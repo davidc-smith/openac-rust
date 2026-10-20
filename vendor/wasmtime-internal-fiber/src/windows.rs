@@ -1,3 +1,7 @@
+// Modified from wasmtime-internal-fiber 48.0.5: `fiber_start` frees the box of
+// the fiber's closure as it moves the closure out (it never returns, so a box
+// kept to its end leaked on every fiber).
+
 use crate::{RunResult, RuntimeFiberStack};
 use alloc::boxed::Box;
 use std::cell::Cell;
