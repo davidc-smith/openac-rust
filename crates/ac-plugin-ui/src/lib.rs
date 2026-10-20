@@ -1,0 +1,40 @@
+//! Plugin UI as data: plugin UI is runtime state that a window only draws.
+//!
+//! A plugin's panels (OpenAC's XML markup with `{Binding}`s), the values it
+//! pushes for them, its canvases and their paint lists, its images, world
+//! labels and lines live in one [`PluginUi`] the session owns. Every plugin
+//! call is answered from it, the same with or without a window, so a plugin
+//! cannot tell whether anyone is drawing. A window that attaches gets a
+//! snapshot and then the changes, keeps a [`PluginUiView`] copy, draws it,
+//! and reports what the player did ([`UiInput`]); the session turns that into
+//! the plugins' events ([`UiEvent`]).
+//!
+//! Neither a plugin host nor a window: the session (`ac-runtime`) owns the
+//! state, the plugin host (`ac-plugin`) translates the plugins' calls, and
+//! the window (`ac-ui`, `ac-render`) draws the copy.
+
+pub mod hotkeys;
+pub mod images;
+pub mod list;
+pub mod markup;
+pub mod model;
+mod state;
+pub mod theme;
+pub mod value;
+pub mod view;
+
+pub use images::{DecodedImage, ImageBudget};
+pub use markup::{MarkupDocument, MarkupError, parse};
+pub use model::{
+    ActionValue, CanvasAnchor, CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction,
+    Color8, ImageSource, ImageView, MapPoint, PaintCmd, PaintRect, PanelDescriptor, PanelView,
+    PluginIcon, PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner,
+    WorldLabel, WorldLine, canvas_origin, window_name,
+};
+pub use state::{
+    MAXIMUM_CANVASES, MAXIMUM_LABEL_TEXT, MAXIMUM_LABELS, MAXIMUM_LINES_PER_LAYER,
+    MAXIMUM_PAINT_COMMANDS, MAXIMUM_PROJECTILE_SAMPLES, PluginUi, TextMetrics, UiResources,
+};
+pub use theme::{ThemeKind, ThemePalette};
+pub use value::{BindingKind, BindingSchema, Rgba, UiValue};
+pub use view::{PluginUiView, ViewDirty};

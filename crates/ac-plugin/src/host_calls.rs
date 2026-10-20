@@ -1,0 +1,519 @@
+//! Carrying out one import for a plugin: the plugin host's own services
+//! (log, settings, verbs, chat lines, the registries plugins share) here,
+//! everything about the game through [`SessionApi::call`].
+//!
+//! A call that asks another plugin something it registered (a loot
+//! classifier) calls that plugin's callback export directly: the other
+//! plugin is idle (only the caller is inside a call), and the callback's
+//! own imports are served like any other, except that they cannot ask a
+//! third plugin. A plugin that faults while answering is unloaded once the
+//! caller's call returns ([`Services::faulted`]).
+
+use ac_plugin_abi::callback::{Callback, CallbackAnswer, LootQuestion};
+use ac_plugin_abi::items::{
+    ClassifierRegistration, ClassifyRequest, LootClassification, LootedNotice, RemovedNotice,
+};
+use ac_plugin_abi::storage::{StorageKey, StoragePlace, StorageWrite};
+use ac_plugin_abi::{
+    ChatPost, CommandCall, CommandCompletion, CommandDef, DecodeError, Import, LogRequest, Wire,
+};
+
+use crate::api::{Caller, SessionApi};
+use crate::classifiers::ClassifierRegistry;
+use crate::commands::CommandRegistry;
+use crate::interceptors::{FilterRegistry, InterceptorRegistry};
+use crate::manifest::PluginManifest;
+use crate::session::Loaded;
+use crate::settings::PluginSessionSettings;
+use crate::status::StatusBoard;
+use crate::storage::{self as files, StorageRoots, StorageService};
+
+/// What the plugin host keeps for the session's plugins.
+#[derive(Debug, Default)]
+pub(crate) struct Services {
+    /// The chat verbs.
+    pub(crate) commands: CommandRegistry,
+    /// Lines submitted to the chat box, for the session to route after the
+    /// call.
+    pub(crate) submits: Vec<String>,
+    /// The loot classifiers.
+    pub(crate) classifiers: ClassifierRegistry,
+    /// The chat input interceptors.
+    pub(crate) interceptors: InterceptorRegistry,
+    /// The chat filters.
+    pub(crate) filters: FilterRegistry,
+    /// Storage's locks.
+    pub(crate) storage: StorageService,
+    /// The session's status board.
+    pub(crate) status: StatusBoard,
+    /// The plugins' network.
+    pub(crate) net: ac_plugin_net::NetService,
+    /// Hosts the player approved this session: (plugin id, host).
+    pub(crate) approvals: Vec<(String, String)>,
+    /// Hosts a plugin already asked the player about.
+    pub(crate) asked: Vec<(String, String)>,
+    /// Plugins that faulted while answering another plugin's question:
+    /// unloaded once the caller's call returns.
+    pub(crate) faulted: Vec<(String, String)>,
+}
+
+impl Services {
+    /// The player lets plugin `id` reach `host` this session.
+    pub(crate) fn approve(&mut self, id: &str, host: &str) {
+        let host = host.to_lowercase();
+        if !self
+            .approvals
+            .iter()
+            .any(|(p, h)| p.eq_ignore_ascii_case(id) && *h == host)
+        {
+            self.approvals.push((id.to_lowercase(), host));
+        }
+    }
+
+    /// The hosts plugin `manifest` may reach: its manifest's and the
+    /// ones the player approved.
+    fn allowed_hosts(&self, manifest: &PluginManifest) -> Vec<String> {
+        manifest
+            .permissions
+            .iter()
+            .filter(|p| p.permission == ac_plugin_abi::Permission::Network)
+            .flat_map(|p| p.hosts.iter().map(|h| h.to_lowercase()))
+            .chain(
+                self.approvals
+                    .iter()
+                    .filter(|(p, _)| p.eq_ignore_ascii_case(&manifest.id))
+                    .map(|(_, h)| h.clone()),
+            )
+            .collect()
+    }
+}
+
+/// Whether plugin `manifest` may reach `host` now; when not, the player is
+/// asked once (a line in the transcript naming the command that approves
+/// it) and the refusal names it too.
+fn reach(
+    services: &mut Services,
+    api: &mut dyn SessionApi,
+    manifest: &PluginManifest,
+    host: &str,
+) -> Result<Vec<String>, String> {
+    let allowed = services.allowed_hosts(manifest);
+    if ac_plugin_net::host_allowed(host, &allowed) {
+        return Ok(allowed);
+    }
+    let id = manifest.id.as_str();
+    let ask = (id.to_lowercase(), host.to_lowercase());
+    if !services.asked.contains(&ask) {
+        services.asked.push(ask);
+        api.post_chat(
+            &format!(
+                "Plugin {} ({id}) asks to reach {host}. Type /plugin allow {id} {host} to let it.",
+                manifest.display_name
+            ),
+            0,
+        );
+    }
+    Err(format!(
+        "{host} is not one of the plugin's hosts; the player can approve it with /plugin allow {id} {host}"
+    ))
+}
+
+impl Services {
+    /// Everything plugin `id` registered goes.
+    pub(crate) fn release(&mut self, id: &str) {
+        self.commands.release(id);
+        self.classifiers.release(id);
+        self.interceptors.release(id);
+        self.filters.release(id);
+        self.storage.release(id);
+        self.status.release(id);
+        self.net.release(id);
+    }
+}
+
+/// The plugins other than the caller, which a call may ask something.
+pub(crate) struct Others<'a> {
+    pub(crate) before: &'a mut [Loaded],
+    pub(crate) after: &'a mut [Loaded],
+}
+
+impl Others<'_> {
+    fn find(&mut self, id: &str) -> Option<&mut Loaded> {
+        self.before
+            .iter_mut()
+            .chain(self.after.iter_mut())
+            .find(|p| p.manifest.id.eq_ignore_ascii_case(id))
+    }
+}
+
+/// A request a plugin made that does not decode: the contract is broken.
+fn malformed(import: Import) -> impl Fn(DecodeError) -> String {
+    move |error| format!("its request to {} is malformed: {error}", import.name())
+}
+
+/// The session's settings and the host's services, for one call.
+pub(crate) struct Context<'a> {
+    pub(crate) api: &'a mut dyn SessionApi,
+    pub(crate) services: &'a mut Services,
+    pub(crate) settings: &'a PluginSessionSettings,
+    pub(crate) storage_roots: &'a StorageRoots,
+}
+
+/// Carries out one import for the plugin `manifest`. `others` is none
+/// inside a callback (a plugin answering a question cannot ask a third).
+pub(crate) fn handle_import(
+    import: Import,
+    request: &[u8],
+    manifest: &PluginManifest,
+    directory: &std::path::Path,
+    cx: &mut Context<'_>,
+    others: Option<&mut Others<'_>>,
+) -> Result<Vec<u8>, String> {
+    let id = manifest.id.as_str();
+    if let Some(permission) = import.permission()
+        && !manifest.allows(permission)
+    {
+        return Err(format!(
+            "called {} without the '{}' permission",
+            import.name(),
+            permission.name()
+        ));
+    }
+    let bad = malformed(import);
+    let caller = files::Caller {
+        manifest,
+        directory,
+    };
+    let services = &mut *cx.services;
+    Ok(match import {
+        Import::AbiReplyRead | Import::AbiPanic => {
+            return Err(format!("{} reached the client", import.name()));
+        }
+        Import::HostLog => {
+            let line = LogRequest::from_bytes(request).map_err(bad)?;
+            cx.api.log(id, line.level, &line.message);
+            Vec::new()
+        }
+        Import::HostWindowAttached => cx.api.window_attached().to_bytes(),
+        Import::HostSetting => {
+            let key = String::from_bytes(request).map_err(bad)?;
+            cx.settings.get(id, &key).map(str::to_owned).to_bytes()
+        }
+        Import::HostSettings => cx.settings.all(id).to_bytes(),
+        Import::CommandsRegister => {
+            let definition = CommandDef::from_bytes(request).map_err(bad)?;
+            services.commands.register(id, &definition).to_bytes()
+        }
+        Import::CommandsUnregister => {
+            let verb = String::from_bytes(request).map_err(bad)?;
+            services.commands.unregister(id, &verb).to_bytes()
+        }
+        Import::CommandsDefinitions => services.commands.definitions().to_bytes(),
+        Import::CommandsHelp => services.commands.help().to_bytes(),
+        Import::CommandsComplete => {
+            let mut call = CommandCall::from_bytes(request).map_err(bad)?;
+            let Some((owner, verb)) = services
+                .commands
+                .owner_of(&call.verb)
+                .map(|(o, v)| (o.to_owned(), v.to_owned()))
+            else {
+                return Ok(Vec::<CommandCompletion>::new().to_bytes());
+            };
+            call.verb = verb;
+            match ask_plugin(id, &owner, others, cx, &Callback::CommandComplete(call)) {
+                Some(CallbackAnswer::Completions(completions)) => completions,
+                _ => Vec::new(),
+            }
+            .to_bytes()
+        }
+        Import::ChatSubmit => {
+            services
+                .submits
+                .push(String::from_bytes(request).map_err(bad)?);
+            Vec::new()
+        }
+        Import::ChatPost => {
+            let post = ChatPost::from_bytes(request).map_err(bad)?;
+            cx.api.post_chat(&post.text, post.log_text_type);
+            Vec::new()
+        }
+        // O. The plugin UI, session state the session owns.
+        Import::UiPanelRegister
+        | Import::UiPanelRemove
+        | Import::UiPanelSet
+        | Import::UiPanelShow
+        | Import::UiViewExists
+        | Import::UiViewVisible
+        | Import::UiControlExists
+        | Import::UiControlLabel
+        | Import::UiControlVisible
+        | Import::UiClientWindow
+        | Import::UiCanvasRegister
+        | Import::UiCanvasPaint
+        | Import::UiCanvasSet
+        | Import::UiCanvasState
+        | Import::UiCanvasAvailable
+        | Import::UiCanvasRemove
+        | Import::UiMeasureText
+        | Import::UiImageClientArt
+        | Import::UiImageSpellIcon
+        | Import::UiImageObjectIcon
+        | Import::UiImageRgba
+        | Import::UiImageDecode
+        | Import::UiImageRelease
+        | Import::UiImageCount
+        | Import::UiLabelsShow
+        | Import::UiLinesCreate
+        | Import::UiLinesSet
+        | Import::UiLinesRemove
+        | Import::UiProjectileDebug
+        | Import::UiHotkeyRegister
+        | Import::UiHotkeyUnregister
+        | Import::UiHotkeyRebind
+        | Import::UiHotkeyState
+        | Import::UiInputActionsListen => {
+            use ac_plugin_abi::ui_host::{WorldQuery, handle, world_query};
+            let owner = ac_plugin_ui::UiOwner::new(id, manifest.display_name.as_str());
+            let api = &mut *cx.api;
+            let answer = match world_query(import, request) {
+                Some(WorldQuery::SpellIcon(spell)) => api.spell_icon(spell),
+                Some(WorldQuery::ObjectIcon(object)) => api.object_icon(object),
+                None => None,
+            };
+            let Some(state) = api.plugin_ui() else {
+                return Err(format!(
+                    "called {} but this session has no plugin UI",
+                    import.name()
+                ));
+            };
+            return handle(import, request, &owner, state, answer);
+        }
+        // Net: the permission is checked above; the host here.
+        Import::NetHttpRequest => {
+            let request = ac_plugin_abi::net::HttpRequest::from_bytes(request).map_err(bad)?;
+            let Some(host) = ac_plugin_net::request_host(&request.url) else {
+                return Ok(Err::<u32, String>(format!(
+                    "'{}' is not an http(s) address",
+                    request.url
+                ))
+                .to_bytes());
+            };
+            match reach(services, &mut *cx.api, manifest, &host) {
+                Ok(allowed) => services.net.http_request(id, request, allowed).to_bytes(),
+                Err(refusal) => Err::<u32, String>(refusal).to_bytes(),
+            }
+        }
+        Import::NetTcpConnect | Import::NetTcpConnectProxied => {
+            let connect = ac_plugin_abi::net::TcpConnect::from_bytes(request).map_err(bad)?;
+            let via_proxy = import == Import::NetTcpConnectProxied;
+            match reach(
+                services,
+                &mut *cx.api,
+                manifest,
+                &connect.host.to_lowercase(),
+            ) {
+                Ok(_) => services.net.tcp_connect(id, &connect, via_proxy).to_bytes(),
+                Err(refusal) => Err::<u32, String>(refusal).to_bytes(),
+            }
+        }
+        Import::NetTcpListen => {
+            let port = u32::from_bytes(request).map_err(bad)?;
+            services.net.tcp_listen(id, port).to_bytes()
+        }
+        Import::NetSend => {
+            let (handle, bytes) = <(u32, Vec<u8>)>::from_bytes(request).map_err(bad)?;
+            services.net.send(id, handle, &bytes).to_bytes()
+        }
+        Import::NetReceive => {
+            let (handle, max) = <(u32, u32)>::from_bytes(request).map_err(bad)?;
+            services.net.receive(id, handle, max).to_bytes()
+        }
+        Import::NetClose => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            services.net.close(id, handle).to_bytes()
+        }
+        // M. The status board.
+        Import::StatusPublish => {
+            let (key, value) = <(String, Option<String>)>::from_bytes(request).map_err(bad)?;
+            services.status.publish(id, &key, value).to_bytes()
+        }
+        Import::StatusRead => {
+            let (owner, key) = <(String, String)>::from_bytes(request).map_err(bad)?;
+            services.status.read(&owner, &key).to_bytes()
+        }
+        Import::StatusCapture => {
+            let owner = String::from_bytes(request).map_err(bad)?;
+            services.status.capture(&owner).to_bytes()
+        }
+        // N. Storage.
+        Import::StorageRead => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            files::read(cx.storage_roots, &caller, &key).to_bytes()
+        }
+        Import::StorageReadText => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            files::read(cx.storage_roots, &caller, &key)
+                .map(|bytes| bytes.map(|b| files::decode_text(&b)))
+                .to_bytes()
+        }
+        Import::StorageWrite => {
+            let write = StorageWrite::from_bytes(request).map_err(bad)?;
+            files::write(&mut services.storage, cx.storage_roots, &caller, &write).to_bytes()
+        }
+        Import::StorageList => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            files::list(cx.storage_roots, &caller, &key).to_bytes()
+        }
+        Import::StorageDelete => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            files::delete(cx.storage_roots, &caller, &key).to_bytes()
+        }
+        Import::StorageEnsureFolder => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            files::ensure_folder(cx.storage_roots, &caller, &key).to_bytes()
+        }
+        Import::StorageDescribe => {
+            let place = StoragePlace::from_bytes(request).map_err(bad)?;
+            files::describe(cx.storage_roots, &caller, &place).to_bytes()
+        }
+        Import::StorageLock => {
+            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            services
+                .storage
+                .lock(cx.storage_roots, &caller, &key)
+                .to_bytes()
+        }
+        Import::StorageUnlock => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            services.storage.unlock(id, handle).to_bytes()
+        }
+        Import::ResourcesListDataFiles => {
+            let relative = String::from_bytes(request).map_err(bad)?;
+            files::list_data_files(cx.storage_roots, &caller, &relative).to_bytes()
+        }
+        Import::ChatAddFilter => services.filters.register(id).to_bytes(),
+        Import::ChatRemoveFilter => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            services.filters.unregister(id, handle).to_bytes()
+        }
+        Import::ChatAddInterceptor => services.interceptors.register(id).to_bytes(),
+        Import::ChatRemoveInterceptor => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            services.interceptors.unregister(id, handle).to_bytes()
+        }
+        Import::CharacterInfo => cx.api.character().to_bytes(),
+        // G. The loot classifiers plugins share.
+        Import::LootClassifierRegister => {
+            let registration = ClassifierRegistration::from_bytes(request).map_err(bad)?;
+            services.classifiers.register(id, &registration).to_bytes()
+        }
+        Import::LootClassifierUnregister => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            services.classifiers.unregister(id, handle).to_bytes()
+        }
+        Import::LootClassifiers => services.classifiers.available().to_bytes(),
+        Import::LootClassify => {
+            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
+                Callback::LootClassify(LootQuestion {
+                    handle,
+                    profile: ask.profile.clone(),
+                    context: ask.context.clone(),
+                })
+            });
+            let classification: Option<LootClassification> = match answer {
+                Some(CallbackAnswer::Classification(c)) => c,
+                _ => None,
+            };
+            classification.to_bytes()
+        }
+        Import::LootNeedsIdentification => {
+            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
+                Callback::LootNeedsIdentification(LootQuestion {
+                    handle,
+                    profile: ask.profile.clone(),
+                    context: ask.context.clone(),
+                })
+            });
+            matches!(answer, Some(CallbackAnswer::Bool(true))).to_bytes()
+        }
+        Import::LootNotifyLooted => {
+            let notice = LootedNotice::from_bytes(request).map_err(bad)?;
+            let item = notice.item.clone();
+            ask_classifier(id, &notice.classifier_id, others, cx, |handle| {
+                Callback::LootLooted((handle, item.clone()))
+            })
+            .is_some()
+            .to_bytes()
+        }
+        Import::LootNotifyRemoved => {
+            let notice = RemovedNotice::from_bytes(request).map_err(bad)?;
+            ask_classifier(id, &notice.classifier_id, others, cx, |handle| {
+                Callback::LootRemoved((handle, notice.object_id))
+            })
+            .is_some()
+            .to_bytes()
+        }
+        // Everything about the game is the session's.
+        game => return cx.api.call(Caller { plugin_id: id }, game, request),
+    })
+}
+
+/// Asks the plugin owning classifier `scoped_id` the question `make`
+/// builds from its handle; `None` when no plugin answers (no such
+/// classifier, the caller's own (a plugin asks its own code directly), no
+/// callback export, inside another callback, or a fault, which unloads the
+/// owner after the call).
+fn ask_classifier(
+    caller: &str,
+    scoped_id: &str,
+    others: Option<&mut Others<'_>>,
+    cx: &mut Context<'_>,
+    make: impl FnOnce(u32) -> Callback,
+) -> Option<CallbackAnswer> {
+    let (owner, handle) = cx.services.classifiers.find(scoped_id)?;
+    ask_plugin(caller, &owner, others, cx, &make(handle))
+}
+
+/// Asks plugin `owner` `callback`; `None` when it does not answer (it is
+/// the caller, has no callback export, the call is inside another
+/// callback, or it faults, which unloads it after the call).
+fn ask_plugin(
+    caller: &str,
+    owner: &str,
+    others: Option<&mut Others<'_>>,
+    cx: &mut Context<'_>,
+    callback: &Callback,
+) -> Option<CallbackAnswer> {
+    if owner.eq_ignore_ascii_case(caller) {
+        return None;
+    }
+    let target = others?.find(owner)?;
+    let bytes = callback.to_bytes();
+    let Loaded {
+        manifest,
+        instance,
+        directory,
+    } = target;
+    let manifest: &PluginManifest = manifest;
+    let directory: &std::path::Path = directory;
+    let result = {
+        let mut handler = |import: Import, request: &[u8]| {
+            handle_import(import, request, manifest, directory, cx, None)
+        };
+        instance.callback(
+            &bytes,
+            crate::watchdog::Entry::of_callback(callback),
+            &mut handler,
+        )
+    };
+    match result {
+        Ok(Some(answer)) => CallbackAnswer::from_bytes(&answer).ok(),
+        Ok(None) => None,
+        Err(fault) => {
+            cx.services.faulted.push((manifest.id.clone(), fault));
+            None
+        }
+    }
+}

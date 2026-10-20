@@ -1,0 +1,12 @@
+/target
+*.log
+.vs/
+.idea/
+.claude/
+# Local agent instructions; kept out of the repository.
+/AGENTS.md
+/CLAUDE.md
+CLAUDE.local.md
+/logs/
+# Test fixtures are data, whatever their extension.
+!crates/*/tests/fixtures/**

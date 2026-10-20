@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental builds only cost cache space on a fresh runner.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The C compiler (wasmtime's two C files, openssl-sys's header step) is
+      # already on the image; OpenSSL and ALSA headers and pkg-config are not.
+      # winit, wgpu and arboard load the display libraries at run time and
+      # need nothing to compile.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev
+
+      # rust-toolchain.toml pins the version, components and the
+      # wasm32-unknown-unknown target; this installs exactly that.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install
+          rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The test plugins (their own workspace) build into
+          # target/plugin-fixtures, inside the cached target directory.
+          cache-on-failure: true
+
+      - name: Check (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ./scripts/check.ps1
+          exit $LASTEXITCODE
+
+      - name: Check (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: sh scripts/check.sh

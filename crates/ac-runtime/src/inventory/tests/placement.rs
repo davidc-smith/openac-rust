@@ -1,0 +1,266 @@
+//! An item on its way into a pack, shown waiting at its slot until the
+//! server answers; drops on item windows; the open pack; the salvage marks.
+//!
+//! The cases follow OpenAC `tests/AcDream.App.Tests/UI/Layout/InventoryControllerTests.cs`
+//! (`LootDrop_InsertsWaitingProjectionAtChosenSlotUntilServerConfirms`,
+//! `DoubleClickLoot_ReservesFirstOpenPackSlotBeforePickupIsSent`,
+//! `GroundDragThenDirectPickupKeepsTheFirstPendingProjection`,
+//! `PendingLootRemovalImmediatelyWithdrawsTheProjection`,
+//! `LootDrop_ServerFailureRemovesOnlyThePendingProjection`,
+//! `Drop_selectedPartialStack_splitsIntoContainer_withoutMovingOriginal`),
+//! `ToolbarControllerTests.cs` (`InventoryButton_*`) and
+//! `ExternalContainerControllerTests.cs`, at the runtime's half of them
+//! (`RuntimeItemInteraction.TryDispatchPendingBackpackPlacement`,
+//! `TrySplitToContainer`, `PreferredBackpackContainer`).
+
+use super::*;
+
+const SCROLL: u32 = 0x7000_0009;
+const CHEST: u32 = 0x7000_0020;
+
+impl Fixture {
+    fn scroll(&mut self) {
+        self.world.apply(&create(SCROLL, "Scroll", |d| {
+            d.item_type = ItemType::WRITABLE.bits();
+        }));
+        self.world.take_table_events();
+    }
+
+    fn placement(&self) -> Option<(u32, u32, i32)> {
+        self.inventory
+            .pending_placement()
+            .map(|p| (p.item_id, p.container_id, p.placement))
+    }
+
+    fn drop_into(
+        &mut self,
+        item: u32,
+        container: u32,
+        slot: i32,
+        amount: u32,
+        pickup: bool,
+    ) -> bool {
+        self.run(ItemCommand::DropInto {
+            item: guid(item),
+            container: guid(container),
+            slot,
+            amount,
+            pickup,
+        })
+    }
+}
+
+#[test]
+fn a_loose_item_dropped_on_a_pack_waits_at_its_slot_until_the_server_places_it() {
+    // LootDrop_InsertsWaitingProjectionAtChosenSlotUntilServerConfirms: a
+    // ground item goes out as a pickup into the pack and slot dropped on,
+    // and is shown there, waiting, until the server's placement.
+    let mut f = Fixture::new();
+    assert!(f.drop_into(LOOSE, PACK, 2, 0, true));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, LOOSE, PACK, 2)]);
+    assert_eq!(f.placement(), Some((LOOSE, PACK, 2)));
+    assert_eq!(f.inventory.pending_item(), Some(LOOSE));
+    assert!(!f.inventory.is_ready(true));
+    f.server(
+        GameEventType::INVENTORY_PUT_OBJ_IN_CONTAINER,
+        &[LOOSE, PACK, 2, 0],
+    );
+    assert_eq!(f.placement(), None);
+    assert!(f.inventory.is_ready(true));
+}
+
+#[test]
+fn a_refusal_or_the_item_leaving_ends_the_waiting_placement() {
+    // LootDrop_ServerFailureRemovesOnlyThePendingProjection.
+    let mut f = Fixture::new();
+    f.drop_into(LOOSE, PACK, 0, 0, true);
+    f.server(GameEventType::INVENTORY_SERVER_SAVE_FAILED, &[LOOSE, 0x29]);
+    assert_eq!(f.placement(), None);
+    assert!(f.inventory.is_ready(true));
+    // PendingLootRemovalImmediatelyWithdrawsTheProjection.
+    let mut f = Fixture::new();
+    f.drop_into(LOOSE, PACK, 0, 0, true);
+    f.world
+        .apply(&Inbound::DeleteObject(ac_proto::DeleteObject {
+            guid: LOOSE,
+            instance_sequence: 1,
+        }));
+    let mut inventory = std::mem::take(&mut f.inventory);
+    inventory.observe(&mut f.ctx());
+    f.inventory = inventory;
+    assert_eq!(f.placement(), None);
+}
+
+#[test]
+fn part_of_a_stack_dropped_from_anywhere_splits_and_is_not_shown_waiting() {
+    // InventoryController.HandleDropRelease: the selected stack's split
+    // quantity goes through TrySplitToContainer, whatever the drag's source
+    // (a ground stack included); only the whole item is a placement.
+    let mut f = Fixture::new();
+    assert!(f.drop_into(LOOSE, PACK, 3, 1, true));
+    assert_eq!(
+        f.sent(),
+        [build_stackable_split_to_container(1, LOOSE, PACK, 3, 1)]
+    );
+    assert_eq!(f.placement(), None);
+    assert_eq!(f.inventory.pending_item(), Some(LOOSE));
+    // An owned stack the same way.
+    let mut f = Fixture::new();
+    assert!(f.drop_into(GEM, PACK, 0, 2, false));
+    assert_eq!(
+        f.sent(),
+        [build_stackable_split_to_container(1, GEM, PACK, 0, 2)]
+    );
+}
+
+#[test]
+fn an_owned_item_dropped_into_a_chest_or_pack_is_a_waiting_move() {
+    // ExternalContainerController.HandleDropRelease and the inventory's
+    // drop: the whole item is TryDispatchPendingBackpackPlacement with a
+    // put-in-container, into a container the player need not own.
+    let mut f = Fixture::new();
+    f.world.apply(&create(CHEST, "Chest", |d| {
+        d.item_type = ItemType::CONTAINER.bits();
+        d.items_capacity = Some(10);
+    }));
+    f.world.take_table_events();
+    assert!(f.drop_into(SWORD, CHEST, 0, 0, false));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, SWORD, CHEST, 0)]);
+    assert_eq!(f.placement(), Some((SWORD, CHEST, 0)));
+    assert_eq!(
+        f.inventory.transactions().pending().map(|p| p.kind),
+        Some(ac_core::items::InventoryRequestKind::PutInContainer)
+    );
+}
+
+#[test]
+fn a_pickup_by_use_waits_in_the_open_pack_and_a_second_is_refused() {
+    // DoubleClickLoot_ReservesFirstOpenPackSlotBeforePickupIsSent and
+    // GroundDragThenDirectPickupKeepsTheFirstPendingProjection: the pickup
+    // is shown at the top of the pack the window has open; another
+    // placement meanwhile is refused with "Already attempting to place X
+    // here" and sends nothing.
+    let mut f = Fixture::new();
+    f.scroll();
+    f.run(ItemCommand::SetOpenPack(PACK));
+    assert!(f.run(ItemCommand::PlaceInPack(guid(SCROLL))));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, SCROLL, PACK, 0)]);
+    assert_eq!(f.placement(), Some((SCROLL, PACK, 0)));
+    assert_eq!(
+        f.inventory.take_backpack_placement(),
+        Some(BackpackPlacement::Sent)
+    );
+    f.world.apply(&create(0x7000_000A, "Book", |d| {
+        d.item_type = ItemType::WRITABLE.bits();
+    }));
+    f.world.take_table_events();
+    assert!(!f.run(ItemCommand::PlaceInPack(guid(0x7000_000A))));
+    assert!(f.sent().is_empty());
+    assert_eq!(
+        f.notices(),
+        [Notice::Interface(
+            "Already attempting to place Scroll here".into()
+        )]
+    );
+    assert_eq!(
+        f.inventory.take_backpack_placement(),
+        Some(BackpackPlacement::AlreadyPending)
+    );
+    assert_eq!(f.placement(), Some((SCROLL, PACK, 0)));
+}
+
+#[test]
+fn a_pickup_that_joins_a_held_stack_waits_in_the_pack_it_would_take() {
+    // TryPlaceWorldItemInBackpack's merge: the join is the placement, shown
+    // in the pack the search chose (the main pack here).
+    let mut f = Fixture::new();
+    assert!(f.run(ItemCommand::PlaceInPack(guid(LOOSE))));
+    assert_eq!(f.sent(), [build_stackable_merge(1, LOOSE, GEM, 2)]);
+    assert_eq!(f.placement(), Some((LOOSE, PLAYER, 0)));
+}
+
+#[test]
+fn the_backpack_button_moves_owned_items_to_the_preferred_pack_and_picks_up_the_rest() {
+    // InventoryButton_ownedDropPublishesDestinationAndGloballyRejectsSecondRequest,
+    // InventoryButton_ownedDropHonorsMainPackPreferenceLikeGroundPickupDoes,
+    // InventoryButton_unownedGroundDropUsesDirectAttemptWithoutDestinationProjection.
+    let mut f = Fixture::new();
+    f.run(ItemCommand::SetOpenPack(PACK));
+    assert!(f.run(ItemCommand::DropOnBackpack(guid(SWORD))));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, SWORD, PACK, 0)]);
+    assert_eq!(f.placement(), Some((SWORD, PACK, 0)));
+    // A second request meanwhile: the busy notice, nothing sent.
+    assert!(!f.run(ItemCommand::DropOnBackpack(guid(GEM))));
+    assert!(f.sent().is_empty());
+    assert_eq!(f.notices(), [Notice::Interface(REQUEST_BUSY.into())]);
+
+    let mut f = Fixture::new();
+    f.run(ItemCommand::SetOpenPack(PACK));
+    f.options
+        .set_bit(crate::character::option_id::MAIN_PACK_PREFERRED, true);
+    assert!(f.run(ItemCommand::DropOnBackpack(guid(SWORD))));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, SWORD, PLAYER, 0)]);
+
+    let mut f = Fixture::new();
+    f.run(ItemCommand::SetOpenPack(PACK));
+    assert!(f.run(ItemCommand::DropOnBackpack(guid(LOOSE))));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, LOOSE, PLAYER, 0)]);
+    assert_eq!(f.placement(), None);
+    assert_eq!(
+        f.inventory.transactions().pending().map(|p| p.kind),
+        Some(ac_core::items::InventoryRequestKind::Pickup)
+    );
+}
+
+#[test]
+fn salvage_marks_hold_staged_items_as_in_a_trade_until_unstaged_or_the_window_goes() {
+    // SalvageUiController.AddRecursive / RemoveItem / ClearItems: a staged
+    // item's trade state is 1 (StackMergePlanner and the placement policy
+    // refuse it; the inventory draws the trade overlay), 0 again when it
+    // leaves the staging.
+    let mut f = Fixture::new();
+    assert!(f.run(ItemCommand::MarkSalvage(vec![GEM2, SWORD])));
+    assert_eq!(f.world.item(GEM2).unwrap().trade_state, 1);
+    assert_eq!(f.world.item(SWORD).unwrap().trade_state, 1);
+    // A staged stack does not merge.
+    assert!(!f.run(ItemCommand::Merge {
+        from: guid(GEM2),
+        to: guid(GEM),
+        amount: 0,
+    }));
+    assert!(f.sent().is_empty());
+    f.events();
+    assert!(f.run(ItemCommand::MarkSalvage(vec![SWORD])));
+    assert_eq!(f.world.item(GEM2).unwrap().trade_state, 0);
+    assert_eq!(f.world.item(SWORD).unwrap().trade_state, 1);
+    // The window going takes the marks and the open pack with it.
+    f.run(ItemCommand::SetOpenPack(PACK));
+    f.inventory.window_detached(&mut f.world);
+    assert_eq!(f.world.item(SWORD).unwrap().trade_state, 0);
+    assert_eq!(f.inventory.open_pack(), 0);
+}
+
+#[test]
+fn a_closing_shop_names_each_listing_it_takes_off_the_buy_list() {
+    // OpenAC: the listing materializer (`VendorShopItemMaterializer`,
+    // subscribed when the runtime's inventory state is built) retires the
+    // listings before the vendor panel hears the close, so the panel's
+    // `OnObjectRemoved` names each staged listing ("Removing X from
+    // shopping list", `ShopItemLeavingClientObjectTable_UnstagesTheBuyEntryWithRetailsNotice`)
+    // before its `OnVendorChanged(Closed)` empties the lists.
+    let mut f = Fixture::new();
+    f.at_the_shop();
+    assert!(f.run(ItemCommand::Vendor(VendorCommand::AddToBuyList {
+        item: guid(DIAMOND),
+        amount: 1,
+    })));
+    f.notices();
+    assert!(f.run(ItemCommand::Vendor(VendorCommand::Close)));
+    assert_eq!(
+        f.notices(),
+        [Notice::Interface(
+            "Removing Diamond from shopping list".into()
+        )]
+    );
+    assert!(f.inventory.vendor_lists().buy().is_empty());
+}

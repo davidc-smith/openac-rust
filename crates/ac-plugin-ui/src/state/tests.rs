@@ -1,0 +1,969 @@
+//! Ported from OpenAC `tests/AcDream.App.Tests/Plugins/BufferedUiRegistryTests.cs`,
+//! `BufferedUiRegistryCanvasTests.cs`, `tests/AcDream.Core.Tests/Plugins/ScopedUiRegistryPanelControlTests.cs`,
+//! `ScopedUiRegistryClientWindowTests.cs`, `tests/AcDream.Runtime.Tests/Plugins/WorldLabelAutomationTests.cs`
+//! and `tests/AcDream.Plugin.Tests/PluginCanvasContractTests.cs`. OpenAC's
+//! answers before a window mounts the panel become the answers of the
+//! session's state, the same with or without a window.
+
+use super::*;
+use crate::model::{
+    ActionValue, CanvasAnchor, Color8, PaintRect, PointerEvent, PointerKind, canvas_origin,
+};
+use crate::value::BindingKind;
+use crate::view::PluginUiView;
+
+fn tank() -> UiOwner {
+    UiOwner::new("edwards.tank", "Tank")
+}
+
+fn other() -> UiOwner {
+    UiOwner::new("another.plugin", "Other")
+}
+
+fn label(id: u32) -> WorldLabel {
+    WorldLabel {
+        object_id: id,
+        text: "name".into(),
+        color: [1.0; 4],
+        height_offset: 0.0,
+        line: 0,
+        max_range: 60.0,
+        outline: true,
+    }
+}
+
+fn status_view(ui: &mut PluginUi) -> u32 {
+    ui.register_panel(
+        &tank(),
+        PanelDescriptor::new("meta", "Status View"),
+        "<panel><button name=\"Action\" text=\"Old\"/><label name=\"Line\" text=\"x\"/><group name=\"Box\"/></panel>",
+        BindingSchema::new("Binding"),
+    )
+    .unwrap()
+}
+
+#[test]
+fn scoped_views_expose_only_their_own_named_controls() {
+    // BufferedUiRegistryTests.ScopedViewsExposeOnlyTheirOwnNamedControls
+    let mut ui = PluginUi::new();
+    let panel = status_view(&mut ui);
+    assert!(ui.view_exists("edwards.tank", "Status View"));
+    assert!(ui.view_exists("edwards.tank", "meta"));
+    assert!(ui.is_view_visible("edwards.tank", "meta"));
+    assert!(ui.control_exists("edwards.tank", "Status View", "Action"));
+    assert!(ui.set_control_label("edwards.tank", "Status View", "Action", "New"));
+    assert!(ui.set_control_visible("edwards.tank", "Status View", "Action", false));
+    let view = ui.panels().next().unwrap();
+    assert_eq!(
+        view.label_overrides.get(&0).map(String::as_str),
+        Some("New")
+    );
+    assert!(!view.node_visible(0));
+    assert!(!ui.view_exists("another.plugin", "Status View"));
+    assert!(!ui.control_exists("edwards.tank", "Status View", "Nobody"));
+    // A group carries no text.
+    assert!(!ui.set_control_label("edwards.tank", "meta", "Box", "x"));
+    assert!(ui.set_control_label("edwards.tank", "meta", "Line", "y"));
+    assert!(ui.remove_panel("edwards.tank", panel));
+    assert!(!ui.view_exists("edwards.tank", "meta"));
+    assert!(!ui.remove_panel("edwards.tank", panel));
+}
+
+#[test]
+fn a_panel_carries_its_owner_and_stable_window_name() {
+    // BufferedUiRegistryTests.FirstClassPanelCarriesManifestOwnerAndStableWindowIdentity,
+    // InlinePanelContentHasAnIndependentlyRemovableLifetime
+    let mut ui = PluginUi::new();
+    let descriptor = PanelDescriptor {
+        icon_text: Some("MT".into()),
+        start_visible: false,
+        ..PanelDescriptor::new("main", "Tank")
+    };
+    let id = ui
+        .register_panel(
+            &tank(),
+            descriptor,
+            "<panel w=\"100\" h=\"50\" />",
+            BindingSchema::new("B"),
+        )
+        .unwrap();
+    let view = ui.panels().next().unwrap();
+    assert_eq!(view.window_name(), "plugin:edwards.tank:main");
+    assert!(!view.requested_visible);
+    assert!(!ui.is_view_visible("edwards.tank", "main"));
+    assert!(ui.remove_panel("edwards.tank", id));
+    assert_eq!(ui.panels().count(), 0);
+}
+
+#[test]
+fn registration_refuses_blank_names_duplicates_and_bad_markup() {
+    let mut ui = PluginUi::new();
+    let schema = || BindingSchema::new("B");
+    assert!(
+        ui.register_panel(
+            &tank(),
+            PanelDescriptor::new(" ", "T"),
+            "<panel/>",
+            schema()
+        )
+        .is_err()
+    );
+    assert!(
+        ui.register_panel(&tank(), PanelDescriptor::new("a", ""), "<panel/>", schema())
+            .is_err()
+    );
+    assert!(
+        ui.register_panel(&tank(), PanelDescriptor::new("a", "T"), "  ", schema())
+            .is_err()
+    );
+    assert_eq!(
+        ui.register_panel(
+            &tank(),
+            PanelDescriptor::new("a", "T"),
+            "<panel><nope/></panel>",
+            schema()
+        ),
+        Err("unknown element <nope>".to_owned())
+    );
+    ui.register_panel(
+        &tank(),
+        PanelDescriptor::new("a", "T"),
+        "<panel/>",
+        schema(),
+    )
+    .unwrap();
+    assert!(
+        ui.register_panel(
+            &tank(),
+            PanelDescriptor::new("a", "T2"),
+            "<panel/>",
+            schema()
+        )
+        .is_err()
+    );
+    // Another plugin may use the same window id.
+    assert!(
+        ui.register_panel(
+            &other(),
+            PanelDescriptor::new("a", "T"),
+            "<panel/>",
+            schema()
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_plugin_reopens_its_window_after_the_player_closed_it() {
+    // BufferedUiRegistryTests.APluginReopensItsOwnWindowAfterThePlayerClosedIt:
+    // the player's close, the plugin's bound visibility, ShowPanel and
+    // HidePanel, as the window's visibility controller combines them.
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("B").with("Visible", BindingKind::Bool);
+    let id = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("main", "Main"),
+            "<panel visible=\"{Visible}\"/>",
+            schema,
+        )
+        .unwrap();
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Visible".into(), UiValue::Bool(true))],
+    )
+    .unwrap();
+    assert!(ui.is_view_visible("edwards.tank", "main"));
+    // The player's close button.
+    ui.input(UiInput::PanelShown {
+        panel: id,
+        shown: false,
+    });
+    assert!(!ui.is_view_visible("edwards.tank", "main"));
+    // The plugin's own binding cannot bring it back...
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Visible".into(), UiValue::Bool(false))],
+    )
+    .unwrap();
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Visible".into(), UiValue::Bool(true))],
+    )
+    .unwrap();
+    assert!(!ui.is_view_visible("edwards.tank", "main"));
+    // ...and ShowPanel does.
+    assert!(ui.show_panel("edwards.tank", "Main", true));
+    assert!(ui.is_view_visible("edwards.tank", "main"), "shown again");
+    assert!(ui.show_panel("edwards.tank", "main", false));
+    assert!(!ui.is_view_visible("edwards.tank", "main"));
+    // Only this plugin's own windows, by id or title.
+    assert!(!ui.show_panel("another", "main", true));
+    assert!(!ui.show_panel("edwards.tank", "missing", true));
+    // A hide while the binding is false leaves the request: the window
+    // shows again when the binding turns true.
+    assert!(ui.show_panel("edwards.tank", "main", true));
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Visible".into(), UiValue::Bool(false))],
+    )
+    .unwrap();
+    assert!(ui.show_panel("edwards.tank", "main", false));
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Visible".into(), UiValue::Bool(true))],
+    )
+    .unwrap();
+    assert!(ui.is_view_visible("edwards.tank", "main"));
+}
+
+#[test]
+fn values_must_be_declared_and_of_their_kind() {
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("Panel")
+        .with("Status", BindingKind::Text)
+        .with("Go", BindingKind::Action)
+        .with("Count", BindingKind::Int);
+    let id = ui
+        .register_panel(&tank(), PanelDescriptor::new("p", "P"), "<panel/>", schema)
+        .unwrap();
+    assert!(
+        ui.set_values(
+            "edwards.tank",
+            id,
+            vec![("Status".into(), UiValue::Text("ok".into()))]
+        )
+        .is_ok()
+    );
+    let e = ui
+        .set_values("edwards.tank", id, vec![("Nope".into(), UiValue::Int(1))])
+        .unwrap_err();
+    assert!(e.contains("not a binding of Panel"), "{e}");
+    assert!(
+        ui.set_values("edwards.tank", id, vec![("Go".into(), UiValue::Int(1))])
+            .is_err()
+    );
+    // All or nothing: the good value before the bad one is not applied.
+    assert!(
+        ui.set_values(
+            "edwards.tank",
+            id,
+            vec![
+                ("Count".into(), UiValue::Int(3)),
+                ("Status".into(), UiValue::Int(1)),
+            ],
+        )
+        .is_err()
+    );
+    assert_eq!(ui.panels().next().unwrap().values.get("Count"), None);
+    // Another plugin cannot push into it.
+    assert!(ui.set_values("another.plugin", id, vec![]).is_err());
+}
+
+#[test]
+fn actions_reach_only_their_plugin_and_only_declared_handlers() {
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("B")
+        .with("Go", BindingKind::Action)
+        .with("Pick", BindingKind::IntAction);
+    let id = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("p", "P"),
+            "<panel><button onclick=\"{Go}\"/></panel>",
+            schema,
+        )
+        .unwrap();
+    ui.input(UiInput::Action {
+        panel: id,
+        handler: "Go".into(),
+        value: ActionValue::None,
+    });
+    ui.input(UiInput::Action {
+        panel: id,
+        handler: "Pick".into(),
+        value: ActionValue::Int(2),
+    });
+    // A handler the panel does not declare with that argument, or a panel
+    // that is gone, is dropped.
+    ui.input(UiInput::Action {
+        panel: id,
+        handler: "Go".into(),
+        value: ActionValue::Int(2),
+    });
+    ui.input(UiInput::Action {
+        panel: 999,
+        handler: "Go".into(),
+        value: ActionValue::None,
+    });
+    assert_eq!(
+        ui.take_events(),
+        vec![
+            (
+                "edwards.tank".to_owned(),
+                UiEvent::Action {
+                    panel: id,
+                    handler: "Go".into(),
+                    value: ActionValue::None
+                }
+            ),
+            (
+                "edwards.tank".to_owned(),
+                UiEvent::Action {
+                    panel: id,
+                    handler: "Pick".into(),
+                    value: ActionValue::Int(2)
+                }
+            ),
+        ]
+    );
+    assert!(ui.take_events().is_empty());
+}
+
+#[test]
+fn client_windows_need_a_window_that_has_them() {
+    // BufferedUiRegistryTests.ClientWindowControlIsUnavailableUntilBound,
+    // ClientWindowControlForwardsToTheBoundRetailSeamOnceBound,
+    // UnbindClientWindowControl_ClearsAllFourDelegates
+    let mut ui = PluginUi::new();
+    let inventory = ClientWindow::Inventory;
+    for action in [
+        ClientWindowAction::Toggle,
+        ClientWindowAction::Show,
+        ClientWindowAction::Hide,
+    ] {
+        assert!(!ui.client_window(inventory, action));
+    }
+    assert!(!ui.is_client_window_visible(inventory));
+    ui.set_window_attached(true);
+    // Attached, but the window has not said which it mounts yet.
+    assert!(!ui.client_window(inventory, ClientWindowAction::Show));
+    ui.input(UiInput::ClientWindows {
+        mounted: inventory.bit() | ClientWindow::Character.bit(),
+        visible: 0,
+    });
+    // The first toggle shows, the second hides.
+    assert!(ui.client_window(inventory, ClientWindowAction::Toggle));
+    assert!(ui.is_client_window_visible(inventory));
+    assert!(!ui.client_window(inventory, ClientWindowAction::Toggle));
+    assert!(!ui.is_client_window_visible(inventory));
+    assert!(ui.client_window(ClientWindow::Character, ClientWindowAction::Show));
+    assert!(ui.is_client_window_visible(ClientWindow::Character));
+    assert!(ui.client_window(ClientWindow::Character, ClientWindowAction::Hide));
+    assert!(!ui.is_client_window_visible(ClientWindow::Character));
+    // A window this build does not mount.
+    assert!(!ui.client_window(ClientWindow::Radar, ClientWindowAction::Show));
+    // The requests reach the window, in order.
+    let requests: Vec<_> = ui
+        .take_changes()
+        .into_iter()
+        .filter_map(|c| match c {
+            UiChange::ClientWindow { window, action } => Some((window, action)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(requests.len(), 4);
+    // The window leaves: unavailable again.
+    ui.set_window_attached(false);
+    assert!(!ui.client_window(inventory, ClientWindowAction::Toggle));
+    assert!(!ui.is_client_window_visible(ClientWindow::Character));
+}
+
+fn canvas(id: &str) -> CanvasDescriptor {
+    CanvasDescriptor {
+        canvas_id: id.into(),
+        width: 64,
+        height: 32,
+        anchor: CanvasAnchor::TopLeft,
+        offset: (0.0, 0.0),
+        start_visible: true,
+        accepts_pointer_input: false,
+    }
+}
+
+#[test]
+fn canvases_are_unique_per_plugin_and_capped_at_eight() {
+    // BufferedUiRegistryCanvasTests (registration rules)
+    let mut ui = PluginUi::new();
+    let first = ui.register_canvas(&tank(), canvas("map")).unwrap();
+    assert_eq!(
+        ui.register_canvas(&tank(), canvas("map")),
+        Err("Plugin canvas 'map' is already registered. Canvas ids must be unique within one plugin.".to_owned())
+    );
+    assert!(ui.register_canvas(&other(), canvas("map")).is_ok());
+    for i in 1..MAXIMUM_CANVASES {
+        ui.register_canvas(&tank(), canvas(&format!("c{i}")))
+            .unwrap();
+    }
+    assert_eq!(
+        ui.register_canvas(&tank(), canvas("ninth")),
+        Err("Plugin canvas 'ninth' refused: the plugin already holds 8 canvases, which is the most it may.".to_owned())
+    );
+    assert!(
+        ui.register_canvas(
+            &tank(),
+            CanvasDescriptor {
+                width: 0,
+                ..canvas("z")
+            }
+        )
+        .is_err()
+    );
+    assert!(ui.register_canvas(&tank(), canvas(" ")).is_err());
+    // Removing one makes room.
+    assert!(ui.remove_canvas("edwards.tank", first));
+    assert!(ui.register_canvas(&tank(), canvas("ninth")).is_ok());
+}
+
+#[test]
+fn a_canvas_keeps_the_state_the_plugin_sets_with_or_without_a_window() {
+    // PluginCanvasContractTests (NoOpPluginCanvas keeps what the plugin sets)
+    let mut ui = PluginUi::new();
+    let id = ui
+        .register_canvas(
+            &tank(),
+            CanvasDescriptor {
+                start_visible: false,
+                anchor: CanvasAnchor::BottomRight,
+                offset: (-10.0, -10.0),
+                ..canvas("hud")
+            },
+        )
+        .unwrap();
+    let c = ui.canvas("edwards.tank", id).unwrap();
+    assert_eq!(
+        (c.visible, c.anchor, c.offset),
+        (false, CanvasAnchor::BottomRight, (-10.0, -10.0))
+    );
+    assert!(!ui.canvas_available("edwards.tank", id));
+    assert!(ui.place_canvas(
+        "edwards.tank",
+        id,
+        Some(true),
+        Some(CanvasAnchor::Center),
+        Some((1.0, 2.0))
+    ));
+    let c = ui.canvas("edwards.tank", id).unwrap();
+    assert_eq!(
+        (c.visible, c.anchor, c.offset),
+        (true, CanvasAnchor::Center, (1.0, 2.0))
+    );
+    ui.set_window_attached(true);
+    assert!(ui.canvas_available("edwards.tank", id));
+    assert!(!ui.place_canvas("another.plugin", id, Some(false), None, None));
+}
+
+#[test]
+fn a_paint_must_balance_its_clips() {
+    let mut ui = PluginUi::new();
+    let id = ui.register_canvas(&tank(), canvas("map")).unwrap();
+    let rect = PaintRect {
+        x: 0.0,
+        y: 0.0,
+        w: 4.0,
+        h: 4.0,
+    };
+    assert!(
+        ui.paint_canvas(
+            "edwards.tank",
+            id,
+            vec![
+                PaintCmd::PushClip(rect),
+                PaintCmd::FillRect {
+                    rect,
+                    color: Color8::WHITE
+                },
+                PaintCmd::PopClip
+            ]
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        ui.paint_canvas("edwards.tank", id, vec![PaintCmd::PushClip(rect)]),
+        Err("the paint leaves 1 clip(s) pushed".to_owned())
+    );
+    assert_eq!(
+        ui.paint_canvas("edwards.tank", id, vec![PaintCmd::PopClip]),
+        Err("the paint pops a clip it did not push".to_owned())
+    );
+    // The good paint stays.
+    assert_eq!(ui.canvas("edwards.tank", id).unwrap().paint.len(), 3);
+}
+
+#[test]
+fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
+    let mut ui = PluginUi::new();
+    let quiet = ui.register_canvas(&tank(), canvas("quiet")).unwrap();
+    let map = ui
+        .register_canvas(
+            &tank(),
+            CanvasDescriptor {
+                accepts_pointer_input: true,
+                ..canvas("map")
+            },
+        )
+        .unwrap();
+    let event = PointerEvent {
+        kind: PointerKind::Down,
+        x: 3.0,
+        y: 4.0,
+        button: 1,
+        modifiers: 0,
+        wheel_delta: 0,
+    };
+    // Nobody listens yet: click-through.
+    ui.input(UiInput::Pointer { canvas: map, event });
+    assert!(ui.take_events().is_empty());
+    assert!(ui.listen_canvas("edwards.tank", map, true));
+    assert!(ui.listen_canvas("edwards.tank", quiet, true));
+    ui.input(UiInput::Pointer { canvas: map, event });
+    ui.input(UiInput::Pointer {
+        canvas: quiet,
+        event,
+    });
+    assert_eq!(
+        ui.take_events(),
+        vec![(
+            "edwards.tank".to_owned(),
+            UiEvent::Pointer { canvas: map, event }
+        )]
+    );
+    assert!(ui.release_canvas_pointer("edwards.tank", map));
+    assert_eq!(ui.canvas("edwards.tank", map).unwrap().release_count, 1);
+}
+
+#[test]
+fn canvases_sit_at_their_anchor_plus_offset() {
+    // PluginCanvasElementTests (Layout): a 100x50 canvas on an 800x600 layer.
+    let at = |a, o| canvas_origin(a, o, (100.0, 50.0), (800.0, 600.0));
+    assert_eq!(at(CanvasAnchor::TopLeft, (10.0, 20.0)), (10.0, 20.0));
+    assert_eq!(at(CanvasAnchor::TopCenter, (0.0, 0.0)), (350.0, 0.0));
+    assert_eq!(
+        at(CanvasAnchor::BottomRight, (-10.0, -10.0)),
+        (690.0, 540.0)
+    );
+    assert_eq!(at(CanvasAnchor::Center, (0.4, 0.5)), (350.0, 276.0));
+    assert_eq!(at(CanvasAnchor::CenterLeft, (0.0, 0.0)), (0.0, 275.0));
+}
+
+#[test]
+fn labels_are_detached_validated_capped_and_per_owner() {
+    // WorldLabelAutomationTests.ThePushedSetIsDetachedAndUnusableLabelsAreDropped,
+    // ASetPastTheCapIsRefusedAndTheOldSetStays,
+    // EachOwnerReplacesOnlyItsOwnSetAndTheCapIsPerOwner,
+    // ReleasingAnOwnerTakesItsLabelsDownAndUnbindTakesEveryOnesDown
+    let mut ui = PluginUi::new();
+    let mut set = vec![
+        label(0x7000_0001),
+        label(0),
+        WorldLabel {
+            text: String::new(),
+            ..label(0x7000_0002)
+        },
+        WorldLabel {
+            max_range: 0.0,
+            ..label(0x7000_0003)
+        },
+        WorldLabel {
+            max_range: f32::INFINITY,
+            ..label(0x7000_0004)
+        },
+        WorldLabel {
+            max_range: f32::NAN,
+            ..label(0x7000_0005)
+        },
+        WorldLabel {
+            height_offset: f32::NAN,
+            ..label(0x7000_0006)
+        },
+        WorldLabel {
+            max_range: 12.0,
+            line: 1,
+            ..label(0x7000_0007)
+        },
+        WorldLabel {
+            text: "x".repeat(MAXIMUM_LABEL_TEXT + 1),
+            ..label(0x7000_0008)
+        },
+        WorldLabel {
+            text: "x".repeat(MAXIMUM_LABEL_TEXT),
+            ..label(0x7000_0009)
+        },
+        WorldLabel {
+            color: [f32::NAN, 1.0, 1.0, 1.0],
+            ..label(0x7000_000A)
+        },
+        WorldLabel {
+            color: [1.0, 1.0, 1.0, f32::INFINITY],
+            ..label(0x7000_000B)
+        },
+    ];
+    assert!(ui.show_labels("first", set.clone()));
+    set[0] = label(0x1234);
+    let shown = ui.merged_labels();
+    assert_eq!(
+        shown.iter().map(|l| l.object_id).collect::<Vec<_>>(),
+        [0x7000_0001, 0x7000_0007, 0x7000_0009]
+    );
+    assert_eq!(shown[1].line, 1);
+
+    let too_many: Vec<WorldLabel> = (1..=MAXIMUM_LABELS as u32 + 1).map(label).collect();
+    assert!(!ui.show_labels("first", too_many.clone()));
+    assert_eq!(ui.merged_labels().len(), 3);
+    assert!(ui.show_labels("first", too_many[..MAXIMUM_LABELS].to_vec()));
+    assert!(ui.show_labels("second", too_many[..MAXIMUM_LABELS].to_vec()));
+    assert_eq!(ui.merged_labels().len(), 2 * MAXIMUM_LABELS);
+    assert!(ui.show_labels(
+        "first",
+        vec![WorldLabel {
+            text: "one".into(),
+            ..label(0x7000_0001)
+        }]
+    ));
+    assert_eq!(ui.merged_labels().len(), 1 + MAXIMUM_LABELS);
+    assert!(ui.show_labels("second", vec![]));
+    let only = ui.merged_labels();
+    assert_eq!(only.len(), 1);
+    assert_eq!(only[0].text, "one");
+    ui.release("first");
+    assert!(ui.merged_labels().is_empty());
+}
+
+#[test]
+fn line_layers_belong_to_their_plugin_and_go_with_it() {
+    let mut ui = PluginUi::new();
+    let line = WorldLine {
+        start: crate::model::MapPoint::default(),
+        end: crate::model::MapPoint {
+            east_west: 0.1,
+            north_south: 0.0,
+            elevation: 0.0,
+        },
+        color_rgb: 0xFF0000,
+        follow_terrain: true,
+        width_metres: 0.25,
+    };
+    let a = ui.create_line_layer("edwards.tank");
+    let b = ui.create_line_layer("another.plugin");
+    assert!(ui.set_lines("edwards.tank", a, vec![line; 3]));
+    assert!(ui.set_lines("another.plugin", b, vec![line]));
+    assert!(!ui.set_lines("another.plugin", a, vec![]));
+    assert_eq!(ui.merged_lines().len(), 4);
+    assert!(ui.set_lines("edwards.tank", a, vec![line; MAXIMUM_LINES_PER_LAYER + 5]));
+    assert_eq!(ui.merged_lines().len(), MAXIMUM_LINES_PER_LAYER + 1);
+    ui.release("edwards.tank");
+    assert_eq!(ui.merged_lines().len(), 1);
+    assert!(ui.remove_line_layer("another.plugin", b));
+    assert!(ui.merged_lines().is_empty());
+}
+
+#[test]
+fn release_takes_everything_of_one_plugin_down() {
+    let mut ui = PluginUi::new();
+    status_view(&mut ui);
+    ui.register_panel(
+        &other(),
+        PanelDescriptor::new("o", "O"),
+        "<panel/>",
+        BindingSchema::new("B"),
+    )
+    .unwrap();
+    ui.register_canvas(&tank(), canvas("map")).unwrap();
+    let (handle, _, _) = ui.image_rgba("edwards.tank", "dot", 1, 1, vec![1, 2, 3, 4]);
+    assert_ne!(handle, 0);
+    ui.show_labels("edwards.tank", vec![label(5)]);
+    ui.release("edwards.tank");
+    assert_eq!(ui.panels().count(), 1);
+    assert_eq!(ui.canvases().count(), 0);
+    assert_eq!(ui.image_count("edwards.tank"), 0);
+    assert!(ui.merged_labels().is_empty());
+}
+
+#[derive(Debug)]
+struct Content;
+
+impl UiResources for Content {
+    fn measure_text(&self, text: &str) -> (f32, f32) {
+        TextMetrics::new([('A', 7.0), ('B', 8.0)], 16.0).measure(text)
+    }
+    fn surface_size(&self, surface_id: u32) -> Option<(u32, u32)> {
+        (surface_id == 0x0600_1234).then_some((32, 16))
+    }
+}
+
+#[test]
+fn text_is_measured_and_art_sized_from_the_clients_content() {
+    let mut ui = PluginUi::new();
+    assert_eq!(ui.measure_text("AB"), (0.0, 0.0), "no content");
+    ui.set_resources(Some(Arc::new(Content)));
+    assert_eq!(ui.measure_text("AB"), (15.0, 16.0));
+    assert_eq!(ui.measure_text("AxB"), (15.0, 16.0));
+    assert_eq!(ui.measure_text(""), (0.0, 0.0));
+    // A bare index is normalised to the image block.
+    assert_eq!(ui.image_client_art("p", 0x1234).1, 32);
+    let (missing, _, _) = ui.image_client_art("p", 0x0600_9999);
+    assert_eq!(missing, 0);
+    assert_eq!(
+        ui.take_reports(),
+        vec![(
+            "p".to_owned(),
+            "client art 0x06009999 is not something the client can draw".to_owned()
+        )]
+    );
+    assert_eq!(ui.image_spell_icon("p", 7, None).0, 0);
+    assert_ne!(ui.image_spell_icon("p", 7, Some(0x0600_1234)).0, 0);
+    assert_eq!(ui.image_object_icon("p", 0x8000_0001, false).0, 0);
+    assert_eq!(ui.image_object_icon("p", 0x8000_0001, true), (3, 32, 32));
+}
+
+#[derive(Debug)]
+struct Decoding;
+
+impl UiResources for Decoding {
+    fn measure_text(&self, _text: &str) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    fn surface_size(&self, _surface_id: u32) -> Option<(u32, u32)> {
+        None
+    }
+    fn image_dimensions(&self, bytes: &[u8]) -> Option<(u32, u32)> {
+        bytes
+            .first()
+            .map(|side| (u32::from(*side), u32::from(*side)))
+    }
+    fn decode_image(&self, bytes: &[u8]) -> Result<crate::DecodedImage, String> {
+        let side = u32::from(*bytes.first().ok_or("empty file")?);
+        Ok(crate::DecodedImage {
+            width: side,
+            height: side,
+            rgba: vec![7; (side * side * 4) as usize],
+        })
+    }
+}
+
+// OpenAC `IPluginImages.FromStream` (`PluginImages` over `PluginImageTable.AcquireDecoded`):
+// the client decodes a plugin's file and the image lands like its own
+// pixels; a host that lends no decoder refuses, and says so once.
+#[test]
+fn a_plugins_file_is_decoded_by_the_hosts_resources() {
+    let mut ui = PluginUi::new();
+    assert_eq!(ui.image_decode("p", "map.png", &[4]), (0, 0, 0));
+    assert_eq!(
+        ui.take_reports(),
+        vec![(
+            "p".to_owned(),
+            "image 'map.png' could not be decoded: this host decodes no images".to_owned()
+        )]
+    );
+    ui.set_resources(Some(Arc::new(Decoding)));
+    let (handle, width, height) = ui.image_decode("p", "dot.png", &[4]);
+    assert_ne!(handle, 0);
+    assert_eq!((width, height), (4, 4));
+    assert_eq!(ui.image_count("p"), 1);
+    assert_eq!(ui.image_decode("p", "empty.png", &[]).0, 0);
+    assert!(ui.take_reports()[0].1.contains("empty file"));
+}
+
+#[test]
+fn a_copy_built_from_the_snapshot_and_changes_matches_the_state() {
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("B")
+        .with("Status", BindingKind::Text)
+        .with("Shown", BindingKind::Bool);
+    let id = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("main", "Main"),
+            "<panel><label name=\"L\" text=\"{Status}\"/></panel>",
+            schema,
+        )
+        .unwrap();
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Status".into(), UiValue::Text("a".into()))],
+    )
+    .unwrap();
+    // A window attaches now: snapshot, then the changes after it.
+    ui.take_changes();
+    let mut copy = PluginUiView::new();
+    copy.apply_all(ui.snapshot());
+    assert_eq!(copy.panels, ui.panels().cloned().collect::<Vec<_>>());
+    let map = ui.register_canvas(&tank(), canvas("map")).unwrap();
+    ui.paint_canvas("edwards.tank", map, vec![PaintCmd::Clear(Color8::WHITE)])
+        .unwrap();
+    ui.place_canvas("edwards.tank", map, Some(false), None, Some((5.0, 6.0)));
+    ui.set_values(
+        "edwards.tank",
+        id,
+        vec![("Status".into(), UiValue::Text("b".into()))],
+    )
+    .unwrap();
+    ui.set_control_label("edwards.tank", "main", "L", "fixed");
+    ui.input(UiInput::PanelShown {
+        panel: id,
+        shown: false,
+    });
+    let (image, _, _) = ui.image_rgba("edwards.tank", "dot", 1, 1, vec![0, 0, 0, 255]);
+    ui.show_labels("edwards.tank", vec![label(9)]);
+    copy.apply_all(ui.take_changes());
+    assert_eq!(copy.panels, ui.panels().cloned().collect::<Vec<_>>());
+    assert_eq!(copy.canvases, ui.canvases().cloned().collect::<Vec<_>>());
+    assert!(copy.image("edwards.tank", image).is_some());
+    assert_eq!(copy.labels, ui.merged_labels());
+    // Gone in the state, gone in the copy.
+    ui.release("edwards.tank");
+    copy.apply_all(ui.take_changes());
+    assert!(copy.panels.is_empty() && copy.canvases.is_empty() && copy.images.is_empty());
+    assert!(copy.labels.is_empty());
+}
+
+/// Hotkeys as session state: registered with no window they
+/// report unbound (OpenAC's headless registration); a window that attaches
+/// and names its key map's chords binds them and gets the bound table; a
+/// press it reports reaches the owner only for a bound hotkey; the window
+/// leaving unbinds everything; unloading takes a plugin's hotkeys.
+#[test]
+fn hotkeys_bind_while_a_window_with_a_key_map_is_attached() {
+    use crate::hotkeys::Chord;
+    const H: u32 = 8;
+    const ESCAPE: u32 = 51;
+    let heal = Chord::key(H).with_ctrl();
+    let mut ui = PluginUi::new();
+    let state = ui
+        .register_hotkey("edwards.tank", "heal", "Heal", heal)
+        .unwrap();
+    assert!(!state.is_bound);
+    ui.input(UiInput::Hotkey {
+        owner: "edwards.tank".into(),
+        id: "heal".into(),
+    });
+    assert!(ui.take_events().is_empty(), "nothing is bound headless");
+    ui.take_changes();
+    ui.set_window_attached(true);
+    ui.input(UiInput::ClientChords(vec![Chord::key(ESCAPE)]));
+    assert!(ui.hotkeys().state("edwards.tank", "heal").unwrap().is_bound);
+    let mut copy = PluginUiView::new();
+    copy.apply_all(ui.take_changes());
+    assert_eq!(copy.hotkeys.len(), 1);
+    assert_eq!(copy.hotkeys[0].chord, heal);
+    ui.input(UiInput::Hotkey {
+        owner: "edwards.tank".into(),
+        id: "heal".into(),
+    });
+    assert_eq!(
+        ui.take_events(),
+        [("edwards.tank".to_owned(), UiEvent::Hotkey("heal".into()))]
+    );
+    // A snapshot carries the table too.
+    let mut fresh = PluginUiView::new();
+    fresh.apply_all(ui.snapshot());
+    assert_eq!(fresh.hotkeys, copy.hotkeys);
+    ui.set_window_attached(false);
+    copy.apply_all(ui.take_changes());
+    assert!(copy.hotkeys.is_empty());
+    assert!(!ui.hotkeys().state("edwards.tank", "heal").unwrap().is_bound);
+    ui.release("edwards.tank");
+    assert!(ui.hotkeys().state("edwards.tank", "heal").is_none());
+}
+
+/// Input action listeners: the setting answers
+/// what it was; a fired action reaches every listener in the order they
+/// asked, only while a window is attached; unloading stops a plugin
+/// listening.
+#[test]
+fn input_actions_reach_the_plugins_that_listen_while_a_window_is_attached() {
+    let fire = |ui: &mut PluginUi| {
+        ui.input(UiInput::InputAction {
+            action: "MovementForward".into(),
+            activation: "Press".into(),
+        });
+    };
+    let heard = |owner: &str| {
+        (
+            owner.to_owned(),
+            UiEvent::InputAction {
+                action: "MovementForward".into(),
+                activation: "Press".into(),
+            },
+        )
+    };
+    let mut ui = PluginUi::new();
+    assert!(!ui.listen_input_actions("b.second", true));
+    assert!(ui.listen_input_actions("b.second", true));
+    assert!(!ui.listen_input_actions("a.first", true));
+    fire(&mut ui);
+    assert!(ui.take_events().is_empty(), "no window, no actions");
+    ui.set_window_attached(true);
+    fire(&mut ui);
+    assert_eq!(ui.take_events(), [heard("b.second"), heard("a.first")]);
+    assert!(ui.listen_input_actions("b.second", false));
+    assert!(!ui.listen_input_actions("b.second", false));
+    ui.release("a.first");
+    assert!(!ui.hears_input_actions("a.first"));
+    fire(&mut ui);
+    assert!(ui.take_events().is_empty());
+}
+
+#[test]
+fn the_theme_is_classic_until_a_window_tells_and_outlives_the_window() {
+    // BufferedUiRegistryThemeTests: plugins read Classic on a
+    // session no window told; the window publishes the saved theme, then
+    // each pick; a pick of the same theme is no change; the theme outlives
+    // the window, so a reattach answers the same one.
+    use crate::theme::ThemeKind;
+    let mut ui = PluginUi::new();
+    assert_eq!(ui.theme(), ThemeKind::Classic);
+    assert_eq!(ui.take_theme_change(), None);
+    ui.set_window_attached(true);
+    ui.input(UiInput::Theme(ThemeKind::Classic));
+    assert_eq!(ui.take_theme_change(), None, "the same theme is no change");
+    ui.input(UiInput::Theme(ThemeKind::Moss));
+    assert_eq!(ui.theme(), ThemeKind::Moss);
+    assert_eq!(ui.take_theme_change(), Some(ThemeKind::Moss));
+    assert_eq!(ui.take_theme_change(), None, "told once");
+    ui.set_window_attached(false);
+    assert_eq!(ui.theme(), ThemeKind::Moss);
+    assert_eq!(ui.take_theme_change(), None);
+}
+
+#[test]
+fn a_plugins_file_icon_rides_with_its_windows_and_goes_with_it() {
+    // OpenAC RetailUiRuntime.ResolvePluginFileIcon: the shelf button of
+    // every window a plugin registers gets the plugin's icon.png; another
+    // plugin's windows do not, and an unloaded plugin's icon is forgotten.
+    let mut ui = PluginUi::new();
+    let icon = PluginIcon {
+        width: 64,
+        height: 64,
+        rgba: Arc::new(vec![7; 64 * 64 * 4]),
+    };
+    ui.set_file_icon("edwards.tank", Some(icon.clone()));
+    let panel = status_view(&mut ui);
+    ui.register_panel(
+        &other(),
+        PanelDescriptor::new("main", "Other"),
+        "<panel/>",
+        BindingSchema::new("Binding"),
+    )
+    .unwrap();
+    let mut view = PluginUiView::new();
+    view.apply_all(ui.snapshot());
+    assert_eq!(view.panel(panel).unwrap().file_icon.as_ref(), Some(&icon));
+    assert!(
+        view.panels
+            .iter()
+            .find(|p| p.owner.id == "another.plugin")
+            .unwrap()
+            .file_icon
+            .is_none()
+    );
+    ui.release("edwards.tank");
+    status_view(&mut ui);
+    assert!(ui.panels().all(|p| p.file_icon.is_none()));
+}

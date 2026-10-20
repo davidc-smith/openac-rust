@@ -1,0 +1,456 @@
+//! The window's own copy of what it draws, built from the session's
+//! presentation stream. It can be dropped and rebuilt at any time.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::Instant;
+
+use ac_runtime::communication::{ChatLine, WindowRequest};
+use ac_runtime::navigation::NavigationView;
+use ac_runtime::session::interface::InterfaceEvent;
+use ac_runtime::session::{PresentationEvent, SessionCommand};
+use ac_runtime::world::{AppliedMotion, ObjectDelta, ObjectView, PlayerView};
+use ac_ui::pregame::PreGameState;
+
+/// A one-off the session asked the window to present.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SceneEffect {
+    /// An object plays a sound.
+    Sound(ac_proto::effects::SoundEvent),
+    /// An object plays a physics script by id.
+    PlayScript(ac_proto::effects::PlayScript),
+    /// An object plays the physics script of a type at an intensity.
+    PlayScriptType(ac_proto::effects::PlayScriptType),
+    /// The server changed the environment.
+    AdminEnvirons(u32),
+    /// The player entered portal space or arrived.
+    PortalSpace(ac_runtime::world::transit::PortalSpaceEvent),
+    /// A new snapshot replaced the world (portal space under way ends; one
+    /// still under way is announced again after it).
+    WorldReplaced,
+}
+
+/// Objects to draw, keyed by local id, the game clock and the effects not
+/// yet presented.
+#[derive(Debug, Default)]
+pub struct Scene {
+    player_guid: Option<u32>,
+    objects: HashMap<u32, ObjectView>,
+    received_snapshot: bool,
+    /// The server's tick count at the latest sync and when it arrived.
+    game_time: Option<(f64, Instant)>,
+    effects: Vec<SceneEffect>,
+    /// Motion states objects took up, not yet taken by the animations.
+    motions: Vec<AppliedMotion>,
+    chat: Vec<ChatLine>,
+    last_chat_sequence: Option<u64>,
+    player_view: Option<PlayerView>,
+    interface: Vec<InterfaceEvent>,
+    pregame: PreGameState,
+    status_text: Vec<String>,
+    window_requests: Vec<WindowRequest>,
+    link: Option<ac_runtime::session::LinkStatus>,
+    navigation: NavigationView,
+}
+
+impl Scene {
+    /// Apply one message from the session.
+    pub fn apply(&mut self, event: PresentationEvent) {
+        match event {
+            PresentationEvent::Snapshot(snapshot) => {
+                self.player_guid = snapshot.player_guid;
+                self.objects = snapshot
+                    .objects
+                    .into_iter()
+                    .map(|o| (o.key.local_id, o))
+                    .collect();
+                self.received_snapshot = true;
+                self.effects.push(SceneEffect::WorldReplaced);
+                // The snapshot holds each object's motion as it stands.
+                self.motions.clear();
+            }
+            PresentationEvent::Motions(motions) => self.motions.extend(motions),
+            PresentationEvent::Deltas(deltas) => {
+                for delta in deltas {
+                    match delta {
+                        ObjectDelta::Upsert(view) => {
+                            self.objects.insert(view.key.local_id, *view);
+                        }
+                        ObjectDelta::Remove(key) => {
+                            self.objects.remove(&key.local_id);
+                        }
+                    }
+                }
+            }
+            PresentationEvent::GameTime(ticks) => self.game_time = Some((ticks, Instant::now())),
+            PresentationEvent::Sound(sound) => self.effects.push(SceneEffect::Sound(sound)),
+            PresentationEvent::PlayScript(play) => {
+                self.effects.push(SceneEffect::PlayScript(play));
+            }
+            PresentationEvent::PlayScriptType(play) => {
+                self.effects.push(SceneEffect::PlayScriptType(play));
+            }
+            PresentationEvent::AdminEnvirons(change) => {
+                self.effects.push(SceneEffect::AdminEnvirons(change));
+            }
+            PresentationEvent::Chat(lines) => {
+                for line in lines {
+                    // Around the attach a line can come in the transcript
+                    // and again as new; the first copy stands.
+                    if self.last_chat_sequence.is_some_and(|s| line.sequence <= s) {
+                        continue;
+                    }
+                    self.last_chat_sequence = Some(line.sequence);
+                    self.chat.push(line);
+                }
+            }
+            PresentationEvent::Player(view) => self.player_view = Some(view),
+            PresentationEvent::Interface(event) => self.interface.push(event),
+            PresentationEvent::PortalSpace(event) => {
+                self.effects.push(SceneEffect::PortalSpace(event));
+            }
+            PresentationEvent::PreGame(event) => self.pregame.apply(event),
+            PresentationEvent::StatusText(text) => self.status_text.push(text),
+            PresentationEvent::WindowRequest(request) => self.window_requests.push(request),
+            PresentationEvent::Link(link) => self.link = Some(link),
+            PresentationEvent::Navigation(view) => self.navigation = view,
+        }
+    }
+
+    /// What the window draws of navigation, as the session last sent it.
+    #[must_use]
+    pub fn navigation(&self) -> &NavigationView {
+        &self.navigation
+    }
+
+    /// The panels' facts that arrived since the last call, oldest first
+    /// (the UI keeps its own copy of them).
+    pub fn take_interface(&mut self) -> Vec<InterfaceEvent> {
+        std::mem::take(&mut self.interface)
+    }
+
+    /// The pre-game screens' state: the connection, character selection
+    /// and creation, the creation choices, the refusals not yet taken.
+    pub fn pregame_mut(&mut self) -> &mut PreGameState {
+        &mut self.pregame
+    }
+
+    /// The pre-game screens' state.
+    #[must_use]
+    pub fn pregame(&self) -> &PreGameState {
+        &self.pregame
+    }
+
+    /// Status-box text that arrived since the last call, oldest first.
+    pub fn take_status_text(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.status_text)
+    }
+
+    /// What client commands asked of the window since the last call.
+    pub fn take_window_requests(&mut self) -> Vec<WindowRequest> {
+        std::mem::take(&mut self.window_requests)
+    }
+
+    /// The link as the session last reported it.
+    #[must_use]
+    pub fn link(&self) -> Option<ac_runtime::session::LinkStatus> {
+        self.link
+    }
+
+    /// The character is in the world (the snapshot named a player).
+    #[must_use]
+    pub fn in_world(&self) -> bool {
+        self.player_guid.is_some()
+    }
+
+    /// Chat lines that arrived since the last call, oldest first.
+    pub fn take_chat(&mut self) -> Vec<ChatLine> {
+        std::mem::take(&mut self.chat)
+    }
+
+    /// The player's vitals, selection and panel options, once sent.
+    #[must_use]
+    pub fn player_view(&self) -> Option<&PlayerView> {
+        self.player_view.as_ref()
+    }
+
+    /// Whether the attach snapshot arrived.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.received_snapshot
+    }
+
+    /// The local player's object id: a character is in the world.
+    #[must_use]
+    pub fn player_guid(&self) -> Option<u32> {
+        self.player_guid
+    }
+
+    /// The local player's object.
+    #[must_use]
+    pub fn player(&self) -> Option<&ObjectView> {
+        let guid = self.player_guid?;
+        self.objects.values().find(|o| o.guid == guid)
+    }
+
+    /// The game clock now: the latest synced tick count advanced by one
+    /// tick per second since it arrived (`None` before the first sync).
+    #[must_use]
+    pub fn game_ticks(&self, now: Instant) -> Option<f64> {
+        self.game_time
+            .map(|(ticks, at)| ticks + now.saturating_duration_since(at).as_secs_f64())
+    }
+
+    /// The tick count of the latest sync (changes when the server syncs).
+    #[must_use]
+    pub fn synced_ticks(&self) -> Option<f64> {
+        self.game_time.map(|(ticks, _)| ticks)
+    }
+
+    /// The effects that arrived since the last call, oldest first.
+    pub fn take_effects(&mut self) -> Vec<SceneEffect> {
+        std::mem::take(&mut self.effects)
+    }
+
+    /// The motion states objects took up since the last call, in order.
+    pub fn take_motions(&mut self) -> Vec<AppliedMotion> {
+        std::mem::take(&mut self.motions)
+    }
+
+    /// An object by server id.
+    #[must_use]
+    pub fn object_by_guid(&self, guid: u32) -> Option<&ObjectView> {
+        self.objects.values().find(|o| o.guid == guid)
+    }
+
+    /// Every object.
+    pub fn objects(&self) -> impl Iterator<Item = &ObjectView> {
+        self.objects.values()
+    }
+
+    /// How many objects.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    /// True with no objects.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+}
+
+/// A session's presentation stream feeding a [`Scene`].
+#[derive(Debug)]
+pub struct SceneSource {
+    receiver: Receiver<PresentationEvent>,
+    scene: Scene,
+    session_gone: bool,
+    commands: Option<Sender<SessionCommand>>,
+}
+
+impl SceneSource {
+    /// Follow a session through the receiver its attach was sent with.
+    #[must_use]
+    pub fn new(receiver: Receiver<PresentationEvent>) -> Self {
+        Self {
+            receiver,
+            scene: Scene::default(),
+            session_gone: false,
+            commands: None,
+        }
+    }
+
+    /// Also send the session what the window asks for (the UI's requests,
+    /// the movement keys): the window's one way back to the session.
+    #[must_use]
+    pub fn with_commands(mut self, commands: Sender<SessionCommand>) -> Self {
+        self.commands = Some(commands);
+        self
+    }
+
+    /// Send `command` to the session. False when the window has no way
+    /// back or the session is gone.
+    pub fn send(&self, command: SessionCommand) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|c| c.send(command).is_ok())
+    }
+
+    /// Apply everything that arrived since the last call.
+    pub fn pump(&mut self) {
+        loop {
+            match self.receiver.try_recv() {
+                Ok(event) => self.scene.apply(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.session_gone = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The scene as of the last pump.
+    #[must_use]
+    pub fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
+    /// The scene, to take its effects.
+    pub fn scene_mut(&mut self) -> &mut Scene {
+        &mut self.scene
+    }
+
+    /// The session ended or detached this window.
+    #[must_use]
+    pub fn session_gone(&self) -> bool {
+        self.session_gone
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ac_proto::ModelData;
+    use ac_runtime::world::{ObjectKey, WorldSnapshot};
+    use std::sync::mpsc;
+
+    fn view(local_id: u32, guid: u32) -> ObjectView {
+        ObjectView {
+            key: ObjectKey {
+                local_id,
+                incarnation: 1,
+            },
+            guid,
+            name: None,
+            setup_id: None,
+            position: None,
+            parent: None,
+            placement: None,
+            scale: None,
+            translucency: None,
+            state: 0,
+            velocity: None,
+            model: ModelData::default(),
+            motion_table_id: None,
+            sound_table_id: None,
+            radar: ac_runtime::world::RadarFacts::default(),
+            motion: None,
+            effects: ac_runtime::world::EffectFacts::default(),
+        }
+    }
+
+    #[test]
+    fn snapshot_then_deltas_build_the_scene() {
+        let (tx, rx) = mpsc::channel();
+        let mut source = SceneSource::new(rx);
+        tx.send(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: Some(10),
+            objects: vec![view(1, 10), view(2, 20)],
+        }))
+        .unwrap();
+        tx.send(PresentationEvent::Deltas(vec![
+            ObjectDelta::Remove(view(2, 20).key),
+            ObjectDelta::Upsert(Box::new(view(3, 30))),
+        ]))
+        .unwrap();
+        source.pump();
+        assert!(source.scene().is_ready());
+        assert_eq!(source.scene().len(), 2);
+        assert_eq!(source.scene().player().map(|p| p.guid), Some(10));
+        drop(tx);
+        source.pump();
+        assert!(source.session_gone());
+    }
+
+    #[test]
+    fn chat_lines_are_kept_once_and_the_player_view_replaced() {
+        let line = |sequence: u64| ac_runtime::communication::ChatLine {
+            sequence,
+            kind: ac_runtime::communication::ChatKind::LocalSpeech,
+            log_text_type: 2,
+            combat_kind: None,
+            received_unix_ms: 0,
+            text: format!("{sequence}"),
+            channel_name: String::new(),
+            sender: String::new(),
+            sender_guid: 0,
+            words: String::new(),
+            display_text: String::new(),
+            channel_id: 0,
+            spans: None,
+        };
+        let mut scene = Scene::default();
+        // The attach transcript, then a pass that repeats its last line.
+        scene.apply(PresentationEvent::Chat(vec![line(1), line(2)]));
+        scene.apply(PresentationEvent::Chat(vec![line(2), line(3)]));
+        let kept: Vec<u64> = scene.take_chat().iter().map(|l| l.sequence).collect();
+        assert_eq!(kept, [1, 2, 3]);
+        assert!(scene.take_chat().is_empty());
+        assert_eq!(scene.player_view(), None);
+        let view = PlayerView {
+            selected: Some(9),
+            ..PlayerView::default()
+        };
+        scene.apply(PresentationEvent::Player(view));
+        assert_eq!(scene.player_view(), Some(&view));
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_clock_advances_a_tick_per_second_after_a_sync_and_effects_are_taken_once() {
+        let mut scene = Scene::default();
+        assert_eq!(scene.game_ticks(Instant::now()), None);
+        scene.apply(PresentationEvent::GameTime(1000.0));
+        let (_, at) = scene.game_time.unwrap();
+        let ticks = scene.game_ticks(at + Duration::from_millis(2500)).unwrap();
+        assert!((ticks - 1002.5).abs() < 1e-9);
+        assert_eq!(scene.synced_ticks(), Some(1000.0));
+
+        scene.apply(PresentationEvent::AdminEnvirons(0x65));
+        assert_eq!(scene.take_effects(), [SceneEffect::AdminEnvirons(0x65)]);
+        assert!(scene.take_effects().is_empty());
+    }
+
+    #[test]
+    fn motions_taken_up_queue_in_order_until_taken_and_a_snapshot_drops_them() {
+        use ac_runtime::world::{AppliedMotion, MotionView, ObjectKey, WorldSnapshot};
+        let motion = |serial| AppliedMotion {
+            key: ObjectKey {
+                local_id: 1,
+                incarnation: 1,
+            },
+            guid: 0x5000_0001,
+            motion: MotionView {
+                state: ac_physics::movement::InboundInterpretedState::default(),
+                serial,
+                grounded: true,
+                body: None,
+            },
+            taken_up: true,
+        };
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Motions(vec![motion(1), motion(2)]));
+        scene.apply(PresentationEvent::Motions(vec![motion(3)]));
+        let serials: Vec<u32> = scene
+            .take_motions()
+            .iter()
+            .map(|m| m.motion.serial)
+            .collect();
+        assert_eq!(serials, [1, 2, 3]);
+        assert!(scene.take_motions().is_empty());
+        scene.apply(PresentationEvent::Motions(vec![motion(4)]));
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: None,
+            objects: Vec::new(),
+        }));
+        assert!(scene.take_motions().is_empty(), "the snapshot holds them");
+    }
+}

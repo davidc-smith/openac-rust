@@ -1,0 +1,20 @@
+[package]
+name = "ac-host"
+description = "Host configuration: command grammar, the session-config document, credentials, paths, exit codes and the status file. Pure; I/O only where named."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+# The local time zone on Windows (`SystemTimeToTzSpecificLocalTime`) and the
+# process's own numbers (`K32GetProcessMemoryInfo`, `GetProcessTimes`); no C.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading", "Win32_System_Time"] }
+
+[lints]
+workspace = true

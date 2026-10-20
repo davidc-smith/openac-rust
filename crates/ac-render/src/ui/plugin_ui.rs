@@ -1,0 +1,1064 @@
+//! The plugins' UI in the game window (OpenAC `RetailUiRuntime`'s plugin
+//! panel host, `PluginShelfController`, `PluginCanvasElement`, the world
+//! label, world line and projectile overlays): the window's copy of the
+//! session's plugin UI (`InterfaceFacts::plugin_ui`) drawn with the
+//! widgets of `ac_ui::plugin`, and what the player does with it sent back
+//! as session commands.
+//!
+//! Nothing here is kept beyond what the copy rebuilds: a window that
+//! attaches mid-run is handed the session's snapshot and mounts every
+//! plugin window from it.
+
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use ac_dat::DatCollection;
+use ac_dat::objects::{BspNode, GfxObj, Setup};
+use ac_plugin_ui::{
+    ClientWindow, ClientWindowAction, ImageSource, MapPoint, PanelView, ThemeKind, UiInput,
+};
+use ac_proto::Quaternion;
+use ac_runtime::session::SessionCommand;
+use ac_ui::DatContent;
+use ac_ui::bundled_font;
+use ac_ui::draw::{Color, SpriteSizes, TextureRef};
+use ac_ui::font::{DEFAULT_FONT_ID, UiFont};
+use ac_ui::icons::{IconComposer, IconSource, Rgba};
+use ac_ui::import::LayoutSource;
+use ac_ui::overlay::{WorldLabel, WorldLabelAnchor};
+use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
+use ac_ui::plugin::canvas::CanvasLayer;
+use ac_ui::plugin::shelf::{self, PluginShelf};
+use ac_ui::plugin::{
+    Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
+};
+use glam::{Quat, Vec3};
+
+use super::character_pages::CHARACTER_INFO_WINDOW;
+use super::indicator_panels::{
+    LINK_STATUS_WINDOW, NEGATIVE_EFFECTS_WINDOW, POSITIVE_EFFECTS_WINDOW, VITAE_WINDOW,
+};
+use super::map_window::MAP_HOUSE_WINDOW;
+use super::options::OPTIONS_WINDOW;
+use super::social_panels::{JOURNAL_WINDOW, SOCIAL_WINDOW};
+use super::window::{CHARACTER_WINDOW, INVENTORY_WINDOW, RADAR_WINDOW, SPELLBOOK_WINDOW, WindowUi};
+use crate::meshing::flatten_setup;
+use crate::renderer::WorldRenderer;
+use crate::scene::Scene;
+use crate::world_lines::PlacedLine;
+
+/// How long a set of projectile markers shows after it arrives.
+pub const PROJECTILE_SAMPLES_SHOWN: Duration = Duration::from_millis(350);
+
+/// A label hangs this high over an object nothing else gives a height,
+/// metres (about a standing human).
+pub const FALLBACK_LABEL_HEIGHT: f32 = 1.1;
+
+/// The size composed item and spell icons are drawn at, pixels.
+const ICON_SIZE: f32 = 32.0;
+
+/// The window's name for one of its own windows a plugin may ask about.
+#[must_use]
+pub fn client_window_name(window: ClientWindow) -> &'static str {
+    match window {
+        ClientWindow::Inventory => INVENTORY_WINDOW,
+        ClientWindow::Character => CHARACTER_WINDOW,
+        ClientWindow::CharacterInformation => CHARACTER_INFO_WINDOW,
+        ClientWindow::Spellbook => SPELLBOOK_WINDOW,
+        ClientWindow::Map => MAP_HOUSE_WINDOW,
+        ClientWindow::Options => OPTIONS_WINDOW,
+        ClientWindow::Social => SOCIAL_WINDOW,
+        ClientWindow::Journal => JOURNAL_WINDOW,
+        ClientWindow::PositiveEffects => POSITIVE_EFFECTS_WINDOW,
+        ClientWindow::NegativeEffects => NEGATIVE_EFFECTS_WINDOW,
+        ClientWindow::LinkStatus => LINK_STATUS_WINDOW,
+        ClientWindow::Vitae => VITAE_WINDOW,
+        ClientWindow::Radar => RADAR_WINDOW,
+    }
+}
+
+/// What the window keeps of the plugins' UI.
+#[derive(Debug, Default)]
+pub struct PluginWindowUi {
+    outbox: PluginOutbox,
+    /// The plugin windows mounted, by the session's number, with their
+    /// window names.
+    panels: BTreeMap<u32, String>,
+    shelf: bool,
+    canvases: Option<CanvasLayer>,
+    projectile: Option<ProjectileDebugOverlay>,
+    /// The plugins' images as textures, by plugin and handle.
+    images: HashMap<(String, u32), Icon>,
+    /// Each plugin's `icon.png` as a texture, uploaded once per plugin
+    /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
+    /// was made from: a reloaded plugin's new file uploads again.
+    file_icons: HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    synced: Option<u64>,
+    reported: Option<(u16, u16)>,
+    /// The key map's chords as last told to the session, with the
+    /// snapshot (attach) they were told in.
+    reported_chords: Option<(u64, Vec<ac_plugin_ui::hotkeys::Chord>)>,
+    /// The first chord the key map binds to Toggle Plugin Manager.
+    manager_chord: Option<ac_ui::input::KeyChord>,
+    /// The bundled sans font the modern themes draw opted-in windows in
+    /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
+    modern_font: Option<Arc<UiFont>>,
+    /// A markup window's title colour without a theme, from the player's
+    /// `controlsntrols.ini` (`[title] color`); white without one.
+    title_color: Option<Color>,
+    theme: PluginTheme,
+    /// The theme as the player picked it (what the session is told).
+    theme_kind: ThemeKind,
+    /// The Appearance window, once the player opened it.
+    appearance: Option<Appearance>,
+    /// This frame's labels, the objects they hang from, the lines and the
+    /// projectile markers, in the drawing frame.
+    pub(super) labels: Vec<WorldLabel>,
+    pub(super) anchors: HashMap<u32, WorldLabelAnchor>,
+    world_lines: Vec<PlacedLine>,
+    samples: Vec<ProjectileDebugSample>,
+    projectile_set: Option<(u64, Instant)>,
+    setup_shapes: HashMap<u32, Option<SetupShape>>,
+}
+
+/// The Appearance window (OpenAC `RetailUiRuntime.ShowPluginAppearance`):
+/// the client's own markup window, built from a plugin UI of its own that
+/// only this window holds, offering the three themes.
+#[derive(Debug)]
+struct Appearance {
+    ui: ac_plugin_ui::PluginUi,
+    panel: u32,
+    window: String,
+    outbox: PluginOutbox,
+    revision: u64,
+}
+
+/// The owner the Appearance window's markup is registered under.
+const APPEARANCE_OWNER: &str = "openac";
+/// Its window id.
+const APPEARANCE_VIEW: &str = "appearance";
+
+/// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
+const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="140" title="Plugin appearance" theme="plugin">
+  <label x="12" y="33" text="Theme" />
+  <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="3" />
+  <button x="226" y="102" w="72" h="24" text="Close" onclick="{Close}" />
+</panel>"#;
+
+/// Markup with no images to resolve.
+struct NoMarkupIcons;
+
+impl MarkupIcons for NoMarkupIcons {
+    fn surface(&mut self, _id: u32) -> Option<Icon> {
+        None
+    }
+    fn spell(&mut self, _spell: u32) -> Option<Icon> {
+        None
+    }
+    fn item(&mut self, _object: u32) -> Option<Icon> {
+        None
+    }
+}
+
+/// The window's art, its icon composer and the objects it knows, as the
+/// images plugin markup names.
+struct WindowIcons<'a> {
+    content: &'a DatContent,
+    icons: &'a mut IconComposer,
+    objects: &'a ac_core::items::ClientObjectTable,
+}
+
+fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
+    let (w, h) = content.sprite_size(id)?;
+    Some((TextureRef::Surface(id), w as f32, h as f32))
+}
+
+/// The shelf's button images: the window's art and its runtime textures.
+struct WindowShelfIcons<'a> {
+    content: &'a DatContent,
+    images: &'a super::icons::RuntimeImages,
+    file_icons: &'a mut HashMap<String, (Arc<Vec<u8>>, Icon)>,
+}
+
+impl shelf::ShelfIcons for WindowShelfIcons<'_> {
+    fn file(&mut self, owner: &str, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
+        if let Some((pixels, texture)) = self.file_icons.get(owner)
+            && Arc::ptr_eq(pixels, &icon.rgba)
+        {
+            return Some(*texture);
+        }
+        let rgba = Rgba::new(icon.width, icon.height, icon.rgba.as_ref().clone());
+        let texture = (
+            self.images.uploader().upload(&rgba),
+            icon.width as f32,
+            icon.height as f32,
+        );
+        self.file_icons
+            .insert(owner.to_owned(), (Arc::clone(&icon.rgba), texture));
+        Some(texture)
+    }
+
+    fn surface(&mut self, id: u32) -> Option<Icon> {
+        surface_icon(self.content, id)
+    }
+}
+
+impl MarkupIcons for WindowIcons<'_> {
+    fn surface(&mut self, id: u32) -> Option<Icon> {
+        surface_icon(self.content, id)
+    }
+
+    fn spell(&mut self, spell: u32) -> Option<Icon> {
+        self.icons
+            .spell_icon(spell)
+            .map(|t| (t, ICON_SIZE, ICON_SIZE))
+    }
+
+    fn item(&mut self, object: u32) -> Option<Icon> {
+        let o = self.objects.get(object)?;
+        self.icons
+            .item_icon(
+                o.item_type,
+                o.icon_id,
+                o.icon_underlay_id,
+                o.icon_overlay_id,
+                o.effects,
+            )
+            .map(|t| (t, ICON_SIZE, ICON_SIZE))
+    }
+}
+
+impl PluginWindowUi {
+    /// A markup window's title colour without a theme.
+    fn title_color(&self) -> Color {
+        self.title_color.unwrap_or(Color::WHITE)
+    }
+}
+
+impl WindowUi {
+    /// The player's `controls\controls.ini` (OpenAC
+    /// `InteractionRetainedUiComposition`, read from the game folder): its
+    /// `[title] color` colours the titles of the markup windows built from
+    /// now on where no theme colours them.
+    pub fn set_controls(&mut self, controls: &ac_ui::controls_ini::ControlsIni) {
+        self.plugins.title_color = controls.color("title", "color");
+    }
+
+    /// Mount the plugins' shelf and their layers of the overlay band
+    /// (after the overlays).
+    pub(super) fn mount_plugin_ui(&mut self) {
+        // The bundled sans font of the modern themes, baked into an atlas
+        // texture of this window (OpenAC `BundledUiFont.Load`).
+        match bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT) {
+            Ok(atlas) => {
+                let image = Rgba::new(atlas.width, atlas.height, atlas.pixels.clone());
+                let texture = self.images.uploader().upload(&image);
+                self.plugins.modern_font = Some(Arc::new(atlas.create_font(texture)));
+            }
+            Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
+        }
+        let font = self.content.font(DEFAULT_FONT_ID);
+        let outbox = Rc::clone(&self.plugins.outbox);
+        let shelf = PluginShelf::build(&mut self.host.root, font, outbox);
+        let frame = shelf.root;
+        let top = self.host.root.root();
+        self.host.root.add_child(top, frame);
+        match self
+            .host
+            .root
+            .register_window(shelf::WINDOW, frame, Some(frame), 0)
+        {
+            Ok(()) => {
+                if self
+                    .host
+                    .attach_controller(shelf::WINDOW, Box::new(shelf))
+                    .is_ok()
+                {
+                    self.plugins.shelf = true;
+                }
+            }
+            Err(e) => self.notices.push(format!("ui: plugin shelf: {e:?}")),
+        }
+        if let Some(host) = self.status.overlays.host_mut() {
+            let root = &mut self.host.root;
+            self.plugins.canvases = Some(CanvasLayer::mount(root, host));
+            self.plugins.projectile = Some(ProjectileDebugOverlay::mount(root, host));
+        }
+        // The theme the player saved: opted-in windows take it from their
+        // first draw, and plugins are told it (OpenAC `FollowTheme`).
+        let saved = ThemeKind::from_saved(&self.settings.plugin_ui.theme);
+        // The session starts in the classic theme, so telling it that
+        // changes nothing (as OpenAC's publish of an unchanged theme
+        // raises nothing); only another theme is sent.
+        self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
+    }
+
+    /// The plugin theme in force: opted-in windows restyle, the shelf
+    /// turns compact (or classic again), the Appearance window shows it and
+    /// the session tells plugins (OpenAC `PluginUiThemeSettings.Theme`'s
+    /// setter and `BufferedUiRegistry.PublishTheme`).
+    fn apply_plugin_theme(&mut self, kind: ThemeKind, tell_session: bool) {
+        self.plugins.theme_kind = kind;
+        self.plugins.theme = kind.into();
+        let theme = self.plugins.theme;
+        if self.plugins.shelf {
+            self.host
+                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_theme(ui, theme));
+        }
+        // Every window draws again in the theme.
+        self.plugins.synced = None;
+        if tell_session {
+            self.plugins.outbox.borrow_mut().push(UiInput::Theme(kind));
+        }
+        self.sync_appearance();
+    }
+
+    /// The player picked a theme in the Appearance window: it is saved
+    /// with the client settings and applied.
+    fn pick_plugin_theme(&mut self, kind: ThemeKind) {
+        if kind == self.plugins.theme_kind {
+            return;
+        }
+        kind.saved_name()
+            .clone_into(&mut self.settings.plugin_ui.theme);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+        self.apply_plugin_theme(kind, true);
+    }
+
+    /// The settings changed in another window: a different saved theme is
+    /// applied here too.
+    pub(super) fn follow_plugin_theme_setting(&mut self) {
+        let saved = ThemeKind::from_saved(&self.settings.plugin_ui.theme);
+        if saved != self.plugins.theme_kind {
+            self.apply_plugin_theme(saved, true);
+        }
+    }
+
+    /// Open the Appearance window, building it the first time (OpenAC
+    /// `ShowPluginAppearance`).
+    fn show_plugin_appearance(&mut self) {
+        if self.plugins.appearance.is_none() {
+            let mut ui = ac_plugin_ui::PluginUi::new();
+            let schema = ac_plugin_ui::BindingSchema::new("PluginAppearanceBinding")
+                .with("Themes", ac_plugin_ui::BindingKind::TextList)
+                .with("Selected", ac_plugin_ui::BindingKind::Text)
+                .with("Select", ac_plugin_ui::BindingKind::TextAction)
+                .with("Close", ac_plugin_ui::BindingKind::Action);
+            let mut descriptor =
+                ac_plugin_ui::PanelDescriptor::new(APPEARANCE_VIEW, "Plugin appearance");
+            descriptor.show_in_side_panel = false;
+            let owner = ac_plugin_ui::UiOwner::new(APPEARANCE_OWNER, "OpenAC");
+            let panel = match ui.register_panel(&owner, descriptor, APPEARANCE_MARKUP, schema) {
+                Ok(panel) => panel,
+                Err(e) => {
+                    self.notices.push(format!("ui: plugin appearance: {e}"));
+                    return;
+                }
+            };
+            let Some(view) = ui.panels().next().cloned() else {
+                return;
+            };
+            let outbox: PluginOutbox = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let font = self.content.font(DEFAULT_FONT_ID);
+            let controller = build_panel(&mut self.host.root, &view, font, Rc::clone(&outbox))
+                .with_modern_font(self.plugins.modern_font.clone())
+                .with_title_color(&mut self.host.root, self.plugins.title_color());
+            let frame = controller.root;
+            let window = controller.window_name.clone();
+            let top = self.host.root.root();
+            self.host.root.add_child(top, frame);
+            if let Err(e) = self
+                .host
+                .root
+                .register_window(&window, frame, Some(frame), 0)
+            {
+                self.notices.push(format!("ui: plugin appearance: {e:?}"));
+                self.host.root.destroy(frame);
+                return;
+            }
+            if let Err(e) = self.host.attach_controller(&window, Box::new(controller)) {
+                self.notices.push(format!("ui: plugin appearance: {e:?}"));
+            }
+            self.plugins.appearance = Some(Appearance {
+                ui,
+                panel,
+                window,
+                outbox,
+                revision: 0,
+            });
+        }
+        if let Some(a) = self.plugins.appearance.as_mut() {
+            a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, true);
+        }
+        self.sync_appearance();
+        if let Some(frame) = self
+            .plugins
+            .appearance
+            .as_ref()
+            .and_then(|a| self.host.root.window(&a.window))
+            .map(|w| w.frame)
+        {
+            self.host.root.bring_to_front(frame);
+        }
+    }
+
+    /// The Appearance window shows the theme in force.
+    fn sync_appearance(&mut self) {
+        let theme = self.plugins.theme;
+        let kind = self.plugins.theme_kind;
+        let Some(a) = self.plugins.appearance.as_mut() else {
+            return;
+        };
+        let names: Vec<String> = ThemeKind::ALL
+            .iter()
+            .map(|t| t.display_name().to_owned())
+            .collect();
+        let _ = a.ui.set_values(
+            APPEARANCE_OWNER,
+            a.panel,
+            vec![
+                ("Themes".into(), ac_plugin_ui::UiValue::TextList(names)),
+                (
+                    "Selected".into(),
+                    ac_plugin_ui::UiValue::Text(kind.display_name().to_owned()),
+                ),
+            ],
+        );
+        a.revision += 1;
+        let revision = a.revision;
+        let Some(view) = a.ui.panels().next().cloned() else {
+            return;
+        };
+        let window = a.window.clone();
+        self.host
+            .with_controller::<PluginPanelController, _>(&window, |c, ui| {
+                c.sync(ui, &view, revision, &mut NoMarkupIcons, theme);
+            });
+    }
+
+    /// What the player did in the Appearance window: a pick, Close, the
+    /// frame's close button.
+    fn follow_appearance(&mut self) {
+        let Some(a) = self.plugins.appearance.as_mut() else {
+            return;
+        };
+        let inputs: Vec<UiInput> = a.outbox.borrow_mut().drain(..).collect();
+        if inputs.is_empty() {
+            return;
+        }
+        let mut picked = None;
+        for input in inputs {
+            match &input {
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "Select" => picked = ThemeKind::from_display_name(name),
+                UiInput::Action { handler, .. } if handler == "Close" => {
+                    a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, false);
+                }
+                _ => a.ui.input(input),
+            }
+        }
+        if let Some(kind) = picked {
+            self.pick_plugin_theme(kind);
+        }
+        self.sync_appearance();
+    }
+
+    /// Follow the window's copy of the plugin UI: mount the windows that
+    /// came, drop the ones that went, show every one as the session has
+    /// it, and carry out what plugins asked of the client's windows.
+    pub(super) fn feed_plugin_ui(&mut self) {
+        let dirty = self.facts.plugin_ui.take_dirty();
+        let revision = self.facts.plugin_ui.revision;
+        if dirty.panels || self.plugins.synced.is_none() {
+            self.mount_plugin_panels();
+        }
+        if self.plugins.synced != Some(revision) {
+            self.plugins.synced = Some(revision);
+            self.sync_plugin_panels(revision);
+        }
+        let requests = self.facts.plugin_ui.take_client_requests();
+        for (window, action) in requests {
+            self.client_window_request(window, action);
+        }
+        self.report_client_windows();
+        let appearance_asked = self.plugins.shelf
+            && self
+                .host
+                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
+                    c.take_appearance_request()
+                })
+                .unwrap_or(false);
+        if appearance_asked {
+            self.show_plugin_appearance();
+        }
+        self.follow_appearance();
+    }
+
+    fn mount_plugin_panels(&mut self) {
+        let view = &self.facts.plugin_ui;
+        let gone: Vec<(u32, String)> = self
+            .plugins
+            .panels
+            .iter()
+            .filter(|(id, _)| view.panel(**id).is_none())
+            .map(|(id, name)| (*id, name.clone()))
+            .collect();
+        for (id, name) in gone {
+            self.plugins.panels.remove(&id);
+            let frame = self.host.root.window(&name).map(|w| w.frame);
+            self.host.root.unregister_window(&name);
+            self.host.pump();
+            if let Some(frame) = frame {
+                self.host.root.destroy(frame);
+            }
+        }
+        let font = self.content.font(DEFAULT_FONT_ID);
+        let new: Vec<&PanelView> = view
+            .panels
+            .iter()
+            .filter(|p| !self.plugins.panels.contains_key(&p.id))
+            .collect();
+        for panel in new {
+            let controller = build_panel(
+                &mut self.host.root,
+                panel,
+                font.clone(),
+                Rc::clone(&self.plugins.outbox),
+            )
+            .with_modern_font(self.plugins.modern_font.clone())
+            .with_title_color(&mut self.host.root, self.plugins.title_color());
+            let frame = controller.root;
+            let name = controller.window_name.clone();
+            let top = self.host.root.root();
+            self.host.root.add_child(top, frame);
+            if let Err(e) = self.host.root.register_window(&name, frame, Some(frame), 0) {
+                self.notices
+                    .push(format!("ui: plugin window {name}: {e:?}"));
+                self.host.root.destroy(frame);
+                continue;
+            }
+            if let Err(e) = self.host.attach_controller(&name, Box::new(controller)) {
+                self.notices
+                    .push(format!("ui: plugin window {name}: {e:?}"));
+            }
+            self.plugins.panels.insert(panel.id, name);
+        }
+    }
+
+    fn sync_plugin_panels(&mut self, revision: u64) {
+        let Self {
+            host,
+            content,
+            icons,
+            facts,
+            plugins,
+            images,
+            ..
+        } = self;
+        let mut markup_icons = WindowIcons {
+            content,
+            icons,
+            objects: &facts.objects,
+        };
+        let theme = plugins.theme;
+        for panel in &facts.plugin_ui.panels {
+            let Some(name) = plugins.panels.get(&panel.id) else {
+                continue;
+            };
+            host.with_controller::<PluginPanelController, _>(name, |c, ui| {
+                c.sync(ui, panel, revision, &mut markup_icons, theme);
+            });
+        }
+        if plugins.shelf {
+            let mut shelf_icons = WindowShelfIcons {
+                content,
+                images,
+                file_icons: &mut plugins.file_icons,
+            };
+            host.with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| {
+                c.sync(ui, &facts.plugin_ui.panels, &mut shelf_icons);
+            });
+        }
+    }
+
+    /// OpenAC `RetailUiRuntime.ToggleClientWindow` and its siblings: a
+    /// main panel through the panel switcher (so the toolbar follows), any
+    /// other window directly.
+    fn client_window_request(&mut self, window: ClientWindow, action: ClientWindowAction) {
+        let name = client_window_name(window);
+        let root = &mut self.host.root;
+        if let Some(panel) = self.panels.panel_of(name) {
+            match action {
+                ClientWindowAction::Toggle => {
+                    self.panels.toggle(root, panel);
+                }
+                ClientWindowAction::Show => {
+                    self.panels.set_visibility(root, panel, true);
+                }
+                ClientWindowAction::Hide => {
+                    self.panels.set_visibility(root, panel, false);
+                }
+            }
+        } else {
+            match action {
+                ClientWindowAction::Toggle => {
+                    root.toggle_window(name);
+                }
+                ClientWindowAction::Show => {
+                    root.show_window(name);
+                }
+                ClientWindowAction::Hide => {
+                    root.hide_window(name);
+                }
+            }
+        }
+        self.host.pump();
+    }
+
+    /// Tell the session which of the client's windows this window has and
+    /// which show, when that changed.
+    /// Only a session that handed the window its plugin UI (the snapshot
+    /// every attach starts with) hears it.
+    fn report_client_windows(&mut self) {
+        if self.facts.plugin_ui.revision == 0 {
+            return;
+        }
+        let (mut mounted, mut visible) = (0u16, 0u16);
+        for window in ClientWindow::ALL {
+            let name = client_window_name(window);
+            if self.host.root.window(name).is_some() {
+                mounted |= window.bit();
+            }
+            let shown = match self.panels.panel_of(name) {
+                Some(panel) => self.panels.is_visible(&self.host.root, panel),
+                None => self.host.root.is_window_visible(name),
+            };
+            if shown {
+                visible |= window.bit();
+            }
+        }
+        if self.plugins.reported != Some((mounted, visible)) {
+            self.plugins.reported = Some((mounted, visible));
+            self.plugins
+                .outbox
+                .borrow_mut()
+                .push(UiInput::ClientWindows { mounted, visible });
+        }
+    }
+
+    /// One frame of the plugins' overlays: the canvases on the screen and
+    /// the projectile markers (the labels go with the window's world
+    /// labels; the world lines are drawn by the world renderer).
+    pub(super) fn tick_plugin_ui(&mut self, now: Instant) {
+        let camera = self.status.overlays.camera();
+        let Self {
+            host,
+            content,
+            icons,
+            facts,
+            plugins,
+            images,
+            status,
+            ..
+        } = self;
+        let Some(band) = status.overlays.host_mut() else {
+            return;
+        };
+        band.follow_root(&mut host.root);
+        let view = &facts.plugin_ui;
+        plugins
+            .images
+            .retain(|key, _| view.images.contains_key(key));
+        let mut uploader = images.uploader();
+        let mut image = |owner: &str, handle: u32| -> Option<Icon> {
+            let key = (owner.to_owned(), handle);
+            if let Some(icon) = plugins.images.get(&key) {
+                return Some(*icon);
+            }
+            let source = view.images.get(&key)?;
+            let icon = match &source.source {
+                ImageSource::ClientArt(id) => surface_icon(content, *id),
+                ImageSource::SpellIcon { spell, icon } => surface_icon(content, *icon)
+                    .or_else(|| icons.spell_icon(*spell).map(|t| (t, ICON_SIZE, ICON_SIZE))),
+                ImageSource::ObjectIcon(object) => facts.objects.get(*object).and_then(|o| {
+                    icons
+                        .item_icon(
+                            o.item_type,
+                            o.icon_id,
+                            o.icon_underlay_id,
+                            o.icon_overlay_id,
+                            o.effects,
+                        )
+                        .map(|t| (t, ICON_SIZE, ICON_SIZE))
+                }),
+                ImageSource::Rgba(pixels) => {
+                    let rgba = Rgba::new(source.width, source.height, pixels.as_ref().clone());
+                    Some((
+                        uploader.upload(&rgba),
+                        source.width as f32,
+                        source.height as f32,
+                    ))
+                }
+            }?;
+            plugins.images.insert(key, icon);
+            Some(icon)
+        };
+        let font = content.font(DEFAULT_FONT_ID);
+        if let Some(layer) = plugins.canvases.as_mut() {
+            layer.sync(
+                &mut host.root,
+                band,
+                view,
+                &mut image,
+                font.as_ref(),
+                &plugins.outbox,
+            );
+        }
+        let (sets, _) = &view.projectile;
+        if plugins.projectile_set.is_none_or(|(seen, _)| seen != *sets) {
+            plugins.projectile_set = Some((*sets, now));
+        }
+        let fresh = plugins
+            .projectile_set
+            .is_some_and(|(n, at)| n > 0 && now.duration_since(at) <= PROJECTILE_SAMPLES_SHOWN);
+        if let Some(projectile) = plugins.projectile.as_mut() {
+            let samples: &[ProjectileDebugSample] = if fresh { &plugins.samples } else { &[] };
+            projectile.tick(&mut host.root, samples, camera.as_ref());
+        }
+    }
+
+    /// The plugins' world lines placed in the drawing frame this frame (the
+    /// world renderer draws them in the scene).
+    pub(crate) fn plugin_world_lines(&self) -> &[PlacedLine] {
+        &self.plugins.world_lines
+    }
+
+    /// The plugins' labels, lines and projectile markers placed in the
+    /// drawing frame from the world as last drawn (none without a world).
+    pub(crate) fn set_plugin_world(
+        &mut self,
+        world: Option<&WorldRenderer>,
+        scene: Option<&Scene>,
+    ) {
+        let dats = self.content.dats().clone();
+        let view = &self.facts.plugin_ui;
+        let plugins = &mut self.plugins;
+        plugins.labels.clear();
+        plugins.anchors.clear();
+        plugins.world_lines.clear();
+        plugins.samples.clear();
+        let (Some(world), Some(scene)) = (world, scene) else {
+            return;
+        };
+        for label in view.labels.iter() {
+            let [r, g, b, a] = label.color;
+            plugins.labels.push(WorldLabel {
+                object_id: label.object_id,
+                text: label.text.clone(),
+                color: Color::rgba(r, g, b, a),
+                height_offset: label.height_offset,
+                line: u32::try_from(label.line).unwrap_or(0),
+                max_range: label.max_range,
+                outline: label.outline,
+            });
+            if !plugins.anchors.contains_key(&label.object_id)
+                && let Some(anchor) = label_anchor(
+                    world,
+                    scene,
+                    &dats,
+                    &mut plugins.setup_shapes,
+                    label.object_id,
+                )
+            {
+                plugins.anchors.insert(label.object_id, anchor);
+            }
+        }
+        for line in view.lines.iter() {
+            if let (Some(from), Some(to)) = (
+                map_point_in_frame(world, line.start),
+                map_point_in_frame(world, line.end),
+            ) {
+                plugins.world_lines.push(PlacedLine {
+                    start: from,
+                    end: to,
+                    color_rgb: line.color_rgb,
+                    follow_terrain: line.follow_terrain,
+                    width_metres: line.width_metres,
+                });
+            }
+        }
+        for sample in view.projectile.1.iter() {
+            if let Some(world_position) = map_point_in_frame(world, sample.position) {
+                plugins.samples.push(ProjectileDebugSample {
+                    world_position,
+                    is_clear: sample.is_clear,
+                    radius: sample.radius,
+                });
+            }
+        }
+    }
+
+    /// Tell the session which chords the window's key map uses, at each
+    /// attach and whenever the bindings change: plugin hotkeys bind around
+    /// them (OpenAC `AppHotkeyRegistry.Bind`).
+    pub fn report_client_chords(&mut self, bindings: &ac_ui::input::KeyBindings) {
+        self.plugins.manager_chord = bindings
+            .for_action(ac_ui::input::InputAction::TogglePluginManager)
+            .next()
+            .map(|b| b.chord);
+        let snapshots = self.facts.plugin_ui.snapshots;
+        if snapshots == 0 {
+            return;
+        }
+        let chords = ac_ui::plugin::hotkeys::client_chords(bindings);
+        let told = self
+            .plugins
+            .reported_chords
+            .as_ref()
+            .is_some_and(|(s, c)| *s == snapshots && *c == chords);
+        if !told {
+            self.plugins.reported_chords = Some((snapshots, chords.clone()));
+            self.plugins
+                .outbox
+                .borrow_mut()
+                .push(UiInput::ClientChords(chords));
+        }
+    }
+
+    /// OpenAC `RetailUiRuntime`'s `TogglePluginManager` (Shift+Ctrl+F1 by
+    /// default): with no plugin window on the shelf it says so; else the
+    /// shelf hides, telling the player the key that brings it back (or to
+    /// bind one), or shows again.
+    pub(super) fn toggle_plugin_shelf(&mut self) -> bool {
+        let state = if self.plugins.shelf {
+            self.host
+                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
+                    (c.entry_count(), c.is_shown())
+                })
+                .unwrap_or((0, false))
+        } else {
+            (0, false)
+        };
+        let (entries, shown) = state;
+        if entries == 0 {
+            self.client_line(super::panel_keys::NO_PLUGIN_WINDOWS);
+            return true;
+        }
+        self.host
+            .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_hidden(ui, shown));
+        if shown {
+            let text = self.plugin_shelf_hidden_message();
+            self.client_line(&text);
+        }
+        true
+    }
+
+    /// OpenAC `PluginShelfHiddenMessage`.
+    fn plugin_shelf_hidden_message(&self) -> String {
+        let Some(chord) = self.plugins.manager_chord else {
+            return "Plugin shelf hidden. Bind Toggle Plugin Manager in Configure Keyboard to \
+                    show it again."
+                .to_owned();
+        };
+        let dats = self.content.dats().clone();
+        let strings = ac_ui::strings::StringResolver::new(move |id| {
+            dats.get::<ac_dat::objects::StringTable>(id).ok().flatten()
+        });
+        let names = ac_ui::input::key_names::RetailKeyNames::new(
+            Box::new(move |table, hash| strings.resolve(table, hash, 0)),
+            crate::platform::key_name_provider(),
+        );
+        format!(
+            "Plugin shelf hidden. Press {} to show it again.",
+            names.describe(chord)
+        )
+    }
+
+    /// A key went down (not a repeat): the bound plugin hotkeys it fires go
+    /// to the session. Asked before the interface takes the key, as OpenAC
+    /// listens to the keyboard itself; its gates stand in for the interface
+    /// first: nothing fires during a key capture or under a modal dialog,
+    /// and with a text entry focused only a chord with Ctrl or Alt fires.
+    pub fn plugin_hotkeys(
+        &mut self,
+        key: ac_ui::Key,
+        modifiers: ac_ui::event::Modifiers,
+        capturing: bool,
+    ) {
+        let gate = ac_plugin_ui::hotkeys::HotkeyGate {
+            capturing,
+            modal: self.host.root.modal.is_some(),
+            chat_focused: self.host.root.wants_keyboard(),
+        };
+        let fired: Vec<UiInput> =
+            ac_ui::plugin::hotkeys::fired(&self.facts.plugin_ui.hotkeys, key, modifiers, gate)
+                .into_iter()
+                .map(|h| UiInput::Hotkey {
+                    owner: h.owner.clone(),
+                    id: h.id.clone(),
+                })
+                .collect();
+        self.plugins.outbox.borrow_mut().extend(fired);
+    }
+
+    /// Input actions the key map fired go to the session for the plugins
+    /// that listen for them (it drops them when none does).
+    pub fn plugin_input_actions(
+        &mut self,
+        fired: &[(ac_ui::input::InputAction, ac_ui::input::ActivationType)],
+    ) {
+        self.plugins
+            .outbox
+            .borrow_mut()
+            .extend(
+                fired
+                    .iter()
+                    .map(|(action, activation)| UiInput::InputAction {
+                        action: action.name().to_owned(),
+                        activation: activation.name().to_owned(),
+                    }),
+            );
+    }
+
+    /// What the player did with the plugins' UI since the last call, as
+    /// session commands.
+    pub fn take_plugin_commands(&mut self) -> Vec<SessionCommand> {
+        self.plugins
+            .outbox
+            .borrow_mut()
+            .drain(..)
+            .map(SessionCommand::PluginUi)
+            .collect()
+    }
+
+    /// The window names of the plugin windows mounted (diagnostics).
+    #[must_use]
+    pub fn plugin_windows(&self) -> Vec<String> {
+        self.plugins.panels.values().cloned().collect()
+    }
+}
+
+/// A map point in the drawing frame: its landblock placed by the world's
+/// floating origin.
+fn map_point_in_frame(world: &WorldRenderer, point: MapPoint) -> Option<Vec3> {
+    let (x, y, lx, ly, z) = point.to_landblock()?;
+    let cell = (u32::from(x) << 24) | (u32::from(y) << 16) | 1;
+    world.frame_position(cell, Vec3::new(lx, ly, z))
+}
+
+/// Where a label over `guid` hangs (OpenAC
+/// `WorldSelectionQuery.TryResolveWorldLabelAnchor`): its base, and its
+/// height from its body (the setup's cylinder, scaled), else the top of
+/// its selection sphere, else the top of its model at rest, else a fixed
+/// 1.1 m. An object carried by another hangs from the root pose its
+/// holder's hand gives it, as last published.
+fn label_anchor(
+    world: &WorldRenderer,
+    scene: &Scene,
+    dats: &DatCollection,
+    shapes: &mut HashMap<u32, Option<SetupShape>>,
+    guid: u32,
+) -> Option<WorldLabelAnchor> {
+    let object = scene.object_by_guid(guid)?;
+    let base = super::overlays::placement(world, object)?.base();
+    // The sphere's centre turns with the object's own turn (OpenAC: the
+    // entity's rotation, a held object's included); one that never had a
+    // position has none.
+    let orientation = object
+        .position
+        .map_or(Quaternion::IDENTITY, |pos| pos.orientation);
+    let scale = object.scale.filter(|s| *s > 0.0).unwrap_or(1.0);
+    let shape = object.setup_id.and_then(|id| {
+        *shapes
+            .entry(id)
+            .or_insert_with(|| SetupShape::read(dats, id))
+    });
+    let height = shape.and_then(|shape| {
+        let body = shape.height * scale;
+        if body > 0.0 && body.is_finite() {
+            return Some(body);
+        }
+        if let Some((origin, radius)) = shape.sphere {
+            // The sphere's centre turns with the object; its top does not
+            // depend on the turn.
+            let o = orientation;
+            let rotation = Quat::from_xyzw(o.x, o.y, o.z, o.w);
+            let top = (rotation * (origin * scale)).z + radius * scale;
+            if top > 0.0 && top.is_finite() {
+                return Some(top);
+            }
+        }
+        shape.model_top.map(|top| top * scale)
+    });
+    Some(WorldLabelAnchor {
+        base,
+        height: height.unwrap_or(FALLBACK_LABEL_HEIGHT),
+    })
+}
+
+/// What a label's height comes from in one setup, read once per setup.
+#[derive(Debug, Clone, Copy)]
+struct SetupShape {
+    height: f32,
+    sphere: Option<(Vec3, f32)>,
+    model_top: Option<f32>,
+}
+
+impl SetupShape {
+    fn read(dats: &DatCollection, id: u32) -> Option<Self> {
+        let setup = dats.get::<Setup>(id).ok().flatten()?;
+        let s = setup.selection_sphere;
+        Some(Self {
+            height: setup.height,
+            sphere: (s.radius > 1e-4)
+                .then(|| (Vec3::new(s.origin.x, s.origin.y, s.origin.z), s.radius)),
+            model_top: model_height(dats, &setup),
+        })
+    }
+}
+
+/// The top of a model at rest in its own metres, unscaled (OpenAC
+/// `SetupModelHeightResolver`): the highest point of any part's drawing
+/// sphere with the parts placed in the resting pose.
+fn model_height(dats: &DatCollection, setup: &Setup) -> Option<f32> {
+    let mut top = f32::NEG_INFINITY;
+    for part in flatten_setup(setup, None) {
+        let Ok(Some(gfx)) = dats.get::<GfxObj>(part.gfx_obj_id) else {
+            continue;
+        };
+        let sphere = match gfx.drawing_bsp.as_ref().and_then(|t| t.root()) {
+            Some(BspNode::Split(s)) => s.sphere,
+            Some(BspNode::Portal(p)) => p.sphere,
+            _ => continue,
+        };
+        let center = part.transform.transform_point3(Vec3::new(
+            sphere.origin.x,
+            sphere.origin.y,
+            sphere.origin.z,
+        ));
+        top = top.max(center.z + sphere.radius);
+    }
+    (top.is_finite() && top > 0.0).then_some(top)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_client_window_has_a_name() {
+        let names: std::collections::HashSet<&str> = ClientWindow::ALL
+            .iter()
+            .map(|w| client_window_name(*w))
+            .collect();
+        assert_eq!(names.len(), ClientWindow::ALL.len());
+    }
+}

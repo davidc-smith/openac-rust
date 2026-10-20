@@ -1,0 +1,23 @@
+[package]
+name = "openac-plugin"
+description = "The SDK for openAC plugins: write a plugin as an ordinary Rust crate, build it for wasm32-unknown-unknown, and test it natively against a fake host."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+# MIT, so plugins under any licence can use it.
+license = "MIT"
+
+[dependencies]
+ac-plugin-abi.workspace = true
+
+# Natively the fake host keeps plugin UI exactly as the client does (the same
+# state and the same import handling), so a plugin's markup and bindings are
+# checked by its own cargo test. Not in a plugin's wasm build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ac-plugin-abi = { workspace = true, features = ["ui-host"] }
+ac-plugin-ui.workspace = true
+
+[lints]
+workspace = true
