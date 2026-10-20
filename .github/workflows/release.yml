@@ -117,7 +117,7 @@ jobs:
         env:
           # A host tool: the release's static C runtime flag is not for it.
           RUSTFLAGS: ''
-        run: cargo install --locked cargo-about --version 0.9.2
+        run: cargo install --locked cargo-about --version 0.9.2 --features cli
 
       - name: Stage the license files
         shell: bash
