@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/*"]
+# Patched copies of third-party crates (see `[patch.crates-io]` below), not ours to lint.
+exclude = ["vendor"]
 resolver = "3"
 
 [workspace.package]
@@ -137,3 +139,13 @@ opt-level = 2
 # its guard test (`opt_level_guard`) can be removed together.
 [profile.dev.package.ac-plugin]
 opt-level = 2
+
+# wasmtime's fiber crate with one fix: on Windows a new fiber's start function
+# moved its closure out of the box but freed the box only at its end, which a
+# fiber start function never reaches. Every call into a plugin runs on a new
+# fiber, so each call leaked 24 to 40 bytes: about 40 MB an hour for a bot with
+# two plugins. The copy is 48.0.5 with that one change in `src/windows.rs`
+# (the box is freed as the closure is moved out); drop the patch once a
+# wasmtime release carries the fix. `plugin_call_heap` in ac-plugin guards it.
+[patch.crates-io]
+wasmtime-internal-fiber = { path = "vendor/wasmtime-internal-fiber" }
