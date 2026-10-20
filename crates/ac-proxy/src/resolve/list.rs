@@ -113,7 +113,9 @@ impl FailedProxies {
 enum Entries {
     /// Parsed in advance (the manual settings, or a single proxy).
     Listed(Vec<ProxyServer>),
-    /// Parsed one entry at a time (an automatic configuration's answer).
+    /// Parsed one entry at a time (an automatic configuration's answer,
+    /// which only the Windows settings give).
+    #[cfg(any(windows, test))]
     Lazy { list: String, secure: bool },
 }
 
@@ -164,6 +166,7 @@ impl Proxies {
 
     /// An automatic configuration's list (.NET `MultiProxy.CreateLazy`):
     /// read an entry at a time as the request goes on.
+    #[cfg(any(windows, test))]
     pub(crate) fn lazy(list: &str, secure: bool, failed: &Arc<FailedProxies>) -> Self {
         if list.is_empty() {
             return Self::direct();
@@ -190,6 +193,7 @@ impl Proxies {
                 }
                 None => (None, false),
             },
+            #[cfg(any(windows, test))]
             Entries::Lazy { list, secure } => {
                 if self.index >= list.len() {
                     return (None, false);
