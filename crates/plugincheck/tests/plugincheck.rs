@@ -588,6 +588,23 @@ fn a_declared_but_unused_permission_is_noted_not_refused() {
     );
 }
 
+#[test]
+fn a_permission_checked_per_call_is_never_called_unused() {
+    // The profiles folder is asked for by name in a storage call, so no
+    // import shows that a plugin uses it.
+    let root = Root::new("per-call");
+    let manifest = manifest_json(ID, "1.0.0", true).replace(
+        r#"[{ "name": "chat", "note": "Answers /hello." }]"#,
+        r#"[{ "name": "chat", "note": "Answers /hello." }, { "name": "profiles", "note": "Reads your profiles." }]"#,
+    );
+    let directory = write_folder(&root, "per-call", &manifest, &hello_wasm());
+    let report = run_check(&directory).unwrap();
+    assert_no_failure(&report);
+    let (_, message) = check(&report, "module matches its manifest");
+    assert!(message.contains("declared: chat, profiles"), "{message}");
+    assert!(!message.contains("Declared but not used"), "{message}");
+}
+
 // --- pack ---------------------------------------------------------------------------
 
 fn hello_folder(root: &Root) -> PathBuf {

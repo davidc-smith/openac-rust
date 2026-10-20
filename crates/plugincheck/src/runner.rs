@@ -414,10 +414,19 @@ fn check_wasm_module(directory: &Path, manifest: &PluginManifest) -> CheckItem {
                 .iter()
                 .map(|declaration| declaration.permission.name())
                 .collect();
+            // Only a permission some client function requires can be seen
+            // in the imports. One the client checks per call instead (the
+            // profiles folder, asked for by name in a storage call) cannot,
+            // so it is never called unused.
+            let judged: Vec<&str> = ac_plugin::abi::Import::ALL
+                .iter()
+                .filter_map(|import| import.permission())
+                .map(|permission| permission.name())
+                .collect();
             let unused: Vec<&str> = declared
                 .iter()
                 .copied()
-                .filter(|name| !needed.contains(name))
+                .filter(|name| judged.contains(name) && !needed.contains(name))
                 .collect();
             let mut message = format!(
                 "API {}; {} client function(s) imported, all allowed. Permissions used: {}; \
