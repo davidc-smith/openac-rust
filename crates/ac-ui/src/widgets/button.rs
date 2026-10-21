@@ -457,6 +457,18 @@ impl Button {
         Some((name, requested))
     }
 
+    /// Enable or disable the button from inside one of its own handlers.
+    /// The widget is out of the tree while it runs, so the root's
+    /// enabled-changed notification cannot reach it: run it here, or a
+    /// ghosted button keeps the look it had.
+    fn set_own_enabled(&mut self, ui: &mut UiRoot, me: ElementId, enabled: bool) {
+        if ui.element(me).is_none_or(|e| e.enabled() == enabled) {
+            return;
+        }
+        ui.set_enabled(me, enabled);
+        self.on_enabled_changed(ui, me);
+    }
+
     fn update_visual_state(&mut self, ui: &mut UiRoot, me: ElementId) {
         self.enabled = ui.element(me).is_none_or(|e| e.enabled());
         if let Some((name, requested)) = self.visual_state_target() {
@@ -858,13 +870,11 @@ impl Widget for Button {
             return true;
         }
         if state == states::GHOSTED {
-            ui.set_enabled(me, false);
+            self.set_own_enabled(ui, me, false);
             apply_state_visibility(ui, me, &info, state);
             return true;
         }
-        if !ui.element(me).is_none_or(|e| e.enabled()) {
-            ui.set_enabled(me, true);
-        }
+        self.set_own_enabled(ui, me, true);
         if state == DIRECT_STATE_ID {
             if !self.has_state_media("") {
                 return false;

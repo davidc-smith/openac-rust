@@ -562,6 +562,16 @@ mod real_dats {
         book.on_enchantment_removed(3, 50);
         b.update(&book, &objects, 10, link(true, 0.0), 0.0);
         assert!(!b.enabled(ind::VITAE_BUTTON_ID));
+        // It is drawn ghosted again, not left lit.
+        assert_eq!(b.state(ind::VITAE_BUTTON_ID), Some(states::GHOSTED));
+
+        book.on_enchantment_removed(1, 42);
+        book.on_enchantment_removed(2, 43);
+        b.update(&book, &objects, 10, link(true, 0.0), 0.0);
+        for id in [ind::HELPFUL_BUTTON_ID, ind::HARMFUL_BUTTON_ID] {
+            assert!(!b.enabled(id));
+            assert_eq!(b.state(id), Some(states::GHOSTED), "{id:#x}");
+        }
     }
 
     #[test]
