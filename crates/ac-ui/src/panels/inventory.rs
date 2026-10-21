@@ -209,6 +209,7 @@ fn configure_resize_layout(ui: &mut UiRoot, layout: &ImportedLayout) {
     ] {
         if let Some(e) = layout.find(id) {
             ui.set_anchors(e, anchors);
+            ui.capture_current_anchor_baseline(e);
         }
     }
 }

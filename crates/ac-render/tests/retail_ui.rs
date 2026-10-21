@@ -1934,6 +1934,176 @@ fn dragging_the_inventory_bottom_edge_reflows_the_grid_and_keeps_the_scroll() {
     assert_eq!(scroll(&ui), (32, max0, view0, shown0));
 }
 
+/// OpenAC `InventoryController.ResizePackColumn` in the window: a player
+/// with more than seven side packs grows the pack column and the window,
+/// and the contents grid and its scrollbar still reach the window's
+/// bottom, as at the authored height.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_longer_pack_column_keeps_the_contents_grid_filling_the_window() {
+    use ac_render::ui::window::Hotkey;
+    use ac_ui::panels::inventory;
+
+    let size = (1280, 1024);
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = scene();
+    interface(&mut scene, InterfaceState::default());
+    ui.feed(&mut scene);
+    assert!(ui.run_hotkey(Hotkey::Inventory));
+    ui.drain();
+    let start = Instant::now();
+    let mut frames = 0;
+    let mut step = |ui: &mut WindowUi, scene: &mut Scene| {
+        frames += 1;
+        ui.feed(scene);
+        ui.frame(start + Duration::from_millis(50 * frames), size);
+    };
+    step(&mut ui, &mut scene);
+    let frame_id = ui.host().root.window(INVENTORY_WINDOW).unwrap().frame;
+    let find = |ui: &WindowUi, id| {
+        ui.host()
+            .root
+            .find_descendant(frame_id, id)
+            .expect("an inventory element")
+    };
+    let (grid, bar) = (
+        find(&ui, inventory::CONTENTS_GRID_ID),
+        find(&ui, inventory::CONTENTS_SCROLLBAR_ID),
+    );
+    // How far above the frame's bottom edge an element ends.
+    let gap = |ui: &WindowUi, id| {
+        let root = &ui.host().root;
+        let bottom = |id| root.screen_position(id).1 + root.element(id).unwrap().height;
+        bottom(frame_id) - bottom(id)
+    };
+    let (frame_height0, grid_gap0, bar_gap0) = (
+        ui.host().root.element(frame_id).unwrap().height,
+        gap(&ui, grid),
+        gap(&ui, bar),
+    );
+
+    // Nine side packs.
+    let mut player = ac_core::items::ClientObject::new(PLAYER);
+    player.name = "+Horan".to_owned();
+    player.item_type = ac_core::items::ItemType::CREATURE;
+    player.properties.ints.insert(0x19, 12);
+    player.containers_capacity = 9;
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::Items(
+        ItemsUpdate {
+            reset: false,
+            objects: vec![player],
+            removed: Vec::new(),
+            contents: Vec::new(),
+        },
+    )));
+    step(&mut ui, &mut scene);
+    step(&mut ui, &mut scene);
+
+    assert!(
+        ui.host().root.element(frame_id).unwrap().height > frame_height0,
+        "the window grew for the longer pack column"
+    );
+    assert_eq!(gap(&ui, grid), grid_gap0, "the grid reaches the bottom");
+    assert_eq!(gap(&ui, bar), bar_gap0, "the scrollbar reaches the bottom");
+
+    // Dragged taller, it still does.
+    let (l, t, w, h) = {
+        let e = ui.host().root.element(frame_id).unwrap();
+        (e.left, e.top, e.width, e.height)
+    };
+    let (x, y) = ((l + w / 2.0) as i32, (t + h - 2.0) as i32);
+    let host = ui.host_mut();
+    host.mouse_down(ac_ui::event::MouseButton::Left, x, y, 0);
+    host.mouse_move(x, y + 96);
+    host.mouse_up(ac_ui::event::MouseButton::Left, x, y + 96, 0);
+    step(&mut ui, &mut scene);
+    step(&mut ui, &mut scene);
+    assert_eq!(
+        gap(&ui, grid),
+        grid_gap0,
+        "dragged: the grid reaches the bottom"
+    );
+    assert_eq!(
+        gap(&ui, bar),
+        bar_gap0,
+        "dragged: the scrollbar reaches the bottom"
+    );
+
+    // Closed and opened again, it still does.
+    assert!(ui.run_hotkey(Hotkey::Inventory));
+    step(&mut ui, &mut scene);
+    assert!(ui.run_hotkey(Hotkey::Inventory));
+    step(&mut ui, &mut scene);
+    step(&mut ui, &mut scene);
+    assert_eq!(
+        gap(&ui, grid),
+        grid_gap0,
+        "reopened: the grid reaches the bottom"
+    );
+}
+
+/// The same with the nine side packs known before the inventory is first
+/// opened (they arrive with the character, as at login).
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_longer_pack_column_known_at_login_keeps_the_contents_grid_filling_the_window() {
+    use ac_render::ui::window::Hotkey;
+    use ac_ui::panels::inventory;
+
+    let size = (1280, 1024);
+    let start = Instant::now();
+    let mut frames = 0;
+    let mut step = |ui: &mut WindowUi, scene: &mut Scene| {
+        frames += 1;
+        ui.feed(scene);
+        ui.frame(start + Duration::from_millis(50 * frames), size);
+    };
+    // The gaps at the authored height, from a seven-pack character.
+    let gaps = |nine: bool, step: &mut dyn FnMut(&mut WindowUi, &mut Scene)| {
+        let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+        let mut scene = scene();
+        interface(&mut scene, InterfaceState::default());
+        if nine {
+            let mut player = ac_core::items::ClientObject::new(PLAYER);
+            player.name = "+Horan".to_owned();
+            player.item_type = ac_core::items::ItemType::CREATURE;
+            player.properties.ints.insert(0x19, 12);
+            player.containers_capacity = 9;
+            scene.apply(PresentationEvent::Interface(InterfaceEvent::Items(
+                ItemsUpdate {
+                    reset: false,
+                    objects: vec![player],
+                    removed: Vec::new(),
+                    contents: Vec::new(),
+                },
+            )));
+        }
+        step(&mut ui, &mut scene);
+        step(&mut ui, &mut scene);
+        assert!(ui.run_hotkey(Hotkey::Inventory));
+        step(&mut ui, &mut scene);
+        step(&mut ui, &mut scene);
+        let root = &ui.host().root;
+        let frame_id = root.window(INVENTORY_WINDOW).unwrap().frame;
+        let bottom = |id| root.screen_position(id).1 + root.element(id).unwrap().height;
+        let grid = root
+            .find_descendant(frame_id, inventory::CONTENTS_GRID_ID)
+            .unwrap();
+        let bar = root
+            .find_descendant(frame_id, inventory::CONTENTS_SCROLLBAR_ID)
+            .unwrap();
+        (
+            root.element(frame_id).unwrap().height,
+            bottom(frame_id) - bottom(grid),
+            bottom(frame_id) - bottom(bar),
+        )
+    };
+    let seven = gaps(false, &mut step);
+    let nine = gaps(true, &mut step);
+    assert!(nine.0 > seven.0, "the window grew: {seven:?} {nine:?}");
+    assert_eq!((nine.1, nine.2), (seven.1, seven.2), "{seven:?} {nine:?}");
+}
+
 /// OpenAC `RetailUiRuntime.HandleInputAction`'s chat keys, in the window:
 /// the reply key starts a tell to the last teller the session reported,
 /// the command key starts a command, and tell-to-selected starts a tell to

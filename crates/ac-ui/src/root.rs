@@ -1362,6 +1362,28 @@ impl UiRoot {
         }
     }
 
+    /// Capture the anchor margins of `id` against its parent's size now,
+    /// instead of on the first layout pass that reaches it: a pass skips
+    /// hidden windows, and a window resized while hidden would otherwise
+    /// be measured at its new size.
+    pub fn capture_current_anchor_baseline(&mut self, id: ElementId) {
+        let Some((pw, ph)) = self
+            .parent(id)
+            .and_then(|p| self.element(p))
+            .map(|p| (p.width, p.height))
+        else {
+            return;
+        };
+        let Some(n) = self.node_mut(id) else {
+            return;
+        };
+        if n.element.anchors.is_empty() {
+            return;
+        }
+        n.links.anchor_capture = None;
+        self.apply_anchor(id, pw, ph);
+    }
+
     /// Re-base every child of `id` (see [`UiRoot::reset_anchor_capture`]).
     pub fn rebase_child_layout_baselines(&mut self, id: ElementId) {
         for child in self.children(id) {
