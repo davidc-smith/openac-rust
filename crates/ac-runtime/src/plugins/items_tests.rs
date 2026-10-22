@@ -440,6 +440,28 @@ fn equipment_lists_wearables_and_checks_the_item() {
     });
 }
 
+// OpenAC `EquipSecondary` (the dual-wield route): a one-handed sword, whose
+// own slots are only the melee slot, goes to the off hand. The plain equip
+// would refuse it there (the shield slot is not one of its slots).
+#[test]
+fn an_off_hand_equip_wields_a_melee_weapon_in_the_shield_slot() {
+    const MELEE: u32 = 0x0000_0001;
+    let mut state = packed();
+    state.world.apply(&owned(SWORD, "Sword", 0x1, |w| {
+        w.valid_locations = Some(MELEE);
+        w.combat_use = Some(1);
+        w.stack_size = None;
+    }));
+    state.world.drain_changes().for_each(drop);
+    let mut outbox = Outbox::new();
+    at(&mut state, &mut outbox, Duration::from_secs(5), |b| {
+        assert_eq!(
+            call::<calls::EquipmentEquipSecondary>(b, &SWORD).status,
+            EquipmentStatus::Started
+        );
+    });
+}
+
 // OpenAC v0.1.25 `tests/AcDream.Runtime.Tests/Plugins/
 // InventoryCompletenessTests.cs`
 // `PluginHostSeesNestedInventoryReadinessAndDisconnect`: complete only once

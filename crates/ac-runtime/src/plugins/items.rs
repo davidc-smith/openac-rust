@@ -800,15 +800,11 @@ impl PluginBinding<'_> {
         self.state.inventory.is_wield_busy()
     }
 
-    fn run_equip(&mut self, object_id: u32, location: u32) -> EquipmentResult {
+    fn run_equip(&mut self, command: ItemCommand) -> EquipmentResult {
         let answer = |status, notice: Option<String>| EquipmentResult { status, notice };
         if self.state.inventory.is_wield_busy() || self.items_busy() {
             return answer(EquipmentStatus::Busy, None);
         }
-        let command = ItemCommand::Wield {
-            item: ObjectRef::Guid(object_id),
-            location,
-        };
         match self.run(SessionCommand::Item(command)) {
             Ran::NoConnection => answer(EquipmentStatus::Unavailable, None),
             Ran::Refused(why) => answer(EquipmentStatus::Refused, Some(why)),
@@ -836,7 +832,10 @@ impl PluginBinding<'_> {
         if worn != 0 && (request.location == 0 || worn & request.location == request.location) {
             return answer(EquipmentStatus::AlreadyEquipped);
         }
-        self.run_equip(request.object_id, request.location)
+        self.run_equip(ItemCommand::Wield {
+            item: ObjectRef::Guid(request.object_id),
+            location: request.location,
+        })
     }
 
     /// Wield an item in the off hand (OpenAC `EquipSecondary`).
@@ -858,7 +857,9 @@ impl PluginBinding<'_> {
         if item.currently_equipped_location.bits() == SHIELD_SLOT {
             return answer(EquipmentStatus::AlreadyEquipped);
         }
-        self.run_equip(object_id, SHIELD_SLOT)
+        // The dual-wield route: a weapon goes to the off hand although the
+        // shield slot is not one of its own slots.
+        self.run_equip(ItemCommand::WieldSecondary(ObjectRef::Guid(object_id)))
     }
 
     /// Where looting stands (OpenAC `ILootAutomation`'s state members).
