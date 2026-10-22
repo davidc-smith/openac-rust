@@ -2,9 +2,11 @@
 //! their object caches and the decoded-texture cache.
 //!
 //! One [`ContentSlot`] per process. The first window that needs the dats
-//! opens them (on its loader thread); every later window, for whichever
-//! session, reuses the same readers and caches, so re-attaching a window or
-//! moving it to another session reads warm caches.
+//! opens them (on its loader thread). They are kept only while a window is
+//! open: when it closes the host swaps in an empty slot
+//! ([`ContentSlot::emptied`]), so a session with no window holds no copy of
+//! the world's art (a headless bot opened a window once and kept about
+//! 100 MB of caches), and the next window opens them again.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -148,6 +150,13 @@ impl ContentSlot {
             .clone()
     }
 
+    /// A slot for the same dats and area with nothing opened yet: what the
+    /// host holds once the window that used this one has closed.
+    #[must_use]
+    pub fn emptied(&self) -> Self {
+        Self::for_area(self.dir.clone(), self.area.0, self.area.1)
+    }
+
     /// The directory the dats come from.
     #[must_use]
     pub fn directory(&self) -> &Path {
@@ -181,6 +190,16 @@ impl ContentSlot {
 mod tests {
     use super::*;
     use ac_host::settings::{DisplaySettings, QualityPreset};
+
+    #[test]
+    fn an_emptied_slot_keeps_the_dats_and_area_and_holds_nothing_open() {
+        let slot = ContentSlot::for_area(PathBuf::from("no-such-dats"), 5, 15);
+        let _ = slot.get();
+        let emptied = slot.emptied();
+        assert_eq!(emptied.directory(), Path::new("no-such-dats"));
+        assert_eq!(emptied.area, (5, 15));
+        assert!(emptied.opened.get().is_none() && emptied.ui.get().is_none());
+    }
 
     #[test]
     fn the_default_area_holds_the_measured_working_sets_with_headroom() {

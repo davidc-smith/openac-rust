@@ -571,6 +571,11 @@ impl HostApp {
     fn close(&mut self, reason: DetachReason) {
         if let Some(window) = self.window.take() {
             let (frames_presented, failure) = window.close();
+            // The window's loaders are gone with it: the dats and caches it
+            // read go too, and the next window opens them again.
+            if let Some(world) = self.world.as_mut() {
+                world.content = Arc::new(world.content.emptied());
+            }
             if let Some(failure) = failure {
                 self.report(HostEvent::GpuError(format!(
                     "the window closed after a teardown step failed: {failure}"
