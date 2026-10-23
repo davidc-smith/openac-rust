@@ -54,6 +54,10 @@ pub enum Opcode {
     PrivateUpdatePropertyBool = 0x02D1,
     /// Server changes one true/false property on a visible object.
     PublicUpdatePropertyBool = 0x02D2,
+    /// Server changes one string property on the player.
+    PrivateUpdatePropertyString = 0x02D5,
+    /// Server changes one string property on a visible object.
+    PublicUpdatePropertyString = 0x02D6,
     /// Server changes one data-id property on the player.
     PrivateUpdatePropertyDataId = 0x02D7,
     /// Server changes one data-id property on a visible object.
@@ -128,7 +132,7 @@ pub enum Opcode {
 
 impl Opcode {
     /// Every known opcode, for lookups and tests.
-    pub const ALL: [Opcode; 57] = [
+    pub const ALL: [Opcode; 59] = [
         Opcode::CharacterLogOff,
         Opcode::CharacterEnterWorld,
         Opcode::CharacterList,
@@ -151,6 +155,8 @@ impl Opcode {
         Opcode::PrivateUpdatePropertyInt64,
         Opcode::PrivateUpdatePropertyBool,
         Opcode::PublicUpdatePropertyBool,
+        Opcode::PrivateUpdatePropertyString,
+        Opcode::PublicUpdatePropertyString,
         Opcode::PrivateUpdatePropertyDataId,
         Opcode::PublicUpdatePropertyDataId,
         Opcode::PrivateUpdatePropertyInstanceId,

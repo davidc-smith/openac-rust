@@ -10,6 +10,7 @@
 
 use ac_bits::Reader;
 
+use crate::wire::read_string;
 use crate::{Opcode, Position, Result, expect_opcode};
 
 /// Check the opcode and read the one-byte quality sequence that follows it.
@@ -193,6 +194,70 @@ impl PrivateUpdatePropertyDataId {
             sequence,
             property: r.u32()?,
             value: r.u32()?,
+        })
+    }
+}
+
+/// Read the string that ends a string update: padding to a 4-byte boundary
+/// (measured from the opcode), then the u16-length Windows-1252 string;
+/// padding after the text is not required.
+fn read_update_string(r: &mut Reader<'_>) -> Result<String> {
+    r.align(4)?;
+    read_string(r)
+}
+
+/// One string property changed on a visible object
+/// ([`Opcode::PublicUpdatePropertyString`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicUpdatePropertyString {
+    /// Quality sequence.
+    pub sequence: u8,
+    /// The object.
+    pub guid: u32,
+    /// String property id.
+    pub property: u32,
+    /// New value.
+    pub value: String,
+}
+
+impl PublicUpdatePropertyString {
+    /// Parse the body: opcode, sequence, object, property, padding to 4,
+    /// string. The object comes first, as the protocol defines it; a server
+    /// that writes the property first is not understood.
+    pub fn parse(body: &[u8]) -> Result<Self> {
+        let (mut r, sequence) = read_header(body, Opcode::PublicUpdatePropertyString)?;
+        let guid = r.u32()?;
+        let property = r.u32()?;
+        Ok(Self {
+            sequence,
+            guid,
+            property,
+            value: read_update_string(&mut r)?,
+        })
+    }
+}
+
+/// One string property changed on the player
+/// ([`Opcode::PrivateUpdatePropertyString`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivateUpdatePropertyString {
+    /// Quality sequence.
+    pub sequence: u8,
+    /// String property id.
+    pub property: u32,
+    /// New value.
+    pub value: String,
+}
+
+impl PrivateUpdatePropertyString {
+    /// Parse the body: opcode, sequence, property, padding to 4, string.
+    pub fn parse(body: &[u8]) -> Result<Self> {
+        let (mut r, sequence) = read_header(body, Opcode::PrivateUpdatePropertyString)?;
+        let property = r.u32()?;
+        Ok(Self {
+            sequence,
+            property,
+            value: read_update_string(&mut r)?,
         })
     }
 }
@@ -409,7 +474,7 @@ mod tests {
     //! Cases ported from OpenAC
     //! `tests/AcDream.Core.Net.Tests/Messages/PublicUpdatePropertyIntTests.cs`,
     //! `PrivateUpdatePropertyIntTests.cs`, `PrivateUpdatePropertyInt64Tests.cs`,
-    //! `UpdatePropertyDataIdTests.cs`, and
+    //! `UpdatePropertyDataIdTests.cs`, `UpdatePropertyStringTests.cs`, and
     //! `tests/AcDream.Core.Net.Tests/PrivateUpdatePositionTests.cs`,
     //! `PrivateUpdateVitalTests.cs`, `PrivateUpdateAttributeSkillTests.cs`
     //! (the parser parts; applying updates belongs to the world model).
@@ -593,6 +658,81 @@ mod tests {
             &int64_body(0x02CF, 1, 100, 1),
             PrivateUpdatePropertyInt64::parse,
         );
+    }
+
+    // --- string -----------------------------------------------------------
+    // OpenAC `tests/AcDream.Core.Net.Tests/Messages/UpdatePropertyStringTests.cs`.
+
+    fn text(s: &str) -> Vec<u8> {
+        let mut v = vec![s.len() as u8, 0];
+        v.extend_from_slice(s.as_bytes());
+        v
+    }
+
+    // Opcode, sequence, object 0x5000002A, property 1, three bytes of
+    // padding, then an 18-byte name (2 + 18 = 20, so no padding after it).
+    fn public_string_sample() -> Vec<u8> {
+        let mut v = vec![0xD6, 0x02, 0, 0, 7, 0x2A, 0, 0, 0x50, 1, 0, 0, 0, 0, 0, 0];
+        v.extend(text("RabidDee's Cottage"));
+        v
+    }
+
+    // Opcode, sequence, property 1, three bytes of padding, the name.
+    fn private_string_sample() -> Vec<u8> {
+        let mut v = vec![0xD5, 0x02, 0, 0, 7, 1, 0, 0, 0, 0, 0, 0];
+        v.extend(text("RabidDee's Cottage"));
+        v
+    }
+
+    #[test]
+    fn public_string_reads_the_object_before_the_property() {
+        assert_eq!(
+            PublicUpdatePropertyString::parse(&public_string_sample()),
+            Ok(PublicUpdatePropertyString {
+                sequence: 7,
+                guid: 0x5000_002A,
+                property: 1,
+                value: "RabidDee's Cottage".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn private_string_reads_property_and_value() {
+        assert_eq!(
+            PrivateUpdatePropertyString::parse(&private_string_sample()),
+            Ok(PrivateUpdatePropertyString {
+                sequence: 7,
+                property: 1,
+                value: "RabidDee's Cottage".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn public_string_may_be_empty() {
+        let body = [
+            0xD6, 2, 0, 0, 7, 0x2A, 0, 0, 0x50, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        assert_eq!(
+            PublicUpdatePropertyString::parse(&body),
+            Ok(PublicUpdatePropertyString {
+                sequence: 7,
+                guid: 0x5000_002A,
+                property: 5,
+                value: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn string_updates_reject_truncation_and_the_wrong_opcode() {
+        let public = public_string_sample();
+        let private = private_string_sample();
+        assert_every_prefix_fails(&public, PublicUpdatePropertyString::parse);
+        assert_every_prefix_fails(&private, PrivateUpdatePropertyString::parse);
+        wrong_opcode(PublicUpdatePropertyString::parse(&private));
+        wrong_opcode(PrivateUpdatePropertyString::parse(&public));
     }
 
     // --- data id and instance id -------------------------------------------

@@ -341,6 +341,78 @@ fn private_updates_wait_for_the_player_description() {
 }
 
 #[test]
+fn a_public_string_update_stores_the_name_but_keeps_the_shown_name() {
+    // OpenAC WorldSessionUpdateObjectTests
+    // .PublicStringUpdate_StoresTheNameButKeepsTheShownName: the value lands
+    // in the property table only; the shown name changes only when the
+    // object is created or updated again. The object is republished.
+    let mut world = World::new();
+    world.apply(&named(DOOR, 1, "Crystal"));
+    world.take_table_events();
+    world.apply(&Inbound::PublicUpdatePropertyString(
+        ac_proto::PublicUpdatePropertyString {
+            sequence: 1,
+            guid: DOOR,
+            property: 1,
+            value: "RabidDee's Cottage".into(),
+        },
+    ));
+    let door = world.item(DOOR).unwrap();
+    assert_eq!(door.name, "Crystal");
+    assert_eq!(
+        door.properties.strings.get(&1).map(String::as_str),
+        Some("RabidDee's Cottage")
+    );
+    let updated: Vec<u32> = world
+        .take_table_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            TableEvent::Updated { object_id, .. } => Some(object_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updated, [DOOR]);
+
+    // PublicStringUpdate_OtherProperty_LeavesNameAlone.
+    world.apply(&Inbound::PublicUpdatePropertyString(
+        ac_proto::PublicUpdatePropertyString {
+            sequence: 2,
+            guid: DOOR,
+            property: 16,
+            value: "A note".into(),
+        },
+    ));
+    let door = world.item(DOOR).unwrap();
+    assert_eq!(door.name, "Crystal");
+    assert_eq!(
+        door.properties.strings.get(&16).map(String::as_str),
+        Some("A note")
+    );
+}
+
+#[test]
+fn a_private_string_update_keeps_the_players_shown_name() {
+    // OpenAC WorldSessionUpdateObjectTests
+    // .PrivateStringUpdate_StoresTheNameButKeepsThePlayersShownName.
+    let mut world = World::new();
+    world.set_player(PLAYER);
+    world.apply(&named(PLAYER, 1, "Player"));
+    world.apply(&Inbound::PrivateUpdatePropertyString(
+        ac_proto::PrivateUpdatePropertyString {
+            sequence: 1,
+            property: 1,
+            value: "Renamed".into(),
+        },
+    ));
+    let player = world.item(PLAYER).unwrap();
+    assert_eq!(player.name, "Player");
+    assert_eq!(
+        player.properties.strings.get(&1).map(String::as_str),
+        Some("Renamed")
+    );
+}
+
+#[test]
 fn a_private_int_update_reaches_both_player_projections() {
     // OpenAC ObjectTableWiringTests.ApplyPlayerInt64PropertyUpdate_*: the
     // player's value lives in the item table and in the local player's

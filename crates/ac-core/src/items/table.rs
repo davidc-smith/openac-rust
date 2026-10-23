@@ -1291,6 +1291,27 @@ impl ClientObjectTable {
         true
     }
 
+    /// Applies one string property update. The value goes into the property
+    /// bag only: the shown name changes only when the object is created or
+    /// updated, even when this is the name property.
+    pub fn update_string_property(
+        &mut self,
+        item_id: u32,
+        property_id: u32,
+        value: &str,
+        events: &mut Vec<TableEvent>,
+    ) -> bool {
+        let Some(item) = self.objects.get_mut(&item_id) else {
+            return false;
+        };
+        server_showed_object(item);
+        item.properties
+            .strings
+            .insert(property_id, value.to_owned());
+        self.emit_updated(item_id, events);
+        true
+    }
+
     /// Records one object-id property update. Placement has its own
     /// messages, so this stores the value, and a house's owner (which a
     /// purchase or an abandon announces this way) also moves the owner the

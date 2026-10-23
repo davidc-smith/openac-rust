@@ -485,6 +485,13 @@ impl World {
                     t.update_instance_id_property(u.guid, u.property, u.value, e)
                 });
             }
+            Inbound::PublicUpdatePropertyString(u) => {
+                self.with_items(|t, e| t.update_string_property(u.guid, u.property, &u.value, e));
+            }
+            Inbound::PrivateUpdatePropertyString(u) => {
+                let player = self.player_guid.unwrap_or(0);
+                self.with_items(|t, e| t.update_string_property(player, u.property, &u.value, e));
+            }
             Inbound::PublicUpdatePropertyBool(u) => {
                 self.with_items(|t, e| t.update_bool_property(u.guid, u.property, u.value, e));
             }
