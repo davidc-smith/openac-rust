@@ -19,7 +19,8 @@ pub struct Coordinate {
 /// a pair is one north-or-south and one east-or-west value, in either
 /// order (`42.1N 33.5E`, `33.5E, 42.1N`). Neither half may sit inside a
 /// longer word or number: `10n 20east` and `v2.1N 3E` hold no pair. The
-/// client links exactly these pairs in a plugin's chat line.
+/// client links exactly these pairs in the text a chat line shows, in every
+/// line but combat text.
 #[must_use]
 pub fn parse_all(text: &str) -> Vec<Coordinate> {
     ac_plugin_abi::chat_coordinates::find(text)

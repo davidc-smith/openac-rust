@@ -1,6 +1,7 @@
 //! Compass coordinate pairs in chat text, such as `42.1N 33.5E`: the one
-//! matcher the plugin SDK's parser and the client's chat share, so a pair in
-//! a plugin's chat line is a link exactly when a plugin would read it.
+//! matcher the plugin SDK's parser and the client's chat share, so a pair a
+//! chat line shows (any line but combat text) is a link exactly when a
+//! plugin would read it.
 //!
 //! A pair is a number and a compass letter, twice, separated by `,` `;` `/`
 //! `|` or white space: one north-or-south and one east-or-west value, in

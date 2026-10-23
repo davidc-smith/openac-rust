@@ -14,7 +14,7 @@ ac-dat.workspace = true
 ac-motion.workspace = true
 ac-nav.workspace = true
 ac-plugin.workspace = true
-# The coordinate matcher a plugin's chat line is linked by, shared with the SDK.
+# The coordinate matcher chat lines are linked by, shared with the SDK.
 ac-plugin-abi.workspace = true
 # The strict JSON reader and string escaping for the peer notes.
 ac-host.workspace = true
