@@ -99,6 +99,8 @@ spells_cooldown -
 magic_is_casting -
 magic_gate -
 magic_cast -
+magic_gate_without_selecting -
+magic_cast_without_selecting -
 magic_has_components -
 magic_last_completion -
 enchantments_report -

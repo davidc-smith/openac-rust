@@ -239,6 +239,16 @@ pub enum GameplayCommand {
         /// The target.
         target: Option<ObjectRef>,
     },
+    /// Cast a known spell at an object without selecting it: the
+    /// selection is neither read nor changed. A self or untargeted spell
+    /// ignores the target, as [`GameplayCommand::Cast`] ignores the
+    /// selection; 0 is no target.
+    CastWithoutSelecting {
+        /// The spell id.
+        spell: u32,
+        /// The target object.
+        target: u32,
+    },
     /// Reply with [`GameplayEvent::Spellbook`]; the text filters names.
     ListSpells(Option<String>),
     /// Reply with [`GameplayEvent::Enchantments`].
@@ -1243,6 +1253,9 @@ impl Gameplay {
                 }
             }
             GameplayCommand::Cast { spell, target } => self.cast(&spell, target, ctx),
+            GameplayCommand::CastWithoutSelecting { spell, target } => {
+                self.cast_without_selecting(spell, target, ctx);
+            }
             GameplayCommand::ListSpells(filter) => {
                 let view = magic::spellbook_view(
                     ctx.world,
@@ -1466,6 +1479,22 @@ impl Gameplay {
         match world.spellbook() {
             Some(book) => {
                 self.cast.cast(book, id, selected, &mut ops);
+            }
+            None => ops.display_message_now("You do not know that spell."),
+        }
+        self.finish(ctx);
+    }
+
+    /// The cast of [`GameplayCommand::CastWithoutSelecting`]: the same
+    /// request as [`Self::cast`], with the target given instead of read
+    /// from the selection.
+    fn cast_without_selecting(&mut self, spell: u32, target: u32, ctx: &mut GameplayContext<'_>) {
+        let target = (target != 0).then_some(target);
+        let mut ops = ops!(self, ctx);
+        let world: &World = ops.world;
+        match world.spellbook() {
+            Some(book) => {
+                self.cast.cast(book, spell, target, &mut ops);
             }
             None => ops.display_message_now("You do not know that spell."),
         }

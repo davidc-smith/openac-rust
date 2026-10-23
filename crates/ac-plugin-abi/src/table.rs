@@ -397,6 +397,16 @@ macro_rules! import_table {
             MagicCast = magic_cast($crate::magic::CastRequest) -> $crate::magic::CastResult
                 = $crate::magic::CastResult::Unavailable,
                 permission: None, window: false, since: (1, 0);
+            /// Whether a spell could be cast now at a named object, without
+            /// selecting it (the selection is neither read nor changed).
+            MagicGateWithoutSelecting = magic_gate_without_selecting($crate::magic::CastRequest)
+                -> $crate::magic::CastGate = $crate::magic::CastGate::Refused,
+                permission: None, window: false, since: (1, 0);
+            /// Cast a spell at a named object without selecting it (the
+            /// selection is neither read nor changed).
+            MagicCastWithoutSelecting = magic_cast_without_selecting($crate::magic::CastRequest)
+                -> $crate::magic::CastResult = $crate::magic::CastResult::Unavailable,
+                permission: None, window: false, since: (1, 0);
             /// Whether the character carries a spell's components.
             MagicHasComponents = magic_has_components(u32) -> bool = true,
                 permission: None, window: false, since: (1, 0);

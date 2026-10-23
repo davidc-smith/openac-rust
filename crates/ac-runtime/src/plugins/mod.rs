@@ -485,6 +485,8 @@ impl SessionApi for PluginBinding<'_> {
             MagicIsCasting => |()| self.magic_is_casting(),
             MagicGate => |request| self.magic_gate(request),
             MagicCast => |request| self.magic_cast(request),
+            MagicGateWithoutSelecting => |request| self.magic_gate_without_selecting(request),
+            MagicCastWithoutSelecting => |request| self.magic_cast_without_selecting(request),
             MagicHasComponents => |id| self.magic_has_components(id),
             MagicLastCompletion => |()| self.magic_last_completion(),
             EnchantmentsReport => |cast| self.enchantments_report(cast),

@@ -540,3 +540,79 @@ fn the_known_spell_revision_moves_only_when_the_lists_can_change() {
     assert!(fresh > forgot);
     assert_eq!(lists, [Vec::<u32>::new(), vec![], vec![]]);
 }
+
+/// Whether a targeted cast of `spell` at `target` was sent.
+fn sent_cast_at(outbox: &mut Outbox, target: u32, spell: u32) -> bool {
+    let mut tail = target.to_le_bytes().to_vec();
+    tail.extend_from_slice(&spell.to_le_bytes());
+    outbox.drain().any(|o| o.body.ends_with(&tail))
+}
+
+// OpenAC `CampaignAutomationSurfaceTests.CastWithoutSelectingSendsAtTheTargetAndKeepsTheSelection`:
+// the gate and the cast take the named object without touching the
+// selection, and the cast goes out at that object.
+#[test]
+fn a_cast_without_selecting_goes_out_at_the_target_and_keeps_the_selection() {
+    let mut state = caster();
+    let mut outbox = Outbox::new();
+    let at = CastRequest {
+        spell_id: 42,
+        target_id: CREATURE,
+    };
+    with_binding(&mut state, &mut outbox, |b| {
+        assert_eq!(
+            call::<calls::MagicGateWithoutSelecting>(b, &at),
+            CastGate::Ready
+        );
+        assert_eq!(
+            call::<calls::MagicCastWithoutSelecting>(b, &at),
+            CastResult::Sent
+        );
+    });
+    assert_eq!(state.gameplay.selection().selected(), None);
+    assert!(sent_cast_at(&mut outbox, CREATURE, 42));
+}
+
+// OpenAC `CampaignAutomationSurfaceTests.CastWithoutSelectingRefusesAnObjectThatIsNotInTheWorld`
+// and `CastWithoutSelectingAnswersNotKnownBeforeCheckingTheTarget`.
+#[test]
+fn a_cast_without_selecting_refuses_an_object_not_in_the_world() {
+    let mut state = caster();
+    let mut outbox = Outbox::new();
+    let at = |spell_id, target_id| CastRequest {
+        spell_id,
+        target_id,
+    };
+    with_binding(&mut state, &mut outbox, |b| {
+        assert_eq!(
+            call::<calls::MagicGateWithoutSelecting>(b, &at(42, 0x7000_0099)),
+            CastGate::Refused
+        );
+        assert_eq!(
+            call::<calls::MagicCastWithoutSelecting>(b, &at(42, 0x7000_0099)),
+            CastResult::IncompatibleTarget
+        );
+        // An unknown spell answers before the target is looked at.
+        assert_eq!(
+            call::<calls::MagicGateWithoutSelecting>(b, &at(7, 0x7000_0099)),
+            CastGate::NotKnown
+        );
+    });
+    assert_eq!(state.gameplay.selection().selected(), None);
+    assert!(!sent_cast_at(&mut outbox, 0x7000_0099, 42));
+}
+
+// OpenAC `CampaignAutomationSurfaceTests.TheSelectingCastOverloadStillSelects`.
+#[test]
+fn the_selecting_cast_still_selects() {
+    let mut state = caster();
+    let mut outbox = Outbox::new();
+    let at = CastRequest {
+        spell_id: 42,
+        target_id: CREATURE,
+    };
+    with_binding(&mut state, &mut outbox, |b| {
+        assert_eq!(call::<calls::MagicCast>(b, &at), CastResult::Sent);
+    });
+    assert_eq!(state.gameplay.selection().selected(), Some(CREATURE));
+}

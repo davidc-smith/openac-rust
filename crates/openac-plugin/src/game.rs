@@ -282,6 +282,26 @@ impl Host<'_> {
         })
     }
 
+    /// Whether a spell could be cast now at `target_id`, without selecting
+    /// it: the selection is neither read nor changed. Refused when the
+    /// object is not in the world.
+    pub fn cast_gate_without_selecting(&mut self, spell_id: u32, target_id: u32) -> CastGate {
+        self.call::<calls::MagicGateWithoutSelecting>(&CastRequest {
+            spell_id,
+            target_id,
+        })
+    }
+
+    /// Cast a spell at `target_id` without selecting it: the selection is
+    /// neither read nor changed. An incompatible target when the object is
+    /// not in the world.
+    pub fn cast_without_selecting(&mut self, spell_id: u32, target_id: u32) -> CastResult {
+        self.call::<calls::MagicCastWithoutSelecting>(&CastRequest {
+            spell_id,
+            target_id,
+        })
+    }
+
     /// Whether the character carries a spell's components.
     pub fn has_components(&mut self, spell_id: u32) -> bool {
         self.call::<calls::MagicHasComponents>(&spell_id)
