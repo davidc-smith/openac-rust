@@ -26,6 +26,11 @@ pub enum PlacementRejection {
     ItemCapacityFull,
     /// No free container slot.
     ContainerCapacityFull,
+    /// The destination is a hook the item does not fit: the item names no
+    /// hook kind the hook has, or the hook does not take its type.
+    WrongHookType,
+    /// The destination is a hook of a house nobody owns.
+    HookHouseNotOwned,
 }
 
 /// The container-type value of a spell focus.
@@ -56,7 +61,8 @@ fn is_container_id(objects: &ClientObjectTable, id: u32) -> bool {
 /// Whether `item_id` may go into `destination_id`: a known item that is
 /// not the player, not a creature and not being traded; a destination
 /// that is the player or a known container not being traded, and not the
-/// item or inside it; and a free slot of the right kind unless the item is
+/// item or inside it; for a hook, a house with an owner and an item that
+/// fits the hook; and a free slot of the right kind unless the item is
 /// already directly inside (a reorder).
 pub fn evaluate_container_placement(
     objects: &ClientObjectTable,
@@ -92,6 +98,16 @@ pub fn evaluate_container_placement(
     if item_id == destination_id || is_contained_by(objects, destination_id, item_id) {
         return Err(PlacementRejection::RecursiveContainment);
     }
+    if let Some(hook) = destination.filter(|d| d.is_hook()) {
+        // Only the owner of the house may use its hooks; a hook of a house
+        // nobody owns takes nothing.
+        if matches!(hook.house_owner_id(), None | Some(0)) {
+            return Err(PlacementRejection::HookHouseNotOwned);
+        }
+        if !fits_hook(item, hook) {
+            return Err(PlacementRejection::WrongHookType);
+        }
+    }
 
     let already_directly_contained = item.container_id == destination_id;
     let moving_container = is_container(item);
@@ -124,6 +140,13 @@ pub fn evaluate_container_placement(
     Ok(())
 }
 
+/// An item names the kinds of hook it hangs on (floor, wall, ceiling, yard,
+/// roof) and a hook names the item types it takes. An item that names no
+/// hook kind fits none.
+fn fits_hook(item: &ClientObject, hook: &ClientObject) -> bool {
+    item.hook_type & hook.hook_type != 0 && hook.hook_item_types & item.item_type.bits() != 0
+}
+
 fn is_contained_by(
     objects: &ClientObjectTable,
     candidate_id: u32,
@@ -139,6 +162,8 @@ fn is_contained_by(
     }
     false
 }
+
+const CANNOT_PLACE_ON_HOOK: &str = "That item cannot be placed on the hook.";
 
 /// The notice the client prints itself for a refused placement. The
 /// player's own inventory is called by the player object's name (the
@@ -181,6 +206,10 @@ pub fn placement_rejection_text(
         }
         PlacementRejection::ContainerCapacityFull => {
             format!("The {destination_name} can fit no more containers!")
+        }
+        PlacementRejection::WrongHookType => CANNOT_PLACE_ON_HOOK.into(),
+        PlacementRejection::HookHouseNotOwned => {
+            format!("{CANNOT_PLACE_ON_HOOK} You must own the house to manipulate the hook.")
         }
     }
 }
@@ -441,6 +470,96 @@ mod tests {
         assert_eq!(
             evaluate_container_placement(&w.t, 10, PLAYER, PLAYER),
             Err(PlacementRejection::SourceBeingTraded)
+        );
+    }
+
+    const FLOOR_HOOK: u32 = 1;
+    const WALL_HOOK: u32 = 2;
+    const HOUSE_OWNER: u32 = 0x5000_0002;
+
+    fn hooked_house(hook_type: u32, hook_item_types: u32, house_owner: Option<u32>) -> World {
+        let mut w = World::new();
+        let mut hook = object(2, "Hook", ItemType::NONE);
+        hook.items_capacity = 1;
+        hook.hook_type = hook_type;
+        hook.hook_item_types = hook_item_types;
+        hook.house_owner_id = house_owner;
+        w.add(hook);
+        w
+    }
+
+    fn sword() -> ClientObject {
+        let mut sword = object(3, "Long Sword", ItemType::MELEE_WEAPON);
+        sword.hook_type = WALL_HOOK;
+        sword
+    }
+
+    #[test]
+    fn item_goes_only_on_the_hook_types_it_fits() {
+        for (hook_type, expected) in [
+            (WALL_HOOK, Ok(())),
+            (FLOOR_HOOK, Err(PlacementRejection::WrongHookType)),
+        ] {
+            let mut w = hooked_house(hook_type, u32::MAX, Some(HOUSE_OWNER));
+            w.add(sword());
+            assert_eq!(evaluate_container_placement(&w.t, 3, 2, PLAYER), expected);
+        }
+    }
+
+    #[test]
+    fn item_with_no_hook_type_fits_no_hook() {
+        let mut w = hooked_house(WALL_HOOK, u32::MAX, Some(HOUSE_OWNER));
+        w.add(object(3, "Coat", ItemType::ARMOR));
+        assert_eq!(
+            evaluate_container_placement(&w.t, 3, 2, PLAYER),
+            Err(PlacementRejection::WrongHookType)
+        );
+    }
+
+    #[test]
+    fn hook_refuses_item_types_it_does_not_take() {
+        let mut w = hooked_house(WALL_HOOK, ItemType::ARMOR.bits(), Some(HOUSE_OWNER));
+        w.add(sword());
+        assert_eq!(
+            evaluate_container_placement(&w.t, 3, 2, PLAYER),
+            Err(PlacementRejection::WrongHookType)
+        );
+    }
+
+    #[test]
+    fn hook_of_an_unowned_house_refuses_even_a_fitting_item() {
+        for owner in [None, Some(0)] {
+            let mut w = hooked_house(WALL_HOOK, u32::MAX, owner);
+            w.add(sword());
+            assert_eq!(
+                evaluate_container_placement(&w.t, 3, 2, PLAYER),
+                Err(PlacementRejection::HookHouseNotOwned),
+                "{owner:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn hook_refusal_messages() {
+        let coat = object(3, "Coat", ItemType::NONE);
+        let hook = object(2, "Wall Hook", ItemType::NONE);
+        assert_eq!(
+            placement_rejection_text(
+                PlacementRejection::WrongHookType,
+                Some(&coat),
+                Some(&hook),
+                PLAYER
+            ),
+            "That item cannot be placed on the hook."
+        );
+        assert_eq!(
+            placement_rejection_text(
+                PlacementRejection::HookHouseNotOwned,
+                Some(&coat),
+                Some(&hook),
+                PLAYER
+            ),
+            "That item cannot be placed on the hook. You must own the house to manipulate the hook."
         );
     }
 
