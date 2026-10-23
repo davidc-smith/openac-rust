@@ -3,8 +3,9 @@
 //!
 //! Using a salvaging tool the player carries opens the window on it. Items
 //! are staged by dropping them from the inventory (a pack stages its
-//! suitable contents), and leave the row by being dragged out or right
-//! clicked. The button sends the staged items, last staged first. The
+//! suitable contents), and leave the row by being dragged out or double
+//! clicked; a right click examines one, as on any item cell. The button
+//! sends the staged items, last staged first. The
 //! staging is the window's own; it follows the window's copy of the object
 //! table at each update: the tool gone or no longer the player's closes
 //! the window, a staged item gone, no longer the player's or no longer
@@ -482,7 +483,21 @@ impl PanelController for SalvageController {
             return false;
         }
         match message {
+            // Right-click examines a staged item like any other item cell.
             ElementMessage::RightClicked => {
+                let id = slot_object(ui, element);
+                if id != 0 {
+                    emit(ui, PanelOutput::SelectObject(id));
+                    emit(
+                        ui,
+                        PanelOutput::Session(SessionCommand::Item(ItemCommand::Appraise(
+                            ObjectRef::Guid(id),
+                        ))),
+                    );
+                }
+                true
+            }
+            ElementMessage::DoubleClicked => {
                 let id = slot_object(ui, element);
                 if id != 0 {
                     self.remove_item(id);

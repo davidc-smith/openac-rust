@@ -340,9 +340,9 @@ fn a_main_pack_holding_only_side_packs_is_not_a_container_drop() {
     assert_eq!(h.count(), 0);
 }
 
-// Dragging_out_and_right_click_remove_staging.
+// Dragging_out_and_double_click_remove_staging.
 #[test]
-fn dragging_out_and_a_right_click_unstage() {
+fn dragging_out_and_a_double_click_unstage() {
     let mut h = harness();
     h.item(1, 60, 0, PLAYER);
     h.add(1);
@@ -350,10 +350,36 @@ fn dragging_out_and_a_right_click_unstage() {
     h.update();
     assert_eq!(h.count(), 0);
     h.add(1);
-    h.fire(0, kind::RIGHT_CLICK, None);
+    h.fire(0, kind::DOUBLE_CLICK, None);
     h.update();
     assert_eq!(h.count(), 0);
     assert!(!h.button_enabled());
+}
+
+// Right_click_examines_and_keeps_the_item_staged (OpenAC #251).
+#[test]
+fn a_right_click_selects_and_examines_and_keeps_the_item_staged() {
+    let mut h = harness();
+    h.item(1, 60, 0, PLAYER);
+    h.add(1);
+    h.outputs();
+    h.fire(0, kind::RIGHT_CLICK, None);
+    h.update();
+    let out = h.outputs();
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, PanelOutput::SelectObject(1))),
+        "{out:?}"
+    );
+    assert!(
+        sessions(&out).iter().any(|c| matches!(
+            c,
+            SessionCommand::Item(ItemCommand::Appraise(ObjectRef::Guid(1)))
+        )),
+        "{out:?}"
+    );
+    assert_eq!(h.count(), 1);
+    assert!(h.button_enabled());
 }
 
 // Staged_partial_bag_keeps_its_structure_meter.
@@ -458,7 +484,7 @@ fn the_session_is_told_the_staged_items_as_they_change() {
     assert_eq!(marks(&h.outputs()), [vec![1], vec![1, 2]]);
     h.update();
     assert!(marks(&h.outputs()).is_empty(), "told only on a change");
-    h.fire(0, kind::RIGHT_CLICK, None);
+    h.fire(0, kind::DOUBLE_CLICK, None);
     h.update();
     assert_eq!(marks(&h.outputs()), [vec![2]]);
     h.click_salvage();

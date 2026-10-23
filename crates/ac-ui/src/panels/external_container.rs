@@ -10,7 +10,9 @@
 //! click on its cell, or when the player walks out of range. Presses act
 //! at once; drags and drops are resolved at the next update.
 
-use ac_core::items::placement::{evaluate_container_placement, placement_rejection_text};
+use ac_core::items::placement::{
+    evaluate_container_placement, item_list_drop_placement, placement_rejection_text,
+};
 use ac_core::items::{ClientObject, PlacementRejection};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, PendingPlacement, REQUEST_BUSY};
 use ac_runtime::session::SessionCommand;
@@ -482,17 +484,15 @@ impl ExternalContainerController {
         };
         let full = item.stack_size.max(1).unsigned_abs();
         let amount = view.split_size(p.obj_id, full, self.selection.get());
-        // Reordering inside the container keeps the hovered slot; an item
-        // arriving from elsewhere goes to the top.
+        // Lands left of the hovered item, whether it is reordered inside the
+        // container or arrives from the inventory.
         let (target_item, target_index) = ui
             .widget::<ItemSlot>(cell)
             .map_or((0, -1), |s| (s.object_id, s.slot_index));
-        let placement = if item.container_id != self.open_container {
-            0
-        } else if target_item != 0 {
-            target_index.max(0)
-        } else {
-            i32::try_from(view.objects.get_contents(self.open_container).len()).unwrap_or(i32::MAX)
+        let Some(placement) =
+            self.contents_drop_placement(view, p.obj_id, target_item, target_index, amount >= full)
+        else {
+            return; // the item is already there
         };
         emit(
             ui,
@@ -504,6 +504,33 @@ impl ExternalContainerController {
                 pickup: false,
             })),
         );
+    }
+
+    /// The placement a drop on a cell of the open container's item list
+    /// asks for, or `None` when the drop leaves the item where it is.
+    fn contents_drop_placement(
+        &self,
+        view: &ItemsView<'_>,
+        item: u32,
+        target_item: u32,
+        target_index: i32,
+        whole_stack: bool,
+    ) -> Option<i32> {
+        let listed: Vec<u32> = view
+            .objects
+            .get_contents(self.open_container)
+            .iter()
+            .copied()
+            .filter(|&g| !is_container(view.get(g)))
+            .collect();
+        let source = listed.iter().position(|&g| g == item);
+        // An empty cell is past the last item.
+        let drop_index = if target_item != 0 {
+            target_index
+        } else {
+            i32::MAX
+        };
+        item_list_drop_placement(drop_index, listed.len(), source, whole_stack)
     }
 
     /// Show the container, the packs in it and the open pack's loose items

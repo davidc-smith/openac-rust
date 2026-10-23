@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use ac_core::items::placement::{
-    choose_container, evaluate_container_placement, placement_rejection_text,
+    choose_container, evaluate_container_placement, item_list_drop_placement,
+    placement_rejection_text,
 };
 use ac_core::items::{
     ClientObject, EquipMask, ItemType, PlacementRejection, StackMergeItem, StackMergePlan, burden,
@@ -661,29 +662,44 @@ impl InventoryController {
         }
         let dragged = view.get(item);
         let source_is_bag = dragged.is_some_and(is_bag);
+        // The selected stack's split quantity splits it, wherever it comes
+        // from; the whole of it is a pickup when it comes from the ground.
+        let full = dragged.map_or(1, |d| d.stack_size.max(1).unsigned_abs());
+        let split = view.split_size(item, full, self.selection.get());
+        let whole_stack = split >= full;
         let mut container;
-        let mut placement: i32;
+        let mut placement: Option<i32>;
         if Some(list) == self.contents_grid {
             container = self.open_container(view.player);
-            // A reorder inside the list keeps the hovered slot; an arrival
-            // from elsewhere goes to the top.
-            placement = if dragged.map(|d| d.container_id) != Some(container) {
-                0
-            } else if target_item != 0 {
-                target_index
-            } else {
-                count_loose_contents(view, container) as i32
-            };
+            // Lands left of the hovered item, wherever it came from: this
+            // pack, another pack, the paperdoll or the ground.
+            placement = list_drop_placement(
+                view,
+                container,
+                item,
+                false,
+                target_item,
+                target_index,
+                whole_stack,
+            );
         } else if Some(list) == self.container_list || Some(list) == self.top_container {
             if source_is_bag {
                 container = view.player;
                 if container == 0 {
                     return;
                 }
-                placement = if dragged.map(|d| d.container_id) != Some(container) {
-                    0
+                placement = if Some(list) != self.container_list {
+                    Some(0)
                 } else {
-                    target_index.max(0)
+                    list_drop_placement(
+                        view,
+                        container,
+                        item,
+                        true,
+                        target_item,
+                        target_index,
+                        whole_stack,
+                    )
                 };
             } else {
                 if target_item == 0 || target_item == item {
@@ -694,15 +710,18 @@ impl InventoryController {
                     // The refusal already showed over the pack.
                     return;
                 }
-                placement = 0;
+                placement = Some(0);
             }
         } else {
             return;
         }
         if fallthrough != 0 {
             container = fallthrough;
-            placement = 0;
+            placement = Some(0);
         }
+        let Some(placement) = placement else {
+            return; // the item is already there
+        };
         if container == item {
             return;
         }
@@ -711,11 +730,7 @@ impl InventoryController {
         } else {
             ObjectRef::Guid(container)
         };
-        // The selected stack's split quantity splits it, wherever it comes
-        // from; the whole of it is a pickup when it comes from the ground.
-        let full = dragged.map_or(1, |d| d.stack_size.max(1).unsigned_abs());
-        let split = view.split_size(item, full, self.selection.get());
-        let amount = if split < full { split } else { 0 };
+        let amount = if whole_stack { 0 } else { split };
         emit(
             ui,
             PanelOutput::Session(SessionCommand::Item(ItemCommand::DropInto {
@@ -1061,6 +1076,39 @@ pub(crate) fn count_loose_contents(view: &ItemsView<'_>, container: u32) -> usiz
         .filter_map(|&g| view.get(g))
         .filter(|o| o.currently_equipped_location == EquipMask::NONE && !is_bag(o))
         .count()
+}
+
+/// The placement a drop on a cell of one of the pack's own lists asks for:
+/// the loose-item grid (`bags` false) or the pack column (true). `None`
+/// when the drop leaves the item where it is.
+fn list_drop_placement(
+    view: &ItemsView<'_>,
+    container: u32,
+    item: u32,
+    bags: bool,
+    target_item: u32,
+    target_index: i32,
+    whole_stack: bool,
+) -> Option<i32> {
+    let listed: Vec<u32> = view
+        .objects
+        .get_contents(container)
+        .iter()
+        .copied()
+        .filter(|&g| {
+            view.get(g).is_some_and(|o| {
+                o.currently_equipped_location == EquipMask::NONE && is_bag(o) == bags
+            })
+        })
+        .collect();
+    let source = listed.iter().position(|&g| g == item);
+    // An empty cell is past the last item.
+    let drop_index = if target_item != 0 {
+        target_index
+    } else {
+        i32::MAX
+    };
+    item_list_drop_placement(drop_index, listed.len(), source, whole_stack)
 }
 
 fn is_container_full(view: &ItemsView<'_>, container: u32) -> bool {
