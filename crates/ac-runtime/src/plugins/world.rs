@@ -14,10 +14,12 @@ use ac_plugin::abi::world::{
 
 use ac_core::items::PublicWeenieFlags;
 
-use super::{PluginBinding, Ran};
+use super::{PluginBinding, PluginEvent, Ran};
 use crate::inventory::{ItemCommand, ObjectRef, REQUEST_NOT_SENT};
+use crate::session::HostEvent;
 use crate::session::SessionCommand;
 use crate::world::World;
+use ac_plugin::abi::LogLevel;
 
 /// The public flag of a door.
 const DOOR_FLAG: u32 = 0x0000_1000;
@@ -327,6 +329,22 @@ impl PluginBinding<'_> {
     /// `items_use`). A started activation ends with an
     /// [`ac_plugin::abi::Event::ActivationCompleted`].
     pub(super) fn world_activate(&mut self, object_id: u32) -> ItemResult {
+        // Every outcome is logged: a use refused as busy, or a walk begun
+        // that never arrives, leaves no other trace (OpenAC
+        // `RuntimeWorldObjectUse.TryUse`).
+        let result = self.world_activate_core(object_id);
+        let _ = self.events.send(HostEvent::Plugin(PluginEvent::Log {
+            plugin: "plugins".to_owned(),
+            level: LogLevel::Info,
+            message: format!(
+                "[interaction] automation use guid=0x{object_id:08X} outcome={:?}",
+                result.status
+            ),
+        }));
+        result
+    }
+
+    fn world_activate_core(&mut self, object_id: u32) -> ItemResult {
         if !self.in_world() {
             return ItemResult::of(ItemStatus::Unavailable);
         }
