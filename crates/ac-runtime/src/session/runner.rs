@@ -489,6 +489,9 @@ pub enum HostEvent {
     ItemMana(ac_core::items::ItemManaChange),
     /// A salvaging tool was used: the salvage panel opens on it.
     OpenSalvage(u32),
+    /// A pack the player carries was used: the inventory window shows and
+    /// opens on it (the main pack when it is the player).
+    OpenContainedContainer(u32),
     /// The link's numbers (the reply to [`SessionCommand::ShowLinkStatus`]).
     LinkStatus(super::LinkStatus),
     /// A login command could not be routed (the session goes on).

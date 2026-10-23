@@ -56,6 +56,9 @@ pub enum InterfaceEvent {
     Journal(Box<JournalView>),
     /// A salvaging tool was used: the salvage panel opens on it.
     OpenSalvage(u32),
+    /// A pack the player carries was used: the inventory window shows and
+    /// opens on it (the main pack when it is the player).
+    OpenContainedContainer(u32),
     /// The server answered a mana query (each answer once, valid or not):
     /// the selected-object strip shows its mana bar or closes the query.
     ItemMana(ItemManaChange),
@@ -629,6 +632,9 @@ impl InterfaceFeed {
             HostEvent::Appraisal(view) => Some(InterfaceEvent::Appraisal(view.clone())),
             HostEvent::Trade(view) => Some(InterfaceEvent::Trade(Box::new(view.clone()))),
             HostEvent::OpenSalvage(tool) => Some(InterfaceEvent::OpenSalvage(*tool)),
+            HostEvent::OpenContainedContainer(pack) => {
+                Some(InterfaceEvent::OpenContainedContainer(*pack))
+            }
             HostEvent::Vendor(view) => Some(InterfaceEvent::Vendor(view.clone())),
             HostEvent::ItemMana(change) => Some(InterfaceEvent::ItemMana(*change)),
             _ => None,

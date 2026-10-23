@@ -1236,7 +1236,6 @@ impl Inventory {
         actions: &[ItemPolicyAction],
         ctx: &mut ItemContext<'_>,
     ) -> bool {
-        let mut opened_or_used = 0;
         let mut acted = false;
         let mut busy_owned_by_use = false;
         for action in actions {
@@ -1248,14 +1247,22 @@ impl Inventory {
                 K::WieldRight | K::WieldLeft | K::AutoSort => {
                     acted |= self.try_wield(action.object_id, EquipMask::NONE, ctx);
                 }
-                K::OpenContainedContainer | K::SendUse => {
-                    if opened_or_used != action.object_id {
-                        // The use's reservation owns the busy count whether
-                        // it went out, was armed for a walk or was refused.
-                        acted |= self.request_use(action.object_id, ctx);
-                        busy_owned_by_use = true;
-                        opened_or_used = action.object_id;
-                    }
+                K::OpenContainedContainer => {
+                    // A pack the character carries opens in the inventory
+                    // window, and that asks nothing of the server: the use
+                    // request a useable pack needs is its own SendUse
+                    // action. The main pack is the character itself, which
+                    // is not useable; asking the server to use it takes a
+                    // busy count that some servers never release.
+                    self.events
+                        .push(InventoryEvent::OpenContainedContainer(action.object_id));
+                    acted = true;
+                }
+                K::SendUse => {
+                    // The use's reservation owns the busy count whether it
+                    // went out, was armed for a walk or was refused.
+                    acted |= self.request_use(action.object_id, ctx);
+                    busy_owned_by_use = true;
                 }
                 K::SendUseWithTarget => {
                     acted |=

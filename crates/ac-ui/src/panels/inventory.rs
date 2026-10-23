@@ -471,6 +471,43 @@ impl InventoryController {
         }
     }
 
+    /// A pack the character carries was used from anywhere (a hotbar
+    /// shortcut, a double-click): the window opens on it, the main pack when
+    /// it is the character. True when `guid` is such a pack, so the caller
+    /// shows the window. No use request goes out from here; a side pack's
+    /// went out with the use itself.
+    pub fn open_contained_container(
+        &mut self,
+        ui: &mut UiRoot,
+        guid: u32,
+        view: &ItemsView<'_>,
+    ) -> bool {
+        let player = view.player;
+        let Some(item) = view.get(guid).filter(|_| guid != 0) else {
+            return false;
+        };
+        let owned = guid == player || view.objects.is_owned_by_object(guid, player);
+        if !owned || !is_bag(item) {
+            return false;
+        }
+        self.player = player;
+        if guid == self.open_container(player) {
+            return true;
+        }
+        if let Some(g) = self.contents_grid
+            && let Some(l) = ui.widget_mut::<ItemList>(g)
+        {
+            l.scroll.set_scroll_y(0);
+        }
+        self.open_container = guid;
+        // The session's pickups name the pack this window shows open.
+        emit(
+            ui,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::SetOpenPack(guid))),
+        );
+        true
+    }
+
     fn press(&mut self, ui: &mut UiRoot, list: ElementId, cell: ElementId) {
         let Some(id) = slot(ui, cell).map(|s| s.object_id).filter(|id| *id != 0) else {
             return;

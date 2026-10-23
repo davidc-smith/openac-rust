@@ -426,6 +426,45 @@ fn a_refused_move_names_the_item_and_the_reason() {
     assert!(f.inventory.transactions().can_begin_request());
 }
 
+/// The player as the server describes him: a creature that holds packs and
+/// is not useable (the main pack is the character itself).
+fn make_the_player_a_pack(f: &mut Fixture) {
+    f.world.apply(&create(PLAYER, "Horan", |d| {
+        d.object_description_flags = (PublicWeenieFlags::PLAYER | PublicWeenieFlags::STUCK).bits();
+        d.items_capacity = Some(102);
+        d.containers_capacity = Some(7);
+        d.item_type = ItemType::CREATURE.bits();
+        d.useability = Some(ItemUseable::NO.bits());
+    }));
+}
+
+#[test]
+fn using_the_player_opens_the_main_pack_without_a_use_request() {
+    // OpenAC ItemInteractionControllerTests
+    // .UsingThePlayer_opensTheMainPackWithoutAUseRequest: a hotbar shortcut
+    // to the main pack opens it in the inventory window and asks the server
+    // for nothing. A use request for the character is never answered on some
+    // servers, and its busy count then refused every later use.
+    let mut f = Fixture::new();
+    make_the_player_a_pack(&mut f);
+    assert!(f.run(ItemCommand::Use(ObjectRef::Player)));
+    assert!(f.sent().is_empty());
+    assert_eq!(f.inventory.transactions().busy_count(), 0);
+    assert!(f.inventory.transactions().can_begin_request());
+    assert_eq!(f.events(), [InventoryEvent::OpenContainedContainer(PLAYER)]);
+}
+
+#[test]
+fn using_a_carried_pack_sends_one_use_and_opens_it_in_the_inventory() {
+    // OpenAC ItemInteractionControllerTests
+    // .UsingACarriedPack_sendsOneUseAndOpensThePackInTheInventory.
+    let mut f = Fixture::new();
+    assert!(f.run(ItemCommand::Use(guid(PACK))));
+    assert_eq!(f.sent(), [build_use(1, PACK)]);
+    assert_eq!(f.inventory.transactions().busy_count(), 1);
+    assert_eq!(f.events(), [InventoryEvent::OpenContainedContainer(PACK)]);
+}
+
 #[test]
 fn a_use_counts_busy_until_the_use_done_and_is_paced() {
     let mut f = Fixture::new();

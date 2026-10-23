@@ -535,6 +535,9 @@ pub enum InventoryEvent {
     /// A salvaging tool the player carries was used: the salvage panel
     /// opens on it.
     OpenSalvage(u32),
+    /// A pack the player carries was used: the inventory window shows and
+    /// opens on it (the main pack when it is the player).
+    OpenContainedContainer(u32),
 }
 
 /// What the owner reads and changes outside itself for one call.
