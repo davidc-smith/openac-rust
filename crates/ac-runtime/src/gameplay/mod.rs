@@ -1058,6 +1058,10 @@ impl Gameplay {
                 let clock = self.house_clock(ctx);
                 self.house.apply_rent_time(rent_time, clock);
             }
+            GameEventType::UPDATE_HAR => {
+                let access = wire_house::HouseAccess::parse(payload)?;
+                self.text(house::guest_list_text(&access));
+            }
             GameEventType::UPDATE_RENT_PAYMENT => {
                 let rent = wire_house::parse_rent_payment(payload)?;
                 let clock = self.house_clock(ctx);

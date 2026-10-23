@@ -115,6 +115,85 @@ impl HouseUpdateRestrictions {
     }
 }
 
+/// One permanent guest in a house access record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HouseGuest {
+    /// The guest's character.
+    pub guid: u32,
+    /// The guest's name.
+    pub name: String,
+    /// The guest may also use the house's storage.
+    pub storage: bool,
+}
+
+/// The owner's house access record, i.e. the guest list
+/// ([`crate::GameEventType::UPDATE_HAR`]). Roommates are the owner's other
+/// characters on the same account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HouseAccess {
+    /// Bit 0x1 open house, 0x2 allegiance guests, 0x4 allegiance storage.
+    pub bitmask: u32,
+    /// The allegiance's monarch.
+    pub monarch_id: u32,
+    /// The guests, in wire order.
+    pub guests: Vec<HouseGuest>,
+    /// The roommates.
+    pub roommates: Vec<u32>,
+}
+
+impl HouseAccess {
+    /// The house is open to everyone.
+    #[must_use]
+    pub fn open_to_everyone(&self) -> bool {
+        self.bitmask & 0x1 != 0
+    }
+
+    /// The owner's allegiance may enter.
+    #[must_use]
+    pub fn allegiance_guests(&self) -> bool {
+        self.bitmask & 0x2 != 0
+    }
+
+    /// The owner's allegiance may use the storage.
+    #[must_use]
+    pub fn allegiance_storage(&self) -> bool {
+        self.bitmask & 0x4 != 0
+    }
+
+    /// Parse the event payload: version, bitmask, monarch, guest count and
+    /// bucket count (two u16), each guest (id, storage word, name), then the
+    /// roommate count and ids.
+    pub fn parse(payload: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(payload);
+        r.u32()?; // version
+        let bitmask = r.u32()?;
+        let monarch_id = r.u32()?;
+        let guest_count = r.u16()?;
+        r.u16()?; // bucket count
+        let guests = (0..guest_count)
+            .map(|_| {
+                let guid = r.u32()?;
+                let storage = read_bool32(&mut r)?;
+                Ok(HouseGuest {
+                    guid,
+                    name: read_string(&mut r)?,
+                    storage,
+                })
+            })
+            .collect::<Result<_>>()?;
+        let roommate_count = read_count(&mut r, 4, "house roommates")?;
+        let roommates = (0..roommate_count)
+            .map(|_| r.u32())
+            .collect::<ac_bits::Result<_>>()?;
+        Ok(Self {
+            bitmask,
+            monarch_id,
+            guests,
+            roommates,
+        })
+    }
+}
+
 /// Houses for sale ([`crate::GameEventType::AVAILABLE_HOUSES`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailableHouses {
@@ -400,6 +479,73 @@ mod tests {
         assert_eq!(update.restrictions.guests.len(), 1);
         assert_eq!(update.restrictions.guests[0].guest_id, 0x5000_0002);
         assert_every_prefix_fails(w.as_slice(), HouseUpdateRestrictions::parse);
+    }
+
+    // OpenAC HouseEventsTests.ParseUpdateHar_ReadsFlagsGuestsAndRoommates.
+    #[test]
+    fn update_har_reads_flags_guests_and_roommates() {
+        let mut w = Writer::new();
+        w.u32(0x1000_0002); // version
+        w.u32(0x5); // open house + allegiance storage
+        w.u32(0x5000_0001); // monarch
+        w.u16(2);
+        w.u16(64);
+        w.u32(0x5000_0002);
+        w.u32(0);
+        w.string16l("Alice").unwrap();
+        w.u32(0x5000_0003);
+        w.u32(1);
+        w.string16l("Bob").unwrap();
+        w.u32(1);
+        w.u32(0x5000_0004);
+        let har = HouseAccess::parse(w.as_slice()).unwrap();
+        assert!(har.open_to_everyone());
+        assert!(!har.allegiance_guests());
+        assert!(har.allegiance_storage());
+        assert_eq!(har.monarch_id, 0x5000_0001);
+        assert_eq!(
+            har.guests,
+            [
+                HouseGuest {
+                    guid: 0x5000_0002,
+                    name: "Alice".into(),
+                    storage: false
+                },
+                HouseGuest {
+                    guid: 0x5000_0003,
+                    name: "Bob".into(),
+                    storage: true
+                },
+            ]
+        );
+        assert_eq!(har.roommates, [0x5000_0004]);
+        assert_every_prefix_fails(w.as_slice(), HouseAccess::parse);
+    }
+
+    // OpenAC HouseEventsTests.ParseUpdateHar_EmptyPrivateHouse_RoundTrips and
+    // ParseUpdateHar_TruncatedGuest_ReturnsNull.
+    #[test]
+    fn update_har_empty_house_and_truncated_guest() {
+        let mut w = Writer::new();
+        w.u32(0x1000_0002);
+        w.u32(0);
+        w.u32(0);
+        w.u16(0);
+        w.u16(64);
+        w.u32(0);
+        let har = HouseAccess::parse(w.as_slice()).unwrap();
+        assert!(!har.open_to_everyone());
+        assert!(har.guests.is_empty());
+        assert!(har.roommates.is_empty());
+
+        let mut w = Writer::new();
+        w.u32(0x1000_0002);
+        w.u32(0);
+        w.u32(0);
+        w.u16(1);
+        w.u16(64);
+        w.u32(0x5000_0002);
+        assert!(HouseAccess::parse(w.as_slice()).is_err());
     }
 
     #[test]

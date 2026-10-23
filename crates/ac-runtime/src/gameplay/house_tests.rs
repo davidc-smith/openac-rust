@@ -4,7 +4,7 @@
 
 use ac_core::physics::lcoord_to_gid;
 use ac_proto::Position;
-use ac_proto::house::AvailableHouses;
+use ac_proto::house::{AvailableHouses, HouseAccess, HouseGuest};
 
 use super::*;
 
@@ -299,4 +299,73 @@ fn the_available_houses_list_their_map_coordinates() {
 
 fn cell(lx: i32, ly: i32) -> u32 {
     lcoord_to_gid(lx, ly).unwrap()
+}
+
+// OpenAC `tests/AcDream.Core.Net.Tests/HouseGuestListTextTests.cs`.
+
+fn access(bitmask: u32, guests: &[(&str, bool)], roommates: &[u32]) -> HouseAccess {
+    HouseAccess {
+        bitmask,
+        monarch_id: 0x5000_0001,
+        guests: guests
+            .iter()
+            .zip(0x5000_0002u32..)
+            .map(|(&(name, storage), guid)| HouseGuest {
+                guid,
+                name: name.into(),
+                storage,
+            })
+            .collect(),
+        roommates: roommates.to_vec(),
+    }
+}
+
+#[test]
+fn an_empty_guest_list_reads_guests_then_none() {
+    assert_eq!(guest_list_text(&access(0, &[], &[])), "Guests:\n  None\n");
+}
+
+#[test]
+fn a_storage_guest_is_marked_with_an_asterisk() {
+    assert_eq!(
+        guest_list_text(&access(0, &[("Alice", false), ("Bob", true)], &[])),
+        "Guests:\n  Alice\n  Bob *\n"
+    );
+}
+
+#[test]
+fn one_allegiance_bit_adds_its_permission_line() {
+    for (bitmask, line) in [
+        (0x2, "Allegiance Permissions: guest access\n"),
+        (0x4, "Allegiance Permissions: storage access\n"),
+    ] {
+        assert_eq!(
+            guest_list_text(&access(bitmask, &[], &[])),
+            format!("Guests:\n  None\n{line}")
+        );
+    }
+}
+
+#[test]
+fn both_allegiance_bits_run_together_with_no_separator() {
+    assert_eq!(
+        guest_list_text(&access(0x6, &[("Alice", true)], &[])),
+        "Guests:\n  Alice *\nAllegiance Permissions: guest accessstorage access\n"
+    );
+}
+
+#[test]
+fn an_open_house_ends_with_the_open_house_line() {
+    assert_eq!(
+        guest_list_text(&access(0x1, &[], &[])),
+        "Guests:\n  None\n[ open house ]\n"
+    );
+}
+
+#[test]
+fn all_flags_print_permissions_before_open_house_and_no_roommates() {
+    assert_eq!(
+        guest_list_text(&access(0x7, &[("Alice", false)], &[0x5000_0004])),
+        "Guests:\n  Alice\nAllegiance Permissions: guest accessstorage access\n[ open house ]\n"
+    );
 }

@@ -338,6 +338,45 @@ pub fn available_houses_lines(houses: &ac_proto::house::AvailableHouses) -> Vec<
     lines
 }
 
+/// The text the guest-list reply prints, in green and as one block: a
+/// "Guests:" heading, then one guest per line indented by two spaces with
+/// " *" after anyone who may also use storage (or "  None" when the list is
+/// empty), then the allegiance permissions and the open-house line when
+/// their flags are set. Roommates are not printed from this reply. Both
+/// `@house guest list` and `@house storage list` ask for it.
+#[must_use]
+pub fn guest_list_text(access: &ac_proto::house::HouseAccess) -> String {
+    let mut text = String::from("Guests:\n");
+    if access.guests.is_empty() {
+        text.push_str("  None\n");
+    } else {
+        for guest in &access.guests {
+            text.push_str("  ");
+            text.push_str(&guest.name);
+            if guest.storage {
+                text.push_str(" *");
+            }
+            text.push('\n');
+        }
+    }
+    // The two permission words are written back to back, with nothing
+    // between them, when both are set.
+    if access.allegiance_guests() || access.allegiance_storage() {
+        text.push_str("Allegiance Permissions: ");
+        if access.allegiance_guests() {
+            text.push_str("guest access");
+        }
+        if access.allegiance_storage() {
+            text.push_str("storage access");
+        }
+        text.push('\n');
+    }
+    if access.open_to_everyone() {
+        text.push_str("[ open house ]\n");
+    }
+    text
+}
+
 /// A cell's map coordinates as the radar prints them: north-south then
 /// east-west, one decimal, with their compass letters (`12.3N`, `45.6E`).
 #[must_use]

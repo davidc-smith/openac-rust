@@ -940,3 +940,27 @@ fn the_fellow_keys_step_through_the_fellowship_and_wrap() {
     assert_eq!(step(false), Some(PLAYER));
     assert_eq!(step(true), Some(B));
 }
+
+#[test]
+fn a_guest_list_reply_prints_the_list_in_green_as_one_text() {
+    // OpenAC GameEventWiringTests.AGuestListReply_PrintsTheListInGreenAsOneText.
+    let mut f = Fixture::new();
+    let mut w = ac_bits::Writer::new();
+    w.u32(0x1000_0002);
+    w.u32(0x3);
+    w.u32(0x5000_0001);
+    w.u16(1);
+    w.u16(64);
+    w.u32(0x5000_0002);
+    w.u32(1);
+    w.string16l("Alice").unwrap();
+    w.u32(0);
+    f.apply_bytes(&event(GameEventType::UPDATE_HAR, &w.into_vec()));
+    assert_eq!(
+        f.notices(),
+        [GameplayNotice::Text(
+            "Guests:\n  Alice *\nAllegiance Permissions: guest access\n[ open house ]\n".into(),
+            LogTextType::Default
+        )]
+    );
+}
