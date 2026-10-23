@@ -373,6 +373,7 @@ pub fn build_panel(
                 menu.retail_button_art = *retail_art;
                 menu.scrollable = true;
                 menu.popup_scrollbar_hide_when_disabled = true;
+                menu.fits_long_labels = true;
                 ui.add(parent, e, menu)
             }
             Markup::Log { .. } => ui.add(parent, e, MarkupLog::new(font)),
@@ -737,11 +738,13 @@ impl PluginPanelController {
                     let entries = texts(view, items);
                     let chosen = selected.read(view);
                     if let Some(w) = ui.widget_mut::<Menu>(el) {
-                        w.items = entries
-                            .iter()
-                            .enumerate()
-                            .map(|(i, s)| MenuItem::new(s.clone(), i as u64))
-                            .collect();
+                        w.set_items(
+                            entries
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| MenuItem::new(s.clone(), i as u64))
+                                .collect(),
+                        );
                         w.selected = chosen
                             .as_ref()
                             .and_then(|c| entries.iter().position(|s| s == c))

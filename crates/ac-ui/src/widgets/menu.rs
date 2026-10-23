@@ -56,6 +56,19 @@ const FACE_CAP_R: f32 = 12.0;
 const SCROLL_CAP_H: f32 = 3.0;
 /// Inset of plain-style captions, pixels.
 pub const PLAIN_PADDING: f32 = 3.0;
+/// Room the plain look leaves right of the button caption for its chevron,
+/// pixels.
+const PLAIN_CHEVRON_RESERVE: f32 = 18.0;
+
+/// A fitted button caption and what it was fitted for, so an unchanged
+/// caption is not measured again each frame.
+#[derive(Debug)]
+struct CaptionFit {
+    source: String,
+    font: Option<Arc<UiFont>>,
+    max_width: f32,
+    shown: String,
+}
 
 /// A drop-down menu.
 #[derive(Debug)]
@@ -163,8 +176,25 @@ pub struct Menu {
     /// A plain popup draws its scrollbar flat even when art is set
     /// (themed menus).
     pub plain_popup_scrollbar: bool,
+    /// Widens the popup to its longest entry (never below
+    /// [`Self::column_width`] or the button), shifts it left so it stays
+    /// inside its window (or the screen, when it is wider than the window),
+    /// and ends a button caption too long for the button in an ellipsis.
+    /// Off for retail dat menus, whose widths are authored.
+    pub fits_long_labels: bool,
 
     open: bool,
+    /// The widest entry plus its padding, as measured at opening or when
+    /// the entries were replaced while open.
+    items_fit_width: f32,
+    /// The button's width, as last seen with the element.
+    fit_button_width: f32,
+    /// How far left of the button the popup starts (0 or negative), as last
+    /// placed: hit testing has no access to the tree, so the placement is
+    /// refreshed whenever the menu sees its element.
+    popup_left: f32,
+    /// The last fitted button caption.
+    caption_fit: Option<CaptionFit>,
     face_pressed: bool,
     hovered_popup_index: Option<usize>,
     dragging_popup_thumb: bool,
@@ -230,7 +260,12 @@ impl Default for Menu {
             open_upward: true,
             searchable: false,
             plain_popup_scrollbar: false,
+            fits_long_labels: false,
             open: false,
+            items_fit_width: 0.0,
+            fit_button_width: 0.0,
+            popup_left: 0.0,
+            caption_fit: None,
             face_pressed: false,
             hovered_popup_index: None,
             dragging_popup_thumb: false,
@@ -254,6 +289,188 @@ impl Menu {
     pub fn configure(element: &mut Element) {
         element.captures_pointer_drag = true;
         element.click_through = false;
+    }
+
+    /// Replace the entries. A list replaced while the popup is open refits
+    /// it now, not at the next opening.
+    pub fn set_items(&mut self, items: Vec<MenuItem>) {
+        self.items = items;
+        if self.open && self.fits_long_labels {
+            self.measure_items_fit_width();
+        }
+    }
+
+    /// How far left of the button the popup starts, pixels: 0, or negative
+    /// when a widened popup shifted off its window's or the screen's right
+    /// edge.
+    #[must_use]
+    pub fn popup_left(&self) -> f32 {
+        self.popup_left
+    }
+
+    /// The popup scrollbar's left edge inside the popup, pixels.
+    #[must_use]
+    pub fn popup_scrollbar_left(&self) -> f32 {
+        BORDER + self.row_width()
+    }
+
+    /// The caption a button `width` pixels wide shows: the button label,
+    /// cut short with an ellipsis when it does not fit and the menu fits
+    /// long labels.
+    pub fn button_caption(&mut self, width: f32) -> &str {
+        self.fit_caption(width);
+        self.shown_caption()
+    }
+
+    /// The width of a popup row: the column width, or for a menu that fits
+    /// long labels the widest entry or the button's interior when wider.
+    fn row_width(&self) -> f32 {
+        if self.fits_long_labels {
+            self.column_width.max(
+                self.items_fit_width
+                    .max(self.fit_button_width - 2.0 * BORDER - self.effective_scrollbar_width()),
+            )
+        } else {
+            self.column_width
+        }
+    }
+
+    fn measure_items_fit_width(&mut self) {
+        let pad = if self.retail_button_art {
+            self.text_indent
+        } else {
+            PLAIN_PADDING
+        };
+        let widest = self
+            .items
+            .iter()
+            .map(|item| self.measure_text(&item.label))
+            .fold(0.0f32, f32::max);
+        self.items_fit_width = widest + 2.0 * pad;
+    }
+
+    /// Note the button's width and where the popup starts. A popup wider
+    /// than the room right of the button shifts left to end at the right
+    /// edge of its window, or of the screen when the window is too narrow
+    /// for it, but never past the left edge of either.
+    fn place_popup(&mut self, ui: &UiRoot, me: ElementId) {
+        if !self.fits_long_labels || !ui.is_connected(me) {
+            self.popup_left = 0.0;
+            return;
+        }
+        let Some(width) = ui.element(me).map(|e| e.width) else {
+            self.popup_left = 0.0;
+            return;
+        };
+        self.fit_button_width = width;
+        let ow = self.popup_outer_width();
+        let (sx, _) = ui.screen_position(me);
+        let (mut lo, mut hi) = (0.0f32, ui.effective_canvas_size().0);
+        let mut cur = ui.parent(me);
+        while let Some(c) = cur {
+            if c == ui.root() {
+                break;
+            }
+            if let Some(e) = ui.element(c)
+                && (e.draggable || e.resizable)
+            {
+                let (wl, _) = ui.screen_position(c);
+                let (wlo, whi) = (lo.max(wl), hi.min(wl + e.width));
+                if ow <= whi - wlo {
+                    (lo, hi) = (wlo, whi);
+                }
+                break;
+            }
+            cur = ui.parent(c);
+        }
+        self.popup_left = (lo - sx).max(0.0f32.min(hi - sx - ow));
+    }
+
+    /// The room a button `width` pixels wide leaves its caption.
+    fn caption_room(&self, width: f32) -> f32 {
+        if !self.retail_button_art {
+            return width - PLAIN_PADDING - PLAIN_CHEVRON_RESERVE;
+        }
+        let right = if self.arrow_cap_closed_sprite != 0 {
+            self.arrow_cap_width
+        } else {
+            FACE_CAP_R
+        };
+        let indent = if self.button_text_centered {
+            0.0
+        } else {
+            self.button_text_indent
+        };
+        width - right - indent
+    }
+
+    fn caption_font(&self) -> Option<&Arc<UiFont>> {
+        self.button_font.as_ref().or(self.font.as_ref())
+    }
+
+    fn measure_caption(font: Option<&Arc<UiFont>>, s: &str) -> f32 {
+        font.map_or(s.chars().count() as f32 * 7.0, |f| f.measure_width(s))
+    }
+
+    /// Fit the button caption to a button `width` pixels wide, unless the
+    /// last fit was for the same caption, font and room.
+    fn fit_caption(&mut self, width: f32) {
+        if !self.fits_long_labels {
+            return;
+        }
+        let max_width = self.caption_room(width);
+        let font = self.caption_font();
+        if let Some(fit) = &self.caption_fit
+            && fit.source == self.button_label
+            && fit.max_width == max_width
+            && match (&fit.font, font) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+        {
+            return;
+        }
+        let shown = Self::shorten_caption(font, &self.button_label, max_width);
+        self.caption_fit = Some(CaptionFit {
+            source: self.button_label.clone(),
+            font: font.cloned(),
+            max_width,
+            shown,
+        });
+    }
+
+    /// The caption as drawn: the fitted one, or the label itself.
+    fn shown_caption(&self) -> &str {
+        match &self.caption_fit {
+            Some(fit) if self.fits_long_labels => &fit.shown,
+            _ => &self.button_label,
+        }
+    }
+
+    /// `caption`, cut on a whole character with an ellipsis when it is
+    /// wider than `max_width`. A font without the ellipsis glyph gets three
+    /// dots.
+    fn shorten_caption(font: Option<&Arc<UiFont>>, caption: &str, max_width: f32) -> String {
+        if Self::measure_caption(font, caption) <= max_width {
+            return caption.to_owned();
+        }
+        let dots = match font {
+            Some(f) if f.glyph('\u{2026}').is_none() => "...",
+            _ => "\u{2026}",
+        };
+        let cuts = caption.char_indices().rev().map(|(n, _)| n);
+        for n in cuts.filter(|&n| n > 0) {
+            let cut = format!("{}{dots}", caption[..n].trim_end());
+            if Self::measure_caption(font, &cut) <= max_width {
+                return cut;
+            }
+        }
+        if Self::measure_caption(font, dots) <= max_width {
+            dots.to_owned()
+        } else {
+            String::new()
+        }
     }
 
     /// True while the popup is open.
@@ -308,6 +525,9 @@ impl Menu {
             if self.searchable {
                 self.filter_items();
             }
+            if self.fits_long_labels {
+                self.measure_items_fit_width();
+            }
         } else {
             self.end_search_selection(ui, me);
             self.dragging_popup_thumb = false;
@@ -315,6 +535,7 @@ impl Menu {
         self.open = value;
         self.hovered_popup_index = None;
         if value {
+            self.place_popup(ui, me);
             ui.set_active_popup(me, me);
             if self.searchable {
                 ui.set_keyboard_focus(Some(me));
@@ -523,9 +744,9 @@ impl Menu {
 
     fn interior_w(&self) -> f32 {
         if self.scrollable {
-            self.column_width + self.effective_scrollbar_width()
+            self.row_width() + self.effective_scrollbar_width()
         } else {
-            self.column_count() as f32 * self.column_width
+            self.column_count() as f32 * self.row_width()
         }
     }
 
@@ -589,7 +810,7 @@ impl Menu {
 
     fn item_text_x(&self, label: &str) -> f32 {
         if self.item_text_centered {
-            ((self.column_width - self.measure_text(label)) * 0.5).max(0.0)
+            ((self.row_width() - self.measure_text(label)) * 0.5).max(0.0)
         } else {
             self.text_indent
         }
@@ -609,14 +830,14 @@ impl Menu {
         if ix < 0.0 || ix >= self.interior_w() || iy < 0.0 || iy >= self.interior_h() {
             return None;
         }
-        let col = (ix / self.column_width) as usize;
+        let col = (ix / self.row_width()) as usize;
         let row = (iy / self.row_height) as usize;
         let idx = col * self.rows_per_column + row;
         (row < self.rows_per_column && idx < self.display_len()).then_some(idx)
     }
 
     fn hovered_scrollable_index(&self, ix: f32, iy: f32) -> Option<usize> {
-        if ix < 0.0 || ix >= self.column_width || iy < 0.0 || iy >= self.interior_h() {
+        if ix < 0.0 || ix >= self.row_width() || iy < 0.0 || iy >= self.interior_h() {
             return None;
         }
         let row = (iy / self.row_height) as usize;
@@ -654,13 +875,13 @@ impl Menu {
         iy: f32,
     ) -> bool {
         let ih = self.interior_h();
-        if ix >= 0.0 && ix < self.column_width && iy >= 0.0 && iy < ih {
+        if ix >= 0.0 && ix < self.row_width() && iy >= 0.0 && iy < ih {
             let idx = self.hovered_scrollable_index(ix, iy);
             self.pick(ui, me, idx);
             self.set_open(ui, me, false);
             return true;
         }
-        let sx = self.column_width;
+        let sx = self.row_width();
         if self.popup_scrollbar_visible()
             && ix >= sx
             && ix < sx + self.scrollbar_width
@@ -781,12 +1002,12 @@ impl Menu {
                 self.plain_border_color
             };
             rc.rect_outline(0.0, 0.0, w, h, border, 1.0);
-            let font = self.button_font.as_ref().or(self.font.as_ref());
+            let font = self.caption_font();
             if let Some(f) = font {
                 let y = (h - f.line_height) * 0.5;
                 rc.string_dat(
                     f,
-                    &self.button_label,
+                    self.shown_caption(),
                     PLAIN_PADDING,
                     y,
                     self.plain_text_color,
@@ -803,10 +1024,8 @@ impl Menu {
             return;
         }
         self.draw_button_face(rc, w, h);
-        let font = self.button_font.as_ref().or(self.font.as_ref());
-        let caption_w = font.map_or(self.button_label.chars().count() as f32 * 7.0, |f| {
-            f.measure_width(&self.button_label)
-        });
+        let font = self.caption_font();
+        let caption_w = Self::measure_caption(font, self.shown_caption());
         let caption_h = font.map_or(14.0, |f| f.line_height);
         let cap_x = if self.button_text_centered {
             let arrow = if self.arrow_cap_closed_sprite != 0 {
@@ -821,7 +1040,7 @@ impl Menu {
         if let Some(f) = font {
             rc.string_dat(
                 f,
-                &self.button_label,
+                self.shown_caption(),
                 cap_x,
                 (h - caption_h) * 0.5,
                 self.text_color,
@@ -858,7 +1077,7 @@ impl Menu {
         } else {
             Self::draw_bevel(rc, 0.0, top, ow, oh);
             let bg_w = if self.scrollable {
-                self.column_width
+                self.row_width()
             } else {
                 self.interior_w()
             };
@@ -889,7 +1108,7 @@ impl Menu {
                     );
                     (
                         i,
-                        in_x + col as f32 * self.column_width,
+                        in_x + col as f32 * self.row_width(),
                         in_y + row as f32 * self.row_height,
                     )
                 })
@@ -904,7 +1123,7 @@ impl Menu {
                     rc.fill(
                         x,
                         y,
-                        self.column_width,
+                        self.row_width(),
                         self.row_height,
                         self.plain_selected_color,
                     );
@@ -912,7 +1131,7 @@ impl Menu {
                     rc.fill(
                         x,
                         y,
-                        self.column_width,
+                        self.row_width(),
                         self.row_height,
                         self.plain_hover_color,
                     );
@@ -923,7 +1142,7 @@ impl Menu {
                 } else {
                     self.item_normal_sprite
                 };
-                Self::tile(rc, id, x, y, self.column_width, self.row_height);
+                Self::tile(rc, id, x, y, self.row_width(), self.row_height);
             }
         }
         let text_y = (self.row_height - self.line_h()) * 0.5;
@@ -951,7 +1170,7 @@ impl Menu {
             self.label(rc, &item.label, x + dx, y + text_y, color);
         }
         if self.scrollable {
-            self.draw_popup_scrollbar(rc, in_x + self.column_width, in_y);
+            self.draw_popup_scrollbar(rc, in_x + self.row_width(), in_y);
         }
         self.draw_search(rc, top, shown.is_empty());
     }
@@ -1062,6 +1281,9 @@ impl Widget for Menu {
             return false;
         };
         let own = e.target == Some(me);
+        if self.open {
+            self.place_popup(ui, me);
+        }
         if self.searchable && matches!(e.kind, kind::FOCUS_GAINED | kind::FOCUS_LOST) {
             if e.kind == kind::FOCUS_LOST {
                 self.end_search_selection(ui, me);
@@ -1075,7 +1297,7 @@ impl Widget for Menu {
         if self.selecting_search && matches!(e.kind, kind::MOUSE_MOVE | kind::MOUSE_UP) {
             // A drag that began in the search band selects its text.
             let mut inner = e.clone();
-            inner.data1 = (e.data1 as f32 - BORDER) as i32;
+            inner.data1 = (e.data1 as f32 - self.popup_left - BORDER) as i32;
             inner.data2 = (e.data2 as f32 - self.popup_top(h) - BORDER) as i32;
             self.search_event(ui, me, &inner);
             if e.kind == kind::MOUSE_UP {
@@ -1109,7 +1331,10 @@ impl Widget for Menu {
             }
         }
         if !self.retail_button_art && self.open && e.kind == kind::MOUSE_MOVE && own {
-            let (ix, iy) = (e.data1 as f32 - BORDER, e.data2 as f32 - self.rows_top(h));
+            let (ix, iy) = (
+                e.data1 as f32 - self.popup_left - BORDER,
+                e.data2 as f32 - self.rows_top(h),
+            );
             self.hovered_popup_index = if self.scrollable {
                 self.hovered_scrollable_index(ix, iy)
             } else {
@@ -1133,7 +1358,7 @@ impl Widget for Menu {
         let (lx, ly) = (e.data1 as f32, e.data2 as f32);
         let in_popup = if self.open_upward { ly < 0.0 } else { ly >= h };
         if self.open && in_popup {
-            let (ix, iy) = (lx - BORDER, ly - self.rows_top(h));
+            let (ix, iy) = (lx - self.popup_left - BORDER, ly - self.rows_top(h));
             let band = self.search_height();
             if self.searchable && iy < 0.0 && iy >= -band {
                 // A press in the search band puts the caret there.
@@ -1166,18 +1391,17 @@ impl Widget for Menu {
     }
 
     fn hit_test(&self, element: &Element, x: f32, y: f32) -> bool {
-        if !self.open {
+        // The button itself, plus the popup on whichever side it opens.
+        // Across the button row only the button counts, so a popup wider
+        // than the button does not take the space beside it.
+        if !self.open || (y >= 0.0 && y < element.height) {
             return element.contains_local(x, y);
         }
-        if x < 0.0 || x >= self.popup_outer_width() {
-            return false;
-        }
-        let oh = self.popup_outer_height();
-        if self.open_upward {
-            y >= -oh && y < element.height
-        } else {
-            y >= 0.0 && y < element.height + oh
-        }
+        let (left, top) = (self.popup_left, self.popup_top(element.height));
+        x >= left
+            && x < left + self.popup_outer_width()
+            && y >= top
+            && y < top + self.popup_outer_height()
     }
 
     fn receives_hover_mouse_move(&self) -> bool {
@@ -1237,8 +1461,11 @@ impl Widget for Menu {
         let Some(h) = ui.element(me).map(|e| e.height) else {
             return;
         };
+        self.place_popup(ui, me);
         rc.push_alpha_absolute(1.0);
+        rc.push_transform(self.popup_left, 0.0);
         self.draw_popup(rc, h);
+        rc.pop_transform();
         rc.pop_alpha();
     }
 }

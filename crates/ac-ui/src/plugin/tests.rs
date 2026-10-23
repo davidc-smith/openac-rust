@@ -308,6 +308,8 @@ fn a_menu_opens_on_choices_that_arrived_after_it_was_built() {
     let open = host.root.widget::<crate::widgets::Menu>(menu).unwrap();
     assert!(open.is_open());
     assert_eq!(open.items.len(), 8);
+    // OpenAC `MarkupDocument`: every markup menu fits long entries.
+    assert!(open.fits_long_labels);
     let row_height = open.row_height;
     let choice_y = 10 + 24 + crate::widgets::chrome::BORDER + (2.5 * row_height) as i32;
     click(&mut host, 25, choice_y);
