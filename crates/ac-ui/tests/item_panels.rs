@@ -1102,6 +1102,63 @@ fn clicking_a_side_pack_uses_it_and_swaps_the_grid_to_its_contents() {
 }
 
 #[test]
+fn a_carried_pack_used_from_anywhere_opens_in_the_window_without_a_use() {
+    // OpenAC InventoryControllerTests
+    // .UsingTheMainPack_showsTheInventoryOnTheMainPack_withoutAUse: a pack
+    // used from the hotbar opens in this window, the main pack when it is
+    // the player; the window itself asks the server for nothing.
+    let mut o = Objects::new();
+    o.player(102, 7);
+    o.contained(0xA, PLAYER, 0, ItemType::NONE);
+    o.bag(0xC, 1, 24);
+    o.contained(0xB1, 0xC, 0, ItemType::NONE);
+    o.contained(0xD, 0x7000_0001, 0, ItemType::CONTAINER); // someone else's
+    let mut inv = inventory_window(None, InventorySprites::default());
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    inv.outputs();
+    let open = |inv: &mut Inv, pack: u32| {
+        let view = ItemsView::new(&o.t, PLAYER);
+        let opened = inv
+            .host
+            .with_controller::<InventoryController, _>("inventory", |c, ui| {
+                c.open_contained_container(ui, pack, &view)
+            })
+            .unwrap();
+        inv.update(&view);
+        opened
+    };
+    let open_packs = |out: &[PanelOutput]| {
+        sessions(out)
+            .into_iter()
+            .filter_map(|c| match c {
+                SessionCommand::Item(ItemCommand::SetOpenPack(p)) => Some(p),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert!(open(&mut inv, 0xC));
+    let out = inv.outputs();
+    assert!(uses(&out).is_empty());
+    assert_eq!(open_packs(&out), [0xC]);
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xB1);
+    assert!(inv.slot(inv.containers, 0).is_open_container);
+
+    assert!(open(&mut inv, PLAYER));
+    let out = inv.outputs();
+    assert!(uses(&out).is_empty());
+    assert_eq!(open_packs(&out), [PLAYER]);
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xA);
+    assert_eq!(inv.count(inv.grid), 102);
+
+    // Not a pack the player carries, or not a pack at all: nothing opens.
+    assert!(!open(&mut inv, 0xD));
+    assert!(!open(&mut inv, 0xA));
+    assert!(inv.outputs().is_empty());
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xA);
+}
+
+#[test]
 fn switching_between_two_packs_uses_each() {
     let mut o = Objects::new();
     o.bag(0xC1, 0, 24);

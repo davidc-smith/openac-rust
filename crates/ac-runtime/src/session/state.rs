@@ -2008,6 +2008,9 @@ impl SessionState {
                 InventoryEvent::Refused(text) => HostEvent::CommandRefused(text),
                 InventoryEvent::ItemMana(change) => HostEvent::ItemMana(change),
                 InventoryEvent::OpenSalvage(tool) => HostEvent::OpenSalvage(tool),
+                InventoryEvent::OpenContainedContainer(pack) => {
+                    HostEvent::OpenContainedContainer(pack)
+                }
             });
         }
         for event in self.movement.drain_events() {

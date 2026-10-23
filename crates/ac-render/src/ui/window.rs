@@ -935,9 +935,11 @@ impl WindowUi {
             skill_table,
             content,
             status,
+            panels,
             ..
         } = self;
         let mana_answers = std::mem::take(&mut facts.item_mana);
+        let container_opens = std::mem::take(&mut facts.container_opens);
         let state = &facts.state;
         let selection_facts = super::status::selection_facts(state, selected, status);
         let player = state.player;
@@ -967,6 +969,24 @@ impl WindowUi {
                 s.update(ui, &view, &selection_facts);
             }
         });
+        // A carried pack used from anywhere (the main pack too): the
+        // inventory window shows, open on it.
+        if !container_opens.is_empty() {
+            let opened = host
+                .with_controller::<InventoryWindowController, _>(INVENTORY_WINDOW, |c, ui| {
+                    // Every one is applied, in order: the last decides what
+                    // shows open.
+                    let mut opened = false;
+                    for &pack in &container_opens {
+                        opened |= c.inventory.open_contained_container(ui, pack, &view);
+                    }
+                    opened
+                })
+                .unwrap_or(false);
+            if opened && !panels.is_visible(&host.root, panel_id::INVENTORY) {
+                panels.set_visibility(&mut host.root, panel_id::INVENTORY, true);
+            }
+        }
         if shown(host, INVENTORY_WINDOW) || dirty.any() {
             host.with_controller::<InventoryWindowController, _>(INVENTORY_WINDOW, |c, ui| {
                 c.update(ui, &view, icons);
