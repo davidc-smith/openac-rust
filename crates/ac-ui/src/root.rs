@@ -175,6 +175,15 @@ pub enum UiOutput {
         /// Modifiers.
         modifiers: Modifiers,
     },
+    /// A left press on the world (over no UI element) moved past the drag
+    /// distance: the window may lift what was under the press point with
+    /// [`UiRoot::begin_world_drag`].
+    WorldDragStart {
+        /// Canvas x of the press.
+        x: i32,
+        /// Canvas y of the press.
+        y: i32,
+    },
     /// A drag was released over no UI element.
     DragReleasedOutsideUi {
         /// What was dragged.
@@ -269,6 +278,8 @@ pub struct UiRoot {
     last_drag_hover: Option<ElementId>,
     press: (i32, i32),
     drag_candidate: bool,
+    /// A left press on the world that may still become a drag.
+    world_drag_candidate: bool,
     window_drag: Option<WindowDrag>,
     last_click: Option<(ElementId, i64, i32, i32)>,
     resize: Option<ResizeDrag>,
@@ -347,6 +358,7 @@ impl UiRoot {
             last_drag_hover: None,
             press: (0, 0),
             drag_candidate: false,
+            world_drag_candidate: false,
             window_drag: None,
             last_click: None,
             resize: None,
@@ -1984,8 +1996,37 @@ impl UiRoot {
             return;
         }
 
+        if self.world_drag_candidate
+            && self.left_down
+            && ((x - self.press.0).abs() > DRAG_DISTANCE_THRESHOLD
+                || (y - self.press.1).abs() > DRAG_DISTANCE_THRESHOLD)
+        {
+            self.world_drag_candidate = false;
+            let (px, py) = self.press;
+            self.emit(UiOutput::WorldDragStart { x: px, y: py });
+        }
+
         self.update_hover(x, y);
         self.emit(UiOutput::WorldMouseMove { x, y });
+    }
+
+    /// Lift `payload` off the world: a drag started on the world has no
+    /// element to start from, so the root holds it, capturing the pointer,
+    /// and the release lands on whatever is under the pointer as any drag
+    /// does. Refused (false) once the left button is up or while another
+    /// drag runs.
+    pub fn begin_world_drag(&mut self, payload: DragPayload, ghost: Option<DragGhost>) -> bool {
+        if !self.left_down || self.drag_source.is_some() {
+            return false;
+        }
+        let root = self.root;
+        self.drag_source = Some(root);
+        self.drag_payload = Some(payload);
+        self.drag_ghost = ghost;
+        self.set_capture(root);
+        let (x, y) = self.mouse;
+        self.update_drag_hover(x, y);
+        true
     }
 
     fn set_button(&mut self, b: MouseButton, down: bool) {
@@ -2032,6 +2073,7 @@ impl UiRoot {
             if button == MouseButton::Left {
                 self.set_keyboard_focus(None);
             }
+            self.world_drag_candidate = button == MouseButton::Left;
             self.emit(UiOutput::WorldMouse {
                 button,
                 down: true,
@@ -2148,6 +2190,9 @@ impl UiRoot {
         let (x, y) = self.map_window_to_canvas(x, y);
         self.mouse = (x, y);
         self.set_button(button, false);
+        if button == MouseButton::Left {
+            self.world_drag_candidate = false;
+        }
 
         if let Some(r) = self.resize.take() {
             self.release_capture();

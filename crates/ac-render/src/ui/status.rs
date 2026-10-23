@@ -104,6 +104,9 @@ pub struct StatusUi {
     /// Items let go over the world (no UI element under them), with the
     /// window pixel, for the window to place.
     pub world_drops: Vec<(ac_ui::event::ItemDragPayload, i32, i32)>,
+    /// Press points of left presses on the world that moved past the drag
+    /// distance, for the window to pick and maybe lift.
+    pub world_drag_starts: Vec<(i32, i32)>,
 }
 
 /// The character option bit of world tooltips (options 1).
@@ -576,6 +579,24 @@ impl WindowUi {
     /// Items let go over the world since last asked.
     pub fn take_world_drops(&mut self) -> Vec<(ac_ui::event::ItemDragPayload, i32, i32)> {
         std::mem::take(&mut self.status.world_drops)
+    }
+
+    /// Press points of world drags since last asked.
+    pub fn take_world_drag_starts(&mut self) -> Vec<(i32, i32)> {
+        std::mem::take(&mut self.status.world_drag_starts)
+    }
+
+    /// Start the drag the world pick `hit` lifts, if any (your own
+    /// character out of combat lifts your main pack). True when a drag
+    /// began.
+    pub fn begin_world_drag(&mut self, hit: u32) -> bool {
+        let state = &self.facts.state;
+        let Some((payload, ghost)) =
+            ac_ui::world_drag::lift(hit, state.player, state.combat_mode, &mut self.icons)
+        else {
+            return false;
+        };
+        self.host.root.begin_world_drag(payload, ghost)
     }
 
     /// One tick of the element and world tooltips.
