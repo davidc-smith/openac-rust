@@ -76,7 +76,9 @@ pub struct ChatEntry {
     pub sequence: u64,
     /// Whether `text` may carry chat markup (a link such as
     /// `<COORD:World:42.1N, 33.5E>…`). Only a line a plugin wrote does;
-    /// server and player text is never read for it.
+    /// server and player text is never read for it. A coordinate pair
+    /// written in plain text is a link in any line but combat text, whatever
+    /// this says.
     pub allows_markup: bool,
 }
 

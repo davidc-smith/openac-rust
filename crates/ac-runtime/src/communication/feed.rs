@@ -43,9 +43,9 @@ pub struct ChatLine {
     /// entry's number means other things on other kinds).
     pub channel_id: u32,
     /// The line split at its tags (a speaker's tell tag and any other tag
-    /// the line holds; on a plugin's own line, its coordinate tags and the
-    /// coordinate pairs it writes) and its timestamp, or `None` when it has
-    /// none. The tags themselves are not in the text. The spans always
+    /// the line holds, the coordinate pairs it shows unless it is combat
+    /// text, and on a plugin's own line its coordinate tags) and its
+    /// timestamp, or `None` when it has none. The tags themselves are not in the text. The spans always
     /// rejoin to `text`.
     pub spans: Option<Vec<ChatTextSpan>>,
 }
@@ -140,14 +140,21 @@ pub fn format_tagged(entry: &ChatEntry) -> String {
 /// the server's, the character's own and a combat line among them, is read
 /// for tags the same way: a tag is hidden, and the speaker's name in its
 /// tell tag is a link that starts a tell. A coordinate tag in the words is
-/// shown as plain text, never as a link a click would hand to plugins.
+/// shown as plain text and its hidden value goes nowhere. A coordinate pair
+/// the line shows is a link to exactly that pair, except in combat text, so
+/// a click reports what the reader sees.
 fn shown(entry: &ChatEntry) -> (String, Option<Vec<ChatTextSpan>>) {
     let markup = format_tagged(entry);
     let spans = if entry.allows_markup {
         let read = tag_markup::parse_links(&markup);
         link_coordinates(&read).unwrap_or(read)
     } else {
-        tag_markup::parse_line(&markup)
+        let read = tag_markup::parse_line(&markup);
+        if entry.kind == ChatKind::Combat {
+            read
+        } else {
+            link_shown_coordinates(&read).unwrap_or(read)
+        }
     };
     if !spans.iter().any(|s| s.tag.is_some()) {
         return (spans.into_iter().map(|s| s.text).collect(), None);
@@ -200,6 +207,27 @@ pub fn link_coordinates(spans: &[ChatTextSpan]) -> Option<Vec<ChatTextSpan>> {
         }
     }
     result
+}
+
+/// Links the coordinate pairs in the text a line shows. Plain body spans
+/// that stand side by side (a hidden tag between them) are read as one text
+/// first, so a pair is found exactly where the reader sees one, and each
+/// link's target is built from the shown pair alone. Tagged spans and the
+/// timestamp are kept as they are. `None` when the shown text holds no
+/// pair; the new spans rejoin to the same text.
+#[must_use]
+pub fn link_shown_coordinates(spans: &[ChatTextSpan]) -> Option<Vec<ChatTextSpan>> {
+    let is_plain_body = |span: &ChatTextSpan| span.tag.is_none() && span.role == ChatSpanRole::Body;
+    let mut joined: Vec<ChatTextSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match joined.last_mut() {
+            Some(last) if is_plain_body(last) && is_plain_body(span) => {
+                last.text.push_str(&span.text);
+            }
+            _ => joined.push(span.clone()),
+        }
+    }
+    link_coordinates(&joined)
 }
 
 /// The link a coordinate is carried by, in the chat markup's own form:
@@ -573,8 +601,9 @@ mod tests {
         assert_eq!(tag_for(0xFF), "[msg] ");
     }
 
-    // ── Coordinate links: only a plugin's own line carries one. OpenAC PR
-    // #224 `RuntimeChatFeedTests` and `ChatCoordinateLinksTests` ──
+    // ── Coordinate links: a pair a line shows is a link to that pair, in
+    // every line but combat. OpenAC `RuntimeChatFeedTests` and
+    // `ChatCoordinateLinksTests` (PR #224, feat/player-coordinate-links) ──
 
     const SPEECH: u32 = 0x02;
     const TELL: u32 = 0x03;
@@ -631,9 +660,30 @@ mod tests {
         tagged[0].text.clone()
     }
 
+    /// Where a coordinate span's link points: (east-west, north-south).
+    fn target(span: &ChatTextSpan) -> (f64, f64) {
+        span.tag
+            .as_ref()
+            .and_then(ChatTextTag::coordinate)
+            .expect("a coordinate link")
+    }
+
+    /// The tell-tagged speaker of a line.
+    fn the_tell_name(line: &ChatLine) -> String {
+        let tells: Vec<&ChatTextSpan> = line
+            .spans
+            .as_ref()
+            .expect("spans")
+            .iter()
+            .filter(|s| s.tag.as_ref().is_some_and(ChatTextTag::is_tell))
+            .collect();
+        assert_eq!(tells.len(), 1);
+        tells[0].text.clone()
+    }
+
     #[test]
-    fn a_coordinate_a_player_types_is_not_a_link() {
-        // ACoordinateAPlayerTypesIsNotALink.
+    fn a_coordinate_a_player_writes_is_a_link_to_the_pair_it_shows() {
+        // ACoordinateAPlayerWritesIsALinkToThePairItShows.
         let mut log = ChatLog::new();
         log.on_local_speech(
             T0,
@@ -649,41 +699,93 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].text, "Bob says, \"meet at 42.1N 33.5E\"");
         for line in &lines {
-            assert!(!has_coordinate_link(line));
+            let coordinate = coordinate_span(line);
+            assert_eq!(coordinate.text, "42.1N 33.5E");
+            assert_eq!(target(&coordinate), (33.5, 42.1));
             // The speaker's name is still the tell link it always was.
-            assert_eq!(the_named_speaker(line), "Bob");
+            assert_eq!(the_tell_name(line), "Bob");
+            assert_eq!(rejoined(line), line.text);
         }
     }
 
     #[test]
-    fn a_coordinate_in_the_characters_own_line_or_a_server_line_is_not_a_link() {
-        // ACoordinateInTheCharactersOwnLineOrAServerLineIsNotALink.
+    fn a_coordinate_in_the_characters_own_line_or_a_server_line_is_a_link() {
+        // ACoordinateInTheCharactersOwnLineOrAServerLineIsALink.
         let mut log = ChatLog::new();
         log.on_local_speech(T0, "You", "here 1N 2E", 0, false, SPEECH);
         log.on_system_message(T0, "Your corpse is located at (42.1N, 33.5E).", 0);
         let lines = lines(&log, false);
-        assert_eq!(lines[0].spans, None);
-        assert_eq!(lines[1].spans, None);
+        assert_eq!(lines[0].text, "You say, \"here 1N 2E\"");
+        assert_eq!(coordinate_span(&lines[0]).text, "1N 2E");
+        assert_eq!(target(&coordinate_span(&lines[0])), (2.0, 1.0));
         assert_eq!(lines[1].text, "Your corpse is located at (42.1N, 33.5E).");
+        let corpse = coordinate_span(&lines[1]);
+        assert_eq!(corpse.text, "42.1N, 33.5E");
+        assert_eq!(target(&corpse), (33.5, 42.1));
+        assert_eq!(rejoined(&lines[1]), lines[1].text);
     }
 
     #[test]
-    fn a_coordinate_tag_a_player_types_is_not_a_link() {
-        // ACoordinateTagAPlayerTypesIsNotALink: the caption is plain text,
-        // the tag goes nowhere.
+    fn a_coordinate_tag_a_player_types_never_links_its_hidden_value() {
+        // ACoordinateTagAPlayerTypesNeverLinksItsHiddenValue: the tag's
+        // hidden value is never a link; a caption that is itself a pair is
+        // linked to that shown pair, as if written plainly.
         const TYPED: &str = r"<COORD:World:0N, 0E>42.1N 33.5E<\COORD>";
         let mut log = ChatLog::new();
         log.on_local_speech(T0, "Bob", TYPED, OTHER_PLAYER, false, SPEECH);
         log.on_tell_received(T0, "Bob", TYPED, OTHER_PLAYER, TELL, 0);
         log.on_channel_broadcast(T0, 7, "Bob", TYPED, None, "Fellowship");
+        log.on_system_message(T0, TYPED, 0);
         let lines = lines(&log, false);
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         assert_eq!(lines[0].text, "Bob says, \"42.1N 33.5E\"");
+        assert_eq!(lines[3].text, "42.1N 33.5E");
         for line in &lines {
-            assert!(!has_coordinate_link(line));
-            assert_eq!(the_named_speaker(line), "Bob");
+            let coordinate = coordinate_span(line);
+            assert_eq!(coordinate.text, "42.1N 33.5E");
+            assert_eq!(target(&coordinate), (33.5, 42.1));
             assert_eq!(rejoined(line), line.text);
         }
+    }
+
+    #[test]
+    fn a_coordinate_tag_a_player_types_over_words_is_no_link() {
+        // ACoordinateTagAPlayerTypesOverWordsIsNoLink.
+        const TYPED: &str = r"<COORD:World:0N, 0E>the bridge<\COORD>";
+        let mut log = ChatLog::new();
+        log.on_local_speech(T0, "Bob", TYPED, OTHER_PLAYER, false, SPEECH);
+        log.on_system_message(T0, TYPED, 0);
+        let lines = lines(&log, false);
+        assert_eq!(lines[0].text, "Bob says, \"the bridge\"");
+        assert!(!has_coordinate_link(&lines[0]));
+        assert_eq!(the_named_speaker(&lines[0]), "Bob");
+        assert_eq!(lines[1].text, "the bridge");
+        assert_eq!(lines[1].spans, None);
+    }
+
+    #[test]
+    fn a_pair_the_line_shows_across_a_hidden_tag_is_one_link() {
+        // APairTheLineShowsAcrossAHiddenTagIsOneLink: the pair is found in
+        // the text as shown; a hidden tag that splits it does not stop it
+        // being read, and one that glues it to a word does.
+        let mut log = ChatLog::new();
+        log.on_local_speech(
+            T0,
+            "Bob",
+            r"at <COORD:World:0N, 0E>42.1N<\COORD> 33.5E",
+            OTHER_PLAYER,
+            false,
+            SPEECH,
+        );
+        log.on_system_message(T0, r"x<COORD:World:0N, 0E>42.1N 33.5E<\COORD>", 0);
+        let lines = lines(&log, false);
+        assert_eq!(lines[0].text, "Bob says, \"at 42.1N 33.5E\"");
+        let coordinate = coordinate_span(&lines[0]);
+        assert_eq!(coordinate.text, "42.1N 33.5E");
+        assert_eq!(target(&coordinate), (33.5, 42.1));
+        assert_eq!(rejoined(&lines[0]), lines[0].text);
+        assert_eq!(lines[1].text, "x42.1N 33.5E");
+        assert_eq!(lines[1].spans, None);
     }
 
     #[test]
@@ -696,7 +798,15 @@ mod tests {
             LogTextType::CombatSelf.as_u32(),
             CombatLineKind::Info,
         );
-        assert_eq!(lines(&log, false)[0].spans, None);
+        log.on_combat_line(
+            T0,
+            r"You hit <DID:DID:0x06001234>the drudge<\DID> at 3N 4E.",
+            LogTextType::CombatSelf.as_u32(),
+            CombatLineKind::Info,
+        );
+        let lines = lines(&log, false);
+        assert_eq!(lines[0].spans, None);
+        assert!(!has_coordinate_link(&lines[1]));
     }
 
     #[test]
@@ -1023,6 +1133,52 @@ mod tests {
         assert_eq!(texts(&spans), ["Bob", " says, \"at ", "5N 6E", "\""]);
         assert_eq!(spans[0].tag, Some(tell));
         assert_eq!(spans[2].tag.as_ref().unwrap().tag_type, "COORD");
+    }
+
+    fn body(text: &str) -> ChatTextSpan {
+        ChatTextSpan {
+            text: text.into(),
+            tag: None,
+            role: ChatSpanRole::Body,
+        }
+    }
+
+    #[test]
+    fn link_shown_coordinates_reads_neighbouring_plain_spans_as_one_text() {
+        // ChatCoordinateLinksTests.LinkShownReadsNeighbouringPlainSpansAsOneText:
+        // a hidden tag between two plain spans leaves them side by side; the
+        // reader sees one text, and the pair is found in that text.
+        let tell = ChatTextTag {
+            tag_type: "Tell".into(),
+            format: "IIDString".into(),
+            data: "1:Bob".into(),
+        };
+        let spans = link_shown_coordinates(&[
+            ChatTextSpan {
+                text: "Bob".into(),
+                tag: Some(tell.clone()),
+                role: ChatSpanRole::Body,
+            },
+            body(" says, \"at "),
+            body("42.1N"),
+            body(" 33.5E\""),
+        ])
+        .unwrap();
+        assert_eq!(texts(&spans), ["Bob", " says, \"at ", "42.1N 33.5E", "\""]);
+        assert_eq!(spans[0].tag, Some(tell));
+        assert_eq!(
+            spans[2].tag.as_ref().unwrap().coordinate(),
+            Some((33.5, 42.1))
+        );
+    }
+
+    #[test]
+    fn link_shown_coordinates_finds_no_pair_the_shown_text_glues_to_a_word() {
+        // ChatCoordinateLinksTests.LinkShownFindsNoPairThatTheShownTextGluesToAWord.
+        assert_eq!(
+            link_shown_coordinates(&[body("x"), body("42.1N 33.5E")]),
+            None
+        );
     }
 
     #[test]

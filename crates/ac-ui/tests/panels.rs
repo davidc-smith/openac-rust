@@ -1650,8 +1650,10 @@ fn a_coordinate_link_is_named_with_a_decimal_point() {
 }
 
 #[test]
-fn clicking_a_coordinate_or_coordinate_tag_a_player_typed_raises_nothing() {
-    // ClickingACoordinateOrCoordinateTagAPlayerTypedRaisesNothing.
+fn clicking_a_players_or_the_servers_coordinate_raises_the_pair_it_shows() {
+    // ClickingAPlayersOrTheServersCoordinateRaisesThePairItShows: the typed
+    // tag's hidden 0N, 0E is never reported; its caption is a pair, and a
+    // click reports exactly that pair.
     let (mut host, _) = chat_host(0.0, 400.0);
     let mut log = ac_core::chat::ChatLog::new();
     log.on_local_speech(
@@ -1672,11 +1674,40 @@ fn clicking_a_coordinate_or_coordinate_tag_a_player_typed_raises_nothing() {
     let typed = shown_line(&mut host, 0).find("42.1N").unwrap();
     let server = shown_line(&mut host, 1).find("42.1N").unwrap();
 
-    assert!(!with_chat(&mut host, |c, ui| c
+    assert!(with_chat(&mut host, |c, ui| c
         .handle_tag_click(ui, Pos::new(0, typed + 3))));
-    assert!(!with_chat(&mut host, |c, ui| c
+    assert!(with_chat(&mut host, |c, ui| c
         .handle_tag_click(ui, Pos::new(1, server + 3))));
 
+    assert_eq!(
+        coordinate_clicks(&mut host),
+        [
+            (33.5, 42.1, "42.1N, 33.5E".to_owned()),
+            (-33.5, 42.1, "42.1N, 33.5W".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn clicking_a_combat_lines_coordinate_raises_nothing() {
+    // ClickingACombatLinesCoordinateRaisesNothing.
+    let (mut host, _) = chat_host(0.0, 400.0);
+    let mut log = ac_core::chat::ChatLog::new();
+    log.on_combat_line(
+        0,
+        "You hit 3N 4E for 9 points.",
+        ac_core::chat::LogTextType::CombatSelf.as_u32(),
+        ac_core::chat::CombatLineKind::Info,
+    );
+    for line in session_lines(&log) {
+        with_chat(&mut host, |c, _| c.push_chat_line(&line));
+    }
+    frame(&mut host, 16);
+    host.take_outputs();
+    let column = shown_line(&mut host, 0).find("3N").unwrap();
+
+    assert!(!with_chat(&mut host, |c, ui| c
+        .handle_tag_click(ui, Pos::new(0, column + 1))));
     assert!(coordinate_clicks(&mut host).is_empty());
 }
 

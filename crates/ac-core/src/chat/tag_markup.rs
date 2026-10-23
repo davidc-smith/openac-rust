@@ -158,7 +158,7 @@ pub fn parse(text: &str) -> Vec<ChatTextSpan> {
 
 /// A chat line that is not a plugin's own, as it is shown: its tags read by
 /// [`parse`], and a coordinate tag someone wrote in it kept as plain text.
-/// That tag is hidden and its caption shown, but it is not a link.
+/// That tag is hidden and its caption shown, but the tag is not a link.
 #[must_use]
 pub fn parse_line(text: &str) -> Vec<ChatTextSpan> {
     without_coordinate_tags(read(text, true))
@@ -459,7 +459,10 @@ pub fn to_plain_text(text: &str) -> String {
 
 /// The spans with every coordinate tag dropped and its caption kept as
 /// plain text. What a player or the server writes may hold a coordinate
-/// tag; it is shown in the line's colour and is not a link.
+/// tag; its caption is shown in the line's colour and its hidden value is
+/// never a link. A caption that is itself a coordinate pair is linked like
+/// any shown pair, to exactly that pair (the chat feed links the pairs a
+/// line shows).
 #[must_use]
 pub fn without_coordinate_tags(mut spans: Vec<ChatTextSpan>) -> Vec<ChatTextSpan> {
     for span in &mut spans {
