@@ -19,7 +19,7 @@ use super::{
     ClientArmorProfile, ClientObject, ClientWeaponProfile, EquipMask, HouseRestrictionRecord,
     ItemType, ObjectIdentity, PropertyBundle, PublicWeenieFlags, WeenieData, pk_status,
 };
-use crate::properties::{PropertyDataId, PropertyFloat, PropertyInt};
+use crate::properties::{PropertyDataId, PropertyFloat, PropertyInstanceId, PropertyInt};
 
 /// One entry of a contents list: the object and its container type (0 an
 /// item, 1 a pack, 2 a spell focus).
@@ -1292,7 +1292,9 @@ impl ClientObjectTable {
     }
 
     /// Records one object-id property update. Placement has its own
-    /// messages, so this only stores the value.
+    /// messages, so this stores the value, and a house's owner (which a
+    /// purchase or an abandon announces this way) also moves the owner the
+    /// entry gate reads; 0 means no owner.
     pub fn update_instance_id_property(
         &mut self,
         item_id: u32,
@@ -1305,6 +1307,15 @@ impl ClientObjectTable {
         };
         server_showed_object(item);
         item.properties.instance_ids.insert(property_id, value);
+        let mut authority_changes = 0;
+        if PropertyInstanceId(property_id) == PropertyInstanceId::HOUSE_OWNER {
+            let owner = (value != 0).then_some(value);
+            if item.house_owner_id != owner {
+                item.house_owner_id = owner;
+                authority_changes = 1;
+            }
+        }
+        self.mutation_revision = self.mutation_revision.wrapping_add(authority_changes);
         self.emit_updated(item_id, events);
         true
     }

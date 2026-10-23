@@ -158,7 +158,7 @@ mod tests {
     /// 1.0 is unfrozen, but never silently. Update this value in the same
     /// commit; when an existing record changed shape (not only a new
     /// import), say in the commit message which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0x5c7a_6263_52ee_b019;
+    const PUBLISHED: u64 = 0xfc27_2970_da52_0f9d;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {

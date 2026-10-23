@@ -1905,6 +1905,27 @@ fn icon_data_ids_mirror_into_fields() {
     );
 }
 
+// OpenAC `ClientObjectTableTests.HouseOwnerInstanceIdUpdate_SetsAndClearsHouseOwnerId`:
+// a purchase or abandon announces the new owner with an instance-id update;
+// the entry gate reads the house owner, and its change advances the
+// revision the gate's cache follows.
+#[test]
+fn a_house_owner_instance_id_update_sets_and_clears_the_owner() {
+    let mut f = Fixture::new();
+    f.ingest(full_weenie(0x802));
+    assert_eq!(f.get(0x802).house_owner_id(), None);
+
+    let before = f.t.mutation_revision();
+    let owner = crate::properties::PropertyInstanceId::HOUSE_OWNER.0;
+    assert!(f.t.update_instance_id_property(0x802, owner, PLAYER, &mut f.ev));
+    assert_eq!(f.get(0x802).house_owner_id(), Some(PLAYER));
+    // One for the owner change, one for the update.
+    assert_eq!(f.t.mutation_revision(), before + 2);
+
+    assert!(f.t.update_instance_id_property(0x802, owner, 0, &mut f.ev));
+    assert_eq!(f.get(0x802).house_owner_id(), None);
+}
+
 #[test]
 fn house_authority_changes_advance_the_mutation_revision() {
     let mut f = Fixture::new();

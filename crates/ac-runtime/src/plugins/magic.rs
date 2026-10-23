@@ -436,27 +436,51 @@ impl PluginBinding<'_> {
         matches!(self.run(command), Ran::Done)
     }
 
+    /// Whether a plugin may cast at `target` without selecting it: an
+    /// object in the world (OpenAC `IsCastTarget`).
+    fn is_cast_target(&self, target: u32) -> bool {
+        self.in_world() && target != 0 && self.state.world.object(target).is_some()
+    }
+
     /// Whether the spell could be cast now (OpenAC `EvaluateGate`).
     pub(super) fn magic_gate(&mut self, request: CastRequest) -> CastGate {
         if request.target_id != 0 && !self.select_target(request.target_id) {
             return CastGate::Refused;
         }
+        let selected = self.state.gameplay.selection().selected();
+        self.gate_at(request.spell_id, selected, false)
+    }
+
+    /// Whether the spell could be cast now at the request's target,
+    /// without reading or changing the selection (OpenAC
+    /// `EvaluateGateWithoutSelecting`).
+    pub(super) fn magic_gate_without_selecting(&mut self, request: CastRequest) -> CastGate {
+        self.gate_at(request.spell_id, Some(request.target_id), true)
+    }
+
+    /// The gate of a cast at `target` (the selection or a named object).
+    /// A named object (`named`) must be in the world, which is asked after
+    /// whether the spell is known.
+    fn gate_at(&mut self, spell_id: u32, target: Option<u32>, named: bool) -> CastGate {
         if !self.in_world() {
             return CastGate::Unavailable;
         }
         let Some(book) = self.spellbook() else {
             return CastGate::Unavailable;
         };
-        if !book.knows(request.spell_id) {
+        if !book.knows(spell_id) {
             return CastGate::NotKnown;
+        }
+        if named && !self.is_cast_target(target.unwrap_or(0)) {
+            return CastGate::Refused;
         }
         let world = &self.state.world;
         let gate = cast_gate(
             world.items(),
             world.player_guid().unwrap_or(0),
             book,
-            request.spell_id,
-            self.state.gameplay.selection().selected(),
+            spell_id,
+            target,
         );
         match gate {
             SpellCastGate::Unknown => CastGate::NotKnown,
@@ -472,16 +496,43 @@ impl PluginBinding<'_> {
         if request.target_id != 0 && !self.select_target(request.target_id) {
             return CastResult::IncompatibleTarget;
         }
+        self.send_cast(
+            GameplayCommand::Cast {
+                spell: request.spell_id.to_string(),
+                target: None,
+            },
+            request.spell_id,
+        )
+    }
+
+    /// Cast a spell at the request's target without reading or changing
+    /// the selection (OpenAC `RequestCastWithoutSelecting`).
+    pub(super) fn magic_cast_without_selecting(&mut self, request: CastRequest) -> CastResult {
         if !self.in_world() {
             return CastResult::Unavailable;
         }
-        if !self.spells_is_known(request.spell_id) {
+        if !self.is_cast_target(request.target_id) {
+            return CastResult::IncompatibleTarget;
+        }
+        self.send_cast(
+            GameplayCommand::CastWithoutSelecting {
+                spell: request.spell_id,
+                target: request.target_id,
+            },
+            request.spell_id,
+        )
+    }
+
+    /// Runs a cast command through the session's own cast and reports
+    /// how it went.
+    fn send_cast(&mut self, command: GameplayCommand, spell_id: u32) -> CastResult {
+        if !self.in_world() {
+            return CastResult::Unavailable;
+        }
+        if !self.spells_is_known(spell_id) {
             return CastResult::UnknownSpell;
         }
-        let command = SessionCommand::Gameplay(GameplayCommand::Cast {
-            spell: request.spell_id.to_string(),
-            target: None,
-        });
+        let command = SessionCommand::Gameplay(command);
         let before = self.state.gameplay.spell_cast().request_count();
         if matches!(self.run(command), Ran::NoConnection) {
             return CastResult::Unavailable;
