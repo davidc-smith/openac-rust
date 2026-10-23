@@ -5,7 +5,7 @@
 
 use ac_core::combat::CombatMode;
 use ac_core::items::{
-    ClientObject, CombatUse, EquipMask, InventoryRequestKind, ItemType, TableEvent,
+    ClientObject, CombatUse, EquipMask, InventoryRequestKind, ItemType, TableEvent, placement,
 };
 use ac_proto::combat::build_change_combat_mode;
 use ac_proto::inventory::{build_get_and_wield_item, build_put_item_in_container};
@@ -349,6 +349,31 @@ impl Inventory {
         if player == 0 {
             return false;
         }
+        // The server fills exactly the pack it is asked for, so the pack is
+        // chosen here: the main pack when it has room, else the first side
+        // pack with room. With no room anywhere nothing is sent and the
+        // blocker stays where it is.
+        let name = ctx.world.item(blocker).map(|b| b.appropriate_name());
+        let destination =
+            match placement::choose_container(ctx.world.items(), blocker, player, 0, player) {
+                Ok(destination) => destination,
+                Err(no_room) => {
+                    let items = ctx.world.items();
+                    let full = placement::placement_rejection_text(
+                        no_room,
+                        items.get(blocker),
+                        items.get(player),
+                        player,
+                    );
+                    self.notices.push(Notice::Interface(full));
+                    if let Some(name) = name {
+                        self.notices.push(Notice::Interface(format!(
+                            "Moving {name} to your backpack - cannot unwield the {name}"
+                        )));
+                    }
+                    return false;
+                }
+            };
         self.wield.pending = Some(PendingSwitch {
             requested,
             blocking: blocker,
@@ -356,12 +381,12 @@ impl Inventory {
             secondary,
             combat_mode_after_wield,
         });
-        if let Some(name) = ctx.world.item(blocker).map(|b| b.appropriate_name()) {
+        if let Some(name) = name {
             self.notices
                 .push(Notice::Interface(format!("Moving {name} to your backpack")));
         }
         let dispatched = self.dispatch(InventoryRequestKind::PutInContainer, blocker, ctx, |ctx| {
-            ctx.send(|seq| build_put_item_in_container(seq, blocker, player, 0))
+            ctx.send(|seq| build_put_item_in_container(seq, blocker, destination, 0))
         });
         if !dispatched {
             self.wield.pending = None;
@@ -413,10 +438,17 @@ impl Inventory {
             TableEvent::Moved(m)
                 if pending.blocking != 0
                     && m.item_id == pending.blocking
-                    && m.current.container_id == ctx.player()
                     && m.current.equip_location == EquipMask::NONE =>
             {
+                // The blocker has moved, so the switch is over either way.
+                // The wield follows only when it landed in the main pack;
+                // one that went to a side pack (the main pack was full)
+                // leaves the wield to the next attempt.
                 self.wield.pending = None;
+                if m.current.container_id != ctx.player() {
+                    self.wield.transition_observed_during_switch = false;
+                    return;
+                }
                 if pending.secondary {
                     self.try_wield_secondary(pending.requested, ctx);
                 } else {

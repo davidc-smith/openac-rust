@@ -68,11 +68,17 @@ impl Fixture {
     /// axe is worn. A loose gem lies in the world, and an NPC, another
     /// player and a vendor stand there.
     fn new() -> Self {
+        Self::with_main_pack_slots(102)
+    }
+
+    /// The same, with `main_pack_slots` item slots in the main pack (the
+    /// gems and the sword take three).
+    fn with_main_pack_slots(main_pack_slots: i8) -> Self {
         let mut world = World::new();
         world.set_player(PLAYER);
         world.apply(&create(PLAYER, "Horan", |d| {
             d.object_description_flags = PublicWeenieFlags::PLAYER.bits();
-            d.items_capacity = Some(102);
+            d.items_capacity = Some(main_pack_slots);
             d.containers_capacity = Some(7);
             d.item_type = ItemType::CREATURE.bits();
         }));
@@ -866,6 +872,87 @@ fn wielding_over_a_weapon_first_moves_it_to_the_backpack() {
             SWORD,
             EquipMask::MELEE_WEAPON.bits()
         )]
+    );
+}
+
+// OpenAC issue #253: with the main pack full, the weapon in hand goes to the
+// first side pack with room, not to the main pack the server cannot fill.
+// OpenAC `ItemInteractionControllerTests.WieldWithFullMainPack_*`.
+#[test]
+fn wielding_with_a_full_main_pack_moves_the_weapon_to_a_side_pack() {
+    // The gems and the sword fill the three main-pack slots.
+    let mut f = Fixture::with_main_pack_slots(3);
+    assert!(f.run(ItemCommand::Wield {
+        item: guid(SWORD),
+        location: 0,
+    }));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, AXE, PACK, 0)]);
+    assert_eq!(
+        f.notices(),
+        [Notice::Interface("Moving Axe to your backpack".into())]
+    );
+}
+
+#[test]
+fn a_weapon_landing_in_a_side_pack_ends_the_switch_without_wielding() {
+    let mut f = Fixture::with_main_pack_slots(3);
+    assert!(f.run(ItemCommand::Wield {
+        item: guid(SWORD),
+        location: 0,
+    }));
+    f.sent();
+    f.server(
+        GameEventType::INVENTORY_PUT_OBJ_IN_CONTAINER,
+        &[AXE, PACK, 0, 0],
+    );
+    // The wield follows only a weapon that landed in the main pack.
+    assert!(f.sent().is_empty());
+    assert!(!f.inventory.is_wield_busy());
+    // The switch is over, so the next attempt wields straight away.
+    assert!(f.run(ItemCommand::Wield {
+        item: guid(SWORD),
+        location: 0,
+    }));
+    assert_eq!(
+        f.sent(),
+        [build_get_and_wield_item(
+            2,
+            SWORD,
+            EquipMask::MELEE_WEAPON.bits()
+        )]
+    );
+}
+
+#[test]
+fn wielding_with_every_pack_full_sends_nothing_and_says_so() {
+    // One gem goes into the one-slot side pack; the other gem and the sword
+    // fill the two main-pack slots.
+    let mut f = Fixture::with_main_pack_slots(2);
+    f.world.apply(&create(PACK, "Pack", |d| {
+        d.item_type = ItemType::CONTAINER.bits();
+        d.items_capacity = Some(1);
+    }));
+    f.server(
+        GameEventType::INVENTORY_PUT_OBJ_IN_CONTAINER,
+        &[GEM2, PACK, 0, 0],
+    );
+    f.notices();
+    assert!(!f.run(ItemCommand::Wield {
+        item: guid(SWORD),
+        location: 0,
+    }));
+    assert!(f.sent().is_empty());
+    assert!(!f.inventory.is_wield_busy());
+    assert_eq!(
+        f.notices(),
+        [
+            Notice::Interface("Backpack is completely full!".into()),
+            Notice::Interface("Moving Axe to your backpack - cannot unwield the Axe".into()),
+        ]
+    );
+    assert_eq!(
+        f.world.item(AXE).unwrap().currently_equipped_location,
+        EquipMask::MELEE_WEAPON
     );
 }
 
