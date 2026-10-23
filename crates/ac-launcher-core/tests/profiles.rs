@@ -1161,6 +1161,14 @@ fn account_errors_name_their_line_and_change_nothing() {
             "#Coldeve\nName=a\nName=a",
             "Line 3: account 'a' appears more than once on this server.",
         ),
+        (
+            "#Coldeve\nName=a\nName=A",
+            "Line 3: account 'A' appears more than once on this server.",
+        ),
+        (
+            "#Coldeve\nName=notan\nName=NOTAN",
+            "Line 3: account 'NOTAN' appears more than once on this server.",
+        ),
         ("#Coldeve\nPassword=b", "Line 2: each account needs Name=."),
         (
             "#Coldeve\nName=a,Colour=red",
@@ -1657,4 +1665,222 @@ fn an_invalid_checked_accounts_file_is_an_error_and_left_alone() {
     let mut store = LauncherCheckedAccountStore::new(&path);
     assert!(store.load().is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
+
+// --- Account names ignore case ------------------------------------------------
+//
+// The server keeps one account per name whatever its case, so `Fefe` and
+// `fefe` are the same account. Names stay as they were typed.
+
+/// A document saved by a launcher that compared names exactly: `Fefe` and
+/// `fefe` on one server, each with something of its own.
+fn case_twins() -> LauncherProfileDocument {
+    let mut upper = AccountProfile::new("Fefe", "upper-secret");
+    upper.characters.push(CharacterProfile::new("Upper"));
+    upper.login_commands = strings(&["/upper"]);
+    let mut lower = AccountProfile::new("fefe", "lower-secret");
+    lower.characters.push(CharacterProfile::new("Lower"));
+    lower.login_commands = strings(&["/lower"]);
+    let mut server = ServerProfile::new("Local ACE", "127.0.0.1", 9000);
+    server.accounts = vec![upper, lower];
+    server.account_list_initialized = true;
+    LauncherProfileDocument {
+        servers: vec![server],
+        ..LauncherProfileDocument::default()
+    }
+}
+
+// OpenAC LauncherProfileStoreTests.AccountNamesThatDifferOnlyInCaseAreOneAccount.
+#[test]
+fn add_account_refuses_a_name_that_differs_only_in_case() {
+    let fixture = fixture();
+    let mut store = loaded(&fixture);
+    store.add_server("Local ACE", "127.0.0.1", 9000).unwrap();
+    store.add_account("Local ACE", "Fefe", "pw").unwrap();
+    assert!(is_invalid(store.add_account("Local ACE", "fefe", "pw2")));
+    assert!(is_invalid(store.add_account("Local ACE", "FEFE", "pw2")));
+    assert_eq!(only_account(&store).account, "Fefe");
+    assert_eq!(only_account(&store).password, "pw");
+}
+
+// OpenAC LauncherProfileStoreTests.AccountNamesThatDifferOnlyInCaseAreOneAccount.
+#[test]
+fn an_account_is_found_by_any_case_and_renaming_it_to_another_case_keeps_the_new_spelling() {
+    let fixture = fixture();
+    let mut store = loaded(&fixture);
+    store.add_server("Local ACE", "127.0.0.1", 9000).unwrap();
+    store.add_account("Local ACE", "Fefe", "pw").unwrap();
+    store.add_account("Local ACE", "other", "pw").unwrap();
+    store
+        .set_account_plugins("Local ACE", "fefe", &strings(&["x.y"]))
+        .unwrap();
+    store
+        .edit_account("Local ACE", "FEFE", Some("fEfE"), None)
+        .unwrap();
+    let names: Vec<&str> = only_server(&store)
+        .accounts
+        .iter()
+        .map(|account| account.account.as_str())
+        .collect();
+    assert_eq!(names, ["fEfE", "other"]);
+    assert_eq!(only_server(&store).accounts[0].plugins, ["x.y"]);
+    // Renaming another account onto it is a duplicate.
+    assert!(is_invalid(store.edit_account(
+        "Local ACE",
+        "other",
+        Some("FEFE"),
+        None
+    )));
+}
+
+// OpenAC LauncherProfileStoreTests.AFileWithTwoSpellingsOfOneAccountKeepsBothAndRefusesAThird.
+#[test]
+fn a_saved_file_with_two_cases_of_one_account_keeps_both_and_refuses_a_third() {
+    let fixture = fixture();
+    std::fs::write(&fixture.file_path, case_twins().to_json()).unwrap();
+    let mut store = loaded(&fixture);
+    assert_eq!(store.document(), &case_twins());
+    assert!(is_invalid(store.add_account("Local ACE", "FEFE", "pw")));
+    // Each spelling finds its own entry; a name spelled neither way finds
+    // the first in the file.
+    store
+        .edit_account("Local ACE", "fefe", None, Some("lower-changed"))
+        .unwrap();
+    store
+        .edit_account("Local ACE", "FEFE", None, Some("first-changed"))
+        .unwrap();
+    let server = only_server(&store);
+    assert_eq!(server.accounts[0].password, "first-changed");
+    assert_eq!(server.accounts[1].password, "lower-changed");
+}
+
+// OpenAC LauncherProfileStoreTests.AccountNamesThatDifferOnlyInCaseAreOneAccount (its new-server part).
+#[test]
+fn an_unreviewed_server_does_not_get_another_case_of_an_account_it_has() {
+    let fixture = fixture();
+    let mut document = case_twins();
+    document.servers[0].accounts.truncate(1);
+    let mut second = ServerProfile::new("Second", "second.example", 9000);
+    second.accounts = vec![AccountProfile::new("FEFE", "second-secret")];
+    document.servers.push(second);
+    std::fs::write(
+        &fixture.file_path,
+        without_account_list_flags(&document.to_json()),
+    )
+    .unwrap();
+    let mut store = loaded(&fixture);
+    let names = |store: &LauncherProfileStore, index: usize| -> Vec<String> {
+        store.document().servers[index]
+            .accounts
+            .iter()
+            .map(|account| account.account.clone())
+            .collect()
+    };
+    assert_eq!(names(&store, 0), ["Fefe"]);
+    assert_eq!(names(&store, 1), ["FEFE"]);
+    store.add_server("Third", "third.example", 9000).unwrap();
+    assert_eq!(names(&store, 2), ["Fefe"]);
+}
+
+// OpenAC LauncherProfileTextTests (the case-variant duplicate rows of the account errors).
+#[test]
+fn text_import_refuses_a_second_case_of_one_account() {
+    let mut document = sample();
+    let before = document.clone();
+    let message = apply_error(
+        &mut document,
+        LauncherTextEditorKind::Accounts,
+        "#Coldeve\nName=notan3,Password=secret\nName=NOTAN3,Password=other\n",
+    );
+    assert!(message.contains("Line 3"), "{message}");
+    assert!(message.contains("more than once"), "{message}");
+    assert_eq!(document, before);
+}
+
+// OpenAC LauncherProfileTextTests.AnAccountRetypedInAnotherCaseIsTheSameAccountUnderTheNewSpelling.
+#[test]
+fn text_import_of_another_case_keeps_the_account_and_takes_the_new_spelling() {
+    let mut document = sample();
+    let text = "#Coldeve\nName=NOTAN3,Password=secret,Profiles=Bots\nName=notan,Password=other\n";
+    assert!(describe_account_removals(&document, text).is_empty());
+    apply_text(&mut document, LauncherTextEditorKind::Accounts, text).unwrap();
+    let kept = &document.servers[0].accounts[0];
+    assert_eq!(kept.account, "NOTAN3");
+    assert_eq!(kept.characters[0].name, "Festivus");
+    assert_eq!(kept.login_commands, ["/vt start"]);
+}
+
+// OpenAC LauncherProfileTextTests.TwoSavedSpellingsOfOneAccountRoundTripButATextCannotAddAThird.
+#[test]
+fn text_of_a_file_with_two_cases_of_one_account_round_trips_and_refuses_a_third() {
+    let mut document = case_twins();
+    for kind in [
+        LauncherTextEditorKind::Accounts,
+        LauncherTextEditorKind::LogonCommands,
+    ] {
+        let text = read_text(&document, kind);
+        assert!(describe_account_removals(&document, &text).is_empty());
+        apply_text(&mut document, kind, &text).unwrap();
+        assert_eq!(document, case_twins(), "{kind:?}");
+    }
+    let message = apply_error(
+        &mut document,
+        LauncherTextEditorKind::Accounts,
+        "#Local ACE\nName=Fefe,Password=a\nName=fefe,Password=b\nName=FEFE,Password=c\n",
+    );
+    assert!(message.contains("Line 4"), "{message}");
+    assert_eq!(document, case_twins());
+}
+
+// OpenAC LauncherProfileMigrationTests.TheSharedUserListFindsAServersAccountWhateverTheCaseOfItsName.
+#[test]
+fn migration_keeps_an_accounts_characters_when_the_user_list_spells_it_in_another_case() {
+    let migration = Migration::new();
+    let json = r#"{"version":1,
+     "servers":[
+       {"name":"one","host":"h","port":9000,"accounts":[{"account":"b","password":"stale","characters":[{"name":"Hero","plugins":[],"loginCommands":[]}]}]}],
+     "users":[{"account":"B","password":"pb"}]}"#;
+    let store = migration.load_version1(json);
+    let account = only_account(&store);
+    assert_eq!(account.account, "B");
+    assert_eq!(account.password, "pb");
+    assert_eq!(account.characters[0].name, "Hero");
+}
+
+// OpenAC LauncherWindowViewModelTests.ACheckedAccountMatchesItsRowWhateverTheCaseOfItsName (the store side).
+#[test]
+fn a_checked_account_matches_its_row_in_any_case() {
+    let fixture = fixture();
+    let path = fixture.root.join("launcher-checked-accounts.json");
+    let mut store = LauncherCheckedAccountStore::new(&path);
+    store
+        .save([LauncherCheckedAccount::new("Two", "alice")])
+        .unwrap();
+    let mut reopened = LauncherCheckedAccountStore::new(&path);
+    reopened.load().unwrap();
+    assert!(reopened.contains("Two", "Alice"));
+    assert!(reopened.contains("Two", "ALICE"));
+    assert!(!reopened.contains("two", "alice"));
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"alice\"")
+    );
+}
+
+// OpenAC LauncherProfileTextTests.LogonCommandsFindAnAccountNamedInAnotherCase.
+#[test]
+fn logon_commands_find_an_account_named_in_another_case() {
+    let mut document = sample();
+    apply_text(
+        &mut document,
+        LauncherTextEditorKind::LogonCommands,
+        "#Coldeve\n##NOTAN\n/vt start\n",
+    )
+    .unwrap();
+    assert_eq!(
+        document.servers[0].accounts[1].login_commands,
+        ["/vt start"]
+    );
+    assert!(document.servers[0].accounts[0].login_commands.is_empty());
 }

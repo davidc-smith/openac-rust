@@ -9,12 +9,14 @@
 //! 0600. Whether to move them to the operating system's credential store is
 //! an open question.
 
+mod account_name;
 mod checked_accounts;
 mod document;
 mod migration;
 mod store;
 mod text;
 
+pub use account_name::{find_account, same_account};
 pub use checked_accounts::{
     CHECKED_ACCOUNTS_FILE_NAME, CheckedAccountsError, LauncherCheckedAccount,
     LauncherCheckedAccountStore,

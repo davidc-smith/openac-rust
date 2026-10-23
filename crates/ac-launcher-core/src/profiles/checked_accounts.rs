@@ -8,13 +8,14 @@ use std::path::{Path, PathBuf};
 use ac_host::PathSet;
 use ac_host::json as host_json;
 
+use super::account_name::same_account;
 use crate::fsutil;
 use crate::json::{self, ObjectBuilder, Out};
 
 /// The file's name in the settings folder.
 pub const CHECKED_ACCOUNTS_FILE_NAME: &str = "launcher-checked-accounts.json";
 
-/// The exact server and account identifying one checked launch row.
+/// The server and account of one checked launch row, as they were shown.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LauncherCheckedAccount {
     /// The server's name.
@@ -64,10 +65,12 @@ impl LauncherCheckedAccountStore {
         &self.file_path
     }
 
-    /// Whether the row of `account` on `server` was checked.
+    /// Whether the row of `account` on `server` was checked: the server
+    /// exactly, the account in any case.
     pub fn contains(&self, server: &str, account: &str) -> bool {
         self.checked
-            .contains(&LauncherCheckedAccount::new(server, account))
+            .iter()
+            .any(|row| row.server == server && same_account(&row.account, account))
     }
 
     /// Reads the file; a missing file is no checked rows. A file that is

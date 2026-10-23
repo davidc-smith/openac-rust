@@ -24,7 +24,7 @@ use ac_host::json::{self, Member, Node, Value};
 
 use crate::cancel::CancelToken;
 use crate::orchestration::{LauncherSessionSnapshot, LauncherStateSnapshot};
-use crate::profiles::LaunchMode;
+use crate::profiles::{LaunchMode, find_account};
 use crate::updates::ClientVersionStore;
 use crate::window::Orchestration;
 
@@ -287,13 +287,18 @@ impl LauncherControlHandler {
         request: &ControlRequest,
         cancel: &CancelToken,
     ) -> ControlReply {
-        let mut matching = state
+        // The server by its exact name; the account in any case, as the
+        // server matches it.
+        let selected = state
             .servers
             .iter()
             .filter(|server| Some(server.name.as_str()) == request.server.as_deref())
-            .flat_map(|server| server.accounts.iter())
-            .filter(|account| Some(account.account_name.as_str()) == request.account.as_deref());
-        let (Some(selected), None) = (matching.next(), matching.next()) else {
+            .find_map(|server| {
+                let name = request.account.as_deref()?;
+                find_account(&server.accounts, |account| &account.account_name, name)
+                    .map(|index| &server.accounts[index])
+            });
+        let Some(selected) = selected else {
             return ControlReply::refused("Saved server/account not found.");
         };
         let character = selected

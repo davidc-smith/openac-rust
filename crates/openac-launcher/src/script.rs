@@ -26,7 +26,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ac_launcher_core::profiles::LauncherTextEditorKind;
+use ac_launcher_core::profiles::{LauncherTextEditorKind, same_account};
 use ac_launcher_core::window::accounts::RowLaunchMode;
 use ac_launcher_core::window::install_dialog::PluginEnableChoice;
 use ac_launcher_core::window::{LauncherMainTab, LauncherWindow};
@@ -476,7 +476,7 @@ fn newest_state(window: &LauncherWindow, account: &str, server: &str) -> Option<
     window
         .sessions
         .iter()
-        .find(|session| session.account == account && session.server == server)
+        .find(|session| same_account(&session.account, account) && session.server == server)
         .map(|session| session.state.clone())
 }
 

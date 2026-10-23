@@ -27,6 +27,8 @@ type Launch = (String, String, Option<String>, LaunchMode);
 /// is a failure.
 struct OwnerSpy {
     account: Mutex<LauncherAccountSnapshot>,
+    /// The server's accounts when set; else only `account`.
+    accounts: Mutex<Option<Vec<LauncherAccountSnapshot>>>,
     session: Mutex<LauncherSessionSnapshot>,
     launches: Mutex<Vec<Launch>>,
     console_lines: Mutex<Vec<(String, String)>>,
@@ -46,6 +48,7 @@ fn spy() -> Arc<OwnerSpy> {
             profiles: Vec::new(),
             login_commands: vec!["secret-command".into()],
         }),
+        accounts: Mutex::new(None),
         session: Mutex::new(LauncherSessionSnapshot {
             session_id: "session".into(),
             kind: LauncherActivityKind::Play,
@@ -87,7 +90,12 @@ impl Orchestration for OwnerSpy {
                 name: "world".into(),
                 host: "localhost".into(),
                 port: 9000,
-                accounts: vec![self.account.lock().unwrap().clone()],
+                accounts: self
+                    .accounts
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| vec![self.account.lock().unwrap().clone()]),
             }],
             sessions: vec![self.session.lock().unwrap().clone()],
             platform: LauncherPlatformCapabilities::for_operating_system(true, false, false),
@@ -287,6 +295,41 @@ fn starts_the_saved_selection_and_rejects_a_duplicate_or_graphical_launch() {
         &request("start", Some("other"), Some("account"), None)
     ));
     assert_eq!(owner.launches.lock().unwrap().len(), 1);
+}
+
+// OpenAC StartFindsTheSavedAccountWhateverTheCaseOfItsName.
+#[test]
+fn start_finds_the_saved_account_whatever_the_case_of_its_name() {
+    let owner = spy();
+    let handler = handler(&owner);
+    assert!(ok(
+        &handler,
+        &request("start", Some("world"), Some("ACCOUNT"), None)
+    ));
+    assert_eq!(owner.launches.lock().unwrap()[0].1, "account");
+
+    // A file saved before names were compared without case can hold two
+    // spellings: a name spelled neither way starts the first.
+    {
+        let first = owner.account.lock().unwrap().clone();
+        let mut second = first.clone();
+        second.account_name = "Account".into();
+        *owner.accounts.lock().unwrap() = Some(vec![first, second]);
+    }
+    assert!(ok(
+        &handler,
+        &request("start", Some("world"), Some("ACCOUNT"), None)
+    ));
+    assert_eq!(owner.launches.lock().unwrap()[1].1, "account");
+    assert!(ok(
+        &handler,
+        &request("start", Some("world"), Some("Account"), None)
+    ));
+    assert_eq!(owner.launches.lock().unwrap()[2].1, "Account");
+    assert!(!ok(
+        &handler,
+        &request("start", Some("WORLD"), Some("account"), None)
+    ));
 }
 
 // OpenAC StopRequestsQuitWithoutForceStopAndStatusOmitsCommands.

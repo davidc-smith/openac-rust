@@ -2075,6 +2075,68 @@ fn restoring_and_refreshing_checks_does_not_rewrite_the_selection_file() {
     assert!(fake.saved_row_selection.lock().unwrap().is_none());
 }
 
+// OpenAC LauncherWindowViewModelTests.ACheckedAccountMatchesItsRowWhateverTheCaseOfItsName.
+#[test]
+fn a_checked_account_matches_its_row_whatever_the_case_of_its_name() {
+    let selection = CheckedFixture::new();
+    LauncherCheckedAccountStore::new(&selection.file_path())
+        .save([ac_launcher_core::profiles::LauncherCheckedAccount::new(
+            "Two", "ALICE",
+        )])
+        .unwrap();
+    let window = selection.window(&batch());
+    let checked: Vec<(&str, &str)> = window
+        .accounts
+        .iter()
+        .flat_map(|group| group.servers.iter())
+        .filter(|row| row.is_checked)
+        .map(|row| (row.account_name.as_str(), row.server_name.as_str()))
+        .collect();
+    assert_eq!(checked, [("Alice", "Two")]);
+    let mut store = LauncherCheckedAccountStore::new(&selection.file_path());
+    store.load().unwrap();
+    assert!(!store.contains("two", "Alice"));
+}
+
+// OpenAC LauncherWindowViewModelTests.OneAccountIsOneGroupWhateverTheCaseOfItsNameAndEachEntryKeepsItsRow.
+#[test]
+fn one_account_is_one_group_whatever_the_case_of_its_name_and_each_entry_keeps_its_row() {
+    let fake = Fake::default();
+    *fake.servers.lock().unwrap() = vec![
+        batch_server("One", &["Alice", "ALICE", "Bob"]),
+        batch_server("Two", &["alice"]),
+    ];
+    *fake.session.lock().unwrap() = Some(session(LauncherActivityState::Exited));
+    let fake = Arc::new(fake);
+    let mut window = create_initialized(&fake);
+    let groups: Vec<&str> = window
+        .accounts
+        .iter()
+        .map(|group| group.account_name.as_str())
+        .collect();
+    assert_eq!(groups, ["Alice", "Bob"]);
+    let rows = |window: &LauncherWindow| -> Vec<(String, String)> {
+        window.accounts[0]
+            .servers
+            .iter()
+            .map(|row| (row.server_name.clone(), row.account_name.clone()))
+            .collect()
+    };
+    let expected = [
+        ("One".to_owned(), "Alice".to_owned()),
+        ("One".to_owned(), "ALICE".to_owned()),
+        ("Two".to_owned(), "alice".to_owned()),
+    ];
+    assert_eq!(rows(&window), expected);
+    // Each spelling finds its own row; another finds the first.
+    assert_eq!(window.row("ALICE", "One").unwrap().account_name, "ALICE");
+    assert_eq!(window.row("alice", "One").unwrap().account_name, "Alice");
+    assert_eq!(window.row("ALICE", "Two").unwrap().account_name, "alice");
+    fake.raise_state_changed();
+    window.poll();
+    assert_eq!(rows(&window), expected);
+}
+
 // OpenAC LauncherWindowViewModelTests.InvalidSelectionFileIsReportedAndPreserved.
 #[test]
 fn an_invalid_selection_file_is_reported_and_preserved() {
