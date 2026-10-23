@@ -278,6 +278,88 @@ pub fn choose_container(
     })
 }
 
+/// The slot a drop onto a container's item list asks the server for, or
+/// `None` when the drop leaves the item where it already is and nothing is
+/// sent.
+///
+/// The dropped item takes the place of the item under the pointer, which
+/// moves one slot on, so it always lands to the left of the item it was
+/// dropped on; a drop at or past `item_count` (an empty cell after the last
+/// item) appends. The server takes a moved item out of its old slot before
+/// inserting it, so an item moving later in its own list asks for one slot
+/// less. A split leaves the source stack in place and takes nothing off.
+///
+/// `source_index` is the dragged item's index in this list, `None` when it
+/// comes from anywhere else (another pack, the paperdoll, the ground).
+#[must_use]
+pub fn item_list_drop_placement(
+    drop_index: i32,
+    item_count: usize,
+    source_index: Option<usize>,
+    whole_stack: bool,
+) -> Option<i32> {
+    let count = i32::try_from(item_count).unwrap_or(i32::MAX);
+    let mut placement = drop_index.clamp(0, count);
+    let Some(source) = source_index.and_then(|s| i32::try_from(s).ok()) else {
+        return Some(placement);
+    };
+    if placement == source {
+        return None; // dropped on itself
+    }
+    if !whole_stack {
+        return Some(placement);
+    }
+    if placement == source + 1 {
+        return None; // already left of the item it was dropped on
+    }
+    if source < placement {
+        placement -= 1; // its old slot closes up first
+    }
+    Some(placement)
+}
+
+#[cfg(test)]
+mod drop_placement_tests {
+    //! Ported from OpenAC `tests/AcDream.Core.Tests/Items/ItemListDropPlacementTests.cs`.
+
+    use super::item_list_drop_placement as resolve;
+
+    #[test]
+    fn whole_item_reorder() {
+        for (drop, count, source, expected) in [
+            (0, 4, 3, 0), // moving earlier takes the hovered slot
+            (1, 4, 3, 1),
+            (3, 5, 0, 2), // moving later asks for one less: lands left of the target
+            (2, 4, 0, 1),
+            (99, 4, 0, 3), // past the last item appends
+            (99, 4, 2, 3),
+        ] {
+            assert_eq!(resolve(drop, count, Some(source), true), Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_drop_that_leaves_the_item_in_place_sends_nothing() {
+        for (drop, count, source) in [(2, 4, 2), (3, 4, 2), (99, 4, 3)] {
+            assert_eq!(resolve(drop, count, Some(source), true), None);
+        }
+    }
+
+    #[test]
+    fn a_split_keeps_the_source_in_place_so_nothing_is_taken_off() {
+        assert_eq!(resolve(3, 4, Some(2), false), Some(3));
+        assert_eq!(resolve(99, 4, Some(0), false), Some(4));
+        assert_eq!(resolve(2, 4, Some(2), false), None);
+    }
+
+    #[test]
+    fn an_arrival_from_elsewhere_takes_the_hovered_slot() {
+        for (drop, count, expected) in [(0, 3, 0), (2, 3, 2), (7, 3, 3), (0, 0, 0), (-1, 3, 0)] {
+            assert_eq!(resolve(drop, count, None, true), Some(expected));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ported from OpenAC

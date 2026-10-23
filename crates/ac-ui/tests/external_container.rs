@@ -401,16 +401,22 @@ fn an_item_from_the_pack_lands_at_the_top_of_the_chest() {
 }
 
 #[test]
-fn a_reorder_inside_the_chest_keeps_the_hovered_slot() {
+fn a_reorder_inside_the_chest_lands_left_of_the_item_dropped_on() {
+    // OpenAC #249: the server closes the old slot up first, so an item
+    // moving later asks for one slot less; onto its right-hand neighbour
+    // it is already in place and nothing is sent.
     let mut s = strip();
     s.open(CHEST, &[0x7000_0101, 0x7000_0102, 0x7000_0103]);
     s.outputs();
     let p = ItemDragPayload::new(0x7000_0101, ItemDragSource::Ground, 0);
+    s.fire(CONTENTS, 1, kind::DROP_RELEASED, Some(p.clone()));
+    s.update();
+    assert!(moves(&s.outputs()).is_empty());
     s.fire(CONTENTS, 2, kind::DROP_RELEASED, Some(p));
     s.update();
     assert_eq!(
         moves(&s.outputs()),
-        vec![(0x7000_0101, ObjectRef::Guid(CHEST), 2, 0)]
+        vec![(0x7000_0101, ObjectRef::Guid(CHEST), 1, 0)]
     );
 }
 

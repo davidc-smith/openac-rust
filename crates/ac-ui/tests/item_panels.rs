@@ -1380,7 +1380,9 @@ fn a_drop_from_elsewhere_on_the_grid_goes_to_the_top() {
 }
 
 #[test]
-fn a_reorder_inside_the_grid_keeps_the_hovered_slot_or_appends() {
+fn a_reorder_inside_the_grid_lands_left_of_the_item_dropped_on_or_appends() {
+    // OpenAC #249: the server takes the item out of its old slot before it
+    // inserts it, so an item moving later asks for one slot less.
     let mut o = Objects::new();
     o.contained(0xA, PLAYER, 0, ItemType::NONE);
     o.contained(0xB, PLAYER, 1, ItemType::NONE);
@@ -1389,10 +1391,45 @@ fn a_reorder_inside_the_grid_keeps_the_hovered_slot_or_appends() {
     let view = ItemsView::new(&o.t, PLAYER);
     inv.update(&view);
     let g = inv.grid;
+    // A B D -> B A D
     let out = drop_on(&mut inv, g, 2, payload(0xA), &view);
-    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 2i32, 0u32)]);
+    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 1i32, 0u32)]);
+    // A B D -> B D A
     let out = drop_on(&mut inv, g, 20, payload(0xA), &view);
-    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 3i32, 0u32)]);
+    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 2i32, 0u32)]);
+    // A B D -> A D B: moving earlier takes the hovered slot.
+    let out = drop_on(&mut inv, g, 1, payload(0xD), &view);
+    assert_dbg_eq!(moves(&out), vec![(0xDu32, ObjectRef::Player, 1i32, 0u32)]);
+}
+
+#[test]
+fn a_reorder_onto_itself_or_its_right_neighbour_sends_nothing() {
+    let mut o = Objects::new();
+    o.contained(0xA, PLAYER, 0, ItemType::NONE);
+    o.contained(0xB, PLAYER, 1, ItemType::NONE);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let g = inv.grid;
+    for cell in [0, 1] {
+        let out = drop_on(&mut inv, g, cell, payload(0xA), &view);
+        assert!(sessions(&out).is_empty(), "cell {cell}: {out:?}");
+    }
+}
+
+#[test]
+fn a_side_pack_moved_down_the_column_lands_above_the_pack_dropped_on() {
+    let mut o = Objects::new();
+    o.bag(0xC1, 0, 24);
+    o.bag(0xC2, 1, 24);
+    o.bag(0xC3, 2, 24);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let c = inv.containers;
+    // C1 C2 C3 -> C2 C1 C3
+    let out = drop_on(&mut inv, c, 2, payload(0xC1), &view);
+    assert_dbg_eq!(moves(&out), vec![(0xC1u32, ObjectRef::Player, 1i32, 0u32)]);
 }
 
 #[test]
@@ -1478,9 +1515,10 @@ fn a_matching_stack_dropped_on_a_stack_merges_and_selects_the_joined_stack() {
             PanelOutput::SelectObject(0xB),
         ]
     );
-    // A different kind falls through to the ordinary insert.
+    // A different kind falls through to the ordinary insert: left of D,
+    // its old slot closing up first.
     let out = drop_on(&mut inv, g, 2, payload(0xA), &view);
-    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 2i32, 0u32)]);
+    assert_dbg_eq!(moves(&out), vec![(0xAu32, ObjectRef::Player, 1i32, 0u32)]);
 }
 
 #[test]
