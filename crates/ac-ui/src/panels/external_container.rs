@@ -484,17 +484,14 @@ impl ExternalContainerController {
         };
         let full = item.stack_size.max(1).unsigned_abs();
         let amount = view.split_size(p.obj_id, full, self.selection.get());
-        // A reorder inside the container lands left of the hovered item; an
-        // item arriving from elsewhere goes to the top.
+        // Lands left of the hovered item, whether it is reordered inside the
+        // container or arrives from the inventory.
         let (target_item, target_index) = ui
             .widget::<ItemSlot>(cell)
             .map_or((0, -1), |s| (s.object_id, s.slot_index));
-        let placement = if item.container_id != self.open_container {
-            Some(0)
-        } else {
+        let Some(placement) =
             self.contents_drop_placement(view, p.obj_id, target_item, target_index, amount >= full)
-        };
-        let Some(placement) = placement else {
+        else {
             return; // the item is already there
         };
         emit(

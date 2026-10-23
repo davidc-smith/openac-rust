@@ -671,30 +671,24 @@ impl InventoryController {
         let mut placement: Option<i32>;
         if Some(list) == self.contents_grid {
             container = self.open_container(view.player);
-            // A reorder inside the list lands left of the hovered item; an
-            // arrival from elsewhere goes to the top.
-            placement = if dragged.map(|d| d.container_id) != Some(container) {
-                Some(0)
-            } else {
-                list_drop_placement(
-                    view,
-                    container,
-                    item,
-                    false,
-                    target_item,
-                    target_index,
-                    whole_stack,
-                )
-            };
+            // Lands left of the hovered item, wherever it came from: this
+            // pack, another pack, the paperdoll or the ground.
+            placement = list_drop_placement(
+                view,
+                container,
+                item,
+                false,
+                target_item,
+                target_index,
+                whole_stack,
+            );
         } else if Some(list) == self.container_list || Some(list) == self.top_container {
             if source_is_bag {
                 container = view.player;
                 if container == 0 {
                     return;
                 }
-                placement = if dragged.map(|d| d.container_id) != Some(container)
-                    || Some(list) != self.container_list
-                {
+                placement = if Some(list) != self.container_list {
                     Some(0)
                 } else {
                     list_drop_placement(

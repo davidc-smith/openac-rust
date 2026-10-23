@@ -1362,7 +1362,8 @@ fn drag_over(
 }
 
 #[test]
-fn a_drop_from_elsewhere_on_the_grid_goes_to_the_top() {
+fn a_drop_from_elsewhere_on_the_grid_lands_left_of_the_item_or_appends() {
+    // OpenAC #250: the hovered cell's slot whatever the source.
     let mut o = Objects::new();
     o.contained(0xA, PLAYER, 0, ItemType::NONE);
     o.contained(0xB, PLAYER, 1, ItemType::NONE);
@@ -1372,10 +1373,30 @@ fn a_drop_from_elsewhere_on_the_grid_goes_to_the_top() {
     let view = ItemsView::new(&o.t, PLAYER);
     inv.update(&view);
     let g = inv.grid;
-    // Onto an occupied cell and onto an empty one: both to the top.
-    for cell in [1, 10] {
+    // Onto B: A C1 B. Onto an empty cell: A B C1.
+    for (cell, slot) in [(1, 1), (10, 2)] {
         let out = drop_on(&mut inv, g, cell, payload(0xC1), &view);
-        assert_dbg_eq!(moves(&out), vec![(0xC1u32, ObjectRef::Player, 0i32, 0u32)]);
+        assert_dbg_eq!(moves(&out), vec![(0xC1u32, ObjectRef::Player, slot, 0u32)]);
+    }
+}
+
+#[test]
+fn an_equipped_item_dropped_on_the_grid_lands_left_of_the_item_or_appends() {
+    // OpenAC #250: an equipped shield went to the pack's first slot.
+    const SHIELD: u32 = 0xE0;
+    let mut o = Objects::new();
+    o.contained(0xA, PLAYER, 0, ItemType::NONE);
+    o.contained(0xB, PLAYER, 1, ItemType::NONE);
+    o.contained(0xD, PLAYER, 2, ItemType::NONE);
+    o.equipped(SHIELD, EquipMask::SHIELD);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let g = inv.grid;
+    for (cell, slot) in [(2, 2), (9, 3)] {
+        let p = ItemDragPayload::new(SHIELD, ItemDragSource::Equipment, 0);
+        let out = drop_on(&mut inv, g, cell, p, &view);
+        assert_dbg_eq!(moves(&out), vec![(SHIELD, ObjectRef::Player, slot, 0u32)]);
     }
 }
 

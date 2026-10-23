@@ -385,7 +385,8 @@ fn a_request_in_flight_refuses_a_drop_into_the_chest() {
 }
 
 #[test]
-fn an_item_from_the_pack_lands_at_the_top_of_the_chest() {
+fn an_item_from_the_pack_lands_left_of_the_chest_item_dropped_on() {
+    // OpenAC #250: the hovered cell's slot whatever the source.
     let mut s = strip();
     s.objects.add(plain_item(0x7000_0101));
     s.objects.add(plain_item(0x7000_0102));
@@ -396,7 +397,7 @@ fn an_item_from_the_pack_lands_at_the_top_of_the_chest() {
     s.update();
     assert_eq!(
         moves(&s.outputs()),
-        vec![(ITEM, ObjectRef::Guid(CHEST), 0, 0)]
+        vec![(ITEM, ObjectRef::Guid(CHEST), 1, 0)]
     );
 }
 
