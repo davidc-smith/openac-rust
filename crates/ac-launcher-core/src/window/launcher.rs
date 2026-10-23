@@ -41,6 +41,7 @@ use crate::plugins::{
 };
 use crate::profiles::{
     LaunchMode, LauncherCheckedAccount, LauncherCheckedAccountStore, LauncherTextEditorKind,
+    find_account, same_account,
 };
 use crate::status::{KnownServerCatalog, KnownServerList};
 use crate::updates::{
@@ -372,6 +373,18 @@ fn short_version(version: &str) -> String {
 /// How often an open launcher checks for updates.
 pub const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
 
+/// Whether `rows` (server, account pairs) hold `account` on `server`: the
+/// server exactly, the account in any case.
+fn is_account_in<'a>(
+    rows: impl IntoIterator<Item = &'a (String, String)>,
+    server: &str,
+    account: &str,
+) -> bool {
+    rows.into_iter().any(|(known_server, known_account)| {
+        known_server == server && same_account(known_account, account)
+    })
+}
+
 /// Why a launch from a row would be refused (OpenAC's `GetRowLaunchBlock`):
 /// judged against `current` with `capability` for the account's launch
 /// availability. The window's rows use its displayed snapshot and the
@@ -395,7 +408,8 @@ fn row_launch_block(
             .sessions
             .iter()
             .filter(|session| {
-                session.server_name == server_name && session.account_name == account_name
+                session.server_name == server_name
+                    && same_account(&session.account_name, account_name)
             })
             .max_by_key(|session| session.created_at)
     });
@@ -411,10 +425,12 @@ fn row_launch_block(
             .iter()
             .find(|server| server.name == server_name)
             .and_then(|server| {
-                server
-                    .accounts
-                    .iter()
-                    .find(|account| account.account_name == account_name)
+                find_account(
+                    &server.accounts,
+                    |account| &account.account_name,
+                    account_name,
+                )
+                .map(|index| &server.accounts[index])
             })
     });
     let (Some(current), Some(account)) = (current, account) else {
@@ -424,7 +440,7 @@ fn row_launch_block(
         || current.sessions.iter().any(|session| {
             session.is_process_or_start_active()
                 && session.server_name == server_name
-                && session.account_name == account_name
+                && same_account(&session.account_name, account_name)
         })
     {
         return Some(active.into());
@@ -1202,20 +1218,27 @@ impl LauncherWindow {
     }
 
     fn refresh_account_rows(&mut self, snapshot: &LauncherStateSnapshot) {
-        // One group per account name, in the order the names first appear;
-        // one row per server the account is on.
+        // One group per account, whatever the case of its name, in the order
+        // the accounts first appear and under the first spelling; one row
+        // per saved entry on each server (a file may hold two spellings of
+        // one account on a server).
         let mut order: Vec<String> = Vec::new();
         for account in snapshot
             .servers
             .iter()
             .flat_map(|server| server.accounts.iter())
         {
-            if !order.contains(&account.account_name) {
+            if !order
+                .iter()
+                .any(|name| same_account(name, &account.account_name))
+            {
                 order.push(account.account_name.clone());
             }
         }
         let mut groups = std::mem::take(&mut self.accounts);
         for name in &order {
+            // Reused only under the same spelling, so a renamed account
+            // shows its new name.
             let mut group = match groups.iter().position(|group| &group.account_name == name) {
                 Some(index) => groups.remove(index),
                 None => AccountGroup::new(name.clone()),
@@ -1223,35 +1246,39 @@ impl LauncherWindow {
             let mut rows = std::mem::take(&mut group.servers);
             let mut entries: Vec<&LauncherAccountSnapshot> = Vec::new();
             for server in &snapshot.servers {
-                let Some(account) = server
+                for account in server
                     .accounts
                     .iter()
-                    .find(|account| &account.account_name == name)
-                else {
-                    continue;
-                };
-                entries.push(account);
-                let mut row = match rows.iter().position(|row| row.server_name == server.name) {
-                    Some(index) => rows.remove(index),
-                    None => {
-                        let mut row = AccountServerRow::new(name.clone(), server.name.clone());
-                        row.is_checked = self.checked_accounts_loaded
-                            && self
-                                .checked_accounts
-                                .as_ref()
-                                .is_some_and(|store| store.contains(&server.name, name));
-                        row
-                    }
-                };
-                let session = snapshot
-                    .sessions
-                    .iter()
-                    .filter(|session| {
-                        session.server_name == server.name && &session.account_name == name
-                    })
-                    .max_by_key(|session| session.created_at);
-                row.update(server, account, session);
-                group.servers.push(row);
+                    .filter(|account| same_account(&account.account_name, name))
+                {
+                    entries.push(account);
+                    let mut row = match rows.iter().position(|row| {
+                        row.server_name == server.name && row.account_name == account.account_name
+                    }) {
+                        Some(index) => rows.remove(index),
+                        None => {
+                            let mut row = AccountServerRow::new(
+                                account.account_name.clone(),
+                                server.name.clone(),
+                            );
+                            row.is_checked = self.checked_accounts_loaded
+                                && self.checked_accounts.as_ref().is_some_and(|store| {
+                                    store.contains(&server.name, &account.account_name)
+                                });
+                            row
+                        }
+                    };
+                    let session = snapshot
+                        .sessions
+                        .iter()
+                        .filter(|session| {
+                            session.server_name == server.name
+                                && same_account(&session.account_name, &account.account_name)
+                        })
+                        .max_by_key(|session| session.created_at);
+                    row.update(server, account, session);
+                    group.servers.push(row);
+                }
             }
             let names = self.plugin_display_names();
             group.update(&entries, |id| {
@@ -1384,7 +1411,7 @@ impl LauncherWindow {
             let key = (row.server_name.clone(), row.account_name.clone());
             row.disabled_reason = if !can_start {
                 "Finish the current operation or close the dialog first.".into()
-            } else if starting.contains(&key) {
+            } else if is_account_in(&starting, &row.server_name, &row.account_name) {
                 "This account is starting.".into()
             } else {
                 row_launch_block(
@@ -1446,15 +1473,28 @@ impl LauncherWindow {
         self.accounts.iter().flat_map(|group| group.servers.iter())
     }
 
+    /// The position, among all rows, of the row for `account` on `server`:
+    /// the server exactly, the account spelled exactly so or else the first
+    /// row of that account in any case.
+    fn row_index(&self, account: &str, server: &str) -> Option<usize> {
+        let on_server: Vec<(usize, &AccountServerRow)> = self
+            .rows()
+            .enumerate()
+            .filter(|(_, row)| row.server_name == server)
+            .collect();
+        find_account(&on_server, |(_, row)| &row.account_name, account)
+            .map(|index| on_server[index].0)
+    }
+
     /// The row for `account` on `server`.
     pub fn row(&self, account: &str, server: &str) -> Option<&AccountServerRow> {
-        self.rows()
-            .find(|row| row.account_name == account && row.server_name == server)
+        let index = self.row_index(account, server)?;
+        self.rows().nth(index)
     }
 
     fn row_mut(&mut self, account: &str, server: &str) -> Option<&mut AccountServerRow> {
-        self.rows_mut()
-            .find(|row| row.account_name == account && row.server_name == server)
+        let index = self.row_index(account, server)?;
+        self.rows_mut().nth(index)
     }
 
     // --- Derived state --------------------------------------------------------------------
@@ -1494,16 +1534,12 @@ impl LauncherWindow {
     /// The row's own controls (its selection, its options) may change: not
     /// while its account starts.
     pub fn can_interact_with_row(&self, account: &str, server: &str) -> bool {
-        self.can_interact()
-            && !self
-                .starting_rows
-                .contains(&(server.to_owned(), account.to_owned()))
+        self.can_interact() && !self.is_row_starting(account, server)
     }
 
     /// The row's account is starting.
     pub fn is_row_starting(&self, account: &str, server: &str) -> bool {
-        self.starting_rows
-            .contains(&(server.to_owned(), account.to_owned()))
+        is_account_in(&self.starting_rows, server, account)
     }
 
     /// Stop may run for `session_id`: only that session's own pending stop
@@ -1929,7 +1965,7 @@ impl LauncherWindow {
         if let Some(group) = self
             .accounts
             .iter_mut()
-            .find(|group| group.account_name == account)
+            .find(|group| same_account(&group.account_name, account))
         {
             group.is_expanded = expanded;
         }
@@ -1966,12 +2002,17 @@ impl LauncherWindow {
         if !self.can_start_rows() {
             return;
         }
-        let mut seen: HashSet<(String, String)> = HashSet::new();
+        // One start per account: two rows of one account in different case
+        // start once.
+        let mut seen: Vec<(String, String)> = Vec::new();
         let pending: Vec<(String, String, Option<String>, LaunchMode)> = rows
             .iter()
             .filter(|(account, server)| {
-                let key = (server.clone(), account.clone());
-                !self.starting_rows.contains(&key) && seen.insert(key)
+                if self.is_row_starting(account, server) || is_account_in(&seen, server, account) {
+                    return false;
+                }
+                seen.push((server.clone(), account.clone()));
+                true
             })
             .filter_map(|(account, server)| self.row(account, server))
             .map(|row| {
@@ -2322,11 +2363,13 @@ impl LauncherWindow {
                 .servers
                 .into_iter()
                 .find(|candidate| candidate.name == server)
-                .and_then(|server| {
-                    server
-                        .accounts
-                        .into_iter()
-                        .find(|candidate| candidate.account_name == account)
+                .and_then(|mut server| {
+                    find_account(
+                        &server.accounts,
+                        |candidate| &candidate.account_name,
+                        account,
+                    )
+                    .map(|index| server.accounts.swap_remove(index))
                 })
         })
     }
@@ -3442,10 +3485,16 @@ impl LauncherWindow {
             })
             .unwrap_or_default();
         for option in accounts {
-            let Some(account) = snapshots.iter().find(|candidate| {
-                candidate.server_name == option.server_name
-                    && candidate.account_name == option.account_name
-            }) else {
+            let on_server: Vec<&LauncherAccountSnapshot> = snapshots
+                .iter()
+                .filter(|candidate| candidate.server_name == option.server_name)
+                .collect();
+            let Some(account) = find_account(
+                &on_server,
+                |candidate| &candidate.account_name,
+                &option.account_name,
+            )
+            .map(|index| on_server[index]) else {
                 continue;
             };
             if account

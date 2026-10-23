@@ -28,6 +28,7 @@ use std::collections::HashSet;
 
 use ac_host::json as host_json;
 
+use super::account_name::{find_account, same_account};
 use super::document::{AccountProfile, LauncherProfileDocument, ServerProfile};
 use super::store::{ProfileError, copy_known_account_credentials};
 use crate::json;
@@ -128,8 +129,9 @@ struct ParsedAccount {
 /// The accounts saving `text` would remove that have something saved on
 /// them (characters, plugins or logon commands), each as "account on
 /// server (1 character, 2 plugins)". A changed name counts: it is a
-/// different account, with its own characters. Empty when there are none,
-/// or when the text has an error the save will report.
+/// different account, with its own characters; the same name in another
+/// case is the same account. Empty when there are none, or when the text
+/// has an error the save will report.
 pub fn describe_account_removals(document: &LauncherProfileDocument, text: &str) -> Vec<String> {
     let mut errors = Vec::new();
     let sections = parse_accounts(document, text, &mut errors);
@@ -144,11 +146,11 @@ pub fn describe_account_removals(document: &LauncherProfileDocument, text: &str)
     let mut removals = Vec::new();
     for (server_index, accounts) in sections {
         let server = &document.servers[server_index];
-        for account in server
-            .accounts
-            .iter()
-            .filter(|account| accounts.iter().all(|parsed| parsed.name != account.account))
-        {
+        for (_, account) in server.accounts.iter().enumerate().filter(|(index, _)| {
+            accounts
+                .iter()
+                .all(|parsed| saved_entry(&server.accounts, &parsed.name) != Some(*index))
+        }) {
             let parts: Vec<String> = [
                 count(account.characters.len(), "character"),
                 count(account.plugins.len(), "plugin"),
@@ -180,11 +182,12 @@ fn apply_accounts(document: &mut LauncherProfileDocument, text: &str) -> Result<
         server.accounts = accounts
             .into_iter()
             .map(|parsed| {
-                let mut account = old
-                    .iter()
-                    .find(|existing| existing.account == parsed.name)
-                    .cloned()
+                // The same account in another case keeps everything and
+                // takes the new spelling.
+                let mut account = saved_entry(&old, &parsed.name)
+                    .map(|index| old[index].clone())
                     .unwrap_or_else(|| AccountProfile::new(parsed.name.clone(), String::new()));
+                parsed.name.clone_into(&mut account.account);
                 account.password = parsed.password;
                 account.profiles = parsed.profiles;
                 account
@@ -192,6 +195,11 @@ fn apply_accounts(document: &mut LauncherProfileDocument, text: &str) -> Result<
             .collect();
     }
     Ok(())
+}
+
+/// The saved account a parsed line stands for.
+fn saved_entry(saved: &[AccountProfile], name: &str) -> Option<usize> {
+    find_account(saved, |account| &account.account, name)
 }
 
 fn parse_accounts(
@@ -231,11 +239,17 @@ fn parse_accounts(
             continue;
         };
         if let Some(account) = try_parse_account_line(line, number, errors) {
-            let accounts = &mut sections[section].1;
-            if accounts
-                .iter()
-                .any(|existing| existing.name == account.name)
-            {
+            let (server_index, accounts) = &mut sections[section];
+            // Two spellings of one account are a duplicate, unless both are
+            // already saved: a file saved before names were compared
+            // without case can hold them, and its text must still save.
+            let saved = &document.servers[*server_index].accounts;
+            let is_saved = |name: &str| saved.iter().any(|item| item.account == name);
+            if accounts.iter().any(|existing| {
+                existing.name == account.name
+                    || (same_account(&existing.name, &account.name)
+                        && !(is_saved(&existing.name) && is_saved(&account.name)))
+            }) {
                 errors.push(format!(
                     "Line {number}: account '{}' appears more than once on this server.",
                     account.name
@@ -392,11 +406,7 @@ fn apply_logon_commands(
                 continue;
             };
             let server_profile = &document.servers[server_index];
-            let Some(account_index) = server_profile
-                .accounts
-                .iter()
-                .position(|candidate| candidate.account == name)
-            else {
+            let Some(account_index) = saved_entry(&server_profile.accounts, &name) else {
                 errors.push(format!(
                     "Line {number}: server '{}' has no account '{name}'. Add it in Edit \
                      accounts first.",

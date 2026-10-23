@@ -32,7 +32,7 @@ use crate::plugins::PluginCatalog;
 use crate::profiles::{
     AccountProfile, CharacterProfile, CharacterRosterEntry, LaunchMode, LauncherProfileStore,
     LauncherTextEditorKind, ProfileError, ServerProfile, apply_text, describe_account_removals,
-    read_text,
+    read_text, same_account,
 };
 use crate::status::{
     StatusEvent, StatusEventKind, StatusEventSource, StatusEventSourceFactory,
@@ -398,10 +398,9 @@ fn find_account<'a>(
     account_name: &str,
 ) -> Result<&'a AccountProfile, OrchestratorError> {
     require_text(account_name, "accountName")?;
-    find_server(store, server_name)?
-        .accounts
-        .iter()
-        .find(|account| account.account == account_name)
+    let accounts = &find_server(store, server_name)?.accounts;
+    crate::profiles::find_account(accounts, |account| &account.account, account_name)
+        .map(|index| &accounts[index])
         .ok_or_else(|| {
             ProfileError::Invalid(format!(
                 "No account '{account_name}' on server '{server_name}'."
@@ -437,7 +436,7 @@ fn find_active<'a>(
     activities.iter().rev().find(|activity| {
         activity.is_active()
             && activity.server_name == server_name
-            && activity.account_name == account_name
+            && same_account(&activity.account_name, account_name)
     })
 }
 
@@ -476,7 +475,7 @@ fn ensure_character_idle(
         activity.is_active()
             && activity.kind == LauncherActivityKind::Play
             && activity.server_name == server_name
-            && activity.account_name == account_name
+            && same_account(&activity.account_name, account_name)
             && activity.character_name.as_deref() == Some(character_name)
     }) {
         return Err(OrchestratorError::Operation(
@@ -818,7 +817,7 @@ impl LauncherOrchestrator {
                         && server
                             .accounts
                             .iter()
-                            .any(|account| account.account == activity.account_name)
+                            .any(|account| same_account(&account.account, &activity.account_name))
                 });
                 if !still_there {
                     return Err(OrchestratorError::Operation(format!(
@@ -1471,7 +1470,7 @@ fn account_snapshot(
                 candidate.is_active()
                     && candidate.kind == LauncherActivityKind::Play
                     && candidate.server_name == server.name
-                    && candidate.account_name == account.account
+                    && same_account(&candidate.account_name, &account.account)
                     && candidate.character_name.as_deref() == Some(character.name.as_str())
             });
             LauncherCharacterSnapshot {
@@ -1598,7 +1597,7 @@ impl Inner {
                 activity.is_terminal()
                     && !activity.exited_gracefully()
                     && activity.server_name == server_name
-                    && activity.account_name == account_name
+                    && same_account(&activity.account_name, account_name)
             })
             .filter_map(|activity| activity.terminal_at)
             .max()
@@ -2032,7 +2031,7 @@ fn apply_roster(
     characters: &[crate::status::StatusCharacterEntry],
     update_status: bool,
 ) {
-    if account_name != activity.account_name {
+    if !same_account(account_name, &activity.account_name) {
         activity.error = Some(
             "Ignored a character roster whose account did not match the launched account.".into(),
         );

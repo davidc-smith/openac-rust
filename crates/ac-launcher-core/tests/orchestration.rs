@@ -570,6 +570,9 @@ struct Setup {
     executables: LauncherExecutableSet,
     barrier: Option<UpdateSessionBarrier>,
     clock: Option<Clock>,
+    /// Also saves `TestAccount`, the same account in another case, as a
+    /// launcher that compared names exactly could have.
+    case_twin: bool,
 }
 
 impl Default for Setup {
@@ -583,6 +586,7 @@ impl Default for Setup {
             executables: test_executables(),
             barrier: None,
             clock: None,
+            case_twin: false,
         }
     }
 }
@@ -613,6 +617,11 @@ fn create_orchestrator(root: &TempDir, setup: Setup) -> LauncherOrchestrator {
         store
             .set_account_login_commands("Local ACE", "testaccount", &["/vt start".to_owned()])
             .unwrap();
+    }
+    if setup.case_twin {
+        let mut twin = AccountProfile::new("TestAccount", PASSWORD);
+        twin.characters.push(CharacterProfile::new("+Twin"));
+        store.document_mut().servers[0].accounts.push(twin);
     }
     store.save().unwrap();
 
@@ -1019,6 +1028,82 @@ fn launch_is_refused_while_the_account_probe_is_running() {
         launch(&orchestrator, Some("+Acdream"), LaunchMode::Headless),
         Err(OrchestratorError::Operation(_))
     ));
+}
+
+// OpenAC LauncherOrchestratorTests.ASecondSpellingOfARunningAccountIsTheSameAccount.
+#[test]
+fn a_second_session_is_refused_for_the_same_account_in_another_case() {
+    let root = TempDir::new("orchestrator");
+    let orchestrator = create_orchestrator(&root, Setup::default());
+    launch(&orchestrator, Some("+Acdream"), LaunchMode::Headless).unwrap();
+
+    let capability = orchestrator
+        .account_launch_capability("Local ACE", "TESTACCOUNT", LaunchMode::Headless)
+        .unwrap();
+    assert!(!capability.is_available);
+    let refused = orchestrator.launch(
+        "Local ACE",
+        "TESTACCOUNT",
+        Some("+Acdream"),
+        LaunchMode::Headless,
+        &none(),
+    );
+    assert!(
+        matches!(&refused, Err(OrchestratorError::Operation(message)) if message.contains("already running")),
+        "{refused:?}"
+    );
+    assert_eq!(orchestrator.snapshot().unwrap().sessions.len(), 1);
+}
+
+// OpenAC LauncherOrchestratorTests.ASecondSpellingOfARunningAccountIsTheSameAccount.
+#[test]
+fn two_saved_cases_of_one_account_cannot_run_at_once() {
+    let root = TempDir::new("orchestrator");
+    let orchestrator = create_orchestrator(
+        &root,
+        Setup {
+            case_twin: true,
+            ..Setup::default()
+        },
+    );
+    launch(&orchestrator, Some("+Acdream"), LaunchMode::Headless).unwrap();
+
+    let snapshot = orchestrator.snapshot().unwrap();
+    assert!(
+        snapshot.servers[0]
+            .accounts
+            .iter()
+            .all(|account| account.has_running_activity)
+    );
+    assert!(
+        orchestrator
+            .account_launch_capabilities(LaunchMode::Headless)
+            .unwrap()
+            .values()
+            .all(|capability| !capability.is_available)
+    );
+    assert!(
+        !orchestrator
+            .probe_capability("Local ACE", "TestAccount")
+            .unwrap()
+            .is_available
+    );
+    assert!(matches!(
+        orchestrator.remove_account("Local ACE", "TestAccount"),
+        Err(OrchestratorError::Operation(_))
+    ));
+    let refused = orchestrator.launch(
+        "Local ACE",
+        "TestAccount",
+        Some("+Twin"),
+        LaunchMode::Headless,
+        &none(),
+    );
+    assert!(
+        matches!(refused, Err(OrchestratorError::Operation(_))),
+        "{refused:?}"
+    );
+    assert_eq!(orchestrator.snapshot().unwrap().sessions.len(), 1);
 }
 
 #[test]

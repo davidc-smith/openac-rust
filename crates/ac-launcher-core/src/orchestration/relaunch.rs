@@ -9,7 +9,7 @@
 //! [`poll`]: LauncherRelaunchController::poll
 //! [`finish`]: LauncherRelaunchController::finish
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -17,7 +17,7 @@ use super::capabilities::LauncherCapability;
 use super::orchestrator::OrchestratorError;
 use super::snapshot::{LauncherActivityKind, LauncherSessionSnapshot, LauncherStateSnapshot};
 use crate::cancel::CancelToken;
-use crate::profiles::LaunchMode;
+use crate::profiles::{LaunchMode, same_account};
 
 /// The default delay before a relaunch, in seconds.
 pub const DEFAULT_RELAUNCH_DELAY_SECONDS: u32 = 180;
@@ -70,7 +70,13 @@ pub struct RelaunchAttempt {
     entry: u64,
 }
 
+/// A checked account: its server and its name.
 type Key = (String, String);
+
+/// The same account: the server exactly, the name in any case.
+fn same_key(a: &Key, b: &Key) -> bool {
+    a.0 == b.0 && same_account(&a.1, &b.1)
+}
 
 #[derive(Debug)]
 struct Entry {
@@ -162,44 +168,45 @@ impl LauncherRelaunchController {
             return;
         }
         self.enabled = true;
-        let configured: HashSet<(&str, &str)> = snapshot
-            .servers
-            .iter()
-            .flat_map(|server| {
-                server
-                    .accounts
-                    .iter()
-                    .map(move |account| (server.name.as_str(), account.account_name.as_str()))
+        let configured = |server_name: &str, account_name: &str| {
+            snapshot.servers.iter().any(|server| {
+                server.name == server_name
+                    && server
+                        .accounts
+                        .iter()
+                        .any(|account| same_account(&account.account_name, account_name))
             })
-            .collect();
+        };
         let mut selected: Vec<(Key, LauncherRelaunchSelection)> = Vec::new();
         for selection in checked_accounts {
-            if !configured.contains(&(selection.server.as_str(), selection.account.as_str())) {
+            if !configured(&selection.server, &selection.account) {
                 continue;
             }
+            // Two checked spellings of one account are one entry: the first
+            // is kept.
             let key = (selection.server.clone(), selection.account.clone());
-            match selected.iter_mut().find(|(known, _)| *known == key) {
-                Some((_, choice)) => *choice = selection.clone(),
-                None => selected.push((key, selection.clone())),
+            if !selected.iter().any(|(known, _)| same_key(known, &key)) {
+                selected.push((key, selection.clone()));
             }
         }
         let mut sessions: HashMap<&str, &LauncherSessionSnapshot> = HashMap::new();
-        let mut latest_plays: HashMap<(&str, &str), &LauncherSessionSnapshot> = HashMap::new();
+        let mut latest_plays: Vec<&LauncherSessionSnapshot> = Vec::new();
         for session in &snapshot.sessions {
             sessions.insert(session.session_id.as_str(), session);
             if session.kind != LauncherActivityKind::Play {
                 continue;
             }
-            let key = (session.server_name.as_str(), session.account_name.as_str());
-            if latest_plays
-                .get(&key)
-                .is_none_or(|previous| session.created_at > previous.created_at)
-            {
-                latest_plays.insert(key, session);
+            match latest_plays.iter_mut().find(|previous| {
+                previous.server_name == session.server_name
+                    && same_account(&previous.account_name, &session.account_name)
+            }) {
+                Some(previous) if session.created_at > previous.created_at => *previous = session,
+                Some(_) => {}
+                None => latest_plays.push(session),
             }
         }
         self.entries.retain(|(key, entry)| {
-            let keep = selected.iter().any(|(wanted, _)| wanted == key);
+            let keep = selected.iter().any(|(wanted, _)| same_key(wanted, key));
             if !keep && let Some(cancel) = &entry.cancellation {
                 cancel.cancel();
             }
@@ -207,8 +214,17 @@ impl LauncherRelaunchController {
         });
         let now = (self.clock)();
         for (key, choice) in selected {
-            let latest = latest_plays.get(&(key.0.as_str(), key.1.as_str())).copied();
-            let index = match self.entries.iter().position(|(known, _)| *known == key) {
+            let latest = latest_plays
+                .iter()
+                .find(|session| {
+                    session.server_name == key.0 && same_account(&session.account_name, &key.1)
+                })
+                .copied();
+            let index = match self
+                .entries
+                .iter()
+                .position(|(known, _)| same_key(known, &key))
+            {
                 Some(index) => {
                     let entry = &mut self.entries[index].1;
                     entry.selection = choice;

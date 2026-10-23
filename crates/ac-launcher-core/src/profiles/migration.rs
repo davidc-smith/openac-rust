@@ -6,6 +6,7 @@
 
 use ac_host::json::{self as host_json, Node, ObjectReader};
 
+use super::account_name::find_account;
 use super::document::{
     AccountProfile, CharacterProfile, LaunchMode, LauncherProfileDocument, ReadError,
     ServerProfile, invalid, read_launch_mode_or_null, required_text,
@@ -81,10 +82,14 @@ pub(crate) fn from_version1(
             accounts = users
                 .iter()
                 .map(|user| {
-                    let existing = accounts
-                        .iter()
-                        .flatten()
-                        .find(|account| account.account == user.account);
+                    // The user list's spelling is kept; the server's entry
+                    // for that account may be spelled in another case.
+                    let existing = find_account(
+                        &accounts,
+                        |account| account.as_ref().map_or("", |account| &account.account),
+                        &user.account,
+                    )
+                    .and_then(|index| accounts[index].as_ref());
                     Some(Version1Account {
                         account: user.account.clone(),
                         password: user.password.clone(),

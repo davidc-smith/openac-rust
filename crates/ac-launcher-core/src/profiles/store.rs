@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use ac_host::PathSet;
 use ac_host::json as host_json;
 
+use super::account_name::{find_account, same_account};
 use super::character_id;
 use super::document::{
     AccountProfile, CharacterProfile, LaunchMode, LauncherProfileDocument, ReadError, ServerProfile,
@@ -177,14 +178,22 @@ fn character_ids_equal(left: Option<&str>, right: Option<&str>) -> bool {
     }
 }
 
-/// Every account on any server, the first of each name.
+/// Every account on any server, the first of each name (in any case).
 fn distinct_known_accounts(document: &LauncherProfileDocument) -> Vec<&AccountProfile> {
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut seen: Vec<&str> = Vec::new();
     document
         .servers
         .iter()
         .flat_map(|server| server.accounts.iter())
-        .filter(|account| seen.insert(account.account.as_str()))
+        .filter(|account| {
+            let new = !seen
+                .iter()
+                .any(|known| same_account(known, &account.account));
+            if new {
+                seen.push(&account.account);
+            }
+            new
+        })
         .collect()
 }
 
@@ -212,7 +221,7 @@ fn initialize_account_lists(document: &mut LauncherProfileDocument) -> bool {
             if !server
                 .accounts
                 .iter()
-                .any(|existing| existing.account == account.account)
+                .any(|existing| same_account(&existing.account, &account.account))
             {
                 server.accounts.push(account.clone());
             }
@@ -461,16 +470,12 @@ impl LauncherProfileStore {
 
     fn account_index(server: &ServerProfile, account: &str) -> Result<usize, ProfileError> {
         require_text(account, "account")?;
-        server
-            .accounts
-            .iter()
-            .position(|candidate| candidate.account == account)
-            .ok_or_else(|| {
-                ProfileError::invalid(format!(
-                    "No account '{account}' on server '{}'.",
-                    server.name
-                ))
-            })
+        find_account(&server.accounts, |candidate| &candidate.account, account).ok_or_else(|| {
+            ProfileError::invalid(format!(
+                "No account '{account}' on server '{}'.",
+                server.name
+            ))
+        })
     }
 
     fn character_index(
@@ -576,7 +581,11 @@ impl LauncherProfileStore {
         require_text(account, "account")?;
         let index = self.server_index(server_name)?;
         let server = &mut self.document.servers[index];
-        if server.accounts.iter().any(|item| item.account == account) {
+        if server
+            .accounts
+            .iter()
+            .any(|item| same_account(&item.account, account))
+        {
             return Err(ProfileError::invalid(format!(
                 "Account '{account}' already exists on server '{server_name}'."
             )));
@@ -598,11 +607,12 @@ impl LauncherProfileStore {
         if let Some(new_account) = new_account {
             require_text(new_account, "newAccount")?;
             let server = &self.document.servers[server_index];
+            // Retyping the account's own name in another case is a rename;
+            // taking another account's name, in any case, is a duplicate.
             if new_account != server.accounts[account_index].account
-                && server
-                    .accounts
-                    .iter()
-                    .any(|item| item.account == new_account)
+                && server.accounts.iter().enumerate().any(|(index, item)| {
+                    index != account_index && same_account(&item.account, new_account)
+                })
             {
                 return Err(ProfileError::invalid(format!(
                     "Account '{new_account}' already exists on server '{server_name}'."
@@ -902,6 +912,9 @@ pub(crate) fn validate_and_normalize_document(
                 server.name
             )));
         }
+        // Exact: a file saved before account names were compared without
+        // case can hold two spellings of one account, and both are kept.
+        // Adding and renaming refuse another spelling.
         let mut account_names = HashSet::new();
         for account in &mut server.accounts {
             require_loaded_text(&account.account, "account name")?;
