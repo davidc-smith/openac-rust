@@ -2324,6 +2324,23 @@ impl AttachedWindow {
         }
     }
 
+    /// Lift what is under each world drag's press point, if anything lifts
+    /// (your own character out of combat lifts your main pack).
+    fn start_world_drags(&mut self) {
+        let starts = match self.ui.as_mut() {
+            Some(ui) => ui.take_world_drag_starts(),
+            None => return,
+        };
+        for (x, y) in starts {
+            let hit = self
+                .pick_object(x as f32, y as f32)
+                .map_or(0, |(guid, _)| guid);
+            if let Some(ui) = self.ui.as_mut() {
+                ui.begin_world_drag(hit);
+            }
+        }
+    }
+
     fn carry_out_click(
         &mut self,
         outcome: crate::world_click::ClickOutcome,
@@ -2366,6 +2383,7 @@ impl AttachedWindow {
             self.send_to_session(commands);
             self.follow_settings();
             self.place_world_drops();
+            self.start_world_drags();
             self.follow_keyboard();
         }
         world

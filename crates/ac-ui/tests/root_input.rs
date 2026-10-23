@@ -1442,3 +1442,99 @@ fn a_focus_loss_that_hides_its_panel_is_heard_once_and_focuses_nothing() {
     ui.on_char('x');
     ui.on_mouse_up(Left, 20, 40, 0);
 }
+
+// ── A drag started on the world ─────────────────────────────────────────
+
+fn world_drag_starts(ui: &mut UiRoot) -> Vec<(i32, i32)> {
+    ui.drain_output()
+        .iter()
+        .filter_map(|o| match o {
+            UiOutput::WorldDragStart { x, y } => Some((*x, *y)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_press_on_the_world_that_moves_asks_for_a_lift_at_the_press_point() {
+    let mut ui = root(800.0, 600.0);
+    ui.on_mouse_down(Left, 300, 300, 0);
+    ui.on_mouse_move(302, 301);
+    assert!(world_drag_starts(&mut ui).is_empty());
+    ui.on_mouse_move(320, 310);
+    assert_eq!(world_drag_starts(&mut ui), [(300, 300)]);
+    // Asked once per press.
+    ui.on_mouse_move(340, 330);
+    assert!(world_drag_starts(&mut ui).is_empty());
+}
+
+#[test]
+fn only_a_left_press_on_the_world_asks_for_a_lift() {
+    let mut ui = root(800.0, 600.0);
+    let r = ui.root();
+    ui.add(r, at(0.0, 0.0, 100.0, 100.0), Panel::default());
+    ui.on_mouse_down(Right, 300, 300, 0);
+    ui.on_mouse_move(350, 350);
+    ui.on_mouse_up(Right, 350, 350, 0);
+    ui.on_mouse_down(Left, 50, 50, 0);
+    ui.on_mouse_move(90, 90);
+    ui.on_mouse_up(Left, 90, 90, 0);
+    ui.on_mouse_down(Left, 300, 300, 0);
+    ui.on_mouse_up(Left, 300, 300, 0);
+    ui.on_mouse_move(350, 350);
+    assert!(world_drag_starts(&mut ui).is_empty());
+}
+
+#[test]
+fn a_world_lift_is_held_by_the_root_and_dropped_like_any_drag() {
+    let mut ui = root(800.0, 600.0);
+    let r = ui.root();
+    let target = ui.add(r, at(0.0, 0.0, 100.0, 40.0), DropTarget::default());
+    ui.on_mouse_down(Left, 300, 300, 0);
+    ui.on_mouse_move(320, 320);
+    assert!(ui.begin_world_drag(
+        ac_ui::event::DragPayload::new(0x5000_0A01u32),
+        Some(DragGhost {
+            texture: TextureRef::Runtime(9),
+            width: 32,
+            height: 32,
+        }),
+    ));
+    assert_eq!(ui.drag_source(), Some(r));
+    assert_eq!(ui.captured(), Some(r));
+    ui.on_mouse_move(20, 20);
+    ui.on_mouse_up(Left, 20, 20, 0);
+    assert_eq!(
+        ui.widget::<DropTarget>(target).unwrap().dropped,
+        [(0x5000_0A01, 20, 20)]
+    );
+    assert_eq!(ui.drag_source(), None);
+    assert_eq!(ui.captured(), None);
+}
+
+#[test]
+fn a_world_lift_released_on_the_world_goes_to_the_world() {
+    let mut ui = root(800.0, 600.0);
+    ui.on_mouse_down(Left, 300, 300, 0);
+    ui.on_mouse_move(320, 320);
+    assert!(ui.begin_world_drag(ac_ui::event::DragPayload::new(7u32), None));
+    ui.drain_output();
+    ui.on_mouse_up(Left, 400, 400, 0);
+    let released = ui.drain_output().iter().find_map(|o| match o {
+        UiOutput::DragReleasedOutsideUi { payload, x, y } => {
+            Some((*payload.get::<u32>().unwrap(), *x, *y))
+        }
+        _ => None,
+    });
+    assert_eq!(released, Some((7, 400, 400)));
+}
+
+#[test]
+fn a_world_lift_is_refused_once_the_button_is_up() {
+    let mut ui = root(800.0, 600.0);
+    ui.on_mouse_down(Left, 300, 300, 0);
+    ui.on_mouse_move(320, 320);
+    ui.on_mouse_up(Left, 320, 320, 0);
+    assert!(!ui.begin_world_drag(ac_ui::event::DragPayload::new(7u32), None));
+    assert_eq!(ui.drag_source(), None);
+}

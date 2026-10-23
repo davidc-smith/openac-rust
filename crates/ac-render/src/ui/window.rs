@@ -1329,6 +1329,9 @@ impl WindowUi {
                     Err(None) => {}
                 },
                 // An item let go over the world: the window picks there.
+                UiOutput::WorldDragStart { x, y } => {
+                    self.status.world_drag_starts.push((x, y));
+                }
                 UiOutput::DragReleasedOutsideUi { payload, x, y } => {
                     if let Some(item) = payload.get::<ac_ui::event::ItemDragPayload>() {
                         self.status.world_drops.push((item.clone(), x, y));
