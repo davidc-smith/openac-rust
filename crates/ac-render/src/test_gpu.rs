@@ -29,13 +29,23 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
 }
 
 /// A device of its own, for a test that ends it (`destroy`): the shared one
-/// must outlive every test.
+/// must outlive every test. Vulkan only, or `None` (the test is skipped):
+/// polling a destroyed device on D3D12's software adapter, the only one a
+/// GPU-less Windows CI machine has, faults the whole test process.
 pub(crate) fn own_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    new_device("ac-render test, ended by its test")
+    new_device_on("ac-render test, ended by its test", wgpu::Backends::VULKAN)
 }
 
 fn new_device(label: &'static str) -> Option<(wgpu::Device, wgpu::Queue)> {
+    new_device_on(label, wgpu::Backends::all())
+}
+
+fn new_device_on(
+    label: &'static str,
+    backends: wgpu::Backends,
+) -> Option<(wgpu::Device, wgpu::Queue)> {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends;
     descriptor.flags =
         wgpu::InstanceFlags::from_build_config().difference(wgpu::InstanceFlags::VALIDATION);
     // As the window: FXC, which ships with Windows, not a dxcompiler.dll found on PATH.
