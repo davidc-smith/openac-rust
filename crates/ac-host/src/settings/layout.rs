@@ -190,7 +190,7 @@ impl SettingsStore {
         if toon.trim().is_empty() || window.trim().is_empty() {
             return Err(invalid("a window position needs a character and a window"));
         }
-        let mut root = self.load_mutable_root();
+        let mut root = self.load_mutable_root()?;
         let positions = object_member(&mut root, "windowPositions");
         let toon_map = object_member(positions, toon);
         set_member(
@@ -247,7 +247,7 @@ impl SettingsStore {
                 "a window layout needs a character, a resolution and a window",
             ));
         }
-        let mut root = self.load_mutable_root();
+        let mut root = self.load_mutable_root()?;
         let layouts = object_member(&mut root, "windowLayouts");
         let resolutions = object_member(layouts, toon);
         let windows = object_member(resolutions, resolution);
@@ -319,7 +319,7 @@ impl SettingsStore {
         if placement.screen_width <= 0 || placement.screen_height <= 0 {
             return Err(invalid("a window placement needs a positive screen size"));
         }
-        let mut root = self.load_mutable_root();
+        let mut root = self.load_mutable_root()?;
         let placements = object_member(&mut root, "windowPlacements");
         let toon_map = object_member(placements, toon);
         set_member(
@@ -368,7 +368,7 @@ impl SettingsStore {
         if window.trim().is_empty() {
             return Err(invalid("a named window layout needs a window"));
         }
-        let mut root = self.load_mutable_root();
+        let mut root = self.load_mutable_root()?;
         let profiles = object_member(&mut root, "namedWindowLayouts");
         let windows = object_member(profiles, profile);
         set_member(windows, window, layout_value(layout));

@@ -59,6 +59,188 @@ impl Chord {
     }
 }
 
+/// Every key's name by its number (OpenAC `PluginKey`'s member names; the
+/// plugin ABI's `PluginKey` has the same list): what a `<hotkey>` box's
+/// text spells a key as.
+pub const KEY_NAMES: [&str; 93] = [
+    "Unknown",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "Number0",
+    "Number1",
+    "Number2",
+    "Number3",
+    "Number4",
+    "Number5",
+    "Number6",
+    "Number7",
+    "Number8",
+    "Number9",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+    "Space",
+    "Enter",
+    "Escape",
+    "Tab",
+    "Backspace",
+    "Delete",
+    "Insert",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Minus",
+    "Equal",
+    "LeftBracket",
+    "RightBracket",
+    "BackSlash",
+    "Semicolon",
+    "Apostrophe",
+    "Comma",
+    "Period",
+    "Slash",
+    "Numpad0",
+    "Numpad1",
+    "Numpad2",
+    "Numpad3",
+    "Numpad4",
+    "Numpad5",
+    "Numpad6",
+    "Numpad7",
+    "Numpad8",
+    "Numpad9",
+    "NumpadDecimal",
+    "NumpadDivide",
+    "NumpadMultiply",
+    "NumpadSubtract",
+    "NumpadAdd",
+    "NumpadEnter",
+    "Grave",
+    "PrintScreen",
+    "Pause",
+];
+
+/// The modifiers as a `<hotkey>` box writes them: `Ctrl+`, `Alt+`,
+/// `Shift+`, in that order.
+fn push_modifiers(text: &mut String, ctrl: bool, alt: bool, shift: bool) {
+    if ctrl {
+        text.push_str("Ctrl+");
+    }
+    if alt {
+        text.push_str("Alt+");
+    }
+    if shift {
+        text.push_str("Shift+");
+    }
+}
+
+impl Chord {
+    /// The text a `<hotkey>` box holds for this chord (OpenAC
+    /// `PluginKeyChord.ToHotkeyText`): the modifiers in the order Ctrl, Alt,
+    /// Shift, then the key's name; empty when it has no key a hotkey can
+    /// bind.
+    #[must_use]
+    pub fn to_hotkey_text(self) -> String {
+        if !is_bindable(self.key) {
+            return String::new();
+        }
+        let mut text = String::new();
+        push_modifiers(&mut text, self.ctrl, self.alt, self.shift);
+        text.push_str(KEY_NAMES[self.key as usize]);
+        text
+    }
+
+    /// Reads a `<hotkey>` box's text (OpenAC
+    /// `PluginKeyChord.TryParseHotkeyText`): modifiers in any order and any
+    /// case, each once, then a key's name in any case. `None` for empty
+    /// text (an unbound box) and for text it cannot read.
+    #[must_use]
+    pub fn parse_hotkey_text(text: &str) -> Option<Self> {
+        if text.is_empty() {
+            return None;
+        }
+        let parts: Vec<&str> = text.split('+').collect();
+        let (name, modifiers) = parts.split_last()?;
+        let mut chord = Self::default();
+        for part in modifiers {
+            if !chord.ctrl && part.eq_ignore_ascii_case("Ctrl") {
+                chord.ctrl = true;
+            } else if !chord.alt && part.eq_ignore_ascii_case("Alt") {
+                chord.alt = true;
+            } else if !chord.shift && part.eq_ignore_ascii_case("Shift") {
+                chord.shift = true;
+            } else {
+                return None;
+            }
+        }
+        chord.key = key_named(name)?;
+        Some(chord)
+    }
+
+    /// What a `<hotkey>` box shows (OpenAC `MarkupHotkeyText.Describe`):
+    /// the modifiers as Ctrl, Alt and Shift, then the key by `key_name`.
+    #[must_use]
+    pub fn describe(self, key_name: impl FnOnce(u32) -> String) -> String {
+        let mut text = String::new();
+        push_modifiers(&mut text, self.ctrl, self.alt, self.shift);
+        text.push_str(&key_name(self.key));
+        text
+    }
+}
+
+/// The key a name in any case stands for: a letter first, then letters and
+/// digits, naming a key a hotkey can bind (not `Unknown`).
+#[must_use]
+pub fn key_named(name: &str) -> Option<u32> {
+    let first = name.chars().next()?;
+    if !first.is_ascii_alphabetic() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    KEY_NAMES
+        .iter()
+        .position(|k| k.eq_ignore_ascii_case(name))
+        .and_then(|i| u32::try_from(i).ok())
+        .filter(|code| is_bindable(*code))
+}
+
 /// How a registration stands (OpenAC `IPluginHotkeyRegistration.IsBound`,
 /// `EffectiveChord`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -606,5 +788,119 @@ mod tests {
         let mut hotkeys = attached();
         assert!(hotkeys.register("p", " ", "Test", F9).is_err());
         assert!(hotkeys.register("p", "test", "", F9).is_err());
+    }
+
+    // ── Hotkey text: OpenAC `tests/AcDream.Plugin.Tests/PluginKeyChordTextTests.cs`
+    // and `tests/AcDream.App.Tests/UI/MarkupHotkeyTextTests.cs`.
+
+    fn chord(key: u32, ctrl: bool, alt: bool, shift: bool) -> Chord {
+        Chord {
+            key,
+            ctrl,
+            alt,
+            shift,
+        }
+    }
+
+    #[test]
+    fn hotkey_text_reads_a_hotkey_box_string() {
+        // PluginKeyChordTextTests.TryParseHotkeyText_ReadsAHotkeyBoxString
+        for (text, expected) in [
+            ("Ctrl+Alt+Shift+F", chord(6, true, true, true)),
+            (
+                "shift+ctrl+numpad5",
+                chord(keys::NUMPAD5, true, false, true),
+            ),
+            ("Numpad5", Chord::key(keys::NUMPAD5)),
+            ("Grave", Chord::key(keys::GRAVE)),
+            ("NumpadEnter", Chord::key(keys::NUMPAD_ENTER)),
+            ("F12", Chord::key(48)),
+        ] {
+            assert_eq!(Chord::parse_hotkey_text(text), Some(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn hotkey_text_refuses_what_no_plugin_hotkey_can_hold() {
+        // PluginKeyChordTextTests.TryParseHotkeyText_RefusesWhatNoPluginHotkeyCanHold,
+        // MarkupHotkeyTextTests.Parse_UnreadableIsUnbound
+        for text in [
+            "",
+            "F13",
+            "CapsLock",
+            "Keypad5",
+            "GraveAccent",
+            "Ctrl+",
+            "+F",
+            "Ctrl+Ctrl+F",
+            "Meta+F",
+            "5",
+            "A,B",
+            "Unknown",
+            "Ctrl+Nope",
+            "ShiftLeft",
+        ] {
+            assert_eq!(Chord::parse_hotkey_text(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn hotkey_text_spells_the_key_by_its_name() {
+        // PluginKeyChordTextTests.ToHotkeyText_SpellsTheKeyAsItsPluginKeyName,
+        // MarkupHotkeyTextTests.Format_SpellsTheKeyAsItsPluginKeyName
+        assert_eq!(
+            chord(6, true, true, true).to_hotkey_text(),
+            "Ctrl+Alt+Shift+F"
+        );
+        assert_eq!(Chord::key(keys::NUMPAD5).to_hotkey_text(), "Numpad5");
+        assert_eq!(Chord::key(keys::GRAVE).to_hotkey_text(), "Grave");
+        assert_eq!(
+            chord(keys::NUMPAD_ENTER, false, true, false).to_hotkey_text(),
+            "Alt+NumpadEnter"
+        );
+        assert_eq!(
+            chord(28, false, true, false).to_hotkey_text(),
+            "Alt+Number1"
+        );
+        // ToHotkeyText_NoKeyIsEmpty
+        assert_eq!(Chord::default().to_hotkey_text(), "");
+        assert_eq!(chord(999, true, false, false).to_hotkey_text(), "");
+    }
+
+    #[test]
+    fn every_key_round_trips_with_every_modifier_set() {
+        // PluginKeyChordTextTests.EveryPluginKey_RoundTripsWithEveryModifierSet,
+        // MarkupHotkeyTextTests.Parse_ReadsAndRoundTripsToCanonical
+        for key in 1..=LAST_KEY {
+            for mods in 0..8 {
+                let c = chord(key, mods & 1 != 0, mods & 2 != 0, mods & 4 != 0);
+                let text = c.to_hotkey_text();
+                assert_eq!(Chord::parse_hotkey_text(&text), Some(c), "{text}");
+            }
+        }
+        let read = Chord::parse_hotkey_text("shift+ctrl+f").unwrap();
+        assert_eq!(read.to_hotkey_text(), "Ctrl+Shift+F");
+        assert_eq!(
+            Chord::parse_hotkey_text("Ctrl+grave")
+                .unwrap()
+                .to_hotkey_text(),
+            "Ctrl+Grave"
+        );
+    }
+
+    #[test]
+    fn describe_names_modifiers_plainly_and_the_key_by_the_game() {
+        // MarkupHotkeyTextTests.Describe_names_modifiers_plainly_and_only_the_key_by_the_game
+        let mut asked = Vec::new();
+        let text = chord(6, true, true, true).describe(|k| {
+            asked.push(k);
+            "F-KEY".to_owned()
+        });
+        assert_eq!(text, "Ctrl+Alt+Shift+F-KEY");
+        assert_eq!(asked, [6]);
+        assert_eq!(
+            Chord::key(keys::NUMPAD5).describe(|_| "NUMPAD 5".to_owned()),
+            "NUMPAD 5"
+        );
     }
 }

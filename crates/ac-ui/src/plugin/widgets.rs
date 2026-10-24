@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use ac_plugin_ui::list::{self, ColumnPress};
-use ac_plugin_ui::markup::{Column, ColumnKind};
+use ac_plugin_ui::markup::{Column, ColumnHeader, ColumnKind};
 
 use crate::draw::{Color, DEFAULT_OUTLINE_COLOR, RenderContext, TextureRef};
 use crate::event::{Key, UiEvent, kind};
@@ -202,13 +202,18 @@ fn enabled(ui: &UiRoot, me: ElementId) -> bool {
 }
 
 /// The outline a tab stop with keyboard focus draws.
-const KEYBOARD_FOCUS_OUTLINE: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
+pub(crate) const KEYBOARD_FOCUS_OUTLINE: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
 
 /// Keyboard focus on a tab stop (OpenAC `UiSimpleButton`/`UiMarkupToggle`
 /// with `TabStop`): gaining and losing it switch the outline, and Enter,
 /// keypad Enter or Space activates an enabled control. `Some(activate)`
 /// when the event was one of those, which the control takes.
-fn tab_stop_event(ui: &UiRoot, me: ElementId, e: &UiEvent, focused: &mut bool) -> Option<bool> {
+pub(crate) fn tab_stop_event(
+    ui: &UiRoot,
+    me: ElementId,
+    e: &UiEvent,
+    focused: &mut bool,
+) -> Option<bool> {
     if e.target != Some(me) || !ui.element(me).is_some_and(|el| el.tab_stop) {
         return None;
     }
@@ -242,6 +247,11 @@ pub struct MarkupLabel {
     pub outline: bool,
     /// The interface font.
     pub font: Option<Arc<UiFont>>,
+    /// Inside a flex container: its size comes from the layout, so it no
+    /// longer sizes itself to its text, its line is centred in the height
+    /// it is given, and text wider than that is cut short with "...".
+    pub sized_by_layout: bool,
+    shown: Option<(String, f32, usize, String)>,
 }
 
 impl MarkupLabel {
@@ -253,14 +263,53 @@ impl MarkupLabel {
             color: Color::WHITE,
             outline: true,
             font,
+            sized_by_layout: false,
+            shown: None,
         }
+    }
+
+    /// The text shortened to `width` with "...", measured as the layout
+    /// measures, so a label given its text's width keeps it all. Cached per
+    /// text, width and font.
+    pub fn fitted(&mut self, width: f32) -> String {
+        let font = self.font.as_ref().map_or(0, |f| Arc::as_ptr(f) as usize);
+        if let Some((text, w, f, shown)) = &self.shown
+            && *text == self.text
+            && *w == width
+            && *f == font
+        {
+            return shown.clone();
+        }
+        let measure_font = self.font.clone();
+        let shown = ac_plugin_ui::chrome::ellipsize(
+            &self.text,
+            |s| measure(measure_font.as_ref(), s).ceil(),
+            width,
+        );
+        self.shown = Some((self.text.clone(), width, font, shown.clone()));
+        shown
     }
 }
 
 impl Widget for MarkupLabel {
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
-        let w = measure(self.font.as_ref(), &self.text);
         let h = line_height(self.font.as_ref());
+        if self.sized_by_layout {
+            let (width, height) = size(ui, me);
+            let y = ((height - h) / 2.0 + 0.5).floor();
+            let shown = self.fitted(width);
+            text(
+                rc,
+                self.font.as_ref(),
+                &shown,
+                0.0,
+                y,
+                self.color,
+                self.outline,
+            );
+            return;
+        }
+        let w = measure(self.font.as_ref(), &self.text);
         if let Some(e) = ui.element_mut(me) {
             e.width = w;
             e.height = h;
@@ -731,6 +780,18 @@ pub struct MarkupList {
     /// The pointer's last list-local position, so the hovered button can be
     /// found again when the rows move under a pointer that did not.
     pointer: Option<(f32, f32)>,
+    /// A column list's header, sort, widths, multi-select and tree.
+    pub ext: Option<Box<super::list_ext::ListExt>>,
+    /// With an extension: every row in the plugin's order (`rows` is
+    /// them as shown).
+    pub all_rows: Vec<Vec<Cell>>,
+    /// With an extension: the markup's columns (`columns` has the widths in
+    /// force).
+    pub markup_columns: Vec<Column>,
+    /// The plugin row each shown row is.
+    plugin_rows: Vec<usize>,
+    /// It has the keyboard (a multi-select or tree list is a tab stop).
+    focused: bool,
 }
 
 /// A held list button. A release fires by row index, so the press is
@@ -803,7 +864,53 @@ impl MarkupList {
             hover: None,
             press: None,
             pointer: None,
+            ext: None,
+            all_rows: Vec::new(),
+            markup_columns: Vec::new(),
+            plugin_rows: Vec::new(),
+            focused: false,
         }
+    }
+
+    /// The plugin row shown at `index` (the same without an extension).
+    #[must_use]
+    pub fn plugin_row(&self, index: usize) -> usize {
+        if self.ext.is_some() {
+            self.plugin_rows.get(index).copied().unwrap_or(index)
+        } else {
+            index
+        }
+    }
+
+    /// The rows' area: the list less its header.
+    fn rows_size(&self, ui: &UiRoot, me: ElementId) -> (f32, f32) {
+        let (w, h) = size(ui, me);
+        (w, (h - self.rows_top()).max(0.0))
+    }
+
+    /// Where the rows start (under the header).
+    #[must_use]
+    pub fn rows_top(&self) -> f32 {
+        self.ext.as_ref().map_or(0.0, |x| x.rows_top())
+    }
+
+    /// With an extension: the order, widths and shown rows for now.
+    pub fn arrange(&mut self) {
+        let Some(ext) = self.ext.as_mut() else {
+            return;
+        };
+        ext.refresh(&self.markup_columns, &self.all_rows);
+        let view = &ext.view;
+        self.plugin_rows = (0..view.view_count() as i32)
+            .map(|v| usize::try_from(view.plugin_row(v)).unwrap_or(0))
+            .collect();
+        self.rows = self
+            .plugin_rows
+            .iter()
+            .map(|r| self.all_rows[*r].clone())
+            .collect();
+        self.columns = ext.columns_now(&self.markup_columns);
+        self.column_rows = vec![self.rows.len(); self.columns.len()];
     }
 
     fn has_buttons(&self) -> bool {
@@ -922,7 +1029,7 @@ impl MarkupList {
     /// that fires a button is handled here; everything else carries on to
     /// the list.
     fn track_button_pointer(&mut self, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> bool {
-        let (w, h) = size(ui, me);
+        let (w, h) = self.rows_size(ui, me);
         match e.kind {
             kind::HOVER_ENTER | kind::MOUSE_MOVE | kind::MOUSE_DOWN => {
                 self.pointer = Some((e.data1 as f32, e.data2 as f32));
@@ -1037,10 +1144,190 @@ impl MarkupList {
         self.scroll.set_scroll_y(self.top as i32 * line);
     }
 
+    /// A column list's own handling: the header (sorting, resizing,
+    /// select-all), tree arrows, multi-select picks and Ctrl+A. `Some` when
+    /// it took the event.
+    fn ext_event(&mut self, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> Option<bool> {
+        let live = enabled(ui, me);
+        let (w, h) = size(ui, me);
+        let top = self.rows_top();
+        let (_, rows_h) = self.rows_size(ui, me);
+        let content = self.content_width(w, rows_h);
+        let layout = list::column_layout(&self.columns, content);
+        let (x, y) = (e.data1 as f32, e.data2 as f32);
+        let row_plugin = {
+            let index = ((y - top) / self.row_height.max(1.0)).floor();
+            let shown = self.top as i64 + index as i64;
+            (index >= 0.0
+                && (index as usize) < self.visible(rows_h)
+                && shown >= 0
+                && (shown as usize) < self.rows.len())
+            .then(|| self.plugin_row(shown as usize))
+        };
+        let ext = self.ext.as_mut()?;
+        match e.kind {
+            kind::FOCUS_GAINED => {
+                self.focused = true;
+                Some(true)
+            }
+            kind::FOCUS_LOST => {
+                self.focused = false;
+                Some(true)
+            }
+            kind::KEY_DOWN
+                if self.focused
+                    && live
+                    && ext.multi
+                    && e.key == Key::A
+                    && e.modifiers.contains(crate::event::Modifiers::CTRL) =>
+            {
+                ext.select_all_rows();
+                Some(true)
+            }
+            kind::MOUSE_MOVE if ext.resizing() => {
+                ext.drag_resize(&layout, x, content);
+                self.arrange();
+                Some(true)
+            }
+            kind::MOUSE_UP if ext.resizing() || (ext.header && y < top) => {
+                ext.header_up(&self.markup_columns, &layout, x, y, &self.all_rows);
+                self.arrange();
+                Some(true)
+            }
+            kind::CAPTURE_CHANGED if ext.resizing() => {
+                ext.header_up(&self.markup_columns, &layout, -1.0, -1.0, &self.all_rows);
+                Some(true)
+            }
+            kind::DOUBLE_CLICK if ext.header && y < top => {
+                if live {
+                    ext.reset_width(&layout, x, y);
+                    self.arrange();
+                }
+                Some(true)
+            }
+            kind::MOUSE_DOWN if ext.header && y >= 0.0 && y < top => {
+                ext.header_down(&layout, x, y, live);
+                if ext.resizing() {
+                    ui.set_capture(me);
+                }
+                Some(true)
+            }
+            kind::CLICK if ext.header && y < top => Some(true),
+            kind::MOUSE_DOWN if live && x < content => {
+                let plugin = row_plugin?;
+                if let Some(tree) = &ext.tree {
+                    let cell_x = layout.get(tree.column).map_or(0.0, |l| l.0);
+                    if ext.on_arrow(plugin, cell_x, x) {
+                        ext.toggle_expanded(plugin);
+                        self.arrange();
+                        return Some(true);
+                    }
+                }
+                if ext.multi {
+                    let press = self.press(w, h, x, y);
+                    if matches!(press, ColumnPress::Select(_)) {
+                        let ext = self.ext.as_mut()?;
+                        ext.pick(
+                            plugin as i32,
+                            e.modifiers.contains(crate::event::Modifiers::CTRL),
+                            e.modifiers.contains(crate::event::Modifiers::SHIFT),
+                        );
+                        return Some(true);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The header row: captions, the sort glyph, select-all boxes and the
+    /// lines between cells.
+    fn draw_header(&mut self, rc: &mut RenderContext<'_>, w: f32, layout: &[(f32, f32)]) {
+        let p = self.palette;
+        let border = p.map_or(self.border, |p| p.border);
+        let text_color = p.map_or(self.text_color, |p| p.text);
+        rc.fill(
+            0.0,
+            0.0,
+            w,
+            super::list_ext::HEADER_HEIGHT,
+            p.map_or(self.background, |p| p.field),
+        );
+        rc.fill(0.0, super::list_ext::HEADER_HEIGHT - 1.0, w, 1.0, border);
+        let font = self.font.clone();
+        let Some(ext) = self.ext.as_mut() else {
+            return;
+        };
+        let (sorted, descending) = ext.current_sort(&self.markup_columns);
+        let h = super::list_ext::HEADER_HEIGHT;
+        for (c, &(cx, cw)) in layout.iter().enumerate() {
+            if cw <= 0.0 {
+                continue;
+            }
+            if c + 1 < layout.len() {
+                rc.fill(cx + cw - 1.0, 2.0, 1.0, h - 4.0, border);
+            }
+            let column = &self.markup_columns[c];
+            if let ColumnHeader::SelectAll(onall) = &column.header {
+                if onall.is_some() {
+                    let state = super::list_ext::ListExt::select_all_look(&self.all_rows, c);
+                    super::controls::draw_check_box(
+                        rc,
+                        cx + 1.0 + ((cw - 2.0 - CHECK_SIZE).max(0.0) * 0.5),
+                        ((h - CHECK_SIZE) * 0.5).max(1.0),
+                        state,
+                        p.as_ref(),
+                    );
+                }
+                continue;
+            }
+            let caption = ext.captions.get(c).cloned().flatten().unwrap_or_default();
+            let is_sorted = c as i32 == sorted;
+            rc.push_clip(
+                cx,
+                0.0,
+                (cw - if is_sorted { 12.0 } else { 0.0 }).max(0.0),
+                h,
+            );
+            let ty = ((h - line_height(font.as_ref())) * 0.5).max(0.0);
+            text(
+                rc,
+                font.as_ref(),
+                &caption,
+                cx + PADDING,
+                ty,
+                text_color,
+                p.is_none(),
+            );
+            rc.pop_clip();
+            if is_sorted {
+                let left = cx + cw - 10.0;
+                let top = ((h - 4.0) * 0.5).floor();
+                for r in 0..4u8 {
+                    let step = if descending { 3 - r } else { r };
+                    let width = 1.0 + 2.0 * f32::from(step);
+                    rc.fill(
+                        left + (7.0 - width) * 0.5,
+                        top + f32::from(r),
+                        width,
+                        1.0,
+                        text_color,
+                    );
+                }
+            }
+        }
+    }
+
     /// What a press at list-local (`x`, `y`) means, with the list as last
     /// drawn (OpenAC `UiMarkupList.OnEvent` / `OnEventColumns`).
     #[must_use]
     pub fn press(&self, width: f32, height: f32, x: f32, y: f32) -> ColumnPress {
+        let top = self.rows_top();
+        let (height, y) = ((height - top).max(0.0), y - top);
+        if y < 0.0 {
+            return ColumnPress::Nothing;
+        }
         let visible = self.visible(height);
         if self.columns.is_empty() {
             let row = (y / self.row_height.max(1.0)).floor();
@@ -1077,15 +1364,25 @@ impl Widget for MarkupList {
         if e.target != Some(me) {
             return false;
         }
+        if self.ext.is_some()
+            && let Some(taken) = self.ext_event(ui, me, e)
+        {
+            return taken;
+        }
+        // Below the header: the rows' own coordinates.
+        let mut shifted = e.clone();
+        shifted.data2 -= self.rows_top() as i32;
+        let e = &shifted;
         let has_buttons = self.has_buttons();
         if has_buttons && self.track_button_pointer(ui, me, e) {
             return true;
         }
-        let (w, h) = size(ui, me);
+        let (w, h) = self.rows_size(ui, me);
         let visible = self.visible(h);
         let count = self.rows.len();
+        // A list with nothing to scroll leaves the wheel to the group around it.
         match e.kind {
-            kind::SCROLL => {
+            kind::SCROLL if count > visible => {
                 self.top = if e.data0 > 0 {
                     self.top.saturating_sub(1)
                 } else {
@@ -1165,7 +1462,7 @@ impl Widget for MarkupList {
                         me,
                         ElementMessage::Clicked {
                             x: e.data1,
-                            y: e.data2,
+                            y: e.data2 + self.rows_top() as i32,
                         },
                     );
                 }
@@ -1186,13 +1483,29 @@ impl Widget for MarkupList {
     }
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
-        let (w, h) = size(ui, me);
+        self.arrange();
+        let (w, h) = self.rows_size(ui, me);
         let visible = self.visible(h);
         let count = self.rows.len();
-        if self.selected != self.revealed {
-            self.revealed = self.selected;
-            self.top = list::reveal(self.top, self.selected, count, visible);
+        let shown_selected = if self.ext.is_some() {
+            self.plugin_rows
+                .iter()
+                .position(|r| *r as i32 == self.selected)
+                .map_or(-1, |i| i as i32)
+        } else {
+            self.selected
+        };
+        if shown_selected != self.revealed {
+            self.revealed = shown_selected;
+            self.top = list::reveal(self.top, shown_selected, count, visible);
         }
+        let header_top = self.rows_top();
+        if header_top > 0.0 {
+            let content = self.content_width(w, h);
+            let layout = list::column_layout(&self.columns, content);
+            self.draw_header(rc, w, &layout);
+        }
+        rc.push_transform(0.0, header_top);
         self.top = list::clamp_top(self.top, count, visible);
         if self.has_buttons() {
             self.cancel_press_if_rows_moved();
@@ -1219,7 +1532,16 @@ impl Widget for MarkupList {
         let end = count.min(self.top + visible);
         for index in self.top..end {
             let y = (index - self.top) as f32 * self.row_height;
-            if band && i32::try_from(index).ok() == Some(self.selected) && self.columns.is_empty() {
+            let plugin = self.plugin_row(index);
+            let banded = match &self.ext {
+                Some(ext) if ext.multi => ext.banded(plugin),
+                Some(_) => self.selection_band && plugin as i32 == self.selected,
+                None => {
+                    band && i32::try_from(index).ok() == Some(self.selected)
+                        && self.columns.is_empty()
+                }
+            };
+            if banded {
                 rc.fill(
                     1.0,
                     y + 1.0,
@@ -1264,15 +1586,33 @@ impl Widget for MarkupList {
                 rc.push_clip(cx, y, cw, self.row_height);
                 match cell {
                     Cell::Text(s, color) => {
-                        text(
-                            rc,
-                            font.as_ref(),
-                            s,
-                            cx + PADDING,
-                            y + text_y,
-                            *color,
-                            p.is_none(),
-                        );
+                        // A tree column: indent, an arrow on a parent, the text
+                        // after the arrow slot.
+                        let tree = self
+                            .ext
+                            .as_ref()
+                            .and_then(|x| x.tree.as_ref().map(|t| t.column))
+                            .filter(|column| *column == c)
+                            .and_then(|_| self.ext.as_ref()?.tree_row(plugin));
+                        let mut tx = cx + PADDING;
+                        if let Some((level, parent, expanded)) = tree {
+                            let slot = cx + PADDING + level as f32 * super::list_ext::TREE_INDENT;
+                            if parent {
+                                let arrow = p.map_or(self.text_color, |p| p.text);
+                                let top = y + ((self.row_height - 7.0) * 0.5).floor();
+                                for i in 0..4u8 {
+                                    let i = f32::from(i);
+                                    let length = 7.0 - 2.0 * i;
+                                    if expanded {
+                                        rc.fill(slot + 2.0 + i, top + 1.0 + i, length, 1.0, arrow);
+                                    } else {
+                                        rc.fill(slot + 3.0 + i, top + i, 1.0, length, arrow);
+                                    }
+                                }
+                            }
+                            tx = slot + super::list_ext::TREE_INDENT;
+                        }
+                        text(rc, font.as_ref(), s, tx, y + text_y, *color, p.is_none());
                     }
                     Cell::Check(checked) => {
                         let extent = (cw - 2.0).max(0.0);
@@ -1309,6 +1649,7 @@ impl Widget for MarkupList {
                 p.as_ref(),
             );
         }
+        rc.pop_transform();
     }
 }
 
@@ -1494,7 +1835,9 @@ impl Widget for MarkupLog {
         let (w, h) = size(ui, me);
         self.refresh(w, h);
         match e.kind {
-            kind::SCROLL => {
+            // A log with nothing to scroll leaves the wheel to the group
+            // around it.
+            kind::SCROLL if self.scroll.has_overflow() => {
                 self.scroll.scroll_by_lines(-e.data0 * 3);
                 self.follow_end = self.scroll.at_end();
                 true

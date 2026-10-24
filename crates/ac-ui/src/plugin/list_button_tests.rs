@@ -29,6 +29,9 @@ fn text_column(width: f32) -> Column {
             colors: None,
             onclick: None,
         },
+        header: ac_plugin_ui::markup::ColumnHeader::None,
+        sort: ac_plugin_ui::markup::SortKind::None,
+        sort_keys: None,
     }
 }
 
@@ -42,6 +45,9 @@ fn button_column(width: f32, button_width: f32, button_height: f32) -> Column {
             button_width,
             button_height,
         },
+        header: ac_plugin_ui::markup::ColumnHeader::None,
+        sort: ac_plugin_ui::markup::SortKind::None,
+        sort_keys: None,
     }
 }
 

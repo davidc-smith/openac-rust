@@ -761,12 +761,13 @@ impl ApplicationHandler<HostCommand> for HostApp {
                 window.monitor_changed();
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Notches away from the user (positive) or toward.
-                let notches = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 120.0,
+                // Notches away from the user (positive y) or toward, and
+                // sideways (positive x toward the left).
+                let (x, y) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 120.0, p.y as f32 / 120.0),
                 };
-                window.wheel(notches);
+                window.wheel(x, y);
             }
             WindowEvent::ModifiersChanged(modifiers) => window.modifiers_changed(modifiers.state()),
             WindowEvent::RedrawRequested => self.redraw(event_loop),

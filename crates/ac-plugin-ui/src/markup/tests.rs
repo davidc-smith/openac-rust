@@ -540,7 +540,9 @@ fn every_literal_colour_attribute_parses_and_absent_ones_keep_defaults() {
     let v = values(&[]);
     let lit = |c: &Option<ColorSource>| c.as_ref().unwrap().read(&v);
     match &doc.nodes[0].element {
-        Element::Group { background, border } => {
+        Element::Group {
+            background, border, ..
+        } => {
             assert_eq!(lit(background), Rgba::argb(0xFF11_2233));
             assert_eq!(lit(border), Rgba::argb(0xFF44_5566));
         }
@@ -581,7 +583,9 @@ fn every_literal_colour_attribute_parses_and_absent_ones_keep_defaults() {
         other => panic!("{other:?}"),
     }
     match &doc.nodes[6].element {
-        Element::Group { background, border } => {
+        Element::Group {
+            background, border, ..
+        } => {
             assert!(background.is_none() && border.is_none());
         }
         other => panic!("{other:?}"),
@@ -634,7 +638,10 @@ fn bound_colours_follow_their_values() {
         ("Accent", UiValue::Text("#FF7788AA".into())),
         ("NotAColor", UiValue::Bool(true)),
     ]);
-    let Element::Group { background, border } = &doc.nodes[0].element else {
+    let Element::Group {
+        background, border, ..
+    } = &doc.nodes[0].element
+    else {
         panic!()
     };
     let (background, border) = (background.clone().unwrap(), border.clone().unwrap());
@@ -737,15 +744,22 @@ fn list_columns_bind_each_columns_own_source() {
                     items: "Names".into(),
                     colors: None,
                     onclick: None
-                }
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
             Column {
                 width: 20.0,
                 auto: false,
                 kind: ColumnKind::Check {
                     values: "Fester".into(),
-                    onchange: "ToggleFester".into()
-                }
+                    onchange: "ToggleFester".into(),
+                    boxed: false
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
             Column {
                 width: 20.0,
@@ -754,7 +768,10 @@ fn list_columns_bind_each_columns_own_source() {
                     values: "Icons".into(),
                     kind: IconKind::Did,
                     onclick: "ClickIcon".into()
-                }
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
         ]
     );

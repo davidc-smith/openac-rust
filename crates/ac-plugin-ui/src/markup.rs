@@ -15,6 +15,10 @@ use std::fmt;
 
 use roxmltree::Node as XmlNode;
 
+pub use flex_attrs::{FlexContainer, FlexItem};
+
+mod flex_attrs;
+
 use crate::value::{
     BindingKind, BindingSchema, Rgba, UiValue, bound_color, parse_bool, parse_color, parse_float,
     parse_hex, parse_int,
@@ -259,6 +263,146 @@ pub struct Column {
     pub auto: bool,
     /// What the column shows.
     pub kind: ColumnKind,
+    /// Its header cell.
+    pub header: ColumnHeader,
+    /// How a header click sorts it.
+    pub sort: SortKind,
+    /// What it sorts by instead of its cells (`sortkeys`): a float-list
+    /// binding (numbers) or a string-list binding (text).
+    pub sort_keys: Option<SortKeysSource>,
+}
+
+/// A column's header cell.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum ColumnHeader {
+    /// No caption.
+    #[default]
+    None,
+    /// A caption (literal or bound text).
+    Text(TextSource),
+    /// A checkbox column's select-all box (`header="all"`), with its
+    /// `onall` (`Action<bool>`).
+    SelectAll(Option<String>),
+}
+
+/// How a column sorts (`sort`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortKind {
+    /// It does not.
+    #[default]
+    None,
+    /// By text, ignoring case.
+    Text,
+    /// By number.
+    Number,
+    /// By its check state.
+    Bool,
+}
+
+/// A column's `sortkeys` binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SortKeysSource {
+    /// A float list, compared as numbers.
+    Numbers(String),
+    /// A string list, compared as the column's sort says.
+    Texts(String),
+}
+
+/// A column list's header, sort and widths (`header resizable sortcolumn
+/// sortdescending onsort widths onresize`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ListHeader {
+    /// The header row is shown.
+    pub show: bool,
+    /// The bound sort: the column (`int`) and descending (`bool`); none:
+    /// the client keeps (and remembers) the sort.
+    pub sort: Option<(String, String)>,
+    /// A sort asked for (`Action<int, bool>`).
+    pub onsort: Option<String>,
+    /// The player can drag the column edges.
+    pub resizable: bool,
+    /// The bound widths (a float list); none: the client keeps (and
+    /// remembers) them.
+    pub widths: Option<String>,
+    /// Every column's width after a drag (`Action<IReadOnlyList<float>>`).
+    pub onresize: Option<String>,
+}
+
+/// A tree list (`tree="true"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListTree {
+    /// The column the tree is drawn in (the first text column).
+    pub column: usize,
+    /// Each row's depth (an int list).
+    pub levels: String,
+    /// Each row's key (a string list).
+    pub keys: String,
+    /// The expanded rows' keys (a string list); none: the client keeps
+    /// (and remembers) the expansion.
+    pub expanded: Option<String>,
+    /// Rows start folded (`collapsed`, only without `expanded`).
+    pub start_collapsed: bool,
+    /// An expansion asked for (`Action<string, bool>`).
+    pub onexpand: Option<String>,
+}
+
+/// Options given as a literal `a|b|c` list or a bound string list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemsSource {
+    /// Written in the markup.
+    Literal(Vec<String>),
+    /// A string-list binding.
+    Bound(String),
+}
+
+impl ItemsSource {
+    /// The items now.
+    #[must_use]
+    pub fn read(&self, values: &dyn Values) -> Vec<String> {
+        match self {
+            Self::Literal(items) => items.clone(),
+            Self::Bound(name) => match values.value(name) {
+                Some(UiValue::TextList(items)) => items.clone(),
+                _ => Vec::new(),
+            },
+        }
+    }
+}
+
+/// An element's right-click menu (`<contextmenu>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextMenu {
+    /// The items; `-` is a separator.
+    pub items: ItemsSource,
+    /// One flag per item (a bool list).
+    pub enabled: Option<String>,
+    /// The item picked (`Action<int>`, separators counted).
+    pub onselect: String,
+    /// The menu is about to open (`Action<int>`: the plugin row on a list,
+    /// else −1).
+    pub onopen: Option<String>,
+}
+
+/// What a `<number>` binds: an `int` or a `float` value and an `onchange`
+/// of the same type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberKind {
+    /// `int`, `Action<int>`.
+    Int,
+    /// `float`, `Action<float>`.
+    Float,
+}
+
+/// What a `<color>` binds: a `uint`, `int` or `string` value and an
+/// `onchange` of the same type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorValueKind {
+    /// `0xAARRGGBB` as `uint`.
+    Uint,
+    /// `0xAARRGGBB` as `int`.
+    Int,
+    /// `#AARRGGBB` text.
+    Text,
 }
 
 /// What a column shows.
@@ -280,6 +424,8 @@ pub enum ColumnKind {
         values: String,
         /// A row's box clicked (an `Action<int>` binding).
         onchange: String,
+        /// Drawn as tick boxes (`type="checkbox"`) rather than lamps.
+        boxed: bool,
     },
     /// An icon per row.
     Icon {
@@ -332,6 +478,12 @@ pub enum Element {
         background: Option<ColorSource>,
         /// One-pixel border (none when absent).
         border: Option<ColorSource>,
+        /// `layout`: it places its children with flex.
+        layout: Option<FlexContainer>,
+        /// `scroll` includes x.
+        scroll_x: bool,
+        /// `scroll` includes y.
+        scroll_y: bool,
     },
     /// A bar filled to a share.
     Meter {
@@ -471,16 +623,126 @@ pub enum Element {
     },
     /// A list of rows.
     List {
-        /// The selected row (an int binding; -1 none).
+        /// The selected row (an int binding; -1 none), or with `multi` the
+        /// selected plugin rows (an int-list binding).
         selected: String,
-        /// A row selected (`Action<int>`).
+        /// A row selected (`Action<int>`), or with `multi` the new
+        /// selection (`Action<IReadOnlyList<int>>`).
         onchange: Option<String>,
         /// Row height.
         row_height: f32,
-        /// Draw a band behind the selected row.
+        /// Draw a band behind the selected row (always with `multi`).
         selection_band: bool,
+        /// `selectmode="multi"`: click, Ctrl and Shift pick several rows.
+        multi: bool,
         /// The rows.
         body: ListBody,
+        /// A column list's header, sort and widths.
+        header: ListHeader,
+        /// A tree list's attributes.
+        tree: Option<ListTree>,
+    },
+    /// A tick box with a caption, optionally indeterminate.
+    Checkbox {
+        /// The caption.
+        text: TextSource,
+        /// Its state: a `bool`, or an optional bool whose none draws the box
+        /// indeterminate.
+        checked: String,
+        /// The value a click asks for (`Action<bool>`).
+        onchange: Option<String>,
+        /// Caption colour.
+        color: Option<ColorSource>,
+    },
+    /// A number field with spin buttons.
+    Number {
+        /// The value (`int` or `float`).
+        value: String,
+        /// A new value (`Action<int>` or `Action<float>`).
+        onchange: String,
+        /// Which of the two it binds.
+        kind: NumberKind,
+        /// Range, step and decimals.
+        spec: crate::number::NumberSpec,
+        /// Fill.
+        background: ColorSource,
+        /// Text colour.
+        color: ColorSource,
+        /// The background attribute was absent.
+        default_background: bool,
+        /// The color attribute was absent.
+        default_color: bool,
+    },
+    /// One choice of several.
+    Radio {
+        /// The options.
+        items: ItemsSource,
+        /// The chosen option (an int binding; −1 none).
+        selected: String,
+        /// The option picked (`Action<int>`).
+        onchange: Option<String>,
+        /// Options side by side rather than stacked.
+        horizontal: bool,
+        /// A joined bar of buttons rather than round buttons.
+        segmented: bool,
+        /// Caption colour.
+        color: Option<ColorSource>,
+    },
+    /// A 1 px line.
+    Separator {
+        /// Its colour (`None`: the default).
+        color: Option<ColorSource>,
+    },
+    /// A header that folds away the content below it.
+    Expander {
+        /// The header's caption.
+        text: TextSource,
+        /// The bound state (`bool`); none: the client keeps (and remembers)
+        /// it.
+        expanded: Option<String>,
+        /// A new state (`Action<bool>`).
+        onchange: Option<String>,
+        /// Open at first (`open`, default true).
+        open: bool,
+        /// Header caption colour.
+        color: Option<ColorSource>,
+    },
+    /// Two panes with a bar between them the player drags.
+    Split {
+        /// Side by side (`horizontal`, the default) or stacked.
+        horizontal: bool,
+        /// The first pane's least size.
+        min: f32,
+        /// Its largest size (none: all the room).
+        max: Option<f32>,
+        /// Where the bar starts (`at`, else half the room left after the
+        /// bar).
+        default_position: f32,
+        /// `at` was given.
+        at_given: bool,
+        /// The bound position (`float`); none: the client keeps (and
+        /// remembers) it.
+        position: Option<String>,
+        /// A position asked for (`Action<float>`).
+        onchange: Option<String>,
+    },
+    /// A box that records a key chord.
+    Hotkey {
+        /// The chord as text (a string binding).
+        value: String,
+        /// A new chord (`Action<string>`).
+        onchange: String,
+    },
+    /// A colour swatch that opens a picker.
+    Color {
+        /// The colour.
+        value: String,
+        /// What the value is.
+        kind: ColorValueKind,
+        /// A new colour, of the same type.
+        onchange: String,
+        /// The picker has an alpha strip.
+        alpha: bool,
     },
 }
 
@@ -501,16 +763,29 @@ impl Element {
             Self::Menu { .. } => "menu",
             Self::Log { .. } => "log",
             Self::List { .. } => "list",
+            Self::Checkbox { .. } => "checkbox",
+            Self::Number { .. } => "number",
+            Self::Radio { .. } => "radio",
+            Self::Separator { .. } => "separator",
+            Self::Expander { .. } => "expander",
+            Self::Split { .. } => "split",
+            Self::Hotkey { .. } => "hotkey",
+            Self::Color { .. } => "color",
         }
     }
 
-    /// Whether `SetControlLabel` reaches it (buttons, tabs, toggles and
-    /// labels carry text).
+    /// Whether `SetControlLabel` reaches it (buttons, tabs, toggles,
+    /// checkboxes, expanders and labels carry text).
     #[must_use]
     pub const fn carries_text(&self) -> bool {
         matches!(
             self,
-            Self::Button { .. } | Self::Tab { .. } | Self::Toggle { .. } | Self::Label { .. }
+            Self::Button { .. }
+                | Self::Tab { .. }
+                | Self::Toggle { .. }
+                | Self::Label { .. }
+                | Self::Checkbox { .. }
+                | Self::Expander { .. }
         )
     }
 }
@@ -534,6 +809,8 @@ pub struct Common {
     pub default_background: bool,
     /// The `border` attribute was absent.
     pub default_border: bool,
+    /// Its right-click menu.
+    pub context_menu: Option<ContextMenu>,
 }
 
 /// One element in the document.
@@ -547,8 +824,10 @@ pub struct Node {
     pub rect: Rect,
     /// Its parent (`None`: the panel).
     pub parent: Option<usize>,
-    /// Its children (groups only), in order.
+    /// Its children (groups, expanders and splits), in order.
     pub children: Vec<usize>,
+    /// Its flex item attributes, when its parent is a flex container.
+    pub flex: Option<FlexItem>,
 }
 
 /// The `<panel>` root's own attributes.
@@ -572,6 +851,32 @@ pub struct PanelSpec {
     pub title: Option<String>,
     /// `theme="plugin"`: follows the player's plugin theme.
     pub themed: bool,
+    /// `layout`: the content area is a flex container.
+    pub layout: Option<FlexContainer>,
+    /// The host title bar (`titlebar`, else on exactly with `layout`).
+    pub title_bar: bool,
+    /// `scroll` includes x (only with a content area).
+    pub scroll_x: bool,
+    /// `scroll` includes y (only with a content area).
+    pub scroll_y: bool,
+    /// A layout root's authored content size (`w`, `h`); `None` leaves it
+    /// to the content.
+    pub authored_size: (Option<f32>, Option<f32>),
+    /// A layout root's authored content minimums (`minw`, `minh`).
+    pub authored_min: (Option<f32>, Option<f32>),
+    /// The revision the window's saved geometry is kept under: from the
+    /// authored geometry attributes for a window with a content area, 0
+    /// otherwise.
+    pub geometry_revision: i32,
+}
+
+impl PanelSpec {
+    /// A window with chrome or a flex layout has a content area: its
+    /// authored sizes are the area inside the border (and title bar).
+    #[must_use]
+    pub fn has_content_area(&self) -> bool {
+        self.layout.is_some() || self.title_bar
+    }
 }
 
 /// A parsed, checked panel.
@@ -583,6 +888,9 @@ pub struct MarkupDocument {
     pub nodes: Vec<Node>,
     /// The root's children.
     pub roots: Vec<usize>,
+    /// What the build ignored, one line each: flex attributes on markup
+    /// that does not use flex, which older builds ignored silently.
+    pub warnings: Vec<String>,
 }
 
 impl MarkupDocument {
@@ -617,6 +925,12 @@ impl Values for NoValues {
     }
 }
 
+/// An `<expander>`'s header height, pixels: its `h` must be at least this.
+pub const EXPANDER_HEADER_HEIGHT: f32 = 18.0;
+
+/// A `<split>`'s bar thickness, pixels.
+pub const SPLIT_BAR_SIZE: f32 = 5.0;
+
 /// The plugin theme's colour names a `theme:` colour may use.
 pub const THEME_TOKENS: [&str; 6] = ["text", "muted", "field", "border", "accent", "background"];
 
@@ -636,25 +950,116 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
     if name != "panel" {
         return err(format!("root must be <panel>, got <{name}>"));
     }
+    if root
+        .children()
+        .any(|c| c.is_element() && c.tag_name().name() == "contextmenu")
+    {
+        return err("<contextmenu> goes inside the element it belongs to, not directly in <panel>");
+    }
     let mut parser = Parser {
         schema,
         doc: MarkupDocument::default(),
     };
     let resizable = b(root, "resizable", false);
+    // A window with chrome or a flex layout has a content area: its
+    // authored sizes are the area inside the border (and title bar), and
+    // the frame adds the chrome. A root with layout gets the title bar by
+    // default.
+    let mut warnings = Vec::new();
+    let has_layout = flex_attrs::is_container(root, &mut warnings);
+    let title_bar = match attr(root, "titlebar") {
+        None => has_layout,
+        Some("false") => false,
+        Some("true") => true,
+        Some(other) => {
+            warnings.push(flex_attrs::ignored(
+                root,
+                "titlebar",
+                other,
+                "must be true or false",
+            ));
+            has_layout
+        }
+    };
+    let content_area = has_layout || title_bar;
+    let (mut scroll_x, mut scroll_y) = flex_attrs::scroll(root, &mut warnings);
+    if (scroll_x || scroll_y) && !content_area {
+        warnings.push(flex_attrs::ignored(
+            root,
+            "scroll",
+            attr(root, "scroll").unwrap_or_default(),
+            "scrolls the window's content area, which needs layout=\"row|column\" or titlebar=\"true\" on the panel",
+        ));
+        (scroll_x, scroll_y) = (false, false);
+    }
+    let chrome_w = if content_area {
+        crate::chrome::HORIZONTAL_INSETS
+    } else {
+        0.0
+    };
+    let chrome_h = if content_area {
+        crate::chrome::vertical_insets_for(title_bar)
+    } else {
+        0.0
+    };
+    if !has_layout {
+        flex_attrs::reject_container(root, &mut warnings);
+    }
+    let layout = if has_layout {
+        Some(flex_attrs::read_container(root)?)
+    } else {
+        None
+    };
+    // A layout root may leave its size to its content; it is measured once
+    // its children exist (by the window), so these are provisional for it.
+    let (authored_w, authored_h, authored_min_w, authored_min_h) = if has_layout {
+        (
+            flex_attrs::root_size(root, "w")?,
+            flex_attrs::root_size(root, "h")?,
+            flex_attrs::root_size(root, "minw")?,
+            flex_attrs::root_size(root, "minh")?,
+        )
+    } else {
+        (Some(f(root, "w")), Some(f(root, "h")), None, None)
+    };
+    let content_w = authored_w.unwrap_or(0.0);
+    let content_h = authored_h.unwrap_or(0.0);
     let rect = Rect {
         x: f(root, "x"),
         y: f(root, "y"),
-        w: f(root, "w"),
-        h: f(root, "h"),
+        w: content_w + chrome_w,
+        h: content_h + chrome_h,
+    };
+    let min_width = if content_area {
+        crate::chrome::frame_minimum_width(f_or(root, "minw", content_w), title_bar)
+    } else {
+        f_or(root, "minw", content_w)
     };
     let mut panel = PanelSpec {
         rect,
         resizable,
-        min_width: f_or(root, "minw", rect.w),
-        min_height: f_or(root, "minh", rect.h),
+        min_width,
+        min_height: f_or(root, "minh", content_h) + chrome_h,
         resize_x: resizable,
         resize_y: resizable,
         themed: attr(root, "theme") == Some("plugin"),
+        layout,
+        title_bar,
+        scroll_x,
+        scroll_y,
+        authored_size: if has_layout {
+            (authored_w, authored_h)
+        } else {
+            (None, None)
+        },
+        authored_min: (authored_min_w, authored_min_h),
+        geometry_revision: if content_area {
+            crate::chrome::authored_geometry_revision(&crate::chrome::authored_inputs(|n| {
+                attr(root, n)
+            }))
+        } else {
+            0
+        },
         ..PanelSpec::default()
     };
     if let Some(resize) = attr(root, "resize") {
@@ -677,6 +1082,7 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
     parser.doc.panel = panel;
+    parser.doc.warnings = warnings;
     for child in root.children().filter(XmlNode::is_element) {
         let index = parser.element(child, None)?;
         parser.doc.roots.push(index);
@@ -1007,6 +1413,639 @@ impl Parser<'_> {
         }
     }
 
+    // ── The newer elements' binding helpers (OpenAC `MarkupBindings`):
+    // `required_*` fail when the attribute is absent or mistyped; the others
+    // are `None` when absent and fail when present but mistyped. `context`
+    // is "<element> <attribute>".
+
+    /// A required binding of one of `kinds`; `what` names them in the
+    /// messages ("a bool or bool?", "a float", ...), `binding` is what the
+    /// absent attribute must be ("bool or bool? binding").
+    fn required_of(
+        &self,
+        attribute: Option<&str>,
+        context: &str,
+        kinds: &[BindingKind],
+        binding: &str,
+        property: &str,
+    ) -> Result<String, MarkupError> {
+        let Some(a) = attribute.filter(|a| !a.trim().is_empty() && is_binding(a)) else {
+            return err(format!("{context} must be {binding}"));
+        };
+        match self.kind(inner(a)) {
+            Some(k) if kinds.contains(&k) => Ok(inner(a).to_owned()),
+            _ => err(format!(
+                "{a} did not resolve to {property} on {} ({context})",
+                self.type_name()
+            )),
+        }
+    }
+
+    /// An optional `Action<T>`.
+    fn optional_action(
+        &self,
+        attribute: Option<&str>,
+        context: &str,
+        kind: BindingKind,
+        type_name: &str,
+    ) -> Result<Option<String>, MarkupError> {
+        let Some(a) = attribute else {
+            return Ok(None);
+        };
+        if !is_binding(a) {
+            return err(format!("{context} must be an Action<{type_name}> binding"));
+        }
+        if self.kind(inner(a)) != Some(kind) {
+            return err(format!(
+                "{a} did not resolve to an Action<{type_name}> property on {} ({context})",
+                self.type_name()
+            ));
+        }
+        Ok(Some(inner(a).to_owned()))
+    }
+
+    /// A required `Action<T>`.
+    fn required_action(
+        &self,
+        attribute: Option<&str>,
+        context: &str,
+        kind: BindingKind,
+        type_name: &str,
+    ) -> Result<String, MarkupError> {
+        self.optional_action(attribute, context, kind, type_name)?
+            .map_or_else(
+                || err(format!("{context} must be an Action<{type_name}> binding")),
+                Ok,
+            )
+    }
+
+    /// A literal `a|b|c` list (no empty item) or a string-list binding.
+    fn items(
+        &self,
+        expression: Option<&str>,
+        element: &str,
+        noun: &str,
+    ) -> Result<ItemsSource, MarkupError> {
+        let Some(expression) = expression.filter(|e| !e.is_empty()) else {
+            return err(format!("{element} items must list at least one {noun}"));
+        };
+        if is_binding(expression) {
+            return self
+                .string_list(Some(expression), &format!("{element} items"))
+                .map(ItemsSource::Bound);
+        }
+        let items: Vec<String> = expression.split('|').map(str::to_owned).collect();
+        if items.iter().any(String::is_empty) {
+            return err(format!("{element} items must not have an empty {noun}"));
+        }
+        Ok(ItemsSource::Literal(items))
+    }
+
+    /// `true` or `false` (absent: `fallback`), anything else refused.
+    fn strict_bool(
+        el: XmlNode<'_, '_>,
+        name: &str,
+        fallback: bool,
+        message: impl FnOnce(&str) -> String,
+    ) -> Result<bool, MarkupError> {
+        match attr(el, name) {
+            None => Ok(fallback),
+            Some("true") => Ok(true),
+            Some("false") => Ok(false),
+            Some(other) => err(message(other)),
+        }
+    }
+
+    /// An element's `<contextmenu>` child (OpenAC `MarkupContextMenu.Attach`).
+    fn context_menu(&self, owner: XmlNode<'_, '_>) -> Result<Option<ContextMenu>, MarkupError> {
+        let menus: Vec<XmlNode<'_, '_>> = owner
+            .children()
+            .filter(|c| c.is_element() && c.tag_name().name() == "contextmenu")
+            .collect();
+        let Some(el) = menus.first().copied() else {
+            return Ok(None);
+        };
+        if menus.len() > 1 {
+            return err(format!(
+                "<{}> may have only one <contextmenu>",
+                owner.tag_name().name()
+            ));
+        }
+        if el.children().any(|c| c.is_element()) {
+            return err("<contextmenu> takes no children");
+        }
+        let onopen = self.optional_action(
+            attr(el, "onopen"),
+            "contextmenu onopen",
+            BindingKind::IntAction,
+            "int",
+        )?;
+        let items = self.items(attr(el, "items"), "contextmenu", "item")?;
+        let enabled = match attr(el, "enabled") {
+            None => None,
+            Some(e) => Some(self.bool_list(Some(e), "contextmenu enabled")?),
+        };
+        let onselect = self.required_int_action(attr(el, "onselect"), "contextmenu onselect")?;
+        Ok(Some(ContextMenu {
+            items,
+            enabled,
+            onselect,
+            onopen,
+        }))
+    }
+
+    fn checkbox(&self, el: XmlNode<'_, '_>) -> Result<Element, MarkupError> {
+        let text = match attr(el, "text") {
+            None => TextSource::Literal(String::new()),
+            Some(c) => self.text(Some(c)),
+        };
+        let checked = self.required_of(
+            attr(el, "checked"),
+            "checkbox checked",
+            &[BindingKind::Bool, BindingKind::OptionalBool],
+            "a bool or bool? binding",
+            "a bool or bool? property",
+        )?;
+        let onchange = self.optional_action(
+            attr(el, "onchange"),
+            "checkbox onchange",
+            BindingKind::BoolAction,
+            "bool",
+        )?;
+        Ok(Element::Checkbox {
+            text,
+            checked,
+            onchange,
+            color: self.color(attr(el, "color"))?,
+        })
+    }
+
+    fn number_element(&self, el: XmlNode<'_, '_>) -> Result<Element, MarkupError> {
+        use crate::number::{Dec, NumberSpec};
+        let value = self.required_of(
+            attr(el, "value"),
+            "number value",
+            &[BindingKind::Int, BindingKind::Float],
+            "a number binding",
+            "an int or float property",
+        )?;
+        let kind = if self.kind(&value) == Some(BindingKind::Int) {
+            NumberKind::Int
+        } else {
+            NumberKind::Float
+        };
+        let (action, type_name) = match kind {
+            NumberKind::Int => (BindingKind::IntAction, "Int32"),
+            NumberKind::Float => (BindingKind::FloatAction, "Single"),
+        };
+        let onchange = match attr(el, "onchange") {
+            Some(a) if !a.trim().is_empty() && is_binding(a) => {
+                if self.kind(inner(a)) != Some(action) {
+                    return err(format!(
+                        "{a} did not resolve to an Action<{type_name}> property on {} (number onchange)",
+                        self.type_name()
+                    ));
+                }
+                inner(a).to_owned()
+            }
+            _ => {
+                return err(format!(
+                    "number onchange must be an Action<{type_name}> binding"
+                ));
+            }
+        };
+        let integral = kind == NumberKind::Int;
+        let (type_min, type_max) = if integral {
+            (
+                Dec::from_i64(i64::from(i32::MIN)),
+                Dec::from_i64(i64::from(i32::MAX)),
+            )
+        } else {
+            (Dec::MIN, Dec::MAX)
+        };
+        let decimal = |name: &str, fallback: Dec| -> Result<Dec, MarkupError> {
+            match attr(el, name) {
+                None => Ok(fallback),
+                Some(raw) => Dec::parse_float_style(raw).map_or_else(
+                    || err(format!("<number {name}=\"{raw}\"> is not a number")),
+                    Ok,
+                ),
+            }
+        };
+        let min = decimal("min", type_min)?;
+        let max = decimal("max", type_max)?;
+        let step = decimal("step", Dec::ONE)?;
+        let decimals = match attr(el, "decimals") {
+            None => {
+                if integral {
+                    0
+                } else {
+                    2
+                }
+            }
+            Some(raw) => match parse_int(raw) {
+                Some(d) => d,
+                None => {
+                    return err(format!("<number decimals=\"{raw}\"> is not a whole number"));
+                }
+            },
+        };
+        if max < min {
+            return err(format!(
+                "<number min=\"{min}\" max=\"{max}\"> must have max >= min"
+            ));
+        }
+        if min < type_min || max > type_max {
+            return err(format!(
+                "<number min=\"{min}\" max=\"{max}\"> must fit a {type_name} value"
+            ));
+        }
+        if step <= Dec::ZERO {
+            return err(format!("<number step=\"{step}\"> must be greater than 0"));
+        }
+        if !(0..=10).contains(&decimals) {
+            return err(format!(
+                "<number decimals=\"{decimals}\"> must be from 0 to 10"
+            ));
+        }
+        let decimals = decimals.unsigned_abs();
+        if step.round(decimals) != step {
+            return err(format!(
+                "<number step=\"{step}\"> must not have more decimal places than decimals=\"{decimals}\""
+            ));
+        }
+        if integral && decimals != 0 {
+            return err(format!(
+                "<number decimals=\"{decimals}\"> must be 0 for a {type_name} value"
+            ));
+        }
+        let background = match attr(el, "background") {
+            None => ColorSource::Literal(Rgba::new(0.0, 0.0, 0.0, 0.9)),
+            Some(_) => self
+                .color(attr(el, "background"))?
+                .unwrap_or(ColorSource::Literal(Rgba::WHITE)),
+        };
+        let color = match attr(el, "color") {
+            None => ColorSource::Literal(Rgba::new(0.91, 0.87, 0.76, 1.0)),
+            Some(_) => self
+                .color(attr(el, "color"))?
+                .unwrap_or(ColorSource::Literal(Rgba::WHITE)),
+        };
+        Ok(Element::Number {
+            value,
+            onchange,
+            kind,
+            spec: NumberSpec {
+                min,
+                max,
+                step,
+                decimals,
+            },
+            background,
+            color,
+            default_background: attr(el, "background").is_none(),
+            default_color: attr(el, "color").is_none(),
+        })
+    }
+
+    fn radio(&self, el: XmlNode<'_, '_>) -> Result<Element, MarkupError> {
+        let items = self.items(attr(el, "items"), "radio", "option")?;
+        let selected = self.required_int(attr(el, "selected"), "radio selected")?;
+        let onchange = self.optional_action(
+            attr(el, "onchange"),
+            "radio onchange",
+            BindingKind::IntAction,
+            "int",
+        )?;
+        let horizontal = match attr(el, "orientation") {
+            None | Some("vertical") => false,
+            Some("horizontal") => true,
+            Some(other) => {
+                return err(format!(
+                    "<radio orientation=\"{other}\"> must be vertical or horizontal"
+                ));
+            }
+        };
+        let segmented = match attr(el, "style") {
+            None | Some("radio") => false,
+            Some("segmented") => true,
+            Some(other) => {
+                return err(format!(
+                    "<radio style=\"{other}\"> must be radio or segmented"
+                ));
+            }
+        };
+        Ok(Element::Radio {
+            items,
+            selected,
+            onchange,
+            horizontal,
+            segmented,
+            color: self.color(attr(el, "color"))?,
+        })
+    }
+
+    fn hotkey(&self, el: XmlNode<'_, '_>) -> Result<Element, MarkupError> {
+        let value = self.required_of(
+            attr(el, "value"),
+            "hotkey value",
+            &[BindingKind::Text],
+            "a string binding",
+            "a string property",
+        )?;
+        let onchange = self.required_action(
+            attr(el, "onchange"),
+            "hotkey onchange",
+            BindingKind::TextAction,
+            "string",
+        )?;
+        Ok(Element::Hotkey { value, onchange })
+    }
+
+    fn color_element(&self, el: XmlNode<'_, '_>) -> Result<Element, MarkupError> {
+        let value = self.required_of(
+            attr(el, "value"),
+            "color value",
+            &[BindingKind::Uint, BindingKind::Int, BindingKind::Text],
+            "a uint, int or string binding",
+            "a uint, int or string property",
+        )?;
+        let (kind, action, type_name) = match self.kind(&value) {
+            Some(BindingKind::Uint) => (ColorValueKind::Uint, BindingKind::UintAction, "uint"),
+            Some(BindingKind::Int) => (ColorValueKind::Int, BindingKind::IntAction, "int"),
+            _ => (ColorValueKind::Text, BindingKind::TextAction, "string"),
+        };
+        let onchange =
+            self.required_action(attr(el, "onchange"), "color onchange", action, type_name)?;
+        let alpha = Self::strict_bool(el, "alpha", false, |other| {
+            format!("<color alpha=\"{other}\"> must be true or false")
+        })?;
+        Ok(Element::Color {
+            value,
+            kind,
+            onchange,
+            alpha,
+        })
+    }
+
+    /// The first group's size in the split's axis when `at` is absent: half
+    /// the room the 5 px bar leaves, rounded down.
+    fn split_length(el: XmlNode<'_, '_>, name: &str) -> Result<Option<f32>, MarkupError> {
+        let Some(text) = attr(el, name) else {
+            return Ok(None);
+        };
+        match parse_float(text) {
+            Some(v) if v.is_finite() && v >= 0.0 => Ok(Some(v)),
+            _ => err(format!(
+                "<split {name}=\"{text}\"> must be a number of pixels, 0 or more"
+            )),
+        }
+    }
+
+    // ── Lists (OpenAC `MarkupListSelect`, `MarkupListHeader`, `MarkupListTree`).
+
+    fn list_bool(el: XmlNode<'_, '_>, name: &str) -> Result<bool, MarkupError> {
+        Self::strict_bool(el, name, false, |other| {
+            format!("<list {name}=\"{other}\"> must be true or false")
+        })
+    }
+
+    fn list_header(
+        &self,
+        el: XmlNode<'_, '_>,
+        column_els: &[XmlNode<'_, '_>],
+        columns: &mut [Column],
+    ) -> Result<ListHeader, MarkupError> {
+        let mut header = ListHeader {
+            show: Self::list_bool(el, "header")?,
+            ..ListHeader::default()
+        };
+        let sort_column = attr(el, "sortcolumn");
+        let sort_descending = attr(el, "sortdescending");
+        if sort_column.is_some() != sort_descending.is_some() {
+            return err(
+                "<list sortcolumn> and <list sortdescending> are bound together or not at all",
+            );
+        }
+        if sort_column.is_some() {
+            header.sort = Some((
+                self.required_int(sort_column, "list sortcolumn")?,
+                self.required_bool(sort_descending, "list sortdescending")?,
+            ));
+        }
+        header.onsort = self.int_bool_action(attr(el, "onsort"), "list onsort")?;
+        header.resizable = Self::list_bool(el, "resizable")?;
+        if header.resizable && !header.show {
+            return err("<list resizable=\"true\"> needs header=\"true\"");
+        }
+        let widths = attr(el, "widths");
+        let onresize = attr(el, "onresize");
+        if !header.resizable && (widths.is_some() || onresize.is_some()) {
+            return err("<list widths> and <list onresize> need resizable=\"true\"");
+        }
+        if widths.is_some() {
+            header.widths = Some(self.required_of(
+                widths,
+                "list widths",
+                &[BindingKind::FloatList],
+                "a float-list binding",
+                "an IEnumerable<float> property",
+            )?);
+        }
+        header.onresize = self.optional_action(
+            onresize,
+            "list onresize",
+            BindingKind::FloatListAction,
+            "IReadOnlyList<float>",
+        )?;
+        for (index, (column_el, column)) in column_els.iter().zip(columns.iter_mut()).enumerate() {
+            self.column_header(*column_el, column, index)?;
+        }
+        Ok(header)
+    }
+
+    fn int_bool_action(
+        &self,
+        attribute: Option<&str>,
+        context: &str,
+    ) -> Result<Option<String>, MarkupError> {
+        let Some(a) = attribute else {
+            return Ok(None);
+        };
+        if !is_binding(a) {
+            return err(format!("{context} must be an Action<int, bool> binding"));
+        }
+        if self.kind(inner(a)) != Some(BindingKind::IntBoolAction) {
+            return err(format!(
+                "{a} did not resolve to an Action<int, bool> property on {} ({context})",
+                self.type_name()
+            ));
+        }
+        Ok(Some(inner(a).to_owned()))
+    }
+
+    fn column_header(
+        &self,
+        el: XmlNode<'_, '_>,
+        column: &mut Column,
+        index: usize,
+    ) -> Result<(), MarkupError> {
+        let header = attr(el, "header");
+        let onall = attr(el, "onall");
+        let is_checkbox = matches!(column.kind, ColumnKind::Check { boxed: true, .. });
+        let select_all = header == Some("all") && is_checkbox;
+        if onall.is_some() && !select_all {
+            return err(format!(
+                "column[{index}] onall needs header=\"all\" on a checkbox column"
+            ));
+        }
+        if select_all {
+            column.header = ColumnHeader::SelectAll(self.optional_action(
+                onall,
+                &format!("column[{index}] onall"),
+                BindingKind::BoolAction,
+                "bool",
+            )?);
+        } else if let Some(h) = header {
+            column.header = ColumnHeader::Text(self.text(Some(h)));
+        }
+        let sort = match attr(el, "sort") {
+            None | Some("none") => SortKind::None,
+            Some("text") => SortKind::Text,
+            Some("number") => SortKind::Number,
+            Some("bool") => SortKind::Bool,
+            Some(other) => {
+                return err(format!(
+                    "column[{index}] sort=\"{other}\" must be text, number, bool or none"
+                ));
+            }
+        };
+        let keys = attr(el, "sortkeys");
+        if keys.is_some() && !matches!(sort, SortKind::Text | SortKind::Number) {
+            return err(format!(
+                "column[{index}] sortkeys needs sort=\"text\" or sort=\"number\""
+            ));
+        }
+        let is_check = matches!(column.kind, ColumnKind::Check { .. });
+        if sort == SortKind::Bool && !is_check {
+            return err(format!(
+                "column[{index}] sort=\"bool\" needs a check or checkbox column"
+            ));
+        }
+        if matches!(sort, SortKind::Text | SortKind::Number)
+            && keys.is_none()
+            && !matches!(
+                column.kind,
+                ColumnKind::Text { .. } | ColumnKind::Button { .. }
+            )
+        {
+            let kind = match column.kind {
+                ColumnKind::Check { .. } => "Check",
+                ColumnKind::Icon { .. } => "Icon",
+                _ => "Text",
+            };
+            return err(format!(
+                "column[{index}] sort=\"{}\" on a {kind} column needs sortkeys",
+                attr(el, "sort").unwrap_or_default()
+            ));
+        }
+        column.sort = sort;
+        if select_all && sort != SortKind::None {
+            return err(format!("column[{index}] header=\"all\" can't also sort"));
+        }
+        if let Some(keys) = keys {
+            let context = format!("column[{index}] sortkeys");
+            if keys.trim().is_empty() || !is_binding(keys) {
+                return err(format!(
+                    "{context} must be a binding to a list of double or string"
+                ));
+            }
+            column.sort_keys = Some(match self.kind(inner(keys)) {
+                Some(BindingKind::FloatList) => SortKeysSource::Numbers(inner(keys).to_owned()),
+                Some(BindingKind::TextList) => SortKeysSource::Texts(inner(keys).to_owned()),
+                _ => {
+                    return err(format!(
+                        "{keys} did not resolve to an IReadOnlyList<double> or IReadOnlyList<string> property on {} ({context})",
+                        self.type_name()
+                    ));
+                }
+            });
+        }
+        Ok(())
+    }
+
+    fn list_tree(
+        &self,
+        el: XmlNode<'_, '_>,
+        columns: Option<&[Column]>,
+    ) -> Result<Option<ListTree>, MarkupError> {
+        if !b(el, "tree", false) {
+            for name in ["levels", "keys", "expanded", "onexpand", "collapsed"] {
+                if attr(el, name).is_some() {
+                    return err(format!("<list {name}> needs tree=\"true\""));
+                }
+            }
+            return Ok(None);
+        }
+        let Some(columns) = columns.filter(|c| !c.is_empty()) else {
+            return err("<list tree=\"true\"> needs <column> children");
+        };
+        let Some(column) = columns
+            .iter()
+            .position(|c| matches!(c.kind, ColumnKind::Text { .. }))
+        else {
+            return err("<list tree=\"true\"> needs a text column to draw the tree in");
+        };
+        let levels = self.required_of(
+            attr(el, "levels"),
+            "list levels",
+            &[BindingKind::IntList],
+            "an int-list binding",
+            "an IEnumerable<int> property",
+        )?;
+        let keys = self.string_list(attr(el, "keys"), "list keys")?;
+        let (expanded, start_collapsed) = match attr(el, "expanded") {
+            Some(e) => {
+                if attr(el, "collapsed").is_some() {
+                    return err("<list collapsed> only applies when expanded is not bound");
+                }
+                let name = self.required_of(
+                    Some(e),
+                    "list expanded",
+                    &[BindingKind::TextList],
+                    "a string-set binding",
+                    "an IEnumerable<string> property",
+                )?;
+                (Some(name), false)
+            }
+            None => (None, b(el, "collapsed", false)),
+        };
+        let onexpand = match attr(el, "onexpand") {
+            None => None,
+            Some(a) => {
+                let context = "list onexpand";
+                if !is_binding(a) {
+                    return err(format!("{context} must be an Action<string, bool> binding"));
+                }
+                if self.kind(inner(a)) != Some(BindingKind::TextBoolAction) {
+                    return err(format!(
+                        "{a} did not resolve to an Action<string, bool> property on {} ({context})",
+                        self.type_name()
+                    ));
+                }
+                Some(inner(a).to_owned())
+            }
+        };
+        Ok(Some(ListTree {
+            column,
+            levels,
+            keys,
+            expanded,
+            start_collapsed,
+            onexpand,
+        }))
+    }
+
     fn parse_anchor(&self, el: XmlNode<'_, '_>) -> Result<Anchors, MarkupError> {
         let Some(tokens) = attr(el, "anchor") else {
             return Ok(Anchors::TOP_LEFT);
@@ -1055,6 +2094,7 @@ impl Parser<'_> {
             default_color: attr(el, "color").is_none(),
             default_background: attr(el, "background").is_none(),
             default_border: attr(el, "border").is_none(),
+            context_menu: None,
         })
     }
 
@@ -1072,6 +2112,7 @@ impl Parser<'_> {
             rect,
             parent,
             children: Vec::new(),
+            flex: None,
         });
         if let Some(p) = parent {
             self.doc.nodes[p].children.push(index);
@@ -1079,8 +2120,49 @@ impl Parser<'_> {
         index
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Builds `el` and its children, then its `<contextmenu>`. Under a flex
+    /// container its item attributes are read; elsewhere a stray one is
+    /// reported and ignored.
     fn element(
+        &mut self,
+        el: XmlNode<'_, '_>,
+        parent: Option<usize>,
+    ) -> Result<usize, MarkupError> {
+        let flex_parent = match parent {
+            None => self.doc.panel.layout.is_some(),
+            Some(p) => matches!(
+                self.doc.nodes[p].element,
+                Element::Group {
+                    layout: Some(_),
+                    ..
+                }
+            ),
+        };
+        if !flex_parent {
+            flex_attrs::reject_item(el, &mut self.doc.warnings);
+        }
+        let index = self.element_inner(el, parent)?;
+        let menu = self.context_menu(el)?;
+        self.doc.nodes[index].common.context_menu = menu;
+        if flex_parent {
+            self.doc.nodes[index].flex = Some(flex_attrs::read_item(el)?);
+        }
+        Ok(index)
+    }
+
+    /// The children of a container, its `<contextmenu>` left out.
+    fn children_of(&mut self, el: XmlNode<'_, '_>, index: usize) -> Result<(), MarkupError> {
+        for child in el
+            .children()
+            .filter(|c| c.is_element() && c.tag_name().name() != "contextmenu")
+        {
+            self.element(child, Some(index))?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn element_inner(
         &mut self,
         el: XmlNode<'_, '_>,
         parent: Option<usize>,
@@ -1090,16 +2172,27 @@ impl Parser<'_> {
             "group" => {
                 let background = self.color(attr(el, "background"))?;
                 let border = self.color(attr(el, "border"))?;
+                let (scroll_x, scroll_y) = flex_attrs::scroll(el, &mut self.doc.warnings);
+                let layout = if flex_attrs::is_container(el, &mut self.doc.warnings) {
+                    Some(flex_attrs::read_container(el)?)
+                } else {
+                    flex_attrs::reject_container(el, &mut self.doc.warnings);
+                    None
+                };
                 let common = self.common(el)?;
                 let index = self.push(
-                    Element::Group { background, border },
+                    Element::Group {
+                        background,
+                        border,
+                        layout,
+                        scroll_x,
+                        scroll_y,
+                    },
                     common,
                     rect(el),
                     parent,
                 );
-                for child in el.children().filter(XmlNode::is_element) {
-                    self.element(child, Some(index))?;
-                }
+                self.children_of(el, index)?;
                 return Ok(index);
             }
             "meter" => {
@@ -1333,19 +2426,22 @@ impl Parser<'_> {
                 Element::Log { items, first_index }
             }
             "list" => {
-                let onchange = self.handler(
-                    attr(el, "onchange"),
-                    BindingKind::IntAction,
-                    self.action_message("list", "onchange", "Action<int>"),
-                )?;
-                let children: Vec<XmlNode<'_, '_>> =
-                    el.children().filter(XmlNode::is_element).collect();
+                let children: Vec<XmlNode<'_, '_>> = el
+                    .children()
+                    .filter(|c| c.is_element() && c.tag_name().name() != "contextmenu")
+                    .collect();
                 for child in &children {
                     let name = child.tag_name().name();
                     if name != "column" {
                         return err(format!(
                             "<list> children must all be <column>, got <{name}>"
                         ));
+                    }
+                    if child
+                        .children()
+                        .any(|c| c.is_element() && c.tag_name().name() == "contextmenu")
+                    {
+                        return err("<contextmenu> goes on the <list>, not on a <column>");
                     }
                 }
                 let columns = !children.is_empty();
@@ -1358,7 +2454,46 @@ impl Parser<'_> {
                         "<list> with <column> children cannot also use the items/icons/colors attributes (the single-column form) — express every row source as a <column> instead",
                     );
                 }
-                let selected = self.required_int(attr(el, "selected"), "list selected")?;
+                // OpenAC `MarkupListSelect`.
+                let (selected, onchange, multi, selection_band) = match attr(el, "selectmode")
+                    .unwrap_or("single")
+                {
+                    "single" => {
+                        let onchange = self.handler(
+                            attr(el, "onchange"),
+                            BindingKind::IntAction,
+                            self.action_message("list", "onchange", "Action<int>"),
+                        )?;
+                        let selected = self.required_int(attr(el, "selected"), "list selected")?;
+                        (selected, onchange, false, b(el, "selectionband", false))
+                    }
+                    "multi" => {
+                        if !b(el, "selectionband", true) {
+                            return err(
+                                "<list selectmode=\"multi\"> always draws the selection band; remove selectionband=\"false\"",
+                            );
+                        }
+                        let selected = self.required_of(
+                            attr(el, "selected"),
+                            "list selected",
+                            &[BindingKind::IntList],
+                            "an int-list binding",
+                            "an IEnumerable<int> property",
+                        )?;
+                        let onchange = self.optional_action(
+                            attr(el, "onchange"),
+                            "list onchange",
+                            BindingKind::IntListAction,
+                            "IReadOnlyList<int>",
+                        )?;
+                        (selected, onchange, true, true)
+                    }
+                    other => {
+                        return err(format!(
+                            "<list selectmode=\"{other}\"> must be single or multi"
+                        ));
+                    }
+                };
                 let body = if columns {
                     let last = children.len() - 1;
                     let mut built = Vec::with_capacity(children.len());
@@ -1383,13 +2518,163 @@ impl Parser<'_> {
                         icons,
                     }
                 };
-                Element::List {
+                let common = self.common(el)?;
+                let mut body = body;
+                let header = match &mut body {
+                    ListBody::Columns(built) => self.list_header(el, &children, built)?,
+                    ListBody::Single { .. } => {
+                        for name in [
+                            "header",
+                            "resizable",
+                            "sortcolumn",
+                            "sortdescending",
+                            "onsort",
+                            "widths",
+                            "onresize",
+                        ] {
+                            if attr(el, name).is_some() {
+                                return err(format!("<list {name}> needs <column> children"));
+                            }
+                        }
+                        ListHeader::default()
+                    }
+                };
+                let tree = self.list_tree(
+                    el,
+                    match &body {
+                        ListBody::Columns(c) => Some(c.as_slice()),
+                        ListBody::Single { .. } => None,
+                    },
+                )?;
+                let element = Element::List {
                     selected,
                     onchange,
                     row_height: f_or(el, "rowheight", 18.0).max(12.0),
-                    selection_band: b(el, "selectionband", false),
+                    selection_band,
+                    multi,
                     body,
+                    header,
+                    tree,
+                };
+                return Ok(self.push(element, common, rect(el), parent));
+            }
+            "checkbox" => self.checkbox(el)?,
+            "number" => self.number_element(el)?,
+            "radio" => self.radio(el)?,
+            "separator" => Element::Separator {
+                color: self.color(attr(el, "color"))?,
+            },
+            "hotkey" => self.hotkey(el)?,
+            "color" => self.color_element(el)?,
+            "expander" => {
+                let height = f(el, "h");
+                if height < EXPANDER_HEADER_HEIGHT {
+                    return err(format!(
+                        "<expander h=\"{}\"> must be at least {} (its header)",
+                        num(height),
+                        num(EXPANDER_HEADER_HEIGHT)
+                    ));
                 }
+                let open = Self::strict_bool(el, "open", true, |other| {
+                    format!("<expander open=\"{other}\"> must be true or false")
+                })?;
+                let onchange = self.optional_action(
+                    attr(el, "onchange"),
+                    "expander onchange",
+                    BindingKind::BoolAction,
+                    "bool",
+                )?;
+                let expanded = match attr(el, "expanded") {
+                    None => None,
+                    Some(e) => Some(self.required_bool(Some(e), "expander expanded")?),
+                };
+                let text = match attr(el, "text") {
+                    None => TextSource::Literal(String::new()),
+                    Some(c) => self.text(Some(c)),
+                };
+                let color = self.color(attr(el, "color"))?;
+                let common = self.common(el)?;
+                let index = self.push(
+                    Element::Expander {
+                        text,
+                        expanded,
+                        onchange,
+                        open,
+                        color,
+                    },
+                    common,
+                    rect(el),
+                    parent,
+                );
+                self.children_of(el, index)?;
+                return Ok(index);
+            }
+            "split" => {
+                let horizontal = match attr(el, "orientation") {
+                    None | Some("horizontal") => true,
+                    Some("vertical") => false,
+                    Some(other) => {
+                        return err(format!(
+                            "<split orientation=\"{other}\"> must be horizontal or vertical"
+                        ));
+                    }
+                };
+                let panes: Vec<XmlNode<'_, '_>> = el
+                    .children()
+                    .filter(|c| c.is_element() && c.tag_name().name() != "contextmenu")
+                    .collect();
+                if panes.len() != 2 || panes.iter().any(|p| p.tag_name().name() != "group") {
+                    return err("<split> must contain exactly two <group> elements");
+                }
+                let min = Self::split_length(el, "min")?.unwrap_or(0.0);
+                let max = Self::split_length(el, "max")?;
+                let onchange = self.optional_action(
+                    attr(el, "onchange"),
+                    "split onchange",
+                    BindingKind::FloatAction,
+                    "float",
+                )?;
+                if let Some(max) = max
+                    && max < min
+                {
+                    return err(format!(
+                        "<split max=\"{}\"> must not be less than min=\"{}\"",
+                        num(max),
+                        num(min)
+                    ));
+                }
+                let r = rect(el);
+                let room = ((if horizontal { r.w } else { r.h }) - SPLIT_BAR_SIZE).max(0.0);
+                let at = Self::split_length(el, "at")?;
+                let position = match attr(el, "position") {
+                    None => None,
+                    Some(p) => Some(self.required_of(
+                        Some(p),
+                        "split position",
+                        &[BindingKind::Float],
+                        "a float binding",
+                        "a float property",
+                    )?),
+                };
+                let common = self.common(el)?;
+                let index = self.push(
+                    Element::Split {
+                        horizontal,
+                        min,
+                        max,
+                        default_position: at.unwrap_or((room / 2.0).floor()),
+                        at_given: at.is_some(),
+                        position,
+                        onchange,
+                    },
+                    common,
+                    r,
+                    parent,
+                );
+                for pane in panes {
+                    self.element(pane, Some(index))?;
+                }
+                return Ok(index);
             }
             other => return err(format!("unknown element <{other}>")),
         };
@@ -1439,11 +2724,15 @@ impl Parser<'_> {
                     onclick,
                 }
             }
-            Some("check") => {
-                let values = self.bool_list(attr(el, "values"), &context("check", "values"))?;
+            Some(t @ ("check" | "checkbox")) => {
+                let values = self.bool_list(attr(el, "values"), &context(t, "values"))?;
                 let onchange =
-                    self.required_int_action(attr(el, "onchange"), &context("check", "onchange"))?;
-                ColumnKind::Check { values, onchange }
+                    self.required_int_action(attr(el, "onchange"), &context(t, "onchange"))?;
+                ColumnKind::Check {
+                    values,
+                    onchange,
+                    boxed: t == "checkbox",
+                }
             }
             Some("icon") => {
                 let values_context = context("icon", "values");
@@ -1486,14 +2775,23 @@ impl Parser<'_> {
             }
             other => {
                 return err(format!(
-                    "column[{index}] has unknown type=\"{}\" (expected text, check, icon, or button)",
+                    "column[{index}] has unknown type=\"{}\" (expected text, check, checkbox, icon, or button)",
                     other.unwrap_or("")
                 ));
             }
         };
-        Ok(Column { width, auto, kind })
+        Ok(Column {
+            width,
+            auto,
+            kind,
+            header: ColumnHeader::None,
+            sort: SortKind::None,
+            sort_keys: None,
+        })
     }
 }
 
+#[cfg(test)]
+mod controls_tests;
 #[cfg(test)]
 mod tests;

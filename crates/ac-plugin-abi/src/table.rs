@@ -66,6 +66,28 @@ macro_rules! import_table {
             /// Show or hide a control.
             UiControlVisible = ui_control_visible($crate::ui::ControlVisible) -> bool,
                 permission: None, window: false, since: (1, 0);
+            /// Register a window from markup whose bindings may use every
+            /// kind (the newer controls' and `<repeat>`'s).
+            UiPanelRegisterTyped = ui_panel_register_typed($crate::ui::TypedPanelRegistration)
+                -> Result<u32, String> = Err("no plugin UI".to_owned()),
+                permission: None, window: false, since: (1, 0);
+            /// Push typed bound values.
+            UiPanelSetTyped = ui_panel_set_typed($crate::ui::TypedPanelValues)
+                -> Result<(), String> = Ok(()),
+                permission: None, window: false, since: (1, 0);
+            /// Ask the player a question in a dialog box: its handle, none
+            /// when no window draws it, or why the request is refused.
+            UiDialogConfirm = ui_dialog_confirm($crate::ui::DialogRequest)
+                -> Result<Option<u32>, String> = Ok(None),
+                permission: None, window: true, since: (1, 0);
+            /// Withdraw one of the plugin's dialogs (answered with its last
+            /// button); false once it is answered.
+            UiDialogWithdraw = ui_dialog_withdraw(u32) -> bool,
+                permission: None, window: false, since: (1, 0);
+            /// Show one of the plugin's windows modal over another (false
+            /// without a window).
+            UiPanelShowModal = ui_panel_show_modal($crate::ui::ModalShow) -> bool,
+                permission: None, window: true, since: (1, 0);
             /// Toggle, show, hide or ask about one of the client's windows
             /// (false without a window).
             UiClientWindow = ui_client_window($crate::ui::ClientWindowRequest) -> bool,

@@ -228,6 +228,21 @@ pub struct Element {
     pub runtime_tooltip_text: Option<String>,
     /// Image-map mask.
     pub pointer_region: Option<PointerRegion>,
+    /// Its right-click menu element: a right click the element leaves
+    /// unhandled is offered to it.
+    pub context_menu: Option<ElementId>,
+    /// A child that stays put while its parent scrolls (a scrollbar): it is
+    /// neither moved by nor clipped to the parent's content viewport.
+    pub scroll_chrome: bool,
+    /// The size of the part of this element its scrolled children are seen
+    /// through, from its top-left corner; `None` for an element that does
+    /// not scroll. While set, every child but the scroll chrome is clipped to
+    /// it and moved by [`Self::content_offset`], in drawing, hit-testing and
+    /// screen positions alike.
+    pub content_viewport: Option<(f32, f32)>,
+    /// How far this element's content is scrolled, pixels (used only while
+    /// [`Self::content_viewport`] is set).
+    pub content_offset: (f32, f32),
 }
 
 impl Default for Element {
@@ -267,6 +282,10 @@ impl Default for Element {
             layout_policy: None,
             runtime_tooltip_text: None,
             pointer_region: None,
+            context_menu: None,
+            scroll_chrome: false,
+            content_viewport: None,
+            content_offset: (0.0, 0.0),
         }
     }
 }
@@ -416,6 +435,17 @@ pub trait Widget: AsAny + fmt::Debug {
 
     /// Draw into the overlay layer (popups that escape their window).
     fn draw_overlay(&mut self, _ui: &mut UiRoot, _me: ElementId, _rc: &mut RenderContext<'_>) {}
+
+    /// Put the children where they belong for this element's current size,
+    /// just before they are drawn; false leaves it to their anchors (a flex
+    /// container or a scrolling group lays them out itself).
+    fn layout_children(&mut self, _ui: &mut UiRoot, _me: ElementId) -> bool {
+        false
+    }
+
+    /// Scroll just far enough to show `target`, a descendant that took
+    /// keyboard focus (a scrolling group).
+    fn reveal(&mut self, _ui: &mut UiRoot, _me: ElementId, _target: ElementId) {}
 
     /// Per-frame update, visible elements only.
     fn tick(&mut self, _ui: &mut UiRoot, _me: ElementId, _dt: f64) {}

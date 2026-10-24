@@ -357,6 +357,56 @@ impl UiRoot {
         true
     }
 
+    /// Brings window `name` up to its minimum size, starting from `width` x
+    /// `height` instead of its current size, so a window that grew to fit
+    /// its content can go back to an earlier size (never below its minimum)
+    /// when the content needs less again. Unlike
+    /// [`UiRoot::resize_window`] it grows an axis even when the window
+    /// cannot be resized along it, and it keeps the window on screen: a
+    /// frame that would reach past the parent's right or bottom edge moves
+    /// left or up, no further than the parent's origin, and an axis whose
+    /// minimum is larger than the parent takes the parent's size at its
+    /// origin. The new geometry is announced like a resize, and a move when
+    /// the frame moved. False for an unknown name.
+    pub fn enforce_minimum_size(&mut self, name: &str, width: f32, height: f32) -> bool {
+        let Some(frame) = self.window(name).map(|w| w.frame) else {
+            return false;
+        };
+        let parent = self
+            .parent(frame)
+            .and_then(|p| self.element(p))
+            .map(|p| (p.width, p.height));
+        let Some(e) = self.element(frame) else {
+            return false;
+        };
+        let mut width = width.max(e.min_width);
+        let mut height = height.max(e.min_height);
+        let (mut left, mut top) = (e.left, e.top);
+        if let Some((pw, ph)) = parent {
+            (left, width) = fit_axis(left, width, pw);
+            (top, height) = fit_axis(top, height, ph);
+        }
+        let resized = width != e.width || height != e.height;
+        let moved = left != e.left || top != e.top;
+        if !resized && !moved {
+            return true;
+        }
+        if let Some(e) = self.element_mut(frame) {
+            e.width = width;
+            e.height = height;
+            e.left = left;
+            e.top = top;
+        }
+        self.reset_anchor_capture(frame);
+        if resized {
+            self.windows_notify_resized(frame);
+        }
+        if moved {
+            self.windows_notify_moved(frame);
+        }
+        true
+    }
+
     /// Set window `name`'s opacity (0..=1).
     pub fn set_window_opacity(&mut self, name: &str, opacity: f32) -> bool {
         let Some(frame) = self.window(name).map(|w| w.frame) else {
@@ -506,4 +556,19 @@ impl UiRoot {
             self.emit_window(&name, WindowEvent::Resized);
         }
     }
+}
+
+/// Keeps one axis of a window inside a parent `space` long. A parent with
+/// no extent yet (not laid out) leaves the axis alone.
+fn fit_axis(start: f32, size: f32, space: f32) -> (f32, f32) {
+    if space <= 0.0 {
+        return (start, size);
+    }
+    if size > space {
+        return (0.0, space.max(0.0));
+    }
+    if start + size > space {
+        return ((space - size).max(0.0), size);
+    }
+    (start, size)
 }

@@ -8,8 +8,17 @@
 //! [`PluginOutbox`] the client sends back to the session.
 
 pub mod canvas;
+pub mod color;
+pub mod content_size;
+pub mod controls;
+pub mod dialog;
+pub mod flex_box;
+pub mod fold;
 pub mod hotkeys;
+pub mod layout;
+pub mod list_ext;
 pub mod shelf;
+pub mod title_bar;
 pub mod widgets;
 
 use std::cell::RefCell;
@@ -17,10 +26,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ac_plugin_ui::flex::{FlexMeasurement, FlexNode, FlexSize};
 use ac_plugin_ui::list::ColumnPress;
 use ac_plugin_ui::markup::{
-    Anchors, ColorSource, ColumnKind, Element as Markup, IconKind, IconSource, ListBody,
-    MarkupDocument, normalize_icon,
+    Anchors, ColorSource, ColumnKind, EXPANDER_HEADER_HEIGHT, Element as Markup, IconKind,
+    IconSource, ListBody, MarkupDocument, normalize_icon,
 };
 use ac_plugin_ui::{ActionValue, PanelView, Rgba, UiInput, UiValue};
 
@@ -103,6 +113,16 @@ fn keyboard_activated(mut e: Element) -> Element {
     e.focus_on_mouse_click = false;
     e.tab_stop = true;
     e
+}
+
+/// A transparent, borderless container.
+fn transparent_panel() -> Panel {
+    Panel {
+        background_color: Color::TRANSPARENT,
+        border_color: Color::TRANSPARENT,
+        border_thickness: 0.0,
+        background_sprite: 0,
+    }
 }
 
 fn anchors(a: Anchors) -> AnchorEdges {
@@ -195,6 +215,8 @@ pub struct PluginPanelController {
     outbox: PluginOutbox,
     expected_visible: bool,
     menu_items: HashMap<usize, Vec<String>>,
+    /// Each element's context menu element, by markup element.
+    menus: HashMap<usize, ElementId>,
     synced: Option<u64>,
     /// The font the window was built with.
     classic_font: Option<Arc<UiFont>>,
@@ -203,6 +225,100 @@ pub struct PluginPanelController {
     /// The title's colour without a theme (`controls.ini`'s `[title] color`,
     /// else white).
     title_color: Color,
+    /// The title bar, on a window with one.
+    title_bar: Option<ElementId>,
+    /// The content area, on a window with chrome or a flex layout.
+    content: Option<ElementId>,
+    /// The chrome above and below the content area.
+    chrome_h: f32,
+    /// Menus a flex container sizes: their popup follows their width.
+    flex_menus: Vec<ElementId>,
+    /// The size the window had before its content grew it, and the size it
+    /// grew to; cleared once the player sizes it otherwise.
+    growth: Option<((f32, f32), (f32, f32))>,
+}
+
+/// Enters `id`, just built for markup element `index` under a flex
+/// container, into that container's layout: a flex group is already an
+/// inner node; an absolute group is a leaf of its authored size; any other
+/// control is a leaf measured from its content. The container places it, so
+/// it keeps no anchors.
+fn add_flex_item(
+    ui: &mut UiRoot,
+    flex_of: &HashMap<Option<usize>, (layout::SharedFlex, Option<usize>)>,
+    node: &ac_plugin_ui::markup::Node,
+    index: usize,
+    id: ElementId,
+    attrs: &ac_plugin_ui::markup::FlexItem,
+) {
+    ui.set_anchors(id, AnchorEdges::NONE);
+    let nested_flex = matches!(
+        node.element,
+        Markup::Group {
+            layout: Some(_),
+            ..
+        }
+    );
+    if nested_flex {
+        return;
+    }
+    let Some((shared, parent_item)) = flex_of.get(&node.parent) else {
+        return;
+    };
+    let mut flex_node = FlexNode::default();
+    attrs.apply(&mut flex_node);
+    let authored = match &node.element {
+        Markup::Group {
+            scroll_x, scroll_y, ..
+        } => Some(absolute_group_size(
+            node.rect.w,
+            node.rect.h,
+            *scroll_x,
+            *scroll_y,
+        )),
+        _ => None,
+    };
+    let item = shared
+        .borrow_mut()
+        .add(*parent_item, id, index, flex_node, false, authored);
+    match &node.element {
+        Markup::Expander { .. } => {
+            // Its h is the expanded height, given only while it is
+            // expanded; collapsed it measures as its header.
+            shared.borrow_mut().set_expander(item, node.rect.h);
+            if let Some(x) = ui.widget_mut::<fold::MarkupExpander>(id) {
+                x.flex_placed = true;
+            }
+        }
+        Markup::Label { .. } => {
+            if let Some(l) = ui.widget_mut::<MarkupLabel>(id) {
+                l.sized_by_layout = true;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// An absolute group's content size in a flex container: its authored
+/// size, which is also its minimum, except along an axis it scrolls, where
+/// it can shrink to a 40-pixel viewport (plus the other axis's bar).
+fn absolute_group_size(w: f32, h: f32, scroll_x: bool, scroll_y: bool) -> FlexMeasurement {
+    use ac_plugin_ui::flex::MINIMUM_SCROLL_VIEWPORT;
+    let size = FlexSize::new(w, h);
+    if !scroll_x && !scroll_y {
+        return FlexMeasurement::new(size, size);
+    }
+    let min_w = if scroll_x {
+        MINIMUM_SCROLL_VIEWPORT + if scroll_y { layout::BAR_SIZE } else { 0.0 }
+    } else {
+        w
+    };
+    let min_h = if scroll_y {
+        MINIMUM_SCROLL_VIEWPORT + if scroll_x { layout::BAR_SIZE } else { 0.0 }
+    } else {
+        h
+    };
+    FlexMeasurement::new(size, FlexSize::new(min_w.min(w), min_h.min(h)))
 }
 
 /// Builds the window of `view` (OpenAC `MarkupDocument.Build`): the frame
@@ -215,7 +331,37 @@ pub fn build_panel(
     font: Option<Arc<UiFont>>,
     outbox: PluginOutbox,
 ) -> PluginPanelController {
+    build_panel_with_state(ui, view, font, outbox, None)
+}
+
+/// [`build_panel`] with the window's remembered control values: named
+/// expanders, splits and lists remember what the player left them at for
+/// the character.
+#[allow(clippy::too_many_lines)]
+pub fn build_panel_with_state(
+    ui: &mut UiRoot,
+    view: &PanelView,
+    font: Option<Arc<UiFont>>,
+    outbox: PluginOutbox,
+    control_state: Option<fold::SharedControlState>,
+) -> PluginPanelController {
     let doc = Arc::clone(&view.document);
+    let window_name = view.window_name();
+    let emit = controls::Emit {
+        panel: view.id,
+        outbox: Rc::clone(&outbox),
+    };
+    let shifts: fold::Shifts = Rc::default();
+    let remembered = |control: Option<&String>, kind: &'static str| {
+        fold::Remembered::new(
+            control_state.clone(),
+            &window_name,
+            control.map(String::as_str),
+            kind,
+        )
+    };
+    let mut containers: Vec<ElementId> = Vec::with_capacity(doc.nodes.len());
+    let mut menus: HashMap<usize, ElementId> = HashMap::new();
     let spec = &doc.panel;
     let mut frame_element = Element::at(spec.rect.x, spec.rect.y, spec.rect.w, spec.rect.h)
         .with_anchors(AnchorEdges::NONE)
@@ -237,34 +383,150 @@ pub fn build_panel(
             palette: None,
         },
     );
-    let title = spec.title.as_ref().map(|t| {
-        let mut e = Element::at(8.0, 4.0, 0.0, 0.0);
-        e.click_through = true;
-        let mut label = MarkupLabel::new(font.clone());
-        label.text.clone_from(t);
-        ui.add(root, e, label)
+    // A window with chrome or a flex layout has a content area inside the
+    // border (and title bar) that holds every authored child.
+    let content_area = spec.has_content_area();
+    let chrome_w = if content_area {
+        ac_plugin_ui::chrome::HORIZONTAL_INSETS
+    } else {
+        0.0
+    };
+    let chrome_h = if content_area {
+        ac_plugin_ui::chrome::vertical_insets_for(spec.title_bar)
+    } else {
+        0.0
+    };
+    let title_bar = spec.title_bar.then(|| {
+        let bar = title_bar::TitleBar::add(ui, root, spec.rect.w, font.clone());
+        if let Some(b) = ui.widget_mut::<title_bar::TitleBar>(bar) {
+            b.title = spec
+                .title
+                .clone()
+                .unwrap_or_else(|| view.descriptor.title.clone());
+        }
+        bar
     });
+    // The legacy title label: only on a window without a bar or a layout.
+    let title = if spec.title_bar || spec.layout.is_some() {
+        None
+    } else {
+        spec.title.as_ref().map(|t| {
+            let mut e = Element::at(8.0, 4.0, 0.0, 0.0);
+            e.click_through = true;
+            let mut label = MarkupLabel::new(font.clone());
+            label.text.clone_from(t);
+            ui.add(root, e, label)
+        })
+    };
+    let content = content_area.then(|| {
+        let mut e = Element::at(
+            ac_plugin_ui::chrome::BORDER,
+            ac_plugin_ui::chrome::top_inset(spec.title_bar),
+            spec.rect.w - chrome_w,
+            spec.rect.h - chrome_h,
+        )
+        .with_anchors(AnchorEdges::ALL);
+        e.click_through = true;
+        e.name = Some("PluginContent".to_owned());
+        ui.add(root, e, layout::ContentHost::default())
+    });
+    let content_parent = content.unwrap_or(root);
+    // Each flex root's layout, by the markup element that is its container
+    // (`None`: the content area), with the item a nested container is.
+    let mut flex_of: HashMap<Option<usize>, (layout::SharedFlex, Option<usize>)> = HashMap::new();
+    if let (Some(container), Some(c)) = (&spec.layout, content) {
+        let mut node = FlexNode::default();
+        container.apply(&mut node);
+        let mut layout = flex_box::FlexBox::new(Arc::clone(&doc), node);
+        layout.tracks_minimum = true;
+        let shared = Rc::new(RefCell::new(layout));
+        if let Some(host) = ui.widget_mut::<layout::ContentHost>(c) {
+            host.flex = Some(Rc::clone(&shared));
+        }
+        flex_of.insert(None, (shared, None));
+    }
+    if let Some(c) = content
+        && (spec.scroll_x || spec.scroll_y)
+    {
+        let area = layout::ScrollArea::new(ui, c, spec.scroll_x, spec.scroll_y);
+        if let Some((shared, _)) = flex_of.get(&None) {
+            let mut layout = shared.borrow_mut();
+            let node = layout.root_node_mut();
+            node.scroll_x = spec.scroll_x;
+            node.scroll_y = spec.scroll_y;
+            node.scrollbar_size = layout::BAR_SIZE;
+        }
+        if let Some(host) = ui.widget_mut::<layout::ContentHost>(c) {
+            host.scroll = Some(area);
+        }
+    }
+    let mut flex_menus = Vec::new();
     let mut nodes = Vec::with_capacity(doc.nodes.len());
     let mut by_element = HashMap::new();
     for (index, node) in doc.nodes.iter().enumerate() {
-        let parent = node.parent.map_or(root, |p| nodes[p]);
+        let parent = node.parent.map_or(content_parent, |p| containers[p]);
+        let mut container = None;
         let mut e = Element::at(node.rect.x, node.rect.y, node.rect.w, node.rect.h)
             .with_anchors(anchors(node.common.anchors));
         e.name.clone_from(&node.common.name);
         let font = font.clone();
+        let menu_font = font.clone();
         let id = match &node.element {
-            Markup::Group { .. } => {
-                e.click_through = true;
-                ui.add(
-                    parent,
-                    e,
-                    Panel {
-                        background_color: Color::TRANSPARENT,
-                        border_color: Color::TRANSPARENT,
-                        border_thickness: 0.0,
-                        background_sprite: 0,
-                    },
-                )
+            Markup::Group {
+                layout: group_layout,
+                scroll_x,
+                scroll_y,
+                ..
+            } => {
+                let scrolls = *scroll_x || *scroll_y;
+                // A scrolling group is hit-testable so the wheel reaches it
+                // over empty space.
+                e.click_through = !scrolls;
+                let id = ui.add(parent, e, layout::MarkupGroup::new(transparent_panel()));
+                let mut flex = None;
+                if let Some(container) = group_layout {
+                    let mut flex_node = FlexNode::default();
+                    container.apply(&mut flex_node);
+                    if scrolls {
+                        flex_node.scroll_x = *scroll_x;
+                        flex_node.scroll_y = *scroll_y;
+                        flex_node.scrollbar_size = layout::BAR_SIZE;
+                    }
+                    let (shared, item) = match (&node.flex, flex_of.get(&node.parent)) {
+                        // Nested in a flex container: an inner node of its
+                        // root's tree.
+                        (Some(attrs), Some((shared, parent_item))) => {
+                            attrs.apply(&mut flex_node);
+                            let item = shared.borrow_mut().add(
+                                *parent_item,
+                                id,
+                                index,
+                                flex_node,
+                                true,
+                                None,
+                            );
+                            (Rc::clone(shared), Some(item))
+                        }
+                        _ => (
+                            Rc::new(RefCell::new(flex_box::FlexBox::new(
+                                Arc::clone(&doc),
+                                flex_node,
+                            ))),
+                            None,
+                        ),
+                    };
+                    flex_of.insert(Some(index), (Rc::clone(&shared), item));
+                    flex = Some(layout::FlexPart {
+                        layout: shared,
+                        item,
+                    });
+                }
+                let scroll = scrolls.then(|| layout::ScrollArea::new(ui, id, *scroll_x, *scroll_y));
+                if let Some(g) = ui.widget_mut::<layout::MarkupGroup>(id) {
+                    g.flex = flex;
+                    g.scroll = scroll;
+                }
+                id
             }
             Markup::Meter { sprites, .. } => {
                 Meter::configure(&mut e);
@@ -381,55 +643,374 @@ pub fn build_panel(
                 row_height,
                 selection_band,
                 body,
+                header,
+                tree,
+                multi,
+                onchange,
                 ..
             } => {
                 let mut list = MarkupList::new(font, *row_height);
                 list.selection_band = *selection_band;
                 if let ListBody::Columns(columns) = body {
                     list.columns.clone_from(columns);
+                    list.markup_columns.clone_from(columns);
+                    let mut ext = list_ext::ListExt::new(
+                        columns,
+                        remembered(node.common.name.as_ref(), "sort"),
+                        remembered(node.common.name.as_ref(), "widths"),
+                        emit.clone(),
+                    );
+                    ext.header = header.show;
+                    ext.onsort.clone_from(&header.onsort);
+                    ext.resizable = header.resizable;
+                    ext.onresize.clone_from(&header.onresize);
+                    ext.multi = *multi;
+                    if *multi {
+                        ext.onchange.clone_from(onchange);
+                    }
+                    ext.tree = tree.as_ref().map(|t| {
+                        list_ext::TreeState::new(
+                            t.column,
+                            t.start_collapsed,
+                            t.onexpand.clone(),
+                            remembered(node.common.name.as_ref(), "expanded"),
+                        )
+                    });
+                    if *multi || tree.is_some() {
+                        e = keyboard_activated(e);
+                    }
+                    list.ext = Some(Box::new(ext));
                 }
                 ui.add(parent, e, list)
             }
+            Markup::Checkbox { onchange, .. } => ui.add(
+                parent,
+                keyboard_activated(e),
+                controls::MarkupCheckbox::new(font, onchange.clone(), emit.clone()),
+            ),
+            Markup::Separator { .. } => {
+                e.click_through = true;
+                ui.add(parent, e, controls::MarkupSeparator::default())
+            }
+            Markup::Radio { onchange, .. } => ui.add(
+                parent,
+                keyboard_activated(e),
+                controls::MarkupRadio::new(font, onchange.clone(), emit.clone()),
+            ),
+            Markup::Number {
+                onchange,
+                kind,
+                spec: number_spec,
+                ..
+            } => {
+                Field::configure(&mut e);
+                e.tab_stop = true;
+                let mut field = Field::default();
+                field.font = font;
+                field.one_line = true;
+                field.selectable = true;
+                field.select_all_on_focus = true;
+                field.record_history = false;
+                field.max_characters = 41;
+                ui.add(
+                    parent,
+                    e,
+                    controls::MarkupNumber::new(
+                        field,
+                        *number_spec,
+                        *kind == ac_plugin_ui::markup::NumberKind::Int,
+                        onchange.clone(),
+                        emit.clone(),
+                    ),
+                )
+            }
+            Markup::Hotkey { onchange, .. } => {
+                e.accepts_focus = true;
+                e.focus_on_mouse_click = true;
+                e.tab_stop = true;
+                ui.add(
+                    parent,
+                    e,
+                    controls::MarkupHotkey::new(font, onchange.clone(), emit.clone()),
+                )
+            }
+            Markup::Color { .. } => {
+                e.accepts_focus = true;
+                e.focus_on_mouse_click = false;
+                e.tab_stop = true;
+                ui.add(
+                    parent,
+                    e,
+                    color::MarkupColor::new(font, &node.element, emit.clone()),
+                )
+            }
+            Markup::Expander { open, onchange, .. } => {
+                e.click_through = true;
+                let h = node.rect.h;
+                // In flex without a w: start at the content width, so the
+                // content's anchors are captured against a real box.
+                let w = if node.flex.is_some() && node.rect.w <= 0.0 {
+                    content_size::LIST_WIDTH
+                } else {
+                    node.rect.w
+                };
+                e.width = w;
+                let mut header_element =
+                    keyboard_activated(Element::at(0.0, 0.0, w, EXPANDER_HEADER_HEIGHT))
+                        .with_anchors(AnchorEdges::LEFT | AnchorEdges::RIGHT | AnchorEdges::TOP);
+                header_element.runtime_tooltip_text =
+                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
+                let header = ui.insert(header_element, fold::ExpanderHeader::new(font));
+                let mut content_element = Element::at(
+                    0.0,
+                    EXPANDER_HEADER_HEIGHT,
+                    w,
+                    (h - EXPANDER_HEADER_HEIGHT).max(0.0),
+                )
+                .with_anchors(
+                    AnchorEdges::LEFT | AnchorEdges::TOP | AnchorEdges::RIGHT | AnchorEdges::BOTTOM,
+                );
+                content_element.click_through = true;
+                let content = ui.insert(content_element, transparent_panel());
+                let expander = fold::MarkupExpander::new(
+                    header,
+                    content,
+                    *open,
+                    remembered(node.common.name.as_ref(), "expanded"),
+                    Rc::clone(&shifts),
+                    onchange.clone(),
+                    emit.clone(),
+                );
+                let id = ui.add(parent, e, expander);
+                ui.add_child(id, header);
+                ui.add_child(id, content);
+                container = Some(content);
+                id
+            }
+            Markup::Split {
+                horizontal,
+                min,
+                max,
+                default_position,
+                at_given,
+                onchange,
+                ..
+            } => {
+                e.click_through = true;
+                let mut bar_element = keyboard_activated(Element::at(0.0, 0.0, 0.0, 0.0))
+                    .with_anchors(AnchorEdges::NONE)
+                    .with_z_order(1);
+                bar_element.captures_pointer_drag = true;
+                bar_element.runtime_tooltip_text =
+                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
+                let bar = ui.insert(bar_element, fold::SplitBar::new(*horizontal));
+                let mut split = fold::MarkupSplit::new(
+                    *horizontal,
+                    bar,
+                    remembered(node.common.name.as_ref(), "position"),
+                    onchange.clone(),
+                    emit.clone(),
+                );
+                split.min = *min;
+                split.max = *max;
+                split.default_position = *default_position;
+                if node.flex.is_some() && (e.width <= 0.0 || e.height <= 0.0) {
+                    // In flex without a w or h: start at the content size,
+                    // so the panes' children capture their anchors against
+                    // real panes.
+                    if e.width <= 0.0 {
+                        e.width = content_size::LIST_WIDTH;
+                    }
+                    if e.height <= 0.0 {
+                        e.height = content_size::LIST_HEIGHT;
+                    }
+                    if !*at_given {
+                        let room = if *horizontal { e.width } else { e.height }
+                            - ac_plugin_ui::markup::SPLIT_BAR_SIZE;
+                        split.default_position = (room.max(0.0) / 2.0).floor();
+                    }
+                }
+                let id = ui.add(parent, e, split);
+                ui.add_child(id, bar);
+                id
+            }
         };
+        if let Some(attrs) = &node.flex {
+            add_flex_item(ui, &flex_of, node, index, id, attrs);
+            if matches!(node.element, Markup::Menu { .. }) {
+                flex_menus.push(id);
+            }
+        }
         if let Some(t) = &node.common.tooltip
             && let Some(el) = ui.element_mut(id)
         {
             el.runtime_tooltip_text = t.read(view);
         }
+        if let Some(menu) = &node.common.context_menu {
+            let mut menu_element = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
+            menu_element.accepts_focus = true;
+            menu_element.focus_on_mouse_click = true;
+            menu_element.captures_pointer_drag = true;
+            let menu = ui.add(
+                id,
+                menu_element,
+                fold::MarkupContextMenu::new(
+                    menu_font,
+                    menu.onselect.clone(),
+                    menu.onopen.clone(),
+                    emit.clone(),
+                ),
+            );
+            if let Some(el) = ui.element_mut(id) {
+                el.context_menu = Some(menu);
+            }
+            menus.insert(index, menu);
+        }
         by_element.insert(id, index);
         nodes.push(id);
+        containers.push(container.unwrap_or(id));
     }
-    let minimize = view.descriptor.show_in_side_panel.then(|| {
-        let mut e = Element::at((spec.rect.w - 23.0).max(8.0), 3.0, 18.0, 17.0)
+    // A split sizes its two panes: lay it out at its authored start now,
+    // so the panes' children record their anchors against those sizes.
+    for (index, node) in doc.nodes.iter().enumerate() {
+        if let Markup::Split { .. } = node.element {
+            let id = nodes[index];
+            let panes: Vec<ElementId> = node.children.iter().map(|c| nodes[*c]).collect();
+            for pane in &panes {
+                ui.set_anchors(*pane, AnchorEdges::NONE);
+            }
+            ui.with::<fold::MarkupSplit, _>(id, |split, ui| {
+                split.first = panes.first().copied();
+                split.second = panes.get(1).copied();
+                split.layout_at_default(ui, id);
+            });
+        }
+    }
+    let mut controller = PluginPanelController {
+        panel: view.id,
+        window_name: view.window_name(),
+        root,
+        document: Arc::clone(&doc),
+        nodes,
+        by_element,
+        title,
+        minimize: None,
+        outbox,
+        expected_visible: false,
+        menu_items: HashMap::new(),
+        menus,
+        synced: None,
+        classic_font: font.clone(),
+        modern_font: None,
+        title_color: Color::WHITE,
+        title_bar,
+        content,
+        chrome_h,
+        flex_menus,
+        growth: None,
+    };
+    if let Some((shared, _)) = flex_of.get(&None).cloned() {
+        // The window's first measurement, with the values and fonts known
+        // now (a seeding sync: captions, and what is bound hidden, such as
+        // a tabbed window's other pages): it sizes a root that states no
+        // w/h, and sets the minimum, so mounting and registration see real
+        // geometry. An authored size below the content's minimum opens at
+        // the minimum.
+        controller.sync(ui, view, 0, &mut NoMarkupIcons, PluginTheme::Classic);
+        controller.synced = None;
+        let measured = shared.borrow_mut().measure_now(ui);
+        let (authored_w, authored_h) = spec.authored_size;
+        let (authored_min_w, authored_min_h) = spec.authored_min;
+        let min_w = authored_min_w.unwrap_or(measured.minimum.width);
+        let min_h = authored_min_h.unwrap_or(measured.minimum.height);
+        let content_w = authored_w.unwrap_or(measured.preferred.width).max(min_w);
+        let content_h = authored_h.unwrap_or(measured.preferred.height).max(min_h);
+        if let Some(e) = ui.element_mut(root) {
+            e.width = content_w + chrome_w;
+            e.height = content_h + chrome_h;
+            e.min_width = ac_plugin_ui::chrome::frame_minimum_width(min_w, spec.title_bar);
+            e.min_height = min_h + chrome_h;
+        }
+        if let Some(c) = content
+            && let Some(e) = ui.element_mut(c)
+        {
+            e.width = content_w;
+            e.height = content_h;
+        }
+    }
+    if let Some(bar) = title_bar {
+        // A window narrower than its title bar needs opens at the bar's
+        // minimum.
+        let (width, min_width) = ui
+            .element(root)
+            .map_or((0.0, 0.0), |e| (e.width, e.min_width));
+        let width = if width < ac_plugin_ui::chrome::MINIMUM_BAR_FRAME_WIDTH {
+            if let Some(e) = ui.element_mut(root) {
+                e.width = min_width;
+            }
+            if let Some(c) = content
+                && let Some(e) = ui.element_mut(c)
+            {
+                e.width = min_width - chrome_w;
+            }
+            min_width
+        } else {
+            width
+        };
+        title_bar::TitleBar::set_frame_width(ui, bar, width);
+        if view.descriptor.show_in_side_panel
+            && let Some(close) = ui.widget::<title_bar::TitleBar>(bar).map(|b| b.close)
+            && let Some(e) = ui.element_mut(close)
+        {
+            // The bar's close button takes the shelf's minimize button's
+            // place and says where the window went.
+            e.runtime_tooltip_text = Some(ac_plugin_ui::chrome::DOCKED_CLOSE_TOOLTIP.to_owned());
+        }
+    }
+    // A window with a title bar already has a close button, which does what
+    // "-" would; a layout window without a bar has content right up to its
+    // border, where "-" would sit over it, and is closed from its shelf
+    // button, as the author chose no chrome.
+    let frame_width = ui.element(root).map_or(spec.rect.w, |e| e.width);
+    controller.minimize = (view.descriptor.show_in_side_panel && !content_area).then(|| {
+        let mut e = Element::at((frame_width - 23.0).max(8.0), 3.0, 18.0, 17.0)
             .with_anchors(AnchorEdges::TOP | AnchorEdges::RIGHT)
             .with_z_order(1);
         e.name = Some("PluginMinimize".to_owned());
         e.runtime_tooltip_text = Some("Minimize to plugin sidepanel".to_owned());
         let button = MarkupButton {
             text: "\u{2013}".to_owned(),
-            background: Color::rgba(0.02, 0.02, 0.015, 0.94),
-            border: Color::rgba(0.58, 0.46, 0.17, 1.0),
+            background: MINIMIZE_BACKGROUND,
+            border: MINIMIZE_BORDER,
             ..MarkupButton::new(font.clone())
         };
         ui.add(root, e, button)
     });
+    // The whole document now sits at its first sizes, so this is the one
+    // moment every anchor margin can be read off the layout its author
+    // wrote.
     ui.capture_authored_anchor_baselines(root);
-    PluginPanelController {
-        panel: view.id,
-        window_name: view.window_name(),
-        root,
-        document: doc,
-        nodes,
-        by_element,
-        title,
-        minimize,
-        outbox,
-        expected_visible: false,
-        menu_items: HashMap::new(),
-        synced: None,
-        classic_font: font,
-        modern_font: None,
-        title_color: Color::WHITE,
+    controller
+}
+
+/// The shelf's minimize button's fill in Classic.
+const MINIMIZE_BACKGROUND: Color = Color::rgba(0.02, 0.02, 0.015, 0.94);
+/// Its border in Classic.
+const MINIMIZE_BORDER: Color = Color::rgba(0.58, 0.46, 0.17, 1.0);
+
+/// No icons: the build's seeding sync shows no images (the first real sync
+/// resolves them).
+struct NoMarkupIcons;
+
+impl MarkupIcons for NoMarkupIcons {
+    fn surface(&mut self, _id: u32) -> Option<Icon> {
+        None
+    }
+    fn spell(&mut self, _spell: u32) -> Option<Icon> {
+        None
+    }
+    fn item(&mut self, _object: u32) -> Option<Icon> {
+        None
     }
 }
 
@@ -470,6 +1051,76 @@ impl PluginPanelController {
     #[must_use]
     pub fn minimize_button(&self) -> Option<ElementId> {
         self.minimize
+    }
+
+    /// The title bar, on a window with one.
+    #[must_use]
+    pub fn title_bar(&self) -> Option<ElementId> {
+        self.title_bar
+    }
+
+    /// The content area, on a window with chrome or a flex layout.
+    #[must_use]
+    pub fn content_root(&self) -> Option<ElementId> {
+        self.content
+    }
+
+    /// The revision the window's saved geometry is kept under.
+    #[must_use]
+    pub fn geometry_revision(&self) -> i32 {
+        self.document.panel.geometry_revision
+    }
+
+    /// What the build ignored, one line each.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.document.warnings
+    }
+
+    /// Keeps the frame's minimum on the content's: when a flex content area
+    /// finds its content needs more room (a longer caption), the frame's
+    /// minimum becomes that plus the chrome, unless the markup states its
+    /// own `minw`/`minh`, and the window grows to it. When the content needs
+    /// less again, a window it grew goes back toward the size it had
+    /// before, unless it was sized otherwise in between.
+    fn track_content_minimum(&mut self, ui: &mut UiRoot) {
+        let Some(content) = self.content else {
+            return;
+        };
+        let Some(minimum) = ui
+            .widget::<layout::ContentHost>(content)
+            .and_then(|h| h.flex.as_ref().map(Rc::clone))
+            .and_then(|f| f.borrow_mut().take_minimum_changed())
+        else {
+            return;
+        };
+        let spec = &self.document.panel;
+        let (authored_min_w, authored_min_h) = spec.authored_min;
+        let title_bar = self.title_bar.is_some();
+        let Some((current, min)) = ui.element_mut(self.root).map(|e| {
+            e.min_width = ac_plugin_ui::chrome::frame_minimum_width(
+                authored_min_w.unwrap_or(minimum.width),
+                title_bar,
+            );
+            e.min_height = authored_min_h.unwrap_or(minimum.height) + self.chrome_h;
+            ((e.width, e.height), (e.min_width, e.min_height))
+        }) else {
+            return;
+        };
+        if let Some((_, grown_to)) = self.growth
+            && current != grown_to
+        {
+            self.growth = None;
+        }
+        let from = self.growth.map_or(current, |(before, _)| before);
+        if ui.window(&self.window_name).is_some() {
+            ui.enforce_minimum_size(&self.window_name, from.0, from.1);
+        } else if let Some(e) = ui.element_mut(self.root) {
+            e.width = from.0.max(min.0);
+            e.height = from.1.max(min.1);
+        }
+        let now = ui.element(self.root).map_or(from, |e| (e.width, e.height));
+        self.growth = (now != from).then_some((from, now));
     }
 
     fn push(&self, input: UiInput) {
@@ -540,8 +1191,56 @@ impl PluginPanelController {
                 label.font.clone_from(f);
             }
         }
+        if let Some(bar) = self.title_bar {
+            // The theme's font and text colour without outline under a
+            // theme; Classic's own font, title colour and outline back
+            // under Classic. The themed close button's "x" takes the
+            // theme's font.
+            let font = text_font
+                .cloned()
+                .unwrap_or_else(|| self.classic_font.clone());
+            title_bar::TitleBar::set_palette(ui, bar, palette, font, self.title_color);
+        }
+        if let Some(content) = self.content
+            && let Some(area) = ui
+                .widget::<layout::ContentHost>(content)
+                .and_then(|h| h.scroll.clone())
+        {
+            area.apply_theme(ui, p);
+        }
+        if let Some(minimize) = self.minimize
+            && let Some(b) = ui.widget_mut::<MarkupButton>(minimize)
+        {
+            // The shelf's "-" follows the window's theme as the bar's close
+            // button does: a flat face, edge and caption in the palette.
+            b.background = p.map_or(MINIMIZE_BACKGROUND, |p| p.field);
+            b.border = p.map_or(MINIMIZE_BORDER, |p| p.border);
+            b.text_color = p.map_or(Color::WHITE, |p| p.text);
+            b.outline = p.is_none();
+            if let Some(f) = text_font {
+                b.font.clone_from(f);
+            }
+        }
         for (index, node) in doc.nodes.iter().enumerate() {
             let el = self.nodes[index];
+            if let (Some(menu), Some(&menu_el)) =
+                (&node.common.context_menu, self.menus.get(&index))
+            {
+                let items = menu.items.read(view);
+                let enabled = menu
+                    .enabled
+                    .as_ref()
+                    .map(|e| bools(view, e))
+                    .unwrap_or_default();
+                if let Some(w) = ui.widget_mut::<fold::MarkupContextMenu>(menu_el) {
+                    w.items = items;
+                    w.enabled = enabled;
+                    w.palette = palette;
+                    if let Some(f) = text_font {
+                        w.font.clone_from(f);
+                    }
+                }
+            }
             ui.set_visible(el, view.node_visible(index));
             ui.set_enabled(el, node.common.enabled.read(view, true));
             if let Some(t) = &node.common.tooltip
@@ -551,8 +1250,12 @@ impl PluginPanelController {
             }
             let label = view.label_overrides.get(&index).cloned();
             match &node.element {
-                Markup::Group { background, border } => {
-                    if let Some(w) = ui.widget_mut::<Panel>(el) {
+                Markup::Group {
+                    background, border, ..
+                } => {
+                    let mut bars = None;
+                    if let Some(g) = ui.widget_mut::<layout::MarkupGroup>(el) {
+                        let w = &mut g.panel;
                         w.background_color = background
                             .as_ref()
                             .map_or(Color::TRANSPARENT, |c| read_color(c, view, p));
@@ -560,6 +1263,10 @@ impl PluginPanelController {
                             .as_ref()
                             .map_or(Color::TRANSPARENT, |c| read_color(c, view, p));
                         w.border_thickness = if border.is_some() { 1.0 } else { 0.0 };
+                        bars.clone_from(&g.scroll);
+                    }
+                    if let Some(area) = bars {
+                        area.apply_theme(ui, p);
                     }
                 }
                 Markup::Meter {
@@ -785,18 +1492,232 @@ impl PluginPanelController {
                         }
                     }
                 }
-                Markup::List { selected, body, .. } => {
-                    let selected = int_value(view, selected);
+                Markup::List {
+                    selected,
+                    body,
+                    header,
+                    tree,
+                    multi,
+                    ..
+                } => {
+                    let selected_row = if *multi {
+                        -1
+                    } else {
+                        int_value(view, selected)
+                    };
                     let (rows, column_rows, row_icons) = list_rows(view, body, icons, p);
+                    let floats = |name: &str| match view.values.get(name) {
+                        Some(UiValue::FloatList(v)) => Some(v.clone()),
+                        _ => None,
+                    };
+                    let ints = |name: &str| match view.values.get(name) {
+                        Some(UiValue::IntList(v)) => v.clone(),
+                        _ => Vec::new(),
+                    };
                     if let Some(w) = ui.widget_mut::<MarkupList>(el) {
-                        w.rows = rows;
-                        w.column_rows = column_rows;
-                        w.row_icons = row_icons;
-                        w.selected = selected;
+                        if let (Some(ext), ListBody::Columns(columns)) = (w.ext.as_mut(), body) {
+                            ext.bound_sort = header
+                                .sort
+                                .as_ref()
+                                .map(|(c, d)| (int_value(view, c), bool_value(view, d)));
+                            ext.bound_widths = header
+                                .widths
+                                .as_deref()
+                                .map(|n| floats(n).unwrap_or_default());
+                            for (i, column) in columns.iter().enumerate() {
+                                ext.captions[i] = match &column.header {
+                                    ac_plugin_ui::markup::ColumnHeader::Text(t) => t.read(view),
+                                    _ => None,
+                                };
+                                ext.number_keys[i] = None;
+                                ext.text_keys[i] = None;
+                                match &column.sort_keys {
+                                    Some(ac_plugin_ui::markup::SortKeysSource::Numbers(n)) => {
+                                        ext.number_keys[i] = Some(floats(n).unwrap_or_default());
+                                    }
+                                    Some(ac_plugin_ui::markup::SortKeysSource::Texts(n)) => {
+                                        ext.text_keys[i] = Some(texts(view, n));
+                                    }
+                                    None => {}
+                                }
+                            }
+                            if *multi {
+                                ext.selected_rows = ints(selected);
+                            }
+                            if let (Some(state), Some(spec)) = (ext.tree.as_mut(), tree) {
+                                state.levels = ints(&spec.levels);
+                                state.keys = texts(view, &spec.keys);
+                                state.bound = spec
+                                    .expanded
+                                    .as_deref()
+                                    .map(|n| texts(view, n).into_iter().collect());
+                            }
+                            w.all_rows = rows;
+                            w.row_icons = row_icons;
+                        } else {
+                            w.rows = rows;
+                            w.column_rows = column_rows;
+                            w.row_icons = row_icons;
+                        }
+                        w.selected = selected_row;
                         w.palette = palette;
                         if let Some(f) = text_font {
                             w.font.clone_from(f);
                         }
+                        w.arrange();
+                    }
+                }
+                Markup::Checkbox {
+                    text,
+                    checked,
+                    color: c,
+                    ..
+                } => {
+                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let state = match view.values.get(checked) {
+                        Some(UiValue::Bool(b)) => Some(*b),
+                        Some(UiValue::OptionalBool(b)) => *b,
+                        _ => Some(false),
+                    };
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupCheckbox>(el) {
+                        w.text = s;
+                        w.state = state;
+                        w.color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Separator { color: c } => {
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::UNLIT_INNER, |p| p.border),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupSeparator>(el) {
+                        w.color = col;
+                    }
+                }
+                Markup::Radio {
+                    items,
+                    selected,
+                    horizontal,
+                    segmented,
+                    color: c,
+                    ..
+                } => {
+                    let entries = items.read(view);
+                    let chosen = int_value(view, selected);
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupRadio>(el) {
+                        w.items = entries;
+                        w.selected = chosen;
+                        w.horizontal = *horizontal;
+                        w.segmented = *segmented;
+                        w.color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Number {
+                    value,
+                    background,
+                    color: c,
+                    default_background,
+                    default_color,
+                    ..
+                } => {
+                    let current = match view.values.get(value) {
+                        Some(UiValue::Int(v)) => ac_plugin_ui::number::Dec::from_i64(i64::from(*v)),
+                        Some(UiValue::Float(v)) => ac_plugin_ui::number::Dec::from_f32(*v),
+                        _ => ac_plugin_ui::number::Dec::ZERO,
+                    };
+                    let bg = match (p, default_background) {
+                        (Some(p), true) => p.field,
+                        _ => read_color(background, view, p),
+                    };
+                    let col = match (p, default_color) {
+                        (Some(p), true) => p.text,
+                        _ => read_color(c, view, p),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupNumber>(el) {
+                        w.set_current(current);
+                        w.inner.background_color = bg;
+                        w.text_color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.inner.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Hotkey { value, .. } => {
+                    let text = match view.values.get(value) {
+                        Some(UiValue::Text(t)) => t.clone(),
+                        _ => String::new(),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupHotkey>(el) {
+                        w.value = text;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Color { value, kind, .. } => {
+                    let argb = color::MarkupColor::read(*kind, view.values.get(value));
+                    if let Some(w) = ui.widget_mut::<color::MarkupColor>(el) {
+                        w.value = argb;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Expander {
+                    text,
+                    expanded,
+                    color: c,
+                    ..
+                } => {
+                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    let bound = expanded.as_ref().map(|e| bool_value(view, e));
+                    let header = ui.widget_mut::<fold::MarkupExpander>(el).map(|w| {
+                        w.bound = bound;
+                        w.header
+                    });
+                    if let Some(h) = header.and_then(|h| ui.widget_mut::<fold::ExpanderHeader>(h)) {
+                        h.text = s;
+                        h.color = col;
+                        h.palette = palette;
+                        if let Some(f) = text_font {
+                            h.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Split { position, .. } => {
+                    let bound = position.as_ref().map(|name| match view.values.get(name) {
+                        Some(UiValue::Float(v)) => *v,
+                        _ => 0.0,
+                    });
+                    let bar = ui.widget_mut::<fold::MarkupSplit>(el).map(|w| {
+                        w.bound = bound;
+                        w.bar
+                    });
+                    if let Some(b) = bar.and_then(|b| ui.widget_mut::<fold::SplitBar>(b)) {
+                        b.palette = palette;
                     }
                 }
             }
@@ -894,6 +1815,18 @@ fn list_rows(
 }
 
 impl PanelController for PluginPanelController {
+    fn tick(&mut self, ui: &mut UiRoot, _dt: f64) {
+        self.track_content_minimum(ui);
+        // A flex menu has no authored w (the container sizes it): its popup
+        // column follows the laid-out menu.
+        for &menu in &self.flex_menus {
+            let width = ui.element(menu).map_or(0.0, |e| e.width);
+            if let Some(m) = ui.widget_mut::<Menu>(menu) {
+                m.column_width = width.max(20.0);
+            }
+        }
+    }
+
     fn on_shown(&mut self, _ui: &mut UiRoot) {
         if !self.expected_visible {
             self.expected_visible = true;
@@ -923,6 +1856,16 @@ impl PanelController for PluginPanelController {
         if Some(element) == self.minimize {
             if matches!(message, ElementMessage::Clicked { .. }) {
                 ui.hide_window(&self.window_name);
+            }
+            return true;
+        }
+        if let Some(bar) = self.title_bar
+            && ui
+                .widget::<title_bar::TitleBar>(bar)
+                .is_some_and(|b| b.close == element)
+        {
+            if matches!(message, ElementMessage::Clicked { .. }) {
+                ui.close_window(&self.window_name);
             }
             return true;
         }
@@ -970,7 +1913,9 @@ impl PanelController for PluginPanelController {
                 let Some(list) = ui.widget::<MarkupList>(element) else {
                     return true;
                 };
-                let row = |i: usize| ActionValue::Int(i32::try_from(i).unwrap_or(i32::MAX));
+                let row = |i: usize| {
+                    ActionValue::Int(i32::try_from(list.plugin_row(i)).unwrap_or(i32::MAX))
+                };
                 let column_handler = |c: usize, pick: fn(&ColumnKind) -> Option<&String>| match body
                 {
                     ListBody::Columns(columns) => {
@@ -1015,9 +1960,12 @@ impl PanelController for PluginPanelController {
                     Some(ColumnKind::Button { onclick, .. }) => Some(onclick.clone()),
                     _ => None,
                 };
+                let plugin = ui
+                    .widget::<MarkupList>(element)
+                    .map_or(*row, |l| l.plugin_row(*row));
                 self.action(
                     &handler,
-                    ActionValue::Int(i32::try_from(*row).unwrap_or(i32::MAX)),
+                    ActionValue::Int(i32::try_from(plugin).unwrap_or(i32::MAX)),
                 )
             }
             _ => false,
@@ -1096,6 +2044,8 @@ impl crate::tree::Widget for MarkupField {
     }
 }
 
+#[cfg(test)]
+mod flex_tests;
 #[cfg(test)]
 mod list_button_tests;
 #[cfg(test)]

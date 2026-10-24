@@ -653,7 +653,7 @@ impl SettingsStore {
     /// Write character `toon`'s settings, keeping every other character and
     /// section.
     pub fn save_character(&self, toon: &str, s: &CharacterSettings) -> std::io::Result<()> {
-        let mut root = self.load_mutable_root();
+        let mut root = self.load_mutable_root()?;
         let characters = object_member(&mut root, "character");
         let record = vec![
             Member::made("autoAttack", Value::Bool(s.auto_attack)),

@@ -62,13 +62,15 @@ pub mod route;
 use std::collections::BTreeMap;
 
 pub use ac_plugin_abi::ui::{
-    ActionValue, BindingDecl, BindingKind, CanvasState, Color, MapPoint, PaintCmd, PointerEvent,
-    ProjectileSample, Rect, UiAction, UiEvent, UiValue, WorldLabel, WorldLine,
+    ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, PaintCmd,
+    PointerEvent, ProjectileSample, Rect, TypedBindingDecl, TypedBindingKind, TypedValue, UiAction,
+    UiEvent, UiValue, WorldLabel, WorldLine,
 };
 use ac_plugin_abi::ui::{
     CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
-    ControlVisible, EncodedImage, ImageInfo, LineSet, NamedValue, PanelRegistration, PanelValues,
-    RgbaImage, TextSize, ViewShow,
+    ControlVisible, DialogRequest, EncodedImage, ImageInfo, ItemRow, ItemTypeDecl, ItemValue,
+    LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
+    PanelValues, RgbaImage, TextSize, TypedPanelRegistration, TypedPanelValues, ViewShow,
 };
 use ac_plugin_abi::{Import, Wire};
 
@@ -110,6 +112,64 @@ pub const MAXIMUM_LABEL_TEXT: usize = 128;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
     registration: PanelRegistration,
+    /// Every binding with its full kind (the newer kinds included).
+    typed: Vec<TypedBindingDecl>,
+    /// The item types of its items lists.
+    item_types: Vec<ItemTypeDecl>,
+    /// It uses a kind the first registration cannot carry.
+    needs_typed: bool,
+}
+
+/// The item type of a `<repeat>`'s list: the names each item carries
+/// (OpenAC: the list's element type).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ItemType {
+    type_name: String,
+    bindings: Vec<TypedBindingDecl>,
+    lists: Vec<(String, ItemType)>,
+}
+
+impl ItemType {
+    /// An item type called `type_name` (it appears in error messages).
+    #[must_use]
+    pub fn new(type_name: &str) -> Self {
+        Self {
+            type_name: type_name.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// Declares a name an item carries.
+    #[must_use]
+    pub fn bind(mut self, name: &str, kind: impl Into<TypedBindingKind>) -> Self {
+        self.bindings.push(TypedBindingDecl {
+            name: name.to_owned(),
+            kind: kind.into(),
+        });
+        self
+    }
+
+    /// Declares a list an item carries, for a nested `<repeat>`.
+    #[must_use]
+    pub fn items(mut self, name: &str, item: ItemType) -> Self {
+        self.bindings.push(TypedBindingDecl {
+            name: name.to_owned(),
+            kind: TypedBindingKind::Items,
+        });
+        self.lists.push((name.to_owned(), item));
+        self
+    }
+
+    fn flatten(self, path: &str, out: &mut Vec<ItemTypeDecl>) {
+        out.push(ItemTypeDecl {
+            list: path.to_owned(),
+            type_name: self.type_name,
+            bindings: self.bindings,
+        });
+        for (name, item) in self.lists {
+            item.flatten(&format!("{path}/{name}"), out);
+        }
+    }
 }
 
 impl PanelSpec {
@@ -129,6 +189,9 @@ impl PanelSpec {
                 binding_type: "Bindings".to_owned(),
                 bindings: Vec::new(),
             },
+            typed: Vec::new(),
+            item_types: Vec::new(),
+            needs_typed: false,
         }
     }
 
@@ -139,6 +202,43 @@ impl PanelSpec {
             name: name.to_owned(),
             kind,
         });
+        self.typed.push(TypedBindingDecl {
+            name: name.to_owned(),
+            kind: kind.into(),
+        });
+        self
+    }
+
+    /// Declares a binding of any kind, the newer controls' included
+    /// (`OptionalBool` for a checkbox's `bool?`, `BoolAction` for its
+    /// `onchange`, ...).
+    #[must_use]
+    pub fn bind_typed(mut self, name: &str, kind: TypedBindingKind) -> Self {
+        match old_kind(kind) {
+            Some(old) => {
+                self.registration.bindings.push(BindingDecl {
+                    name: name.to_owned(),
+                    kind: old,
+                });
+            }
+            None => self.needs_typed = true,
+        }
+        self.typed.push(TypedBindingDecl {
+            name: name.to_owned(),
+            kind,
+        });
+        self
+    }
+
+    /// Declares a list of items of type `item` (a `<repeat>`'s `items`).
+    #[must_use]
+    pub fn bind_items(mut self, name: &str, item: ItemType) -> Self {
+        self.typed.push(TypedBindingDecl {
+            name: name.to_owned(),
+            kind: TypedBindingKind::Items,
+        });
+        item.flatten(name, &mut self.item_types);
+        self.needs_typed = true;
         self
     }
 
@@ -189,8 +289,8 @@ impl PanelSpec {
 pub struct Panel {
     id: u32,
     window_id: String,
-    pushed: BTreeMap<String, UiValue>,
-    pending: BTreeMap<String, UiValue>,
+    pushed: BTreeMap<String, TypedValue>,
+    pending: BTreeMap<String, TypedValue>,
 }
 
 impl Panel {
@@ -208,7 +308,7 @@ impl Panel {
 
     /// Sets a bound value; it reaches the client at the next
     /// [`Self::flush`], and only when it differs from what was pushed.
-    pub fn set(&mut self, name: &str, value: impl Into<UiValue>) {
+    pub fn set(&mut self, name: &str, value: impl Into<TypedValue>) {
         let value = value.into();
         if self.pushed.get(name) == Some(&value) {
             self.pending.remove(name);
@@ -234,17 +334,31 @@ impl Panel {
             return Ok(());
         }
         let pending = std::mem::take(&mut self.pending);
-        let values = pending
+        let plain: Option<Vec<NamedValue>> = pending
             .iter()
-            .map(|(name, value)| NamedValue {
-                name: name.clone(),
-                value: value.clone(),
+            .map(|(name, value)| {
+                old_value(value).map(|value| NamedValue {
+                    name: name.clone(),
+                    value,
+                })
             })
             .collect();
-        host.ui_panel_set(&PanelValues {
-            panel: self.id,
-            values,
-        })?;
+        match plain {
+            Some(values) => host.ui_panel_set(&PanelValues {
+                panel: self.id,
+                values,
+            })?,
+            None => host.ui_panel_set_typed(&TypedPanelValues {
+                panel: self.id,
+                values: pending
+                    .iter()
+                    .map(|(name, value)| NamedTypedValue {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            })?,
+        }
         self.pushed.extend(pending);
         Ok(())
     }
@@ -664,9 +778,29 @@ impl Host<'_> {
     /// A blank id or title, an id the plugin already uses, or markup that
     /// does not parse or whose bindings do not resolve.
     pub fn register_panel(&mut self, spec: &PanelSpec) -> Result<Panel, String> {
-        let request = spec.registration.to_bytes();
-        let reply = ui_call!(self, UiPanelRegister, ui_panel_register, &request);
-        let id: Result<u32, String> = decode(Import::UiPanelRegister, &reply);
+        let id: Result<u32, String> = if spec.needs_typed {
+            let r = &spec.registration;
+            let request = TypedPanelRegistration {
+                window_id: r.window_id.clone(),
+                title: r.title.clone(),
+                icon_text: r.icon_text.clone(),
+                icon_surface_id: r.icon_surface_id,
+                start_visible: r.start_visible,
+                show_in_side_panel: r.show_in_side_panel,
+                markup: r.markup.clone(),
+                binding_type: r.binding_type.clone(),
+                bindings: spec.typed.clone(),
+                item_types: spec.item_types.clone(),
+            }
+            .to_bytes();
+            let r = &request;
+            let reply = ui_call!(self, UiPanelRegisterTyped, ui_panel_register_typed, r);
+            decode(Import::UiPanelRegisterTyped, &reply)
+        } else {
+            let request = spec.registration.to_bytes();
+            let reply = ui_call!(self, UiPanelRegister, ui_panel_register, &request);
+            decode(Import::UiPanelRegister, &reply)
+        };
         Ok(Panel {
             id: id?,
             window_id: spec.registration.window_id.clone(),
@@ -994,5 +1128,246 @@ impl Host<'_> {
     /// Actions fire only from an attached window's keys, buttons and wheel.
     pub fn listen_input_actions(&mut self, listen: bool) -> bool {
         self.call::<ac_plugin_abi::calls::UiInputActionsListen>(&listen)
+    }
+}
+
+/// The first registration's kind for `kind`, when it has one.
+fn old_kind(kind: TypedBindingKind) -> Option<BindingKind> {
+    use TypedBindingKind as T;
+    Some(match kind {
+        T::Bool => BindingKind::Bool,
+        T::Int => BindingKind::Int,
+        T::Uint => BindingKind::Uint,
+        T::Float => BindingKind::Float,
+        T::Text => BindingKind::Text,
+        T::TextList => BindingKind::TextList,
+        T::UintList => BindingKind::UintList,
+        T::IntList => BindingKind::IntList,
+        T::BoolList => BindingKind::BoolList,
+        T::Action => BindingKind::Action,
+        T::IntAction => BindingKind::IntAction,
+        T::FloatAction => BindingKind::FloatAction,
+        T::TextAction => BindingKind::TextAction,
+        _ => return None,
+    })
+}
+
+/// The first push's value for `value`, when it has one.
+fn old_value(value: &TypedValue) -> Option<UiValue> {
+    use TypedValue as T;
+    Some(match value {
+        T::Bool(v) => UiValue::Bool(*v),
+        T::Int(v) => UiValue::Int(*v),
+        T::Uint(v) => UiValue::Uint(*v),
+        T::Float(v) => UiValue::Float(*v),
+        T::Text(v) => UiValue::Text(v.clone()),
+        T::TextList(v) => UiValue::TextList(v.clone()),
+        T::UintList(v) => UiValue::UintList(v.clone()),
+        T::IntList(v) => UiValue::IntList(v.clone()),
+        T::BoolList(v) => UiValue::BoolList(v.clone()),
+        _ => return None,
+    })
+}
+
+/// One item of a `<repeat>`'s list: its values by name, and the lists it
+/// carries for nested repeats.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Item {
+    values: Vec<NamedItemValue>,
+    lists: Vec<(String, Items)>,
+}
+
+impl Item {
+    /// An item with no values yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets a value (any kind but a list of items; see [`Self::items`]).
+    #[must_use]
+    pub fn set(mut self, name: &str, value: impl Into<TypedValue>) -> Self {
+        let value = match value.into() {
+            TypedValue::Bool(v) => ItemValue::Bool(v),
+            TypedValue::Int(v) => ItemValue::Int(v),
+            TypedValue::Uint(v) => ItemValue::Uint(v),
+            TypedValue::Float(v) => ItemValue::Float(v),
+            TypedValue::Text(v) => ItemValue::Text(v),
+            TypedValue::TextList(v) => ItemValue::TextList(v),
+            TypedValue::UintList(v) => ItemValue::UintList(v),
+            TypedValue::IntList(v) => ItemValue::IntList(v),
+            TypedValue::BoolList(v) => ItemValue::BoolList(v),
+            TypedValue::OptionalBool(v) => ItemValue::OptionalBool(v),
+            TypedValue::FloatList(v) => ItemValue::FloatList(v),
+            TypedValue::Items(_) => return self,
+        };
+        self.values.retain(|v| v.name != name);
+        self.values.push(NamedItemValue {
+            name: name.to_owned(),
+            value,
+        });
+        self
+    }
+
+    /// Sets a list it carries (a nested `<repeat>`'s items).
+    #[must_use]
+    pub fn items(mut self, name: &str, items: Items) -> Self {
+        self.lists.retain(|(n, _)| n != name);
+        self.lists.push((name.to_owned(), items));
+        self
+    }
+}
+
+/// A `<repeat>`'s list, built item by item.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Items {
+    items: Vec<Item>,
+}
+
+impl Items {
+    /// An empty list.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds an item at the end.
+    #[must_use]
+    pub fn item(mut self, item: Item) -> Self {
+        self.items.push(item);
+        self
+    }
+
+    fn flatten(self, parent: i32, list: &str, rows: &mut Vec<ItemRow>) {
+        for item in self.items {
+            let index = i32::try_from(rows.len()).unwrap_or(i32::MAX);
+            rows.push(ItemRow {
+                parent,
+                list: list.to_owned(),
+                values: item.values,
+            });
+            for (name, nested) in item.lists {
+                nested.flatten(index, &name, rows);
+            }
+        }
+    }
+}
+
+impl From<Items> for TypedValue {
+    fn from(items: Items) -> Self {
+        let mut rows = Vec::new();
+        items.flatten(-1, "", &mut rows);
+        Self::Items(ItemRows { rows })
+    }
+}
+
+impl FromIterator<Item> for Items {
+    fn from_iter<I: IntoIterator<Item = Item>>(iter: I) -> Self {
+        Self {
+            items: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// A question for the player in a dialog box (OpenAC `PluginDialog`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dialog {
+    /// The caption (may be empty).
+    pub title: String,
+    /// The question; long text wraps (may be empty).
+    pub message: String,
+    /// The buttons left to right, one to four; the last is the cancel
+    /// button. Empty means OK and Cancel.
+    pub buttons: Vec<String>,
+    /// The id or title of the window it is centred on and blocks until it
+    /// is answered (none: the screen, blocking nothing).
+    pub owner_view: Option<String>,
+}
+
+impl Dialog {
+    /// A dialog with OK and Cancel, centred on the screen.
+    #[must_use]
+    pub fn new(title: &str, message: &str) -> Self {
+        Self {
+            title: title.to_owned(),
+            message: message.to_owned(),
+            ..Self::default()
+        }
+    }
+
+    /// Its buttons, left to right (the last is the cancel button).
+    #[must_use]
+    pub fn buttons(mut self, buttons: &[&str]) -> Self {
+        self.buttons = buttons.iter().map(|b| (*b).to_owned()).collect();
+        self
+    }
+
+    /// The window it blocks.
+    #[must_use]
+    pub fn owner(mut self, view: &str) -> Self {
+        self.owner_view = Some(view.to_owned());
+        self
+    }
+}
+
+/// A dialog waiting for its answer, which arrives as [`UiEvent::Action`]
+/// read with [`UiAction::dialog_answer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DialogHandle(pub u32);
+
+impl DialogHandle {
+    /// Withdraws a question that went stale: a dialog still showing or
+    /// queued closes and is answered with its last button; false once it is
+    /// answered.
+    pub fn withdraw(self, host: &mut Host<'_>) -> bool {
+        let request = self.0.to_bytes();
+        let reply = ui_call!(host, UiDialogWithdraw, ui_dialog_withdraw, &request);
+        decode(Import::UiDialogWithdraw, &reply)
+    }
+}
+
+/// Dialogs and modal windows (OpenAC `IUiRegistry.Confirm`, `ShowModal`).
+impl Host<'_> {
+    /// Asks the player a question in a dialog box. The dialog blocks only
+    /// its owner window; several for one owner queue. Its answer arrives
+    /// once, as [`UiEvent::Action`] read with [`UiAction::dialog_answer`]:
+    /// the button picked; Escape, the close button, the owner window
+    /// closing and the window detaching answer with the last one. None when
+    /// no window draws it (then it is never answered).
+    ///
+    /// # Errors
+    /// More than four buttons, or a blank one.
+    pub fn confirm(&mut self, dialog: &Dialog) -> Result<Option<DialogHandle>, String> {
+        let request = DialogRequest {
+            title: dialog.title.clone(),
+            message: dialog.message.clone(),
+            buttons: dialog.buttons.clone(),
+            owner_view: dialog.owner_view.clone(),
+        }
+        .to_bytes();
+        let reply = ui_call!(self, UiDialogConfirm, ui_dialog_confirm, &request);
+        let handle: Result<Option<u32>, String> = decode(Import::UiDialogConfirm, &reply);
+        handle.map(|h| h.map(DialogHandle))
+    }
+
+    /// Shows one of the plugin's windows, as [`Host::show_panel`] does, and
+    /// makes it modal over another of its windows (`owner_view`), which
+    /// draws dimmed and ignores presses until the shown window hides or
+    /// goes. False when the plugin has no such window, and without a window
+    /// attached.
+    pub fn show_modal(&mut self, view: &str, owner_view: Option<&str>) -> bool {
+        let request = ModalShow {
+            view: view.to_owned(),
+            owner_view: owner_view.map(str::to_owned),
+        }
+        .to_bytes();
+        let reply = ui_call!(self, UiPanelShowModal, ui_panel_show_modal, &request);
+        decode(Import::UiPanelShowModal, &reply)
+    }
+
+    fn ui_panel_set_typed(&mut self, values: &TypedPanelValues) -> Result<(), String> {
+        let request = values.to_bytes();
+        let reply = ui_call!(self, UiPanelSetTyped, ui_panel_set_typed, &request);
+        decode(Import::UiPanelSetTyped, &reply)
     }
 }

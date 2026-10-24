@@ -13,11 +13,17 @@
 //! state, the plugin host (`ac-plugin`) translates the plugins' calls, and
 //! the window (`ac-ui`, `ac-render`) draws the copy.
 
+pub mod chrome;
+pub mod color;
+pub mod control_state;
+pub mod flex;
 pub mod hotkeys;
 pub mod images;
 pub mod list;
+pub mod list_view;
 pub mod markup;
 pub mod model;
+pub mod number;
 mod state;
 pub mod theme;
 pub mod value;
@@ -27,14 +33,15 @@ pub use images::{DecodedImage, ImageBudget};
 pub use markup::{MarkupDocument, MarkupError, parse};
 pub use model::{
     ActionValue, CanvasAnchor, CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction,
-    Color8, ImageSource, ImageView, MapPoint, PaintCmd, PaintRect, PanelDescriptor, PanelView,
-    PluginIcon, PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner,
-    WorldLabel, WorldLine, canvas_origin, window_name,
+    Color8, DialogView, ImageSource, ImageView, MapPoint, PaintCmd, PaintRect, PanelDescriptor,
+    PanelView, PluginIcon, PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput,
+    UiOwner, WorldLabel, WorldLine, canvas_origin, window_name,
 };
 pub use state::{
-    MAXIMUM_CANVASES, MAXIMUM_LABEL_TEXT, MAXIMUM_LABELS, MAXIMUM_LINES_PER_LAYER,
-    MAXIMUM_PAINT_COMMANDS, MAXIMUM_PROJECTILE_SAMPLES, PluginUi, TextMetrics, UiResources,
+    DEFAULT_DIALOG_BUTTONS, MAXIMUM_CANVASES, MAXIMUM_DIALOG_BUTTONS, MAXIMUM_LABEL_TEXT,
+    MAXIMUM_LABELS, MAXIMUM_LINES_PER_LAYER, MAXIMUM_PAINT_COMMANDS, MAXIMUM_PROJECTILE_SAMPLES,
+    PluginUi, TextMetrics, UiResources,
 };
 pub use theme::{ThemeKind, ThemePalette};
-pub use value::{BindingKind, BindingSchema, Rgba, UiValue};
+pub use value::{BindingKind, BindingSchema, ItemRecord, Rgba, UiValue};
 pub use view::{PluginUiView, ViewDirty};
