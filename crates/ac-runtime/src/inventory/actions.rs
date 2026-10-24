@@ -213,6 +213,7 @@ impl Inventory {
             C::DeclineTrade => self.trade.view().open && ctx.send(build_decline_trade),
             C::ResetTrade => self.trade.view().open && ctx.send(build_reset_trade),
             C::CloseTrade => self.trade.view().open && ctx.send(build_close_trade_negotiations),
+            C::HousePurchase(command) => self.run_house_purchase(*command, ctx),
             C::DropInto {
                 item,
                 container,

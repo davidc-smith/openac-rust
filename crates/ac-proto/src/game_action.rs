@@ -214,6 +214,10 @@ game_action_types! {
     ADD_PLAYER_PERMISSION = 0x0219,
     /// Take house access from a player.
     REMOVE_PLAYER_PERMISSION = 0x021A,
+    /// Buy a house at its slumlord with the items offered.
+    BUY_HOUSE = 0x021C,
+    /// Pay a house's maintenance at its slumlord with the items offered.
+    RENT_HOUSE = 0x0221,
     /// Set how many of a spell component to keep.
     SET_DESIRED_COMPONENT_LEVEL = 0x0224,
     /// Abandon the house.

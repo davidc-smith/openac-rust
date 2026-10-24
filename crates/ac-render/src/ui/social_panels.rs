@@ -13,6 +13,7 @@ use ac_ui::geometry::{AnchorEdges, ResizeEdges};
 use ac_ui::import::{LayoutSource, import_infos_rooted, import_rooted};
 use ac_ui::panels::cell_template::empty_sprite;
 use ac_ui::panels::contracts::ContractsView;
+use ac_ui::panels::house_purchase::{self, HousePurchaseController, HousePurchaseSprites};
 use ac_ui::panels::journal::{self, JournalPanelController};
 use ac_ui::panels::main_panels::RESTORE_PREVIOUS_PROPERTY;
 use ac_ui::panels::social::{self, AllegianceSource, SocialPanelController, SocialView};
@@ -36,6 +37,8 @@ pub const VENDOR_WINDOW: &str = "vendor";
 pub const SOCIAL_WINDOW: &str = "social-panel";
 /// The journal's name.
 pub const JOURNAL_WINDOW: &str = "journal";
+/// The slumlord window's name.
+pub const HOUSE_PURCHASE_WINDOW: &str = "house-purchase";
 
 /// The player's allegiance rank property.
 const ALLEGIANCE_RANK_PROPERTY: u32 = 0x1E;
@@ -98,6 +101,7 @@ impl WindowUi {
             (JOURNAL_WINDOW, self.mount_journal()),
             (VENDOR_WINDOW, self.mount_vendor()),
             (TRADE_WINDOW, self.mount_trade()),
+            (HOUSE_PURCHASE_WINDOW, self.mount_house_purchase()),
         ];
         for (name, result) in results {
             match result {
@@ -301,6 +305,58 @@ impl WindowUi {
             .map_err(|e| e.to_string())
     }
 
+    /// OpenAC `RetailUiRuntime.MountHousePurchase`: the slumlord window,
+    /// centred, its own size; hidden until a slumlord's profile opens it.
+    fn mount_house_purchase(&mut self) -> Result<(), String> {
+        let sprites = HousePurchaseSprites {
+            buy_empty: empty_sprite(
+                &self.content,
+                house_purchase::LAYOUT_ID,
+                house_purchase::BUY_ITEMS_LIST_ID,
+            ),
+            maintenance_empty: empty_sprite(
+                &self.content,
+                house_purchase::LAYOUT_ID,
+                house_purchase::MAINTENANCE_ITEMS_LIST_ID,
+            ),
+        };
+        let font = self.content.font(DEFAULT_FONT_ID);
+        let layout = import_rooted(
+            &mut self.host.root,
+            &self.content,
+            house_purchase::LAYOUT_ID,
+            house_purchase::ROOT_ID,
+            font.clone(),
+        )
+        .ok_or("layout 0x2100000E root 0x1000008C is not in the dats")?;
+        let ui = &mut self.host.root;
+        let (width, height) = ui
+            .element(layout.root)
+            .map_or((0.0, 0.0), |e| (e.width, e.height));
+        let (screen_w, screen_h) = ui.size();
+        mount_window(
+            ui,
+            HOUSE_PURCHASE_WINDOW,
+            layout.root,
+            &MountOptions {
+                chrome: Chrome::NineSlice,
+                left: ((screen_w - width) * 0.5).max(0.0),
+                top: ((screen_h - height) * 0.5).max(0.0),
+                visible: false,
+                resize_x: false,
+                resize_y: false,
+                constrain_resize_to_parent: true,
+                ..MountOptions::default()
+            },
+        )?;
+        let controller =
+            HousePurchaseController::bind(ui, &layout, HOUSE_PURCHASE_WINDOW, sprites, font)
+                .ok_or("required authored item lists are missing")?;
+        self.host
+            .attach_controller(HOUSE_PURCHASE_WINDOW, Box::new(controller))
+            .map_err(|e| e.to_string())
+    }
+
     /// Feed the trade and vendor windows, the social panel and the
     /// contracts page from the window's copy of the facts: the trade and
     /// the shop's events as they come, the social panel when its facts or
@@ -345,6 +401,9 @@ impl WindowUi {
 
         host.with_controller::<SecureTradeController, _>(TRADE_WINDOW, |c, ui| {
             c.update(ui, &facts.trade, &view, icons, Some(strings));
+        });
+        host.with_controller::<HousePurchaseController, _>(HOUSE_PURCHASE_WINDOW, |c, ui| {
+            c.update(ui, &facts.house_purchase, &view, icons);
         });
 
         for event in &shop_events {

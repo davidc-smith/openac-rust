@@ -24,7 +24,8 @@ use crate::character::CharacterOptions;
 use crate::communication::{ClientConfirmation, JournalView, TrackedContract};
 use crate::gameplay::{BookView, FellowshipView, HouseView, TitleState};
 use crate::inventory::{
-    AppraisalView, InteractionMode, PendingPlacement, TradeView, VendorView, VendorViewReason,
+    AppraisalView, HousePurchaseView, InteractionMode, PendingPlacement, TradeView, VendorView,
+    VendorViewReason,
 };
 use crate::world::{ItemChange, WorldChange};
 
@@ -52,6 +53,9 @@ pub enum InterfaceEvent {
     Book(Box<BookView>),
     /// The house as it stands (after the snapshot and each change).
     House(Box<HouseView>),
+    /// The slumlord window as it stands (after the snapshot and each
+    /// change).
+    HousePurchase(Box<HousePurchaseView>),
     /// The journal as it stands (after the snapshot and each change).
     Journal(Box<JournalView>),
     /// A salvaging tool was used: the salvage panel opens on it.
@@ -510,6 +514,7 @@ pub(crate) struct InterfaceFeed {
     contracts: Option<u64>,
     book: Option<u64>,
     house: Option<u64>,
+    house_purchase: Option<u64>,
     journal: Option<u64>,
     titles: Option<(u64, u64)>,
     chat_entry: Option<ChatEntryView>,
@@ -611,6 +616,13 @@ impl InterfaceFeed {
         if self.house != Some(house.revision()) {
             self.house = Some(house.revision());
             events.push(InterfaceEvent::House(Box::new(house.view())));
+        }
+        let house_purchase = state.inventory.house_purchase().revision();
+        if self.house_purchase != Some(house_purchase) {
+            self.house_purchase = Some(house_purchase);
+            events.push(InterfaceEvent::HousePurchase(Box::new(
+                state.inventory.house_purchase_view(&state.world),
+            )));
         }
         let journal = state.communication.journal();
         if self.journal != Some(journal.revision()) {
