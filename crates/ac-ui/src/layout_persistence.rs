@@ -52,6 +52,35 @@ pub trait LayoutStore {
         window: &str,
         placement: &UiWindowPlacement,
     ) -> std::io::Result<()>;
+    /// The latest placements of several windows (each with its fallback)
+    /// for `character` at `resolution`, by name: only the windows with
+    /// something saved. A store that keeps a file reads it once.
+    fn load_window_placements(
+        &self,
+        character: &str,
+        resolution: &str,
+        windows: &[(&str, UiWindowLayout)],
+    ) -> HashMap<String, UiWindowPlacement> {
+        windows
+            .iter()
+            .filter_map(|(window, fallback)| {
+                self.load_window_placement(character, resolution, window, fallback)
+                    .map(|p| ((*window).to_owned(), p))
+            })
+            .collect()
+    }
+    /// Save the placements of several windows for `character`. A store
+    /// that keeps a file writes it once.
+    fn save_window_placements(
+        &self,
+        character: &str,
+        placements: &[(&str, UiWindowPlacement)],
+    ) -> std::io::Result<()> {
+        for (window, placement) in placements {
+            self.save_window_placement(character, window, placement)?;
+        }
+        Ok(())
+    }
     /// Window `window` of the named profile.
     fn load_named_window_layout(
         &self,
@@ -85,6 +114,21 @@ impl LayoutStore for SettingsStore {
         placement: &UiWindowPlacement,
     ) -> std::io::Result<()> {
         SettingsStore::save_window_placement(self, character, window, placement)
+    }
+    fn load_window_placements(
+        &self,
+        character: &str,
+        resolution: &str,
+        windows: &[(&str, UiWindowLayout)],
+    ) -> HashMap<String, UiWindowPlacement> {
+        SettingsStore::load_window_placements(self, character, resolution, windows)
+    }
+    fn save_window_placements(
+        &self,
+        character: &str,
+        placements: &[(&str, UiWindowPlacement)],
+    ) -> std::io::Result<()> {
+        SettingsStore::save_window_placements(self, character, placements)
     }
     fn load_named_window_layout(
         &self,
@@ -576,21 +620,48 @@ impl LayoutPersistence {
         save_back: bool,
         restore_visibility: bool,
     ) {
-        let Some(authored) = self.defaults.get(name).copied() else {
+        let Some(fallback) = self.fallback(name, screen) else {
             return;
         };
-        let fallback = default_layout(name, &authored, screen.0, screen.1, &self.defaults);
-        let mut placement = self
-            .store
-            .as_ref()
-            .and_then(|s| {
-                s.load_window_placement(character, &Self::resolution_key(screen), name, &fallback)
-            })
-            .unwrap_or(UiWindowPlacement {
-                layout: fallback,
-                screen_width: screen.0,
-                screen_height: screen.1,
-            });
+        let saved = self.store.as_ref().and_then(|s| {
+            s.load_window_placement(character, &Self::resolution_key(screen), name, &fallback)
+        });
+        let placement =
+            self.apply_restored(host, name, fallback, saved, screen, restore_visibility);
+        if save_back {
+            self.save_placements(character, &[(name, placement)]);
+        }
+    }
+
+    /// The default layout of `name` on `screen` (`None` for a window not
+    /// attached).
+    fn fallback(&self, name: &str, screen: (i32, i32)) -> Option<UiWindowLayout> {
+        let authored = self.defaults.get(name)?;
+        Some(default_layout(
+            name,
+            authored,
+            screen.0,
+            screen.1,
+            &self.defaults,
+        ))
+    }
+
+    /// Put `name` where `saved` says (its default `fallback` when nothing
+    /// is saved) and return the placement to save back.
+    fn apply_restored(
+        &mut self,
+        host: &mut UiHost,
+        name: &str,
+        fallback: UiWindowLayout,
+        saved: Option<UiWindowPlacement>,
+        screen: (i32, i32),
+        restore_visibility: bool,
+    ) -> UiWindowPlacement {
+        let mut placement = saved.unwrap_or(UiWindowPlacement {
+            layout: fallback,
+            screen_width: screen.0,
+            screen_height: screen.1,
+        });
         placement.layout =
             migrate_authored_geometry(placement.layout, authored_geometry(host, name, fallback));
         self.placements.insert(name.to_owned(), placement);
@@ -603,12 +674,21 @@ impl LayoutPersistence {
         );
         let placement = with_current_state(host, name, placement);
         self.placements.insert(name.to_owned(), placement);
-        if save_back
-            && let Some(store) = &self.store
-            && let Err(e) = store.save_window_placement(character, name, &placement)
+        placement
+    }
+
+    /// Save `placements` for `character` with one write of the store.
+    fn save_placements(&mut self, character: &str, placements: &[(&str, UiWindowPlacement)]) {
+        if placements.is_empty() {
+            return;
+        }
+        if let Some(store) = &self.store
+            && let Err(e) = store.save_window_placements(character, placements)
         {
-            self.failures
-                .push(format!("settings: window layout save failed [{name}]: {e}"));
+            for (name, _) in placements {
+                self.failures
+                    .push(format!("settings: window layout save failed [{name}]: {e}"));
+            }
         }
     }
 
@@ -620,15 +700,34 @@ impl LayoutPersistence {
         let character = self.character.clone();
         let screen = self.valid_screen();
         self.restored_character = Some(character.clone());
-        for name in self.attached.clone() {
-            self.restore_window(
+        // The settings file holds every section, so it is read once for all
+        // the windows and written once after them, not once per window.
+        let fallbacks: Vec<(String, UiWindowLayout)> = self
+            .attached
+            .iter()
+            .filter_map(|name| Some((name.clone(), self.fallback(name, screen)?)))
+            .collect();
+        let windows: Vec<(&str, UiWindowLayout)> =
+            fallbacks.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+        let saved = self
+            .store
+            .as_ref()
+            .map(|s| s.load_window_placements(&character, &Self::resolution_key(screen), &windows))
+            .unwrap_or_default();
+        let mut restored = Vec::with_capacity(fallbacks.len());
+        for (name, fallback) in &fallbacks {
+            let placement = self.apply_restored(
                 host,
-                &name,
-                &character,
+                name,
+                *fallback,
+                saved.get(name).copied(),
                 screen,
-                save_back,
                 restore_visibility,
             );
+            restored.push((name.as_str(), placement));
+        }
+        if save_back {
+            self.save_placements(&character, &restored);
         }
         self.resync(host);
     }
@@ -713,9 +812,17 @@ impl LayoutPersistence {
             return;
         }
         let character = self.character.clone();
-        for name in self.attached.clone() {
-            self.save_placement(host, &character, &name);
+        let names = self.attached.clone();
+        let mut placements = Vec::with_capacity(names.len());
+        for name in &names {
+            let Some(placement) = self.placements.get(name).copied() else {
+                continue;
+            };
+            let placement = with_current_state(host, name, placement);
+            self.placements.insert(name.clone(), placement);
+            placements.push((name.as_str(), placement));
         }
+        self.save_placements(&character, &placements);
     }
 
     /// Save every window under the named profile (`/saveui name`).
