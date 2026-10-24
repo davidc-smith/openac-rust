@@ -440,6 +440,46 @@ fn each_tinkering_augmentation_reads_its_own_property() {
     }
 }
 
+// OpenAC `CharacterControllerTests.Report_SpecializationAugmentationUsesMatchingSkillLine`
+// (#255): each specialization gem property shows its own skill's line.
+#[test]
+fn each_specialization_augmentation_shows_its_own_skill() {
+    let skills = [
+        "Salvaging",
+        "ItemTinkering",
+        "ArmorTinkering",
+        "MagicItemTinkering",
+        "WeaponTinkering",
+        "Gearcraft",
+    ];
+    let mut strings = CharacterInfoStrings::english();
+    strings.augmentations = skills
+        .iter()
+        .map(|name| {
+            (
+                format!("ID_CharacterInfo_Augmentation_Spec_{name}"),
+                vec![format!("<{name}>\n")],
+            )
+        })
+        .collect();
+    for (property, skill) in [
+        (224, "Salvaging"),
+        (225, "ItemTinkering"),
+        (226, "ArmorTinkering"),
+        (227, "MagicItemTinkering"),
+        (228, "WeaponTinkering"),
+        (293, "Gearcraft"),
+    ] {
+        let mut s = CharacterInfoSource::default();
+        s.ints.insert(property, 1);
+        let r = build_report(&s, &strings);
+        assert!(r.contains(&format!("<{skill}>")), "{property}");
+        for other in skills.iter().filter(|name| **name != skill) {
+            assert!(!r.contains(&format!("<{other}>")), "{property}: {other}");
+        }
+    }
+}
+
 // OpenAC `CharacterControllerTests.Report_DoesNotAppendUnusedValueAfterSingleFragmentAugmentation`
 // (#200): a one-part phrase drops the value it has no place for.
 #[test]

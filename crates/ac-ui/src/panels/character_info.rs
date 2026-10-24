@@ -80,10 +80,10 @@ const AUGMENTATIONS: [Augmentation; 43] = [
     aug(0xF4, "ID_CharacterInfo_Augmentation_Resist_Fire", true),
     aug(0xF5, "ID_CharacterInfo_Augmentation_Resist_Frost", true),
     aug(0xF6, "ID_CharacterInfo_Augmentation_Resist_Lightning", true),
-    aug(0xE0, "ID_CharacterInfo_Augmentation_Spec_Gearcraft", false),
+    aug(0xE0, "ID_CharacterInfo_Augmentation_Spec_Salvaging", false),
     aug(
         0xE1,
-        "ID_CharacterInfo_Augmentation_Spec_WeaponTinkering",
+        "ID_CharacterInfo_Augmentation_Spec_ItemTinkering",
         false,
     ),
     aug(
@@ -98,10 +98,10 @@ const AUGMENTATIONS: [Augmentation; 43] = [
     ),
     aug(
         0xE4,
-        "ID_CharacterInfo_Augmentation_Spec_ItemTinkering",
+        "ID_CharacterInfo_Augmentation_Spec_WeaponTinkering",
         false,
     ),
-    aug(0x125, "ID_CharacterInfo_Augmentation_Spec_Salvaging", false),
+    aug(0x125, "ID_CharacterInfo_Augmentation_Spec_Gearcraft", false),
     aug(0xE5, "ID_CharacterInfo_Augmentation_ExtraPackSlot", false),
     aug(
         0xE6,
