@@ -37,6 +37,7 @@ dependencies = [
  "ac-bits",
  "ac-core",
  "glam",
+ "memmap2",
  "thiserror 2.0.21",
 ]
 

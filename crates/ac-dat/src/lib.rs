@@ -18,7 +18,6 @@ mod collection;
 mod database;
 mod error;
 mod header;
-mod io;
 pub mod objects;
 pub mod texture;
 pub mod types;
