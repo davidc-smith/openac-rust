@@ -1,12 +1,18 @@
-//! The shape of one frame: open it, prepare, draw the world, draw the
+//! The shape of one frame: prepare, open it, draw the world, draw the
 //! presentation over it (the retail UI), close it, then the after-frame
 //! work (a pending screenshot, diagnostics), each in a fixed order and each
 //! timed by the frame profiler.
 //!
+//! The frame is prepared before its swapchain image is acquired: preparing
+//! needs no image, and acquiring waits until the presentation engine has
+//! let go of an image, which it has more likely done once the preparation
+//! has run. Acquiring first left that wait (about a millisecond a frame on
+//! the Vulkan swapchain on Windows) on the frame's critical path.
+//!
 //! The window supplies the phases ([`FramePhases`]); [`render_frame`] owns
 //! the order and the failure rule: a phase that fails after the frame was
 //! opened closes the frame without presenting it, exactly once, and the
-//! failure is returned.
+//! failure is returned. A failed preparation opens no frame.
 
 use crate::profiler::{FrameProfiler, FrameStage};
 
@@ -55,7 +61,8 @@ pub trait FramePhases {
     fn begin_frame(&mut self) -> Result<bool, Self::Error>;
     /// Start measuring the frame's GPU work.
     fn begin_measure(&mut self) -> Result<(), Self::Error>;
-    /// Upload and prepare everything the world pass draws.
+    /// Upload and prepare everything the world pass draws. Runs before the
+    /// frame is opened, and also for a frame that then has no image.
     fn prepare(&mut self, input: &FrameInput) -> Result<(), Self::Error>;
     /// Record the world pass.
     fn render_world(&mut self, input: &FrameInput) -> Result<WorldOutcome, Self::Error>;
@@ -92,6 +99,10 @@ pub fn render_frame<P: FramePhases>(
             ..FrameOutcome::default()
         });
     }
+    let token = profiler.begin(FrameStage::Upload);
+    let prepared = phases.prepare(input);
+    profiler.end(token);
+    prepared?;
     let token = profiler.begin(FrameStage::Present);
     let opened = phases.begin_frame();
     profiler.end(token);
@@ -104,10 +115,6 @@ pub fn render_frame<P: FramePhases>(
 
     let drawn = (|| {
         phases.begin_measure()?;
-        let token = profiler.begin(FrameStage::Upload);
-        let prepared = phases.prepare(input);
-        profiler.end(token);
-        prepared?;
         let token = profiler.begin(FrameStage::Render);
         let world = phases
             .render_world(input)
@@ -240,9 +247,9 @@ mod tests {
         assert_eq!(
             p.calls,
             [
+                "resources",
                 "gpu-begin",
                 "measure-begin",
-                "resources",
                 "world",
                 "presentation",
                 "measure-end",
@@ -282,7 +289,7 @@ mod tests {
         };
         let outcome = run(&mut p, &INPUT).unwrap();
         assert!(outcome.skipped_no_image);
-        assert_eq!(p.calls, ["gpu-begin"]);
+        assert_eq!(p.calls, ["resources", "gpu-begin"]);
     }
 
     #[test]
@@ -292,18 +299,22 @@ mod tests {
             ..Recording::default()
         };
         assert_eq!(run(&mut p, &INPUT), Err("gpu-begin"));
-        assert_eq!(p.calls, ["gpu-begin"]);
+        assert_eq!(p.calls, ["resources", "gpu-begin"]);
+    }
+
+    #[test]
+    fn a_failure_to_prepare_opens_no_frame() {
+        let mut p = Recording {
+            fail_at: Some("resources"),
+            ..Recording::default()
+        };
+        assert_eq!(run(&mut p, &INPUT), Err("resources"));
+        assert_eq!(p.calls, ["resources"]);
     }
 
     #[test]
     fn a_failure_inside_the_frame_aborts_it_once_and_propagates() {
-        for point in [
-            "measure-begin",
-            "resources",
-            "world",
-            "presentation",
-            "measure-end",
-        ] {
+        for point in ["measure-begin", "world", "presentation", "measure-end"] {
             let mut p = Recording {
                 fail_at: Some(point),
                 ..Recording::default()

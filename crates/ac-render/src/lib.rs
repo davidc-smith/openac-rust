@@ -56,6 +56,12 @@ pub mod selection;
 pub mod sky;
 pub mod streaming;
 mod surface;
+
+/// A map keyed by ids (model, mesh, cell, static), looked up thousands of
+/// times a frame: a fast hash, as the keys are not chosen by an attacker.
+pub(crate) type IdMap<K, V> = rustc_hash::FxHashMap<K, V>;
+/// A set of ids; see [`IdMap`].
+pub(crate) type IdSet<K> = rustc_hash::FxHashSet<K>;
 pub mod surface_image;
 #[cfg(test)]
 mod test_gpu;

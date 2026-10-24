@@ -71,9 +71,9 @@ pub(super) struct SinkInputs<'a> {
     pub buildings: &'a [BuildingDraw<'a>],
     pub cells: &'a HashMap<u32, CellRef<'a>>,
     pub objects: &'a HashMap<u32, Vec<ObjectDraw<'a>>>,
-    pub models: &'a HashMap<u32, Option<Vec<MeshRef>>>,
-    pub model_info: &'a HashMap<u32, ModelInfo>,
-    pub meshes: &'a HashMap<MeshKey, GfxGpu>,
+    pub models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
+    pub model_info: &'a crate::IdMap<u32, ModelInfo>,
+    pub meshes: &'a crate::IdMap<MeshKey, GfxGpu>,
     pub lights: &'a WindowLights,
     pub sky_pre: &'a [usize],
     pub sky_post: &'a [usize],
@@ -117,9 +117,9 @@ pub(super) struct FrameSink<'a> {
 #[derive(Debug, Default)]
 pub(super) struct StageDrawn {
     /// Interior cells whose room mesh is drawn.
-    cells: HashSet<u32>,
+    cells: crate::IdSet<u32>,
     /// Objects drawn.
-    objects: HashSet<DrawnObject>,
+    objects: crate::IdSet<DrawnObject>,
 }
 
 /// An object a stage drew.
@@ -145,7 +145,7 @@ pub(crate) const SCENERY_WIND_BIT: u32 = 2;
 
 /// A model has a clip-mapped sub-mesh in one of its parts (OpenAC
 /// `FoliageWindClassification.ComputeEntityHasCutoutSubset`).
-pub(super) fn has_cutout_subset(parts: &[MeshRef], meshes: &HashMap<MeshKey, GfxGpu>) -> bool {
+pub(super) fn has_cutout_subset(parts: &[MeshRef], meshes: &crate::IdMap<MeshKey, GfxGpu>) -> bool {
     parts.iter().any(|p| {
         meshes
             .get(&u64::from(p.gfx_obj_id))
@@ -491,7 +491,8 @@ impl WalkSink for FrameSink<'_> {
 
     fn land_cell(&mut self, block: usize, cell: usize) {
         let (coord, near) = self.input.blocks[block];
-        let views = self.views.clone();
+        // The views are lent out for the cell (nothing it draws changes them).
+        let views = std::mem::take(&mut self.views);
         if let Some(near) = near {
             let offset = Mat4::from_translation(landblock_offset(self.input.origin, coord));
             let landblock = coord.terrain_id() & 0xFFFF_0000;
@@ -536,6 +537,7 @@ impl WalkSink for FrameSink<'_> {
         }
         self.cell_particles(key);
         self.out.sort_cell_exit();
+        self.views = views;
     }
 
     fn building_drawable(&mut self, building: usize) -> bool {
@@ -737,7 +739,7 @@ impl<'a> SinkParticles<'a> {
     /// particles wait.
     fn items(
         &mut self,
-        meshes: &HashMap<MeshKey, GfxGpu>,
+        meshes: &crate::IdMap<MeshKey, GfxGpu>,
     ) -> Vec<(f32, AlphaList, PendingParticle)> {
         self.frame.clear();
         let system = self.system;

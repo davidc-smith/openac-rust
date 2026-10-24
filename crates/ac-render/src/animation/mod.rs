@@ -50,7 +50,7 @@ type Refusal = (u16, Option<u32>, Option<u32>);
 pub struct AnimationPresenter {
     live: HashMap<u32, LiveAnimation>,
     refused: HashMap<u32, Refusal>,
-    statics: HashMap<StaticKey, (StaticAnimation, Vec3)>,
+    statics: crate::IdMap<StaticKey, (StaticAnimation, Vec3)>,
     queue: HookFrameQueue,
     fades: TranslucencyFades,
     hooks: FrameHooks,
