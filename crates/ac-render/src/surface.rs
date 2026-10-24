@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::pin;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 use std::time::Instant;
@@ -22,6 +22,7 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::audio::{PlayerPlace, WindowAudio};
 use crate::camera::{CameraMode, ChaseTuning, FlyInput};
+use crate::device_health::DeviceHealth;
 use crate::effects::{EffectSound, ServerEffect};
 use crate::facts::{PresentationFacts, SharedFacts};
 use crate::frame::{FrameInput, FrameOutcome, FramePhases, WorldOutcome, render_frame};
@@ -123,26 +124,6 @@ pub fn retail_screenshot_path(directory: &Path, taken: impl Fn(&Path) -> bool) -
     (0..100_000)
         .map(|index| directory.join(format!("ScreenShot{index:05}.png")))
         .find(|path| !taken(path))
-}
-
-/// GPU faults raised outside the frame (wgpu's error handler and device-lost
-/// callback run on wgpu's terms), collected for the window to act on.
-#[derive(Debug, Default)]
-struct DeviceHealth {
-    faults: Mutex<Vec<GpuFault>>,
-}
-
-impl DeviceHealth {
-    fn push(&self, fault: GpuFault) {
-        self.faults
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(fault);
-    }
-
-    fn drain(&self) -> Vec<GpuFault> {
-        std::mem::take(&mut *self.faults.lock().unwrap_or_else(PoisonError::into_inner))
-    }
 }
 
 /// The swapchain image of the frame being drawn and what is recorded for it.
@@ -372,18 +353,7 @@ impl AttachedWindow {
             required_features: features,
             ..Default::default()
         }))?;
-        let health = Arc::new(DeviceHealth::default());
-        let errors = Arc::clone(&health);
-        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-            errors.push(GpuFault::from_wgpu(&error));
-        }));
-        let lost = Arc::clone(&health);
-        device.set_device_lost_callback(move |reason, message| {
-            // Dropping the device on detach reports `Destroyed`; that is ours.
-            if reason != wgpu::DeviceLostReason::Destroyed {
-                lost.push(GpuFault::DeviceLost(message));
-            }
-        });
+        let health = DeviceHealth::watch(&device);
 
         let mut pacing = DisplayPacing::new(options.vsync, options.uncapped);
         pacing.set_monitor_refresh(monitor_refresh_hz(&window));
@@ -779,6 +749,12 @@ impl AttachedWindow {
         &self.adapter
     }
 
+    /// The loss, when the window's GPU device is known to be lost: the
+    /// window then only closes.
+    pub(crate) fn device_lost(&self) -> Option<GpuFault> {
+        self.health.lost()
+    }
+
     pub(crate) fn request_redraw(&self) {
         self.window.request_redraw();
     }
@@ -882,6 +858,9 @@ impl AttachedWindow {
     /// Faults wgpu reported since the last frame: a fatal one ends the
     /// window; the others are returned once each for the owner to log.
     fn check_health(&mut self, report: &mut FrameReport) -> Result<(), RenderError> {
+        if let Some(lost) = self.health.lost() {
+            return Err(RenderError::Gpu(lost));
+        }
         for fault in self.health.drain() {
             if gpu::is_fatal(&fault) {
                 return Err(RenderError::Gpu(fault));
@@ -935,6 +914,9 @@ impl AttachedWindow {
         for (frame, elapsed) in self.gpu_samples.drain(..) {
             self.profiler.record_gpu(frame, elapsed);
         }
+        // A device lost during the frame ends the window now, before
+        // anything else reaches it.
+        self.check_health(&mut report)?;
         let outcome = result?;
         if !outcome.skipped_zero_area {
             self.window.request_redraw();
@@ -1030,6 +1012,9 @@ impl AttachedWindow {
     /// Draw the prepared frame again into an image the size of the window and write it to
     /// `path` as a PNG.
     fn screenshot(&mut self, path: &Path) -> Result<Option<WorldStats>, RenderError> {
+        if let Some(lost) = self.health.lost() {
+            return Err(RenderError::Gpu(lost));
+        }
         let (width, height) = (self.config.width, self.config.height);
         let format = self.config.format;
         let bgra = match format {
@@ -1103,9 +1088,12 @@ impl AttachedWindow {
         buffer.map_async(wgpu::MapMode::Read, .., move |result| {
             let _ = tx.send(result);
         });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| RenderError::Screenshot(format!("waiting for the GPU: {e}")))?;
+        self.health
+            .poll(&self.device, wgpu::PollType::wait_indefinitely())
+            .map_err(|fault| match fault {
+                GpuFault::DeviceLost(_) => RenderError::Gpu(fault),
+                other => RenderError::Screenshot(other.to_string()),
+            })?;
         rx.recv()
             .map_err(|_| RenderError::Screenshot("the readback was dropped".into()))?
             .map_err(|e| RenderError::Screenshot(format!("mapping the readback: {e}")))?;
@@ -1180,7 +1168,12 @@ impl FramePhases for AttachedWindow {
     fn begin_measure(&mut self) -> Result<(), RenderError> {
         if let Some(timer) = self.gpu_timer.as_mut() {
             // Reads finished measurements of earlier frames without waiting.
-            let _ = self.device.poll(wgpu::PollType::Poll);
+            // A lost device ends the frame; anything else only delays them.
+            if let Err(lost @ GpuFault::DeviceLost(_)) =
+                self.health.poll(&self.device, wgpu::PollType::Poll)
+            {
+                return Err(RenderError::Gpu(lost));
+            }
             for (frame, elapsed) in timer.collect() {
                 self.gpu_samples.push((frame, elapsed));
                 // The atmospheric rendering's automatic quality judges the
@@ -1721,10 +1714,16 @@ impl AttachedWindow {
             }),
             Box::new(|| {
                 with(&mut |w| {
-                    w.device
-                        .poll(wgpu::PollType::wait_indefinitely())
-                        .map(|_| ())
-                        .map_err(|e| format!("waiting for the GPU: {e}"))
+                    // A lost device has nothing left to finish and is not
+                    // waited on (the loss was reported when it closed the
+                    // window).
+                    match w
+                        .health
+                        .poll(&w.device, wgpu::PollType::wait_indefinitely())
+                    {
+                        Ok(_) | Err(GpuFault::DeviceLost(_)) => Ok(()),
+                        Err(fault) => Err(fault.to_string()),
+                    }
                 })
             }),
             Box::new(|| {
@@ -1744,7 +1743,11 @@ impl AttachedWindow {
                 })
             }),
             Box::new(|| {
-                drop(window.borrow_mut().take());
+                let mut window = window.borrow_mut();
+                if let Some(w) = window.as_ref() {
+                    w.health.releasing();
+                }
+                drop(window.take());
                 Ok(())
             }),
         ]);

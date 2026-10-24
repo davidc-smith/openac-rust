@@ -22,6 +22,7 @@ pub mod cells;
 pub mod content;
 pub mod degrade;
 pub mod degrade_controller;
+pub mod device_health;
 pub mod display_mode;
 pub mod draws;
 pub mod effects;

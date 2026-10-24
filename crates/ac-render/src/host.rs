@@ -588,6 +588,17 @@ impl HostApp {
         }
     }
 
+    /// A window whose GPU device is known to be lost closes before any
+    /// event or command reaches it, as when a frame meets the loss: nothing
+    /// may call into a lost device, and the session plays on without the
+    /// window.
+    fn close_if_device_lost(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(lost) = self.window.as_ref().and_then(AttachedWindow::device_lost) {
+            self.report(HostEvent::RenderFailed(RenderError::Gpu(lost)));
+            self.feed(event_loop, AttachInput::RenderFailed);
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let Some(window) = self.window.as_mut() else {
             return;
@@ -662,6 +673,7 @@ impl ApplicationHandler<HostCommand> for HostApp {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: HostCommand) {
+        self.close_if_device_lost(event_loop);
         let input = match command {
             HostCommand::Attach(spec, scene) => {
                 self.pending = Some((spec, scene));
@@ -750,6 +762,7 @@ impl ApplicationHandler<HostCommand> for HostApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.close_if_device_lost(event_loop);
         let Some(window) = self.window.as_mut().filter(|w| w.id() == id) else {
             // A late event for a window that is already gone.
             return;
@@ -785,10 +798,11 @@ impl ApplicationHandler<HostCommand> for HostApp {
 
     fn device_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         _device: DeviceId,
         event: DeviceEvent,
     ) {
+        self.close_if_device_lost(event_loop);
         if let (Some(window), DeviceEvent::MouseMotion { delta }) = (self.window.as_mut(), event) {
             window.mouse_motion(delta.0, delta.1);
         }
