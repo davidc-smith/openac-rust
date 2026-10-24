@@ -240,6 +240,7 @@ impl WindowUi {
 
     /// Where window layouts are saved (the settings file).
     pub fn set_layout_store(&mut self, store: Option<SettingsStore>) {
+        self.plugins.set_control_state_file(store.clone());
         if let Some(layouts) = self.status.layouts.as_mut() {
             layouts.set_store(store.map(|s| Box::new(s) as Box<dyn LayoutStore>));
         }
@@ -285,6 +286,7 @@ impl WindowUi {
         if let Some(layouts) = self.status.layouts.as_mut() {
             match character {
                 Some(name) if self.status.restored_for.as_deref() != Some(name.as_str()) => {
+                    self.plugins.set_control_state_character(&name);
                     layouts.set_gameplay_active(&mut self.host, true);
                     layouts.set_character(&mut self.host, &name);
                     layouts.restore_all(&mut self.host);

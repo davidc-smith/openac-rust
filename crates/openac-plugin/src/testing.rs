@@ -132,6 +132,11 @@ impl FakeHost {
         plugin.disable(&mut Host::with_transport(self));
     }
 
+    /// Runs `f` with a host on this fake, as a plugin call would.
+    pub fn with_host<R>(&mut self, f: impl FnOnce(&mut Host<'_>) -> R) -> R {
+        f(&mut Host::with_transport(self))
+    }
+
     /// One tick.
     pub fn tick<P: Plugin>(&mut self, plugin: &mut P) {
         plugin.tick(&mut Host::with_transport(self));
@@ -234,7 +239,48 @@ impl FakeHost {
             V::UintList(v) => W::UintList(v),
             V::IntList(v) => W::IntList(v),
             V::BoolList(v) => W::BoolList(v),
+            V::OptionalBool(_) | V::FloatList(_) | V::Items(_) => return None,
         })
+    }
+
+    /// The value last pushed for typed binding `name` of panel `panel`
+    /// (any kind but items).
+    #[must_use]
+    pub fn panel_typed_value(&self, panel: u32, name: &str) -> Option<crate::ui::TypedValue> {
+        use crate::ui::TypedValue as T;
+        use ac_plugin_ui::UiValue as V;
+        let value = self.ui.panels().find(|p| p.id == panel)?.values.get(name)?;
+        Some(match value.clone() {
+            V::Bool(v) => T::Bool(v),
+            V::Int(v) => T::Int(v),
+            V::Uint(v) => T::Uint(v),
+            V::Float(v) => T::Float(v),
+            V::Text(v) => T::Text(v),
+            V::TextList(v) => T::TextList(v),
+            V::UintList(v) => T::UintList(v),
+            V::IntList(v) => T::IntList(v),
+            V::BoolList(v) => T::BoolList(v),
+            V::OptionalBool(v) => T::OptionalBool(v),
+            V::FloatList(v) => T::FloatList(v),
+            V::Items(_) => return None,
+        })
+    }
+
+    /// How many items panel `panel` holds for items binding `name`.
+    #[must_use]
+    pub fn panel_item_count(&self, panel: u32, name: &str) -> Option<usize> {
+        match self.ui.panels().find(|p| p.id == panel)?.values.get(name)? {
+            ac_plugin_ui::UiValue::Items(items) => Some(items.len()),
+            _ => None,
+        }
+    }
+
+    /// The player answered dialog `handle` with button `button`.
+    pub fn answer_dialog<P: Plugin>(&mut self, plugin: &mut P, handle: u32, button: i32) {
+        self.ui_input(
+            plugin,
+            ac_plugin_ui::UiInput::DialogAnswered { handle, button },
+        );
     }
 
     /// The player clicked a control whose handler is `handler` (an
@@ -254,11 +300,24 @@ impl FakeHost {
     ) {
         use crate::ui::ActionValue as A;
         use ac_plugin_ui::ActionValue as B;
-        let value = match value {
-            A::None => B::None,
-            A::Int(v) => B::Int(v),
-            A::Float(v) => B::Float(v),
-            A::Text(v) => B::Text(v),
+        use ac_plugin_ui::BindingKind as K;
+        // The newer handler arguments travel in the plain ones; the
+        // handler's declared kind says how to read them back.
+        let typed = match self.ui.handler_kind(panel, handler) {
+            Some(K::BoolAction) => value.as_bool().map(B::Bool),
+            Some(K::UintAction) => value.as_uint().map(B::Uint),
+            Some(K::IntBoolAction) => value.as_int_bool().map(|(v, f)| B::IntBool(v, f)),
+            Some(K::TextBoolAction) => value.as_text_bool().map(|(v, f)| B::TextBool(v, f)),
+            Some(K::FloatListAction) => value.as_float_list().map(B::FloatList),
+            Some(K::IntListAction) => value.as_int_list().map(B::IntList),
+            _ => None,
+        };
+        let value = match (typed, value) {
+            (Some(typed), _) => typed,
+            (None, A::None) => B::None,
+            (None, A::Int(v)) => B::Int(v),
+            (None, A::Float(v)) => B::Float(v),
+            (None, A::Text(v)) => B::Text(v),
         };
         self.ui_input(
             plugin,
@@ -385,6 +444,11 @@ impl Transport for FakeHost {
             | Import::UiControlExists
             | Import::UiControlLabel
             | Import::UiControlVisible
+            | Import::UiPanelRegisterTyped
+            | Import::UiPanelSetTyped
+            | Import::UiDialogConfirm
+            | Import::UiDialogWithdraw
+            | Import::UiPanelShowModal
             | Import::UiClientWindow
             | Import::UiCanvasRegister
             | Import::UiCanvasPaint

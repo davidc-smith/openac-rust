@@ -8,7 +8,12 @@
 //! [`PluginOutbox`] the client sends back to the session.
 
 pub mod canvas;
+pub mod color;
+pub mod controls;
+pub mod dialog;
+pub mod fold;
 pub mod hotkeys;
+pub mod list_ext;
 pub mod shelf;
 pub mod widgets;
 
@@ -19,8 +24,8 @@ use std::sync::Arc;
 
 use ac_plugin_ui::list::ColumnPress;
 use ac_plugin_ui::markup::{
-    Anchors, ColorSource, ColumnKind, Element as Markup, IconKind, IconSource, ListBody,
-    MarkupDocument, normalize_icon,
+    Anchors, ColorSource, ColumnKind, EXPANDER_HEADER_HEIGHT, Element as Markup, IconKind,
+    IconSource, ListBody, MarkupDocument, normalize_icon,
 };
 use ac_plugin_ui::{ActionValue, PanelView, Rgba, UiInput, UiValue};
 
@@ -103,6 +108,16 @@ fn keyboard_activated(mut e: Element) -> Element {
     e.focus_on_mouse_click = false;
     e.tab_stop = true;
     e
+}
+
+/// A transparent, borderless container.
+fn transparent_panel() -> Panel {
+    Panel {
+        background_color: Color::TRANSPARENT,
+        border_color: Color::TRANSPARENT,
+        border_thickness: 0.0,
+        background_sprite: 0,
+    }
 }
 
 fn anchors(a: Anchors) -> AnchorEdges {
@@ -195,6 +210,8 @@ pub struct PluginPanelController {
     outbox: PluginOutbox,
     expected_visible: bool,
     menu_items: HashMap<usize, Vec<String>>,
+    /// Each element's context menu element, by markup element.
+    menus: HashMap<usize, ElementId>,
     synced: Option<u64>,
     /// The font the window was built with.
     classic_font: Option<Arc<UiFont>>,
@@ -215,7 +232,37 @@ pub fn build_panel(
     font: Option<Arc<UiFont>>,
     outbox: PluginOutbox,
 ) -> PluginPanelController {
+    build_panel_with_state(ui, view, font, outbox, None)
+}
+
+/// [`build_panel`] with the window's remembered control values: named
+/// expanders, splits and lists remember what the player left them at for
+/// the character.
+#[allow(clippy::too_many_lines)]
+pub fn build_panel_with_state(
+    ui: &mut UiRoot,
+    view: &PanelView,
+    font: Option<Arc<UiFont>>,
+    outbox: PluginOutbox,
+    control_state: Option<fold::SharedControlState>,
+) -> PluginPanelController {
     let doc = Arc::clone(&view.document);
+    let window_name = view.window_name();
+    let emit = controls::Emit {
+        panel: view.id,
+        outbox: Rc::clone(&outbox),
+    };
+    let shifts: fold::Shifts = Rc::default();
+    let remembered = |control: Option<&String>, kind: &'static str| {
+        fold::Remembered::new(
+            control_state.clone(),
+            &window_name,
+            control.map(String::as_str),
+            kind,
+        )
+    };
+    let mut containers: Vec<ElementId> = Vec::with_capacity(doc.nodes.len());
+    let mut menus: HashMap<usize, ElementId> = HashMap::new();
     let spec = &doc.panel;
     let mut frame_element = Element::at(spec.rect.x, spec.rect.y, spec.rect.w, spec.rect.h)
         .with_anchors(AnchorEdges::NONE)
@@ -247,11 +294,13 @@ pub fn build_panel(
     let mut nodes = Vec::with_capacity(doc.nodes.len());
     let mut by_element = HashMap::new();
     for (index, node) in doc.nodes.iter().enumerate() {
-        let parent = node.parent.map_or(root, |p| nodes[p]);
+        let parent = node.parent.map_or(root, |p| containers[p]);
+        let mut container = None;
         let mut e = Element::at(node.rect.x, node.rect.y, node.rect.w, node.rect.h)
             .with_anchors(anchors(node.common.anchors));
         e.name.clone_from(&node.common.name);
         let font = font.clone();
+        let menu_font = font.clone();
         let id = match &node.element {
             Markup::Group { .. } => {
                 e.click_through = true;
@@ -381,14 +430,171 @@ pub fn build_panel(
                 row_height,
                 selection_band,
                 body,
+                header,
+                tree,
+                multi,
+                onchange,
                 ..
             } => {
                 let mut list = MarkupList::new(font, *row_height);
                 list.selection_band = *selection_band;
                 if let ListBody::Columns(columns) = body {
                     list.columns.clone_from(columns);
+                    list.markup_columns.clone_from(columns);
+                    let mut ext = list_ext::ListExt::new(
+                        columns,
+                        remembered(node.common.name.as_ref(), "sort"),
+                        remembered(node.common.name.as_ref(), "widths"),
+                        emit.clone(),
+                    );
+                    ext.header = header.show;
+                    ext.onsort.clone_from(&header.onsort);
+                    ext.resizable = header.resizable;
+                    ext.onresize.clone_from(&header.onresize);
+                    ext.multi = *multi;
+                    if *multi {
+                        ext.onchange.clone_from(onchange);
+                    }
+                    ext.tree = tree.as_ref().map(|t| {
+                        list_ext::TreeState::new(
+                            t.column,
+                            t.start_collapsed,
+                            t.onexpand.clone(),
+                            remembered(node.common.name.as_ref(), "expanded"),
+                        )
+                    });
+                    if *multi || tree.is_some() {
+                        e = keyboard_activated(e);
+                    }
+                    list.ext = Some(Box::new(ext));
                 }
                 ui.add(parent, e, list)
+            }
+            Markup::Checkbox { onchange, .. } => ui.add(
+                parent,
+                keyboard_activated(e),
+                controls::MarkupCheckbox::new(font, onchange.clone(), emit.clone()),
+            ),
+            Markup::Separator { .. } => {
+                e.click_through = true;
+                ui.add(parent, e, controls::MarkupSeparator::default())
+            }
+            Markup::Radio { onchange, .. } => ui.add(
+                parent,
+                keyboard_activated(e),
+                controls::MarkupRadio::new(font, onchange.clone(), emit.clone()),
+            ),
+            Markup::Number {
+                onchange,
+                kind,
+                spec: number_spec,
+                ..
+            } => {
+                Field::configure(&mut e);
+                e.tab_stop = true;
+                let mut field = Field::default();
+                field.font = font;
+                field.one_line = true;
+                field.selectable = true;
+                field.select_all_on_focus = true;
+                field.record_history = false;
+                field.max_characters = 41;
+                ui.add(
+                    parent,
+                    e,
+                    controls::MarkupNumber::new(
+                        field,
+                        *number_spec,
+                        *kind == ac_plugin_ui::markup::NumberKind::Int,
+                        onchange.clone(),
+                        emit.clone(),
+                    ),
+                )
+            }
+            Markup::Hotkey { onchange, .. } => {
+                e.accepts_focus = true;
+                e.focus_on_mouse_click = true;
+                e.tab_stop = true;
+                ui.add(
+                    parent,
+                    e,
+                    controls::MarkupHotkey::new(font, onchange.clone(), emit.clone()),
+                )
+            }
+            Markup::Color { .. } => {
+                e.accepts_focus = true;
+                e.focus_on_mouse_click = false;
+                e.tab_stop = true;
+                ui.add(
+                    parent,
+                    e,
+                    color::MarkupColor::new(font, &node.element, emit.clone()),
+                )
+            }
+            Markup::Expander { open, onchange, .. } => {
+                e.click_through = true;
+                let (w, h) = (node.rect.w, node.rect.h);
+                let mut header_element =
+                    keyboard_activated(Element::at(0.0, 0.0, w, EXPANDER_HEADER_HEIGHT))
+                        .with_anchors(AnchorEdges::LEFT | AnchorEdges::RIGHT | AnchorEdges::TOP);
+                header_element.runtime_tooltip_text =
+                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
+                let header = ui.insert(header_element, fold::ExpanderHeader::new(font));
+                let mut content_element = Element::at(
+                    0.0,
+                    EXPANDER_HEADER_HEIGHT,
+                    w,
+                    (h - EXPANDER_HEADER_HEIGHT).max(0.0),
+                )
+                .with_anchors(
+                    AnchorEdges::LEFT | AnchorEdges::TOP | AnchorEdges::RIGHT | AnchorEdges::BOTTOM,
+                );
+                content_element.click_through = true;
+                let content = ui.insert(content_element, transparent_panel());
+                let expander = fold::MarkupExpander::new(
+                    header,
+                    content,
+                    *open,
+                    remembered(node.common.name.as_ref(), "expanded"),
+                    Rc::clone(&shifts),
+                    onchange.clone(),
+                    emit.clone(),
+                );
+                let id = ui.add(parent, e, expander);
+                ui.add_child(id, header);
+                ui.add_child(id, content);
+                container = Some(content);
+                id
+            }
+            Markup::Split {
+                horizontal,
+                min,
+                max,
+                default_position,
+                onchange,
+                ..
+            } => {
+                e.click_through = true;
+                let mut bar_element = keyboard_activated(Element::at(0.0, 0.0, 0.0, 0.0))
+                    .with_anchors(AnchorEdges::NONE)
+                    .with_z_order(1);
+                bar_element.captures_pointer_drag = true;
+                bar_element.runtime_tooltip_text =
+                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
+                let bar = ui.insert(bar_element, fold::SplitBar::new(*horizontal));
+                let mut split = fold::MarkupSplit::new(
+                    *horizontal,
+                    bar,
+                    remembered(node.common.name.as_ref(), "position"),
+                    onchange.clone(),
+                    emit.clone(),
+                );
+                split.min = *min;
+                split.max = *max;
+                split.default_position = *default_position;
+                let id = ui.add(parent, e, split);
+                ui.add_child(id, bar);
+                id
             }
         };
         if let Some(t) = &node.common.tooltip
@@ -396,8 +602,45 @@ pub fn build_panel(
         {
             el.runtime_tooltip_text = t.read(view);
         }
+        if let Some(menu) = &node.common.context_menu {
+            let mut menu_element = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
+            menu_element.accepts_focus = true;
+            menu_element.focus_on_mouse_click = true;
+            menu_element.captures_pointer_drag = true;
+            let menu = ui.add(
+                id,
+                menu_element,
+                fold::MarkupContextMenu::new(
+                    menu_font,
+                    menu.onselect.clone(),
+                    menu.onopen.clone(),
+                    emit.clone(),
+                ),
+            );
+            if let Some(el) = ui.element_mut(id) {
+                el.context_menu = Some(menu);
+            }
+            menus.insert(index, menu);
+        }
         by_element.insert(id, index);
         nodes.push(id);
+        containers.push(container.unwrap_or(id));
+    }
+    // A split sizes its two panes: lay it out at its authored start now,
+    // so the panes' children record their anchors against those sizes.
+    for (index, node) in doc.nodes.iter().enumerate() {
+        if let Markup::Split { .. } = node.element {
+            let id = nodes[index];
+            let panes: Vec<ElementId> = node.children.iter().map(|c| nodes[*c]).collect();
+            for pane in &panes {
+                ui.set_anchors(*pane, AnchorEdges::NONE);
+            }
+            ui.with::<fold::MarkupSplit, _>(id, |split, ui| {
+                split.first = panes.first().copied();
+                split.second = panes.get(1).copied();
+                split.layout_at_default(ui, id);
+            });
+        }
     }
     let minimize = view.descriptor.show_in_side_panel.then(|| {
         let mut e = Element::at((spec.rect.w - 23.0).max(8.0), 3.0, 18.0, 17.0)
@@ -426,6 +669,7 @@ pub fn build_panel(
         outbox,
         expected_visible: false,
         menu_items: HashMap::new(),
+        menus,
         synced: None,
         classic_font: font,
         modern_font: None,
@@ -542,6 +786,24 @@ impl PluginPanelController {
         }
         for (index, node) in doc.nodes.iter().enumerate() {
             let el = self.nodes[index];
+            if let (Some(menu), Some(&menu_el)) =
+                (&node.common.context_menu, self.menus.get(&index))
+            {
+                let items = menu.items.read(view);
+                let enabled = menu
+                    .enabled
+                    .as_ref()
+                    .map(|e| bools(view, e))
+                    .unwrap_or_default();
+                if let Some(w) = ui.widget_mut::<fold::MarkupContextMenu>(menu_el) {
+                    w.items = items;
+                    w.enabled = enabled;
+                    w.palette = palette;
+                    if let Some(f) = text_font {
+                        w.font.clone_from(f);
+                    }
+                }
+            }
             ui.set_visible(el, view.node_visible(index));
             ui.set_enabled(el, node.common.enabled.read(view, true));
             if let Some(t) = &node.common.tooltip
@@ -785,18 +1047,232 @@ impl PluginPanelController {
                         }
                     }
                 }
-                Markup::List { selected, body, .. } => {
-                    let selected = int_value(view, selected);
+                Markup::List {
+                    selected,
+                    body,
+                    header,
+                    tree,
+                    multi,
+                    ..
+                } => {
+                    let selected_row = if *multi {
+                        -1
+                    } else {
+                        int_value(view, selected)
+                    };
                     let (rows, column_rows, row_icons) = list_rows(view, body, icons, p);
+                    let floats = |name: &str| match view.values.get(name) {
+                        Some(UiValue::FloatList(v)) => Some(v.clone()),
+                        _ => None,
+                    };
+                    let ints = |name: &str| match view.values.get(name) {
+                        Some(UiValue::IntList(v)) => v.clone(),
+                        _ => Vec::new(),
+                    };
                     if let Some(w) = ui.widget_mut::<MarkupList>(el) {
-                        w.rows = rows;
-                        w.column_rows = column_rows;
-                        w.row_icons = row_icons;
-                        w.selected = selected;
+                        if let (Some(ext), ListBody::Columns(columns)) = (w.ext.as_mut(), body) {
+                            ext.bound_sort = header
+                                .sort
+                                .as_ref()
+                                .map(|(c, d)| (int_value(view, c), bool_value(view, d)));
+                            ext.bound_widths = header
+                                .widths
+                                .as_deref()
+                                .map(|n| floats(n).unwrap_or_default());
+                            for (i, column) in columns.iter().enumerate() {
+                                ext.captions[i] = match &column.header {
+                                    ac_plugin_ui::markup::ColumnHeader::Text(t) => t.read(view),
+                                    _ => None,
+                                };
+                                ext.number_keys[i] = None;
+                                ext.text_keys[i] = None;
+                                match &column.sort_keys {
+                                    Some(ac_plugin_ui::markup::SortKeysSource::Numbers(n)) => {
+                                        ext.number_keys[i] = Some(floats(n).unwrap_or_default());
+                                    }
+                                    Some(ac_plugin_ui::markup::SortKeysSource::Texts(n)) => {
+                                        ext.text_keys[i] = Some(texts(view, n));
+                                    }
+                                    None => {}
+                                }
+                            }
+                            if *multi {
+                                ext.selected_rows = ints(selected);
+                            }
+                            if let (Some(state), Some(spec)) = (ext.tree.as_mut(), tree) {
+                                state.levels = ints(&spec.levels);
+                                state.keys = texts(view, &spec.keys);
+                                state.bound = spec
+                                    .expanded
+                                    .as_deref()
+                                    .map(|n| texts(view, n).into_iter().collect());
+                            }
+                            w.all_rows = rows;
+                            w.row_icons = row_icons;
+                        } else {
+                            w.rows = rows;
+                            w.column_rows = column_rows;
+                            w.row_icons = row_icons;
+                        }
+                        w.selected = selected_row;
                         w.palette = palette;
                         if let Some(f) = text_font {
                             w.font.clone_from(f);
                         }
+                        w.arrange();
+                    }
+                }
+                Markup::Checkbox {
+                    text,
+                    checked,
+                    color: c,
+                    ..
+                } => {
+                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let state = match view.values.get(checked) {
+                        Some(UiValue::Bool(b)) => Some(*b),
+                        Some(UiValue::OptionalBool(b)) => *b,
+                        _ => Some(false),
+                    };
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupCheckbox>(el) {
+                        w.text = s;
+                        w.state = state;
+                        w.color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Separator { color: c } => {
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::UNLIT_INNER, |p| p.border),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupSeparator>(el) {
+                        w.color = col;
+                    }
+                }
+                Markup::Radio {
+                    items,
+                    selected,
+                    horizontal,
+                    segmented,
+                    color: c,
+                    ..
+                } => {
+                    let entries = items.read(view);
+                    let chosen = int_value(view, selected);
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupRadio>(el) {
+                        w.items = entries;
+                        w.selected = chosen;
+                        w.horizontal = *horizontal;
+                        w.segmented = *segmented;
+                        w.color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Number {
+                    value,
+                    background,
+                    color: c,
+                    default_background,
+                    default_color,
+                    ..
+                } => {
+                    let current = match view.values.get(value) {
+                        Some(UiValue::Int(v)) => ac_plugin_ui::number::Dec::from_i64(i64::from(*v)),
+                        Some(UiValue::Float(v)) => ac_plugin_ui::number::Dec::from_f32(*v),
+                        _ => ac_plugin_ui::number::Dec::ZERO,
+                    };
+                    let bg = match (p, default_background) {
+                        (Some(p), true) => p.field,
+                        _ => read_color(background, view, p),
+                    };
+                    let col = match (p, default_color) {
+                        (Some(p), true) => p.text,
+                        _ => read_color(c, view, p),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupNumber>(el) {
+                        w.set_current(current);
+                        w.inner.background_color = bg;
+                        w.text_color = col;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.inner.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Hotkey { value, .. } => {
+                    let text = match view.values.get(value) {
+                        Some(UiValue::Text(t)) => t.clone(),
+                        _ => String::new(),
+                    };
+                    if let Some(w) = ui.widget_mut::<controls::MarkupHotkey>(el) {
+                        w.value = text;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Color { value, kind, .. } => {
+                    let argb = color::MarkupColor::read(*kind, view.values.get(value));
+                    if let Some(w) = ui.widget_mut::<color::MarkupColor>(el) {
+                        w.value = argb;
+                        w.palette = palette;
+                        if let Some(f) = text_font {
+                            w.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Expander {
+                    text,
+                    expanded,
+                    color: c,
+                    ..
+                } => {
+                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let col = match c {
+                        Some(c) => read_color(c, view, p),
+                        None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
+                    };
+                    let bound = expanded.as_ref().map(|e| bool_value(view, e));
+                    let header = ui.widget_mut::<fold::MarkupExpander>(el).map(|w| {
+                        w.bound = bound;
+                        w.header
+                    });
+                    if let Some(h) = header.and_then(|h| ui.widget_mut::<fold::ExpanderHeader>(h)) {
+                        h.text = s;
+                        h.color = col;
+                        h.palette = palette;
+                        if let Some(f) = text_font {
+                            h.font.clone_from(f);
+                        }
+                    }
+                }
+                Markup::Split { position, .. } => {
+                    let bound = position.as_ref().map(|name| match view.values.get(name) {
+                        Some(UiValue::Float(v)) => *v,
+                        _ => 0.0,
+                    });
+                    let bar = ui.widget_mut::<fold::MarkupSplit>(el).map(|w| {
+                        w.bound = bound;
+                        w.bar
+                    });
+                    if let Some(b) = bar.and_then(|b| ui.widget_mut::<fold::SplitBar>(b)) {
+                        b.palette = palette;
                     }
                 }
             }
@@ -970,7 +1446,9 @@ impl PanelController for PluginPanelController {
                 let Some(list) = ui.widget::<MarkupList>(element) else {
                     return true;
                 };
-                let row = |i: usize| ActionValue::Int(i32::try_from(i).unwrap_or(i32::MAX));
+                let row = |i: usize| {
+                    ActionValue::Int(i32::try_from(list.plugin_row(i)).unwrap_or(i32::MAX))
+                };
                 let column_handler = |c: usize, pick: fn(&ColumnKind) -> Option<&String>| match body
                 {
                     ListBody::Columns(columns) => {
@@ -1015,9 +1493,12 @@ impl PanelController for PluginPanelController {
                     Some(ColumnKind::Button { onclick, .. }) => Some(onclick.clone()),
                     _ => None,
                 };
+                let plugin = ui
+                    .widget::<MarkupList>(element)
+                    .map_or(*row, |l| l.plugin_row(*row));
                 self.action(
                     &handler,
-                    ActionValue::Int(i32::try_from(*row).unwrap_or(i32::MAX)),
+                    ActionValue::Int(i32::try_from(plugin).unwrap_or(i32::MAX)),
                 )
             }
             _ => false,

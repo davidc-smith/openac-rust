@@ -186,7 +186,7 @@ mod tests {
     //! (the layout and click-routing cases).
 
     use super::*;
-    use crate::markup::IconKind;
+    use crate::markup::{ColumnHeader, IconKind, SortKind};
 
     fn text(width: f32, auto: bool, onclick: bool) -> Column {
         Column {
@@ -197,6 +197,9 @@ mod tests {
                 colors: None,
                 onclick: onclick.then(|| "C".into()),
             },
+            header: ColumnHeader::None,
+            sort: SortKind::None,
+            sort_keys: None,
         }
     }
 
@@ -209,6 +212,9 @@ mod tests {
                 kind: IconKind::Did,
                 onclick: "C".into(),
             },
+            header: ColumnHeader::None,
+            sort: SortKind::None,
+            sort_keys: None,
         }
     }
 
@@ -219,7 +225,11 @@ mod tests {
             kind: ColumnKind::Check {
                 values: "B".into(),
                 onchange: "C".into(),
+                boxed: false,
             },
+            header: ColumnHeader::None,
+            sort: SortKind::None,
+            sort_keys: None,
         }
     }
 
@@ -313,6 +323,9 @@ mod tests {
                     button_width: 0.0,
                     button_height: 0.0,
                 },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
         ];
         let layout = column_layout(&columns, 100.0);

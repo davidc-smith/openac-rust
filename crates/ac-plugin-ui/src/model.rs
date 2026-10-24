@@ -652,6 +652,18 @@ pub enum ActionValue {
     Float(f32),
     /// `Action<string>` (a field, a menu entry).
     Text(String),
+    /// `Action<bool>` (a checkbox, an expander).
+    Bool(bool),
+    /// `Action<uint>` (a colour picker bound to a `uint`).
+    Uint(u32),
+    /// `Action<int, bool>` (a sort request: the column, descending).
+    IntBool(i32, bool),
+    /// `Action<string, bool>` (a tree row's key and its asked-for state).
+    TextBool(String, bool),
+    /// `Action<IReadOnlyList<float>>` (every column's width).
+    FloatList(Vec<f32>),
+    /// `Action<IReadOnlyList<int>>` (the selected plugin rows).
+    IntList(Vec<i32>),
 }
 
 impl ActionValue {
@@ -664,6 +676,12 @@ impl ActionValue {
             Self::Int(_) => BindingKind::IntAction,
             Self::Float(_) => BindingKind::FloatAction,
             Self::Text(_) => BindingKind::TextAction,
+            Self::Bool(_) => BindingKind::BoolAction,
+            Self::Uint(_) => BindingKind::UintAction,
+            Self::IntBool(..) => BindingKind::IntBoolAction,
+            Self::TextBool(..) => BindingKind::TextBoolAction,
+            Self::FloatList(_) => BindingKind::FloatListAction,
+            Self::IntList(_) => BindingKind::IntListAction,
         }
     }
 }
@@ -799,6 +817,45 @@ pub enum UiChange {
     /// The bound plugin hotkeys, in registration order (all of them, each
     /// time the table changes).
     Hotkeys(Arc<Vec<crate::hotkeys::BoundHotkey>>),
+    /// A plugin asked the player a question (or a snapshot carries one).
+    DialogAdded(Box<DialogView>),
+    /// A dialog was answered or withdrawn: it goes.
+    DialogRemoved(u32),
+    /// A plugin window was shown modal over another (`owner`), or (none)
+    /// stopped being modal.
+    Modal {
+        /// The modal window.
+        panel: u32,
+        /// The window it blocks.
+        owner: Option<u32>,
+    },
+}
+
+/// A plugin's question in a dialog box (OpenAC `PluginDialog`), as a window
+/// shows it: the dialogs of one owner window (and the ownerless ones)
+/// queue and show one at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogView {
+    /// The session's number for it (the plugin's handle).
+    pub handle: u32,
+    /// Its plugin.
+    pub owner: UiOwner,
+    /// The caption.
+    pub title: String,
+    /// The question.
+    pub message: String,
+    /// The buttons left to right; the last is the cancel button.
+    pub buttons: Vec<String>,
+    /// The plugin window it is centred on and blocks (none: the screen).
+    pub owner_panel: Option<u32>,
+}
+
+impl DialogView {
+    /// The cancel button's index (Escape, the close button).
+    #[must_use]
+    pub fn cancel_index(&self) -> i32 {
+        i32::try_from(self.buttons.len()).unwrap_or(1) - 1
+    }
 }
 
 /// What a window tells the session's plugin UI.
@@ -856,6 +913,13 @@ pub enum UiInput {
     },
     /// The plugin theme the player saved (sent at attach) or just picked.
     Theme(crate::theme::ThemeKind),
+    /// The player answered a dialog (the button's index).
+    DialogAnswered {
+        /// The dialog.
+        handle: u32,
+        /// The button.
+        button: i32,
+    },
 }
 
 /// Something a plugin hears from its UI.
@@ -885,5 +949,12 @@ pub enum UiEvent {
         action: String,
         /// How it fired.
         activation: String,
+    },
+    /// One of its dialogs was answered (OpenAC `Confirm`'s `onResult`).
+    DialogAnswered {
+        /// The dialog's handle.
+        handle: u32,
+        /// The button picked.
+        button: i32,
     },
 }

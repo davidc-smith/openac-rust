@@ -228,6 +228,9 @@ pub struct Element {
     pub runtime_tooltip_text: Option<String>,
     /// Image-map mask.
     pub pointer_region: Option<PointerRegion>,
+    /// Its right-click menu element: a right click the element leaves
+    /// unhandled is offered to it.
+    pub context_menu: Option<ElementId>,
 }
 
 impl Default for Element {
@@ -267,6 +270,7 @@ impl Default for Element {
             layout_policy: None,
             runtime_tooltip_text: None,
             pointer_region: None,
+            context_menu: None,
         }
     }
 }

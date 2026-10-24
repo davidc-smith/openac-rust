@@ -7,6 +7,8 @@
 //! (input that fell through to the world, window events, widget messages,
 //! tooltip show/hide) is queued as [`UiOutput`] and drained by the host.
 
+use std::collections::HashMap;
+
 use crate::draw::{Color, DrawList, RenderContext, SpriteSizes};
 use crate::event::{DragPayload, Key, Modifiers, MouseButton, UiEvent, kind};
 use crate::geometry::{
@@ -302,6 +304,13 @@ pub struct UiRoot {
 
     pub(crate) windows: WindowManager,
     output: Vec<UiOutput>,
+    /// Window-modal dialogs: each blocked top-level window with what blocks
+    /// it, newest last.
+    window_blocks: HashMap<ElementId, Vec<ElementId>>,
+    /// Buttons whose press a block swallowed and whose release is due.
+    swallowed_releases: Vec<MouseButton>,
+    /// Blockers flashing after a press on what they block, seconds left.
+    flashing: HashMap<ElementId, f32>,
 }
 
 impl Default for UiRoot {
@@ -376,6 +385,9 @@ impl UiRoot {
             media_seconds: 0.0,
             windows: WindowManager::default(),
             output: Vec::new(),
+            window_blocks: HashMap::new(),
+            swallowed_releases: Vec::new(),
+            flashing: HashMap::new(),
         }
     }
 
@@ -1101,6 +1113,14 @@ impl UiRoot {
         subtree: ElementId,
         preserve_detached_drag: bool,
     ) {
+        if let Some((popup, owner)) = self.active_popup
+            && self.is_within(Some(popup), subtree)
+        {
+            // A popup whose owner hides or leaves the tree closes with it, so
+            // it does not come back open when the owner is shown again.
+            self.active_popup = None;
+            self.dismiss_popup(popup, owner);
+        }
         if self.is_within(self.keyboard_focus, subtree) {
             self.set_keyboard_focus(None);
         }
@@ -1186,6 +1206,32 @@ impl UiRoot {
         false
     }
 
+    /// Bubbles a right click like any event, but once an element leaves
+    /// it unhandled, offers it to that element's context menu (opened at
+    /// the screen point `x`, `y`) before going on.
+    fn bubble_right_click(&mut self, start: ElementId, e: &UiEvent, x: i32, y: i32) -> bool {
+        let mut cur = Some(start);
+        while let Some(w) = cur {
+            if self.send_event(w, e) {
+                return true;
+            }
+            if let Some(menu) = self
+                .element(w)
+                .filter(|el| el.enabled)
+                .and_then(|el| el.context_menu)
+            {
+                let open = self
+                    .event_for(menu, kind::CONTEXT_MENU_OPEN)
+                    .with_data(0, x, y);
+                if self.send_event(menu, &open) {
+                    return true;
+                }
+            }
+            cur = self.parent(w);
+        }
+        false
+    }
+
     /// Send event `k` (with a payload) to `target` alone.
     pub fn fire_event(&mut self, k: i32, target: ElementId, payload: Option<DragPayload>) -> bool {
         let e = self.event_for(target, k).with_payload(payload);
@@ -1234,6 +1280,11 @@ impl UiRoot {
     pub fn tick(&mut self, dt: f64, now_ms: i64) {
         if dt.is_finite() && dt > 0.0 {
             self.media_seconds += dt;
+            let step = dt as f32;
+            self.flashing.retain(|_, left| {
+                *left -= step;
+                *left > 0.0
+            });
         }
         self.now_ms = now_ms;
 
@@ -1478,6 +1529,16 @@ impl UiRoot {
                 self.draw_tree(child, rc);
             }
             widget.draw_after_children(self, id, rc);
+            if self.window_blocks.contains_key(&id) {
+                let (w, h) = self.element(id).map_or((0.0, 0.0), |e| (e.width, e.height));
+                rc.fill(0.0, 0.0, w, h, Color::rgba(0.0, 0.0, 0.0, 0.45));
+            }
+            if let Some(left) = self.flashing.get(&id).copied()
+                && ((left * 10.0) as i32) & 1 == 0
+            {
+                let (w, h) = self.element(id).map_or((0.0, 0.0), |e| (e.width, e.height));
+                rc.rect_outline(0.0, 0.0, w, h, Color::rgba(1.0, 0.82, 0.25, 1.0), 2.0);
+            }
         }
         if clips {
             rc.pop_clip();
@@ -1659,6 +1720,90 @@ impl UiRoot {
         self.active_popup.map(|(p, _)| p)
     }
 
+    // ── Window-modal blocks ─────────────────────────────────────────────
+
+    /// How long a blocker flashes after a press on what it blocks, seconds.
+    pub const MODAL_FLASH_SECONDS: f32 = 0.6;
+
+    /// Blocks a top-level window until [`Self::unblock_window`]: it draws
+    /// dimmed, presses and wheel steps on it go nowhere, and nothing in it
+    /// can take the keyboard. A blocked press flashes `blocker`, brings it
+    /// to the front and gives it the keyboard when it accepts focus.
+    /// Blocking closes a popup open in the window and takes the pointer
+    /// capture and the keyboard out of it.
+    pub fn block_window(&mut self, window: ElementId, blocker: ElementId) {
+        if self.parent(window) != Some(self.root) {
+            return;
+        }
+        self.window_blocks.entry(window).or_default().push(blocker);
+        if let Some((popup, owner)) = self.active_popup
+            && self.is_within(Some(popup), window)
+        {
+            self.active_popup = None;
+            self.dismiss_popup(popup, owner);
+        }
+        if self.is_within(self.captured, window) {
+            self.release_capture();
+        }
+        if self.is_within(self.keyboard_focus, window) {
+            self.set_keyboard_focus(None);
+        }
+    }
+
+    /// Takes one block off.
+    pub fn unblock_window(&mut self, window: ElementId, blocker: ElementId) {
+        if let Some(blockers) = self.window_blocks.get_mut(&window) {
+            blockers.retain(|b| *b != blocker);
+            if blockers.is_empty() {
+                self.window_blocks.remove(&window);
+            }
+        }
+    }
+
+    /// Whether a top-level window is blocked.
+    #[must_use]
+    pub fn is_window_blocked(&self, window: ElementId) -> bool {
+        self.window_blocks.contains_key(&window)
+    }
+
+    fn top_level_of(&self, element: ElementId) -> ElementId {
+        let mut top = element;
+        while let Some(parent) = self.parent(top) {
+            if parent == self.root {
+                break;
+            }
+            top = parent;
+        }
+        top
+    }
+
+    /// The newest element blocking the window `element` is in.
+    fn blocker_for(&self, element: ElementId) -> Option<ElementId> {
+        if self.window_blocks.is_empty() {
+            return None;
+        }
+        let top = self.top_level_of(element);
+        self.window_blocks.get(&top).and_then(|b| b.last().copied())
+    }
+
+    /// Whether an element can take the keyboard now: shown, enabled,
+    /// mounted, and not in a blocked window.
+    #[must_use]
+    pub fn can_focus(&self, element: ElementId) -> bool {
+        self.is_available_input_target(element) && self.blocker_for(element).is_none()
+    }
+
+    fn flash_blocker(&mut self, blocker: ElementId) {
+        self.flashing.insert(blocker, Self::MODAL_FLASH_SECONDS);
+        let top = self.top_level_of(blocker);
+        if self.parent(top) == Some(self.root) {
+            self.bring_to_front(top);
+        }
+        if self.element(blocker).is_some_and(|e| e.accepts_focus) && self.can_focus(blocker) {
+            self.set_keyboard_focus(Some(blocker));
+        }
+    }
+
     fn dismiss_popup(&mut self, popup: ElementId, owner: ElementId) {
         self.with_widget(owner, |w, ui| w.on_popup_dismissed(ui, owner, popup));
     }
@@ -1739,6 +1884,11 @@ impl UiRoot {
     /// Give keyboard focus to `e` (or nobody): the old owner hears focus
     /// lost, then the new one focus gained.
     pub fn set_keyboard_focus(&mut self, e: Option<ElementId>) {
+        if let Some(el) = e
+            && self.blocker_for(el).is_some()
+        {
+            return;
+        }
         if self.keyboard_focus == e {
             return;
         }
@@ -2069,6 +2219,15 @@ impl UiRoot {
             self.pick(x, y)
         };
 
+        if let Some(target) = target
+            && let Some(blocker) = self.blocker_for(target)
+        {
+            // A window-modal dialog owns this window: the press, and its
+            // release, go nowhere but flash the dialog.
+            self.swallowed_releases.push(button);
+            self.flash_blocker(blocker);
+            return;
+        }
         let Some(target) = target else {
             if button == MouseButton::Left {
                 self.set_keyboard_focus(None);
@@ -2190,6 +2349,10 @@ impl UiRoot {
         let (x, y) = self.map_window_to_canvas(x, y);
         self.mouse = (x, y);
         self.set_button(button, false);
+        if let Some(i) = self.swallowed_releases.iter().position(|b| *b == button) {
+            self.swallowed_releases.remove(i);
+            return;
+        }
         if button == MouseButton::Left {
             self.world_drag_candidate = false;
         }
@@ -2259,7 +2422,7 @@ impl UiRoot {
             let click = self
                 .event_for(target, kind::RIGHT_CLICK)
                 .with_data(flags as i32, lx, ly);
-            self.bubble_event(target, &click);
+            self.bubble_right_click(target, &click, x, y);
         }
 
         if self.captured == Some(target) {
@@ -2285,6 +2448,9 @@ impl UiRoot {
             self.emit(UiOutput::WorldScroll { dy });
             return;
         };
+        if self.blocker_for(target).is_some() {
+            return;
+        }
         let ev = self
             .event_for(target, kind::SCROLL)
             .with_data(dy, lx as i32, ly as i32);

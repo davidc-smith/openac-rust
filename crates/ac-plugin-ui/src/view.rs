@@ -41,6 +41,10 @@ pub struct PluginUiView {
     pub hotkeys: Arc<Vec<crate::hotkeys::BoundHotkey>>,
     /// Client-window requests not yet carried out, oldest first.
     pub client_requests: Vec<(ClientWindow, ClientWindowAction)>,
+    /// The dialogs waiting for an answer, in the order asked.
+    pub dialogs: Vec<crate::model::DialogView>,
+    /// The windows shown modal and the windows they block.
+    pub modals: Vec<(u32, u32)>,
     /// Counts every change applied.
     pub revision: u64,
     /// Counts the snapshots applied (one per attach).
@@ -104,6 +108,8 @@ impl PluginUiView {
                 self.lines = Arc::default();
                 self.hotkeys = Arc::default();
                 self.client_requests.clear();
+                self.dialogs.clear();
+                self.modals.clear();
                 self.dirty = ViewDirty {
                     panels: true,
                     canvases: true,
@@ -197,6 +203,14 @@ impl PluginUiView {
                 self.client_requests.push((window, action));
             }
             UiChange::Hotkeys(table) => self.hotkeys = table,
+            UiChange::DialogAdded(dialog) => self.dialogs.push(*dialog),
+            UiChange::DialogRemoved(handle) => self.dialogs.retain(|d| d.handle != handle),
+            UiChange::Modal { panel, owner } => {
+                self.modals.retain(|(p, _)| *p != panel);
+                if let Some(owner) = owner {
+                    self.modals.push((panel, owner));
+                }
+            }
         }
     }
 

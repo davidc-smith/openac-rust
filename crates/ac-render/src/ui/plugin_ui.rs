@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use ac_dat::DatCollection;
 use ac_dat::objects::{BspNode, GfxObj, Setup};
+use ac_host::settings::{MarkupControlKey, SettingsStore};
+use ac_plugin_ui::control_state::{ControlKey, ControlStateFile, ControlStateStore};
 use ac_plugin_ui::{
     ClientWindow, ClientWindowAction, ImageSource, MapPoint, PanelView, ThemeKind, UiInput,
 };
@@ -30,9 +32,11 @@ use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::CanvasLayer;
+use ac_ui::plugin::fold::SharedControlState;
 use ac_ui::plugin::shelf::{self, PluginShelf};
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
+    build_panel_with_state,
 };
 use glam::{Quat, Vec3};
 
@@ -121,6 +125,90 @@ pub struct PluginWindowUi {
     samples: Vec<ProjectileDebugSample>,
     projectile_set: Option<(u64, Instant)>,
     setup_shapes: HashMap<u32, Option<SetupShape>>,
+    /// What the plugin windows' controls remember for the character (an
+    /// expander folded, a split moved, a list sorted), with the character
+    /// it is kept for.
+    control_state: Option<(SharedControlState, Rc<std::cell::RefCell<String>>)>,
+    /// The plugins' dialogs and modal windows on screen.
+    dialogs: ac_ui::plugin::dialog::DialogPresenter,
+}
+
+/// The settings file as the control-state store's file.
+struct ControlStateSettings(SettingsStore);
+
+impl ControlStateFile for ControlStateSettings {
+    fn load(&self, character: &str) -> Result<BTreeMap<ControlKey, String>, String> {
+        Ok(self
+            .0
+            .try_load_markup_control_state(character)?
+            .into_iter()
+            .map(|(k, v)| (ControlKey::new(&k.window, &k.control, &k.kind), v))
+            .collect())
+    }
+
+    fn save(&self, character: &str, values: &BTreeMap<ControlKey, String>) -> Result<(), String> {
+        let values = values
+            .iter()
+            .map(|(k, v)| {
+                (
+                    MarkupControlKey::new(&k.window, &k.control, &k.kind),
+                    v.clone(),
+                )
+            })
+            .collect();
+        self.0
+            .save_markup_control_state(character, &values)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl PluginWindowUi {
+    /// The store, made on first use (values last the session until a
+    /// settings file is given).
+    fn control_state(&mut self) -> SharedControlState {
+        let (store, _) = self.control_state.get_or_insert_with(|| {
+            let character = Rc::new(std::cell::RefCell::new(String::new()));
+            let key = Rc::clone(&character);
+            let started = Instant::now();
+            let store = ControlStateStore::new(
+                None,
+                move || key.borrow().clone(),
+                move || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            );
+            (Rc::new(std::cell::RefCell::new(store)), character)
+        });
+        Rc::clone(store)
+    }
+
+    /// Where the remembered control values are kept.
+    pub fn set_control_state_file(&mut self, store: Option<SettingsStore>) {
+        let shared = self.control_state();
+        shared.borrow_mut().set_file(
+            store.map(|s| Box::new(ControlStateSettings(s)) as Box<dyn ControlStateFile>),
+        );
+    }
+
+    /// The character the controls remember for (`default` before one is
+    /// in the world, which is never written).
+    pub fn set_control_state_character(&mut self, character: &str) {
+        self.control_state();
+        if let Some((_, key)) = &self.control_state
+            && *key.borrow() != character
+        {
+            *key.borrow_mut() = character.to_owned();
+        }
+    }
+
+    /// Writes what changed (at most every few seconds after a failure);
+    /// the log lines it has.
+    pub fn save_control_state(&mut self, last: bool) -> Vec<String> {
+        let Some((store, _)) = &self.control_state else {
+            return Vec::new();
+        };
+        let mut store = store.borrow_mut();
+        store.save(last);
+        store.take_log()
+    }
 }
 
 /// The Appearance window (OpenAC `RetailUiRuntime.ShowPluginAppearance`):
@@ -484,6 +572,7 @@ impl WindowUi {
             self.plugins.synced = Some(revision);
             self.sync_plugin_panels(revision);
         }
+        self.sync_plugin_dialogs();
         let requests = self.facts.plugin_ui.take_client_requests();
         for (window, action) in requests {
             self.client_window_request(window, action);
@@ -500,6 +589,38 @@ impl WindowUi {
             self.show_plugin_appearance();
         }
         self.follow_appearance();
+    }
+
+    /// The session's dialogs and modal windows (OpenAC `PluginDialogHost`).
+    fn sync_plugin_dialogs(&mut self) {
+        let mut frames = HashMap::new();
+        let mut palettes = HashMap::new();
+        for (id, name) in &self.plugins.panels {
+            if let Some(window) = self.host.root.window(name) {
+                frames.insert(*id, window.frame);
+            }
+            if let Some(view) = self.facts.plugin_ui.panel(*id)
+                && view.document.panel.themed
+                && let Some(p) = self.plugins.theme.palette()
+            {
+                palettes.insert(*id, p);
+            }
+        }
+        let font = self.content.font(DEFAULT_FONT_ID);
+        let outbox = Rc::clone(&self.plugins.outbox);
+        let dialogs = self.facts.plugin_ui.dialogs.clone();
+        let modals = self.facts.plugin_ui.modals.clone();
+        self.plugins.dialogs.sync(
+            &mut self.host.root,
+            &dialogs,
+            &frames,
+            &palettes,
+            font.as_ref(),
+            &outbox,
+        );
+        self.plugins
+            .dialogs
+            .sync_modals(&mut self.host.root, &modals, &frames);
     }
 
     fn mount_plugin_panels(&mut self) {
@@ -527,11 +648,13 @@ impl WindowUi {
             .filter(|p| !self.plugins.panels.contains_key(&p.id))
             .collect();
         for panel in new {
-            let controller = build_panel(
+            let state = self.plugins.control_state();
+            let controller = build_panel_with_state(
                 &mut self.host.root,
                 panel,
                 font.clone(),
                 Rc::clone(&self.plugins.outbox),
+                Some(state),
             )
             .with_modern_font(self.plugins.modern_font.clone())
             .with_title_color(&mut self.host.root, self.plugins.title_color());
@@ -658,6 +781,8 @@ impl WindowUi {
     /// the projectile markers (the labels go with the window's world
     /// labels; the world lines are drawn by the world renderer).
     pub(super) fn tick_plugin_ui(&mut self, now: Instant) {
+        let saved = self.plugins.save_control_state(false);
+        self.notices.extend(saved);
         let camera = self.status.overlays.camera();
         let Self {
             host,

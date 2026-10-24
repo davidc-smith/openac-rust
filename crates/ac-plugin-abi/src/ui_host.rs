@@ -55,6 +55,158 @@ fn value(value: UiValue) -> ui::UiValue {
     }
 }
 
+fn typed_kind(kind: abi::TypedBindingKind) -> ui::BindingKind {
+    use abi::TypedBindingKind as T;
+    match kind {
+        T::Bool => ui::BindingKind::Bool,
+        T::Int => ui::BindingKind::Int,
+        T::Uint => ui::BindingKind::Uint,
+        T::Float => ui::BindingKind::Float,
+        T::Text => ui::BindingKind::Text,
+        T::TextList => ui::BindingKind::TextList,
+        T::UintList => ui::BindingKind::UintList,
+        T::IntList => ui::BindingKind::IntList,
+        T::BoolList => ui::BindingKind::BoolList,
+        T::Action => ui::BindingKind::Action,
+        T::IntAction => ui::BindingKind::IntAction,
+        T::FloatAction => ui::BindingKind::FloatAction,
+        T::TextAction => ui::BindingKind::TextAction,
+        T::OptionalBool => ui::BindingKind::OptionalBool,
+        T::FloatList => ui::BindingKind::FloatList,
+        T::Items => ui::BindingKind::Items,
+        T::BoolAction => ui::BindingKind::BoolAction,
+        T::UintAction => ui::BindingKind::UintAction,
+        T::IntBoolAction => ui::BindingKind::IntBoolAction,
+        T::TextBoolAction => ui::BindingKind::TextBoolAction,
+        T::FloatListAction => ui::BindingKind::FloatListAction,
+        T::IntListAction => ui::BindingKind::IntListAction,
+    }
+}
+
+/// A typed registration's schema: the window's names, each items list
+/// with its item type (an item type's list path is `Outer/Inner` for a
+/// list an item of `Outer` carries).
+fn typed_schema(
+    binding_type: String,
+    bindings: Vec<abi::TypedBindingDecl>,
+    item_types: &[abi::ItemTypeDecl],
+) -> ui::BindingSchema {
+    fn fill(
+        schema: &mut ui::BindingSchema,
+        path: &str,
+        bindings: Vec<abi::TypedBindingDecl>,
+        item_types: &[abi::ItemTypeDecl],
+    ) {
+        for decl in bindings {
+            let kind = typed_kind(decl.kind);
+            if kind == ui::BindingKind::Items {
+                let list = if path.is_empty() {
+                    decl.name.clone()
+                } else {
+                    format!("{path}/{}", decl.name)
+                };
+                let item = item_types.iter().find(|t| t.list == list);
+                let mut inner = ui::BindingSchema::new(
+                    item.map_or_else(|| "Item".to_owned(), |t| t.type_name.clone()),
+                );
+                if let Some(item) = item {
+                    fill(&mut inner, &list, item.bindings.clone(), item_types);
+                }
+                schema.declare_items(decl.name, inner);
+            } else {
+                schema.declare(decl.name, kind);
+            }
+        }
+    }
+    let mut schema = ui::BindingSchema::new(binding_type);
+    fill(&mut schema, "", bindings, item_types);
+    schema
+}
+
+fn item_value(value: abi::ItemValue) -> ui::UiValue {
+    use abi::ItemValue as I;
+    match value {
+        I::Bool(v) => ui::UiValue::Bool(v),
+        I::Int(v) => ui::UiValue::Int(v),
+        I::Uint(v) => ui::UiValue::Uint(v),
+        I::Float(v) => ui::UiValue::Float(v),
+        I::Text(v) => ui::UiValue::Text(v),
+        I::TextList(v) => ui::UiValue::TextList(v),
+        I::UintList(v) => ui::UiValue::UintList(v),
+        I::IntList(v) => ui::UiValue::IntList(v),
+        I::BoolList(v) => ui::UiValue::BoolList(v),
+        I::OptionalBool(v) => ui::UiValue::OptionalBool(v),
+        I::FloatList(v) => ui::UiValue::FloatList(v),
+    }
+}
+
+/// Item rows off the wire: each row's nested rows gathered under it, by the
+/// list they name.
+///
+/// # Errors
+/// A row whose parent is not an earlier row.
+fn item_rows(rows: abi::ItemRows) -> Result<std::sync::Arc<Vec<ui::ItemRecord>>, String> {
+    let rows = rows.rows;
+    let count = rows.len();
+    let mut records: Vec<ui::ItemRecord> = Vec::with_capacity(count);
+    let mut parents: Vec<(i32, String)> = Vec::with_capacity(count);
+    for (index, row) in rows.into_iter().enumerate() {
+        if row.parent >= 0 && usize::try_from(row.parent).is_ok_and(|p| p >= index) {
+            return Err(format!(
+                "item row {index} names parent {} that does not come before it",
+                row.parent
+            ));
+        }
+        let mut record = ui::ItemRecord::new();
+        for value in row.values {
+            record.values.insert(value.name, item_value(value.value));
+        }
+        records.push(record);
+        parents.push((row.parent, row.list));
+    }
+    // Children last to first, so each list keeps its order when gathered.
+    let mut nested: Vec<Vec<(String, ui::ItemRecord)>> = vec![Vec::new(); count];
+    let mut top = Vec::new();
+    for (index, record) in records.into_iter().enumerate().rev() {
+        let mut record = record;
+        let mut lists: std::collections::BTreeMap<String, Vec<ui::ItemRecord>> =
+            std::collections::BTreeMap::new();
+        for (list, child) in std::mem::take(&mut nested[index]).into_iter().rev() {
+            lists.entry(list).or_default().push(child);
+        }
+        for (list, children) in lists {
+            record
+                .values
+                .insert(list, ui::UiValue::Items(std::sync::Arc::new(children)));
+        }
+        let (parent, list) = &parents[index];
+        match usize::try_from(*parent) {
+            Ok(p) => nested[p].push((list.clone(), record)),
+            Err(_) => top.push(record),
+        }
+    }
+    top.reverse();
+    Ok(std::sync::Arc::new(top))
+}
+
+fn typed_value(value: abi::TypedValue) -> Result<ui::UiValue, String> {
+    use abi::TypedValue as T;
+    Ok(match value {
+        T::Bool(v) => ui::UiValue::Bool(v),
+        T::Int(v) => ui::UiValue::Int(v),
+        T::Uint(v) => ui::UiValue::Uint(v),
+        T::Float(v) => ui::UiValue::Float(v),
+        T::Text(v) => ui::UiValue::Text(v),
+        T::TextList(v) => ui::UiValue::TextList(v),
+        T::UintList(v) => ui::UiValue::UintList(v),
+        T::IntList(v) => ui::UiValue::IntList(v),
+        T::BoolList(v) => ui::UiValue::BoolList(v),
+        T::OptionalBool(v) => ui::UiValue::OptionalBool(v),
+        T::FloatList(v) => ui::UiValue::FloatList(v),
+        T::Items(rows) => ui::UiValue::Items(item_rows(rows)?),
+    })
+}
+
 fn color(c: abi::Color) -> Color8 {
     Color8::new(c.r, c.g, c.b, c.a)
 }
@@ -229,6 +381,54 @@ pub fn handle(
                 .map(|v| (v.name, value(v.value)))
                 .collect();
             state.set_values(id, r.panel, values).to_bytes()
+        }
+        Import::UiPanelRegisterTyped => {
+            let r = abi::TypedPanelRegistration::from_bytes(request).map_err(bad)?;
+            let schema = typed_schema(r.binding_type, r.bindings, &r.item_types);
+            let descriptor = PanelDescriptor {
+                window_id: r.window_id,
+                title: r.title,
+                icon_text: r.icon_text,
+                icon_surface_id: r.icon_surface_id,
+                start_visible: r.start_visible,
+                show_in_side_panel: r.show_in_side_panel,
+            };
+            state
+                .register_panel(owner, descriptor, &r.markup, schema)
+                .to_bytes()
+        }
+        Import::UiPanelSetTyped => {
+            let r = abi::TypedPanelValues::from_bytes(request).map_err(bad)?;
+            let mut values = Vec::with_capacity(r.values.len());
+            for v in r.values {
+                match typed_value(v.value) {
+                    Ok(value) => values.push((v.name, value)),
+                    Err(why) => return Ok(Err::<(), String>(why).to_bytes()),
+                }
+            }
+            state.set_values(id, r.panel, values).to_bytes()
+        }
+        Import::UiDialogConfirm => {
+            let r = abi::DialogRequest::from_bytes(request).map_err(bad)?;
+            state
+                .confirm(
+                    owner,
+                    &r.title,
+                    &r.message,
+                    r.buttons,
+                    r.owner_view.as_deref(),
+                )
+                .to_bytes()
+        }
+        Import::UiDialogWithdraw => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            state.withdraw_dialog(id, handle).to_bytes()
+        }
+        Import::UiPanelShowModal => {
+            let r = abi::ModalShow::from_bytes(request).map_err(bad)?;
+            state
+                .show_modal(id, &r.view, r.owner_view.as_deref())
+                .to_bytes()
         }
         Import::UiPanelShow => {
             let r = ViewShow::from_bytes(request).map_err(bad)?;
@@ -469,6 +669,12 @@ pub fn event(event: ui::UiEvent) -> Event {
                 ui::ActionValue::Int(v) => ActionValue::Int(v),
                 ui::ActionValue::Float(v) => ActionValue::Float(v),
                 ui::ActionValue::Text(v) => ActionValue::Text(v),
+                ui::ActionValue::Bool(v) => ActionValue::from_bool(v),
+                ui::ActionValue::Uint(v) => ActionValue::from_uint(v),
+                ui::ActionValue::IntBool(v, flag) => ActionValue::from_int_bool(v, flag),
+                ui::ActionValue::TextBool(v, flag) => ActionValue::from_text_bool(&v, flag),
+                ui::ActionValue::FloatList(v) => ActionValue::from_float_list(&v),
+                ui::ActionValue::IntList(v) => ActionValue::from_int_list(&v),
             },
         }),
         ui::UiEvent::Pointer { canvas, event } => abi::UiEvent::Pointer(PointerEvent {
@@ -490,6 +696,11 @@ pub fn event(event: ui::UiEvent) -> Event {
         ui::UiEvent::InputAction { action, activation } => {
             abi::UiEvent::InputAction(action, activation)
         }
+        ui::UiEvent::DialogAnswered { handle, button } => abi::UiEvent::Action(UiAction {
+            panel: abi::DIALOG_PANEL,
+            handler: format!("{}{handle}", abi::DIALOG_HANDLER_PREFIX),
+            value: ActionValue::Int(button),
+        }),
     })
 }
 
@@ -568,5 +779,112 @@ mod theme_tests {
         // Over the wire and back.
         let bytes = moss.to_bytes();
         assert_eq!(abi::ThemeInfo::from_bytes(&bytes).unwrap(), moss);
+    }
+
+    #[test]
+    fn the_key_names_are_the_same_list_on_both_sides() {
+        // A `<hotkey>` box in the window spells keys with the UI's list;
+        // a plugin reads them with the ABI's.
+        let names: Vec<&str> = crate::keys::PluginKey::ALL
+            .iter()
+            .map(|k| k.name())
+            .collect();
+        assert_eq!(names, ui::hotkeys::KEY_NAMES);
+    }
+
+    #[test]
+    fn newer_handler_arguments_read_back_as_sent() {
+        for (value, read) in [
+            (
+                ui::ActionValue::Bool(true),
+                abi::ActionValue::from_bool(true),
+            ),
+            (
+                ui::ActionValue::Uint(0xFF00_0001),
+                abi::ActionValue::from_uint(0xFF00_0001),
+            ),
+        ] {
+            let Event::Ui(abi::UiEvent::Action(action)) = event(ui::UiEvent::Action {
+                panel: 1,
+                handler: "H".into(),
+                value,
+            }) else {
+                panic!()
+            };
+            assert_eq!(action.value, read);
+        }
+        assert_eq!(abi::ActionValue::from_bool(true).as_bool(), Some(true));
+        assert_eq!(
+            abi::ActionValue::from_uint(0xFF00_0001).as_uint(),
+            Some(0xFF00_0001)
+        );
+        assert_eq!(
+            abi::ActionValue::from_int_bool(3, true).as_int_bool(),
+            Some((3, true))
+        );
+        assert_eq!(
+            abi::ActionValue::from_int_bool(-1, false).as_int_bool(),
+            Some((-1, false))
+        );
+        assert_eq!(
+            abi::ActionValue::from_text_bool("a,b/c", true).as_text_bool(),
+            Some(("a,b/c".to_owned(), true))
+        );
+        assert_eq!(
+            abi::ActionValue::from_float_list(&[120.5, 0.0, 1e-7]).as_float_list(),
+            Some(vec![120.5, 0.0, 1e-7])
+        );
+        assert_eq!(
+            abi::ActionValue::from_int_list(&[]).as_int_list(),
+            Some(vec![])
+        );
+        assert_eq!(
+            abi::ActionValue::from_int_list(&[2, 5]).as_int_list(),
+            Some(vec![2, 5])
+        );
+        let Event::Ui(abi::UiEvent::Action(answer)) = event(ui::UiEvent::DialogAnswered {
+            handle: 7,
+            button: 2,
+        }) else {
+            panic!()
+        };
+        assert_eq!(answer.dialog_answer(), Some((7, 2)));
+    }
+
+    #[test]
+    fn item_rows_gather_nested_lists_under_their_parents() {
+        let row = |parent: i32, list: &str, label: &str| abi::ItemRow {
+            parent,
+            list: list.into(),
+            values: vec![abi::NamedItemValue {
+                name: "Label".into(),
+                value: abi::ItemValue::Text(label.into()),
+            }],
+        };
+        let rows = item_rows(abi::ItemRows {
+            rows: vec![
+                row(-1, "", "A"),
+                row(0, "Kids", "A1"),
+                row(0, "Kids", "A2"),
+                row(-1, "", "B"),
+                row(3, "Kids", "B1"),
+            ],
+        })
+        .unwrap();
+        let label = |r: &ui::ItemRecord| match r.values.get("Label") {
+            Some(ui::UiValue::Text(t)) => t.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(rows.iter().map(label).collect::<Vec<_>>(), ["A", "B"]);
+        let Some(ui::UiValue::Items(kids)) = rows[0].values.get("Kids") else {
+            panic!()
+        };
+        assert_eq!(kids.iter().map(label).collect::<Vec<_>>(), ["A1", "A2"]);
+        assert!(
+            item_rows(abi::ItemRows {
+                rows: vec![row(0, "Kids", "self")]
+            })
+            .is_err()
+        );
     }
 }

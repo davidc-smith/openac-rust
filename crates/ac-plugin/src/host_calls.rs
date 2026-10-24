@@ -247,6 +247,11 @@ pub(crate) fn handle_import(
         | Import::UiControlExists
         | Import::UiControlLabel
         | Import::UiControlVisible
+        | Import::UiPanelRegisterTyped
+        | Import::UiPanelSetTyped
+        | Import::UiDialogConfirm
+        | Import::UiDialogWithdraw
+        | Import::UiPanelShowModal
         | Import::UiClientWindow
         | Import::UiCanvasRegister
         | Import::UiCanvasPaint

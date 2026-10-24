@@ -58,6 +58,10 @@ pub mod kind {
     pub const KEY_DOWN: i32 = 0x100;
     /// Key released.
     pub const KEY_UP: i32 = 0x101;
+    /// Open the context menu this is sent to at the screen point in
+    /// `data1`/`data2` (a right click its owner left unhandled); the menu
+    /// answers whether it opened.
+    pub const CONTEXT_MENU_OPEN: i32 = 0x7F01;
     /// A typed character; `data0` is the code point.
     pub const CHAR: i32 = 0x102;
 }

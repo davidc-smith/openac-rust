@@ -9,10 +9,12 @@ use std::path::{Path, PathBuf};
 use crate::json::{self, Member, Node, Value};
 
 mod layout;
+mod markup_controls;
 pub mod render_pack;
 mod sections;
 
 pub use layout::{UiWindowLayout, UiWindowPlacement, UiWindowPosition};
+pub use markup_controls::MarkupControlKey;
 pub use render_pack::RenderPackSelection;
 pub use sections::{
     AudioMixerSettings, AudioSettings, CameraTurningSettings, CharacterSettings, ChatSettings,
@@ -312,11 +314,12 @@ impl SettingsStore {
     /// Write one top-level section (its object text, indented one level),
     /// keeping every other section as it was (in name order, a pre-version-4
     /// display section migrated first, since the version stamped promises
-    /// it), and stamp the current schema version. A file that cannot be read
-    /// is replaced, as the game does.
+    /// it), and stamp the current schema version. A file that does not parse
+    /// is replaced (its loads give the defaults); one that cannot be read
+    /// fails the save, which would otherwise write away every other section.
     pub(crate) fn save_section(&self, name: &str, object_text: &str) -> std::io::Result<()> {
-        let mut preserved: Vec<Member> = match self.read_root() {
-            Ok(Some(root)) => {
+        let mut preserved: Vec<Member> = match self.read_root_for_save()? {
+            Some(root) => {
                 let version = schema_version(&root);
                 root.into_iter()
                     .filter(|m| m.name != name && m.name != "version")
@@ -329,7 +332,7 @@ impl SettingsStore {
                     })
                     .collect()
             }
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         preserved.sort_by(|a, b| a.name.cmp(&b.name));
         let mut out = String::from("{\n");
@@ -349,20 +352,45 @@ impl SettingsStore {
         self.write(&out)
     }
 
-    /// The whole file as members for a nested save: empty when missing or
-    /// unreadable, a pre-version-4 display section migrated.
-    pub(crate) fn load_mutable_root(&self) -> Vec<Member> {
-        match self.read_root() {
-            Ok(Some(mut root)) => {
+    /// The whole file as members for a save: empty when missing or when it
+    /// does not parse (a file that does not parse loads as defaults, so a
+    /// save starts it over), a pre-version-4 display section migrated.
+    ///
+    /// # Errors
+    /// The file exists but cannot be read: a save must then fail, as
+    /// starting from nothing would write away every section it does not own.
+    pub(crate) fn load_mutable_root(&self) -> std::io::Result<Vec<Member>> {
+        match self.read_root_for_save()? {
+            Some(mut root) => {
                 if schema_version(&root) < TEXTURE_DETAIL_ROWS_LIVE_SCHEMA_VERSION
                     && let Some(display) = root.iter_mut().find(|m| m.name == "display")
                 {
                     reset_dead_texture_detail_rows(&mut display.value);
                 }
-                root
+                Ok(root)
             }
-            _ => Vec::new(),
+            None => Ok(Vec::new()),
         }
+    }
+
+    /// The file's members for a save: `None` when it is missing or does not
+    /// parse as a JSON object.
+    ///
+    /// # Errors
+    /// The file exists but cannot be read.
+    fn read_root_for_save(&self) -> std::io::Result<Option<Vec<Member>>> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(match json::parse(&bytes) {
+            Ok(Node {
+                value: Value::Object(members),
+                ..
+            }) => Some(members),
+            _ => None,
+        })
     }
 
     /// Write the whole file from `root` with the current schema version
@@ -379,11 +407,36 @@ impl SettingsStore {
         self.write(&out)
     }
 
+    /// Writes the whole file through a temporary file beside it, then a
+    /// rename, so a save that fails part way leaves the old file whole.
     fn write(&self, text: &str) -> std::io::Result<()> {
-        if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        let dir = self
+            .path
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .map(Path::to_path_buf);
+        if let Some(dir) = &dir {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&self.path, text)
+        let file_name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let temporary_name = format!(".{file_name}.{}.{nanos:x}.tmp", std::process::id());
+        let temporary = match &dir {
+            Some(dir) => dir.join(temporary_name),
+            None => PathBuf::from(temporary_name),
+        };
+        let result =
+            std::fs::write(&temporary, text).and_then(|()| std::fs::rename(&temporary, &self.path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
     }
 
     /// One section of the file: `Ok(None)` when the file or the section is

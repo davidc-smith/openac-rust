@@ -967,3 +967,203 @@ fn a_plugins_file_icon_rides_with_its_windows_and_goes_with_it() {
     status_view(&mut ui);
     assert!(ui.panels().all(|p| p.file_icon.is_none()));
 }
+
+// ── Dialogs and modal windows: OpenAC
+// `tests/AcDream.App.Tests/Plugins/BufferedUiRegistryDialogTests.cs`,
+// `tests/AcDream.App.Tests/UI/PluginDialogHostTests.cs` (what the session
+// decides: queueing, answering once, owners closing, modals) and
+// `tests/AcDream.Core.Tests/Plugins/ScopedUiRegistryDialogTests.cs`.
+
+fn attached_with_two_windows() -> (PluginUi, u32, u32) {
+    let mut ui = PluginUi::new();
+    ui.set_window_attached(true);
+    let a = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("main", "Main Window"),
+            "<panel/>",
+            BindingSchema::new("Binding"),
+        )
+        .unwrap();
+    let b = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("edit", "Editor"),
+            "<panel/>",
+            BindingSchema::new("Binding"),
+        )
+        .unwrap();
+    (ui, a, b)
+}
+
+fn answers(ui: &mut PluginUi) -> Vec<(u32, i32)> {
+    ui.take_events()
+        .into_iter()
+        .filter_map(|(_, e)| match e {
+            UiEvent::DialogAnswered { handle, button } => Some((handle, button)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn ask(ui: &mut PluginUi, owner_view: Option<&str>) -> u32 {
+    ui.confirm(&tank(), "T", "M", Vec::new(), owner_view)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn without_a_window_nothing_is_queued() {
+    // BufferedUiRegistryDialogTests.WithoutADialogHostNothingIsQueued,
+    // ScopedUiRegistryDialogTests.AHostWithoutDialogsAnswersFalseAndNeverCallsBack
+    let mut ui = PluginUi::new();
+    assert_eq!(ui.confirm(&tank(), "T", "M", Vec::new(), None), Ok(None));
+    assert_eq!(ui.dialogs().count(), 0);
+    assert!(!ui.show_modal("edwards.tank", "main", None));
+}
+
+#[test]
+fn bad_buttons_are_refused_even_without_a_window() {
+    // BufferedUiRegistryDialogTests.BadButtonsAreRefusedEvenWithoutAHost,
+    // ADialogWithoutButtonsShowsOkAndCancel
+    let mut ui = PluginUi::new();
+    let five: Vec<String> = (0..5).map(|i| i.to_string()).collect();
+    assert!(ui.confirm(&tank(), "T", "M", five, None).is_err());
+    assert!(
+        ui.confirm(&tank(), "T", "M", vec!["Yes".into(), " ".into()], None)
+            .is_err()
+    );
+    let (mut ui, _, _) = attached_with_two_windows();
+    let handle = ask(&mut ui, None);
+    let dialog = ui.dialogs().find(|d| d.handle == handle).unwrap();
+    assert_eq!(dialog.buttons, ["OK", "Cancel"]);
+}
+
+#[test]
+fn the_owner_is_the_plugins_shown_window_by_id_or_title() {
+    // BufferedUiRegistryDialogTests.TheOwnerIsThePluginsMountedWindowByIdOrTitle,
+    // AnUnknownOrForeignOwnerBlocksNothing,
+    // PluginDialogHostTests.AHiddenOwnerOrNoOwnerCentresOnTheScreenAndBlocksNothing
+    let (mut ui, a, b) = attached_with_two_windows();
+    ask(&mut ui, Some("Main Window"));
+    ask(&mut ui, Some("edit"));
+    ui.confirm(&other(), "T", "M", Vec::new(), Some("main"))
+        .unwrap();
+    ask(&mut ui, Some("nope"));
+    let owners: Vec<Option<u32>> = ui.dialogs().map(|d| d.owner_panel).collect();
+    assert_eq!(owners, [Some(a), Some(b), None, None]);
+    ui.show_panel("edwards.tank", "main", false);
+    ask(&mut ui, Some("main"));
+    assert_eq!(ui.dialogs().last().unwrap().owner_panel, None);
+}
+
+#[test]
+fn a_dialog_is_answered_once_by_the_player_or_its_handle() {
+    // PluginDialogHostTests.AButtonAnswersOnceAfterTheDialogIsGone,
+    // DisposingTheHandleAnswersTheLastButtonOnce,
+    // ScopedUiRegistryDialogTests.ThePluginWithdrawsADialogThroughItsHandle
+    let (mut ui, _, _) = attached_with_two_windows();
+    let yes = ui
+        .confirm(
+            &tank(),
+            "T",
+            "M",
+            vec!["Yes".into(), "No".into(), "Later".into()],
+            None,
+        )
+        .unwrap()
+        .unwrap();
+    ui.take_changes();
+    ui.input(UiInput::DialogAnswered {
+        handle: yes,
+        button: 1,
+    });
+    ui.input(UiInput::DialogAnswered {
+        handle: yes,
+        button: 0,
+    });
+    assert_eq!(answers(&mut ui), [(yes, 1)]);
+    assert_eq!(ui.take_changes(), [UiChange::DialogRemoved(yes)]);
+    let withdrawn = ask(&mut ui, None);
+    assert!(!ui.withdraw_dialog("another.plugin", withdrawn));
+    assert!(ui.withdraw_dialog("edwards.tank", withdrawn));
+    assert!(!ui.withdraw_dialog("edwards.tank", withdrawn));
+    assert_eq!(answers(&mut ui), [(withdrawn, 1)]);
+}
+
+#[test]
+fn an_owner_closing_or_going_answers_its_dialogs_with_the_last_button() {
+    // PluginDialogHostTests.AnOwnerClosingAnswersEveryDialogQueuedOnIt,
+    // AnOwnerRemovedAnswersItsDialog
+    let (mut ui, a, b) = attached_with_two_windows();
+    let first = ask(&mut ui, Some("main"));
+    let second = ask(&mut ui, Some("main"));
+    let elsewhere = ask(&mut ui, Some("edit"));
+    ui.input(UiInput::PanelShown {
+        panel: a,
+        shown: false,
+    });
+    assert_eq!(answers(&mut ui), [(first, 1), (second, 1)]);
+    assert!(ui.remove_panel("edwards.tank", b));
+    assert_eq!(answers(&mut ui), [(elsewhere, 1)]);
+}
+
+#[test]
+fn detaching_the_window_answers_every_dialog_and_ends_modals() {
+    // PluginDialogHostTests.DisposingTheHostAnswersEverythingAndEndsModals
+    let (mut ui, _, _) = attached_with_two_windows();
+    let handle = ask(&mut ui, None);
+    assert!(ui.show_modal("edwards.tank", "edit", Some("main")));
+    ui.set_window_attached(false);
+    assert_eq!(answers(&mut ui), [(handle, 1)]);
+    assert_eq!(ui.modals().count(), 0);
+}
+
+#[test]
+fn unloading_drops_the_plugins_dialogs() {
+    // ScopedUiRegistryDialogTests.UnloadingAnswersAnOpenDialogWithItsLastButton
+    // (the unloading plugin hears nothing more; the window's box goes)
+    let (mut ui, _, _) = attached_with_two_windows();
+    let handle = ask(&mut ui, None);
+    ui.take_changes();
+    ui.release("edwards.tank");
+    assert!(ui.take_changes().contains(&UiChange::DialogRemoved(handle)));
+    assert_eq!(ui.dialogs().count(), 0);
+}
+
+#[test]
+fn a_modal_window_blocks_its_owner_until_it_hides() {
+    // BufferedUiRegistryDialogTests.ShowModalShowsTheWindowAndBlocksItsOwnerUntilItHides,
+    // ShowModalWithoutAnOwnerShowsButBlocksNothing,
+    // ShowModalOfAnUnknownWindowOrWithoutAHostIsFalse,
+    // PluginDialogHostTests.AModalPanelEndsWhenRemovedAndMovesToANewOwner,
+    // TwoPanelsCannotBeShownModalOverEachOther
+    let (mut ui, a, b) = attached_with_two_windows();
+    ui.show_panel("edwards.tank", "edit", false);
+    assert!(!ui.show_modal("edwards.tank", "nope", None));
+    assert!(ui.show_modal("edwards.tank", "edit", Some("Main Window")));
+    assert!(ui.is_view_visible("edwards.tank", "edit"));
+    assert_eq!(ui.modals().collect::<Vec<_>>(), [(b, a)]);
+    // The owner cannot then be shown modal over the window blocking it.
+    assert!(ui.show_modal("edwards.tank", "main", Some("edit")));
+    assert_eq!(ui.modals().collect::<Vec<_>>(), [(b, a)]);
+    ui.show_panel("edwards.tank", "edit", false);
+    assert_eq!(ui.modals().count(), 0);
+    assert!(ui.show_modal("edwards.tank", "edit", None));
+    assert_eq!(ui.modals().count(), 0);
+    assert!(ui.show_modal("edwards.tank", "edit", Some("main")));
+    assert!(ui.remove_panel("edwards.tank", a));
+    assert_eq!(ui.modals().count(), 0);
+}
+
+#[test]
+fn a_snapshot_carries_the_dialogs_and_modals() {
+    let (mut ui, a, b) = attached_with_two_windows();
+    let handle = ask(&mut ui, None);
+    ui.show_modal("edwards.tank", "edit", Some("main"));
+    let mut view = PluginUiView::new();
+    view.apply_all(ui.snapshot());
+    assert_eq!(view.dialogs.len(), 1);
+    assert_eq!(view.dialogs[0].handle, handle);
+    assert_eq!(view.modals, [(b, a)]);
+}

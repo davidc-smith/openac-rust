@@ -15,6 +15,11 @@ ui_view_visible -
 ui_control_exists -
 ui_control_label -
 ui_control_visible -
+ui_panel_register_typed -
+ui_panel_set_typed -
+ui_dialog_confirm - window
+ui_dialog_withdraw -
+ui_panel_show_modal - window
 ui_client_window - window
 ui_canvas_register -
 ui_canvas_paint -

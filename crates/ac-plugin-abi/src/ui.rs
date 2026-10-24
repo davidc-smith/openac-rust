@@ -197,6 +197,451 @@ impl Default for UiValue {
     }
 }
 
+// ── The richer binding kinds the newer markup controls use (`<checkbox>`,
+// `<number>`, `<radio>`, `<expander>`, `<split>`, `<hotkey>`, `<color>`,
+// `<contextmenu>`, list headers, multi-select and trees, `<repeat>`). They
+// travel through their own imports ([`crate::Import::UiPanelRegisterTyped`],
+// [`crate::Import::UiPanelSetTyped`]), so the first imports and every
+// plugin built against them stay as they were. The handlers they add reach
+// the plugin as [`UiEvent::Action`] with the argument carried in an
+// [`ActionValue`] as [`ActionValue`]'s helpers read it.
+
+wire_enum! {
+    /// Every kind a markup binding name may be (OpenAC: the type of the C#
+    /// property it names): [`BindingKind`]'s, with the same tags, and more.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum TypedBindingKind ("typed binding kind") {
+        /// `bool`.
+        Bool = 0,
+        /// `int`.
+        Int = 1,
+        /// `uint`.
+        Uint = 2,
+        /// `float`.
+        Float = 3,
+        /// `string`.
+        #[default]
+        Text = 4,
+        /// Strings.
+        TextList = 5,
+        /// `uint`s.
+        UintList = 6,
+        /// `int`s.
+        IntList = 7,
+        /// `bool`s.
+        BoolList = 8,
+        /// A handler with no argument (`Action`).
+        Action = 9,
+        /// A handler taking an `int` (`Action<int>`).
+        IntAction = 10,
+        /// A handler taking a `float` (`Action<float>`).
+        FloatAction = 11,
+        /// A handler taking a `string` (`Action<string>`).
+        TextAction = 12,
+        /// `bool` or none (`bool?`: none is a checkbox's indeterminate).
+        OptionalBool = 13,
+        /// `float`s (column widths, numeric sort keys).
+        FloatList = 14,
+        /// Item records, each with the names its item type declares (a
+        /// `<repeat>`'s `items`); its type is an [`ItemTypeDecl`].
+        Items = 15,
+        /// A handler taking a `bool` (`Action<bool>`).
+        BoolAction = 16,
+        /// A handler taking a `uint` (`Action<uint>`).
+        UintAction = 17,
+        /// A handler taking an `int` and a `bool` (`Action<int, bool>`).
+        IntBoolAction = 18,
+        /// A handler taking a `string` and a `bool` (`Action<string, bool>`).
+        TextBoolAction = 19,
+        /// A handler taking `float`s (`Action<IReadOnlyList<float>>`).
+        FloatListAction = 20,
+        /// A handler taking `int`s (`Action<IReadOnlyList<int>>`).
+        IntListAction = 21,
+    }
+}
+
+impl From<BindingKind> for TypedBindingKind {
+    fn from(kind: BindingKind) -> Self {
+        match kind {
+            BindingKind::Bool => Self::Bool,
+            BindingKind::Int => Self::Int,
+            BindingKind::Uint => Self::Uint,
+            BindingKind::Float => Self::Float,
+            BindingKind::Text => Self::Text,
+            BindingKind::TextList => Self::TextList,
+            BindingKind::UintList => Self::UintList,
+            BindingKind::IntList => Self::IntList,
+            BindingKind::BoolList => Self::BoolList,
+            BindingKind::Action => Self::Action,
+            BindingKind::IntAction => Self::IntAction,
+            BindingKind::FloatAction => Self::FloatAction,
+            BindingKind::TextAction => Self::TextAction,
+        }
+    }
+}
+
+wire_record! {
+    /// One binding name and its kind, of the typed registration.
+    pub struct TypedBindingDecl {
+        /// The name inside `{...}`.
+        pub name: String,
+        /// What it is.
+        pub kind: TypedBindingKind,
+    }
+}
+
+wire_record! {
+    /// The item type of an [`TypedBindingKind::Items`] binding: the names an
+    /// item record carries. `list` is the path of the list: its binding name
+    /// on the window, or `Outer/Inner` for a list an item of `Outer` carries.
+    pub struct ItemTypeDecl {
+        /// The list's path.
+        pub list: String,
+        /// The item type's name, for messages.
+        pub type_name: String,
+        /// Its names.
+        pub bindings: Vec<TypedBindingDecl>,
+    }
+}
+
+wire_record! {
+    /// A window from markup whose bindings may use every kind
+    /// ([`crate::Import::UiPanelRegisterTyped`]); otherwise as
+    /// [`PanelRegistration`]. Reply `Result<u32, String>`.
+    pub struct TypedPanelRegistration {
+        /// The plugin's own short name for the window.
+        pub window_id: String,
+        /// The caption.
+        pub title: String,
+        /// Initials on the shelf button when there is no icon.
+        pub icon_text: Option<String>,
+        /// The shelf icon (a full image id or a bare index; 0 none).
+        pub icon_surface_id: u32,
+        /// Open at once.
+        pub start_visible: bool,
+        /// A button on the plugin shelf.
+        pub show_in_side_panel: bool,
+        /// The markup.
+        pub markup: String,
+        /// The binding type's name, for messages.
+        pub binding_type: String,
+        /// Every binding name the markup may use.
+        pub bindings: Vec<TypedBindingDecl>,
+        /// The item type of every items list.
+        pub item_types: Vec<ItemTypeDecl>,
+    }
+}
+
+wire_enum! {
+    /// A value inside an item record: every [`TypedValue`] but items (a
+    /// nested list is rows of its own, see [`ItemRow`]).
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ItemValue ("item value") {
+        /// `bool`.
+        Bool(v: bool) = 0,
+        /// `int`.
+        Int(v: i32) = 1,
+        /// `uint`.
+        Uint(v: u32) = 2,
+        /// `float`.
+        Float(v: f32) = 3,
+        /// `string`.
+        Text(v: String) = 4,
+        /// Strings.
+        TextList(v: Vec<String>) = 5,
+        /// `uint`s.
+        UintList(v: Vec<u32>) = 6,
+        /// `int`s.
+        IntList(v: Vec<i32>) = 7,
+        /// `bool`s.
+        BoolList(v: Vec<bool>) = 8,
+        /// `bool` or none.
+        OptionalBool(v: Option<bool>) = 9,
+        /// `float`s.
+        FloatList(v: Vec<f32>) = 10,
+    }
+}
+
+impl Default for ItemValue {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+wire_record! {
+    /// One named value of an item.
+    pub struct NamedItemValue {
+        /// The binding name.
+        pub name: String,
+        /// Its value.
+        pub value: ItemValue,
+    }
+}
+
+wire_record! {
+    /// One item of an items list, flattened: the rows of every list nested
+    /// in it follow it, each naming its parent row (its index in the same
+    /// [`ItemRows`]) and the parent's list binding it belongs to.
+    pub struct ItemRow {
+        /// The parent row's index, or −1 for a row of the list itself.
+        pub parent: i32,
+        /// The parent item's list binding this row is in (empty for a row
+        /// of the list itself).
+        pub list: String,
+        /// Its values.
+        pub values: Vec<NamedItemValue>,
+    }
+}
+
+wire_record! {
+    /// An items list: its rows and its nested lists' rows, parents first.
+    pub struct ItemRows {
+        /// Every row.
+        pub rows: Vec<ItemRow>,
+    }
+}
+
+wire_enum! {
+    /// A value pushed for a typed binding.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum TypedValue ("typed binding value") {
+        /// `bool`.
+        Bool(v: bool) = 0,
+        /// `int`.
+        Int(v: i32) = 1,
+        /// `uint`.
+        Uint(v: u32) = 2,
+        /// `float`.
+        Float(v: f32) = 3,
+        /// `string`.
+        Text(v: String) = 4,
+        /// Strings.
+        TextList(v: Vec<String>) = 5,
+        /// `uint`s.
+        UintList(v: Vec<u32>) = 6,
+        /// `int`s.
+        IntList(v: Vec<i32>) = 7,
+        /// `bool`s.
+        BoolList(v: Vec<bool>) = 8,
+        /// `bool` or none.
+        OptionalBool(v: Option<bool>) = 9,
+        /// `float`s.
+        FloatList(v: Vec<f32>) = 10,
+        /// Item records.
+        Items(v: ItemRows) = 11,
+    }
+}
+
+impl Default for TypedValue {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+impl From<UiValue> for TypedValue {
+    fn from(v: UiValue) -> Self {
+        match v {
+            UiValue::Bool(v) => Self::Bool(v),
+            UiValue::Int(v) => Self::Int(v),
+            UiValue::Uint(v) => Self::Uint(v),
+            UiValue::Float(v) => Self::Float(v),
+            UiValue::Text(v) => Self::Text(v),
+            UiValue::TextList(v) => Self::TextList(v),
+            UiValue::UintList(v) => Self::UintList(v),
+            UiValue::IntList(v) => Self::IntList(v),
+            UiValue::BoolList(v) => Self::BoolList(v),
+        }
+    }
+}
+
+wire_record! {
+    /// One pushed typed value.
+    pub struct NamedTypedValue {
+        /// The binding name.
+        pub name: String,
+        /// Its value.
+        pub value: TypedValue,
+    }
+}
+
+wire_record! {
+    /// Typed values for a panel ([`crate::Import::UiPanelSetTyped`]); reply
+    /// `Result<(), String>` (all or nothing).
+    pub struct TypedPanelValues {
+        /// The panel.
+        pub panel: u32,
+        /// The values.
+        pub values: Vec<NamedTypedValue>,
+    }
+}
+
+wire_record! {
+    /// A question for the player in a dialog box
+    /// ([`crate::Import::UiDialogConfirm`]; OpenAC `PluginDialog`). Reply
+    /// `Result<Option<u32>, String>`: the dialog's handle once it is
+    /// queued, none when no window draws it (then it is never answered),
+    /// or why the request is refused (no buttons, more than four, a blank
+    /// one). The answer arrives as [`UiEvent::Action`] on panel
+    /// [`DIALOG_PANEL`] (see [`UiAction::dialog_answer`]).
+    pub struct DialogRequest {
+        /// The caption (may be empty).
+        pub title: String,
+        /// The question; long text wraps (may be empty).
+        pub message: String,
+        /// The buttons left to right, one to four; the last is the cancel
+        /// button (Escape, the close button, the owner window closing, the
+        /// window detaching and the plugin unloading answer with it).
+        /// Empty means OK and Cancel.
+        pub buttons: Vec<String>,
+        /// The id or title of the plugin's window the dialog is centred on
+        /// and blocks until it is answered; none (or a window not shown)
+        /// centres it on the screen and blocks nothing.
+        pub owner_view: Option<String>,
+    }
+}
+
+wire_record! {
+    /// Show one of the plugin's windows modal over another
+    /// ([`crate::Import::UiPanelShowModal`]); reply `bool`.
+    pub struct ModalShow {
+        /// The id or title of the window to show.
+        pub view: String,
+        /// The id or title of the window it blocks (none: nothing).
+        pub owner_view: Option<String>,
+    }
+}
+
+/// The panel number a dialog's answer arrives on ([`UiAction::dialog_answer`]):
+/// no window has it.
+pub const DIALOG_PANEL: u32 = 0;
+
+/// What a dialog answer's handler name starts with; the dialog's handle
+/// follows.
+pub const DIALOG_HANDLER_PREFIX: &str = "dialog:";
+
+impl UiAction {
+    /// A dialog's answer: its handle and the button picked (by index).
+    #[must_use]
+    pub fn dialog_answer(&self) -> Option<(u32, i32)> {
+        if self.panel != DIALOG_PANEL {
+            return None;
+        }
+        let handle = self
+            .handler
+            .strip_prefix(DIALOG_HANDLER_PREFIX)?
+            .parse()
+            .ok()?;
+        match self.value {
+            ActionValue::Int(button) => Some((handle, button)),
+            _ => None,
+        }
+    }
+}
+
+/// How the newer handler arguments travel in an [`ActionValue`]: the plugin
+/// declared the handler's kind, so it reads the argument back with the
+/// matching helper.
+impl ActionValue {
+    /// `Action<bool>`: `Int(1)` or `Int(0)`.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Int(v) => Some(*v != 0),
+            _ => None,
+        }
+    }
+
+    /// `Action<uint>`: the bits in `Int`.
+    #[must_use]
+    pub fn as_uint(&self) -> Option<u32> {
+        match self {
+            Self::Int(v) => Some(*v as u32),
+            _ => None,
+        }
+    }
+
+    /// `Action<int, bool>`: `Text` of `1` or `0` then the number.
+    #[must_use]
+    pub fn as_int_bool(&self) -> Option<(i32, bool)> {
+        let (flag, rest) = self.flagged()?;
+        Some((rest.parse().ok()?, flag))
+    }
+
+    /// `Action<string, bool>`: `Text` of `1` or `0` then the text.
+    #[must_use]
+    pub fn as_text_bool(&self) -> Option<(String, bool)> {
+        let (flag, rest) = self.flagged()?;
+        Some((rest.to_owned(), flag))
+    }
+
+    /// `Action<IReadOnlyList<float>>`: `Text` of the numbers joined by `,`.
+    #[must_use]
+    pub fn as_float_list(&self) -> Option<Vec<f32>> {
+        self.list()?.map(|s| s.parse().ok()).collect()
+    }
+
+    /// `Action<IReadOnlyList<int>>`: `Text` of the numbers joined by `,`.
+    #[must_use]
+    pub fn as_int_list(&self) -> Option<Vec<i32>> {
+        self.list()?.map(|s| s.parse().ok()).collect()
+    }
+
+    fn flagged(&self) -> Option<(bool, &str)> {
+        let Self::Text(text) = self else {
+            return None;
+        };
+        match text.as_bytes().first() {
+            Some(b'1') => Some((true, &text[1..])),
+            Some(b'0') => Some((false, &text[1..])),
+            _ => None,
+        }
+    }
+
+    fn list(&self) -> Option<impl Iterator<Item = &str>> {
+        let Self::Text(text) = self else {
+            return None;
+        };
+        Some(text.split(',').filter(|s| !s.is_empty()))
+    }
+
+    /// An `Action<bool>` argument.
+    #[must_use]
+    pub fn from_bool(v: bool) -> Self {
+        Self::Int(i32::from(v))
+    }
+
+    /// An `Action<uint>` argument.
+    #[must_use]
+    pub fn from_uint(v: u32) -> Self {
+        Self::Int(v as i32)
+    }
+
+    /// An `Action<int, bool>` argument.
+    #[must_use]
+    pub fn from_int_bool(v: i32, flag: bool) -> Self {
+        Self::Text(format!("{}{v}", u8::from(flag)))
+    }
+
+    /// An `Action<string, bool>` argument.
+    #[must_use]
+    pub fn from_text_bool(v: &str, flag: bool) -> Self {
+        Self::Text(format!("{}{v}", u8::from(flag)))
+    }
+
+    /// An `Action<IReadOnlyList<float>>` argument (each written so it reads
+    /// back exactly).
+    #[must_use]
+    pub fn from_float_list(v: &[f32]) -> Self {
+        Self::Text(v.iter().map(f32::to_string).collect::<Vec<_>>().join(","))
+    }
+
+    /// An `Action<IReadOnlyList<int>>` argument.
+    #[must_use]
+    pub fn from_int_list(v: &[i32]) -> Self {
+        Self::Text(v.iter().map(i32::to_string).collect::<Vec<_>>().join(","))
+    }
+}
+
 wire_record! {
     /// A window from markup ([`crate::Import::UiPanelRegister`]; OpenAC
     /// `RegisterPanelContent` with a `PluginPanelDescriptor`). Reply
@@ -837,3 +1282,180 @@ mod tests {
         );
     }
 }
+
+impl KeyChord {
+    /// The text a markup `<hotkey>` box holds for this chord (OpenAC
+    /// `PluginKeyChord.ToHotkeyText`): `Ctrl+`, `Alt+`, `Shift+` in that
+    /// order, then the key's [`crate::keys::PluginKey`] name; empty without
+    /// a key.
+    #[must_use]
+    pub fn to_hotkey_text(&self) -> String {
+        let key = crate::keys::PluginKey::from_code(self.key);
+        if key == crate::keys::PluginKey::Unknown {
+            return String::new();
+        }
+        let mut text = String::new();
+        for (held, name) in [
+            (self.ctrl, "Ctrl+"),
+            (self.alt, "Alt+"),
+            (self.shift, "Shift+"),
+        ] {
+            if held {
+                text.push_str(name);
+            }
+        }
+        text.push_str(key.name());
+        text
+    }
+
+    /// Reads a `<hotkey>` box's text (OpenAC
+    /// `PluginKeyChord.TryParseHotkeyText`): modifiers in any order and any
+    /// case, each once, then a key's name in any case; none for empty text
+    /// (an unbound box) and for text it cannot read.
+    #[must_use]
+    pub fn parse_hotkey_text(text: &str) -> Option<Self> {
+        if text.is_empty() {
+            return None;
+        }
+        let parts: Vec<&str> = text.split('+').collect();
+        let (name, modifiers) = parts.split_last()?;
+        let mut chord = Self::default();
+        for part in modifiers {
+            if !chord.ctrl && part.eq_ignore_ascii_case("Ctrl") {
+                chord.ctrl = true;
+            } else if !chord.alt && part.eq_ignore_ascii_case("Alt") {
+                chord.alt = true;
+            } else if !chord.shift && part.eq_ignore_ascii_case("Shift") {
+                chord.shift = true;
+            } else {
+                return None;
+            }
+        }
+        let first = name.chars().next()?;
+        if !first.is_ascii_alphabetic() || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        let key = crate::keys::PluginKey::ALL
+            .iter()
+            .copied()
+            .find(|k| k.name().eq_ignore_ascii_case(name))
+            .filter(|k| *k != crate::keys::PluginKey::Unknown)?;
+        chord.key = key.code();
+        Some(chord)
+    }
+}
+
+#[cfg(test)]
+mod hotkey_text_tests {
+    //! OpenAC `tests/AcDream.Plugin.Tests/PluginKeyChordTextTests.cs`.
+    use super::KeyChord;
+    use crate::keys::PluginKey;
+
+    fn chord(key: PluginKey, ctrl: bool, alt: bool, shift: bool) -> KeyChord {
+        KeyChord {
+            key: key.code(),
+            ctrl,
+            alt,
+            shift,
+        }
+    }
+
+    #[test]
+    fn reads_a_hotkey_box_string() {
+        // TryParseHotkeyText_ReadsAHotkeyBoxString
+        for (text, expected) in [
+            ("Ctrl+Alt+Shift+F", chord(PluginKey::F, true, true, true)),
+            (
+                "shift+ctrl+numpad5",
+                chord(PluginKey::Numpad5, true, false, true),
+            ),
+            ("Numpad5", chord(PluginKey::Numpad5, false, false, false)),
+            ("Grave", chord(PluginKey::Grave, false, false, false)),
+            (
+                "NumpadEnter",
+                chord(PluginKey::NumpadEnter, false, false, false),
+            ),
+            ("F12", chord(PluginKey::F12, false, false, false)),
+        ] {
+            assert_eq!(KeyChord::parse_hotkey_text(text), Some(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn refuses_what_no_plugin_hotkey_can_hold() {
+        // TryParseHotkeyText_RefusesWhatNoPluginHotkeyCanHold
+        for text in [
+            "",
+            "F13",
+            "CapsLock",
+            "Keypad5",
+            "GraveAccent",
+            "Ctrl+",
+            "+F",
+            "Ctrl+Ctrl+F",
+            "Meta+F",
+            "5",
+            "A,B",
+            "Unknown",
+            "Ctrl+Nope",
+        ] {
+            assert_eq!(KeyChord::parse_hotkey_text(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn spells_the_key_by_its_name_and_round_trips() {
+        // ToHotkeyText_SpellsTheKeyAsItsPluginKeyName, ToHotkeyText_NoKeyIsEmpty,
+        // EveryPluginKey_RoundTripsWithEveryModifierSet
+        assert_eq!(
+            chord(PluginKey::F, true, true, true).to_hotkey_text(),
+            "Ctrl+Alt+Shift+F"
+        );
+        assert_eq!(
+            chord(PluginKey::NumpadEnter, false, true, false).to_hotkey_text(),
+            "Alt+NumpadEnter"
+        );
+        assert_eq!(KeyChord::default().to_hotkey_text(), "");
+        assert_eq!(
+            KeyChord {
+                key: 999,
+                ctrl: true,
+                ..KeyChord::default()
+            }
+            .to_hotkey_text(),
+            ""
+        );
+        for key in PluginKey::ALL.iter().skip(1) {
+            for mods in 0..8 {
+                let c = chord(*key, mods & 1 != 0, mods & 2 != 0, mods & 4 != 0);
+                assert_eq!(KeyChord::parse_hotkey_text(&c.to_hotkey_text()), Some(c));
+            }
+        }
+    }
+}
+
+macro_rules! typed_from {
+    ($($ty:ty => $variant:ident),* $(,)?) => {$(
+        impl From<$ty> for TypedValue {
+            fn from(v: $ty) -> Self {
+                Self::$variant(v.into())
+            }
+        }
+    )*};
+}
+
+typed_from!(
+    bool => Bool,
+    i32 => Int,
+    u32 => Uint,
+    f32 => Float,
+    &str => Text,
+    String => Text,
+    Vec<String> => TextList,
+    Vec<u32> => UintList,
+    Vec<i32> => IntList,
+    Vec<bool> => BoolList,
+    Option<bool> => OptionalBool,
+    Vec<f32> => FloatList,
+    ItemRows => Items,
+);

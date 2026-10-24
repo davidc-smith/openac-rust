@@ -18,6 +18,9 @@ use crate::model::{
 };
 use crate::value::{BindingSchema, UiValue};
 
+mod dialogs;
+pub use dialogs::{DEFAULT_DIALOG_BUTTONS, MAXIMUM_DIALOG_BUTTONS};
+
 /// The most labels one plugin may have showing at once (a larger set is
 /// refused whole).
 pub const MAXIMUM_LABELS: usize = 256;
@@ -130,6 +133,39 @@ pub struct PluginUi {
     theme: crate::theme::ThemeKind,
     /// The theme changed since the session last took the change.
     theme_changed: bool,
+    /// The dialogs waiting for an answer, in the order asked.
+    dialogs: Vec<crate::model::DialogView>,
+    /// The windows shown modal and the windows they block.
+    modals: Vec<(u32, u32)>,
+}
+
+/// Every item record holds only names its item type declares, each of its
+/// kind (a nested list checked against its own item type).
+fn check_items(item: &BindingSchema, rows: &[crate::value::ItemRecord]) -> Result<(), String> {
+    for row in rows {
+        for (name, value) in &row.values {
+            match item.kind(name) {
+                None => {
+                    return Err(format!(
+                        "'{name}' is not a binding of {} (declare it with the item type)",
+                        item.type_name
+                    ));
+                }
+                Some(kind) if kind.is_action() || kind != value.kind() => {
+                    return Err(format!(
+                        "'{name}' of {} is declared as {kind:?}, but a {:?} was set",
+                        item.type_name,
+                        value.kind()
+                    ));
+                }
+                Some(_) => {}
+            }
+            if let (UiValue::Items(nested), Some(inner)) = (value, item.item_schema(name)) {
+                check_items(inner, nested)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn same_owner(a: &str, b: &str) -> bool {
@@ -239,6 +275,7 @@ impl PluginUi {
         if removed {
             self.changes.push(UiChange::PanelRemoved(panel));
         }
+        self.follow_dialogs();
         removed
     }
 
@@ -282,6 +319,9 @@ impl PluginUi {
                 }
                 Some(_) => {}
             }
+            if let (UiValue::Items(rows), Some(item)) = (value, p.schema.item_schema(name)) {
+                check_items(item, rows)?;
+            }
         }
         let mut changed = Vec::new();
         for (name, value) in values {
@@ -296,6 +336,7 @@ impl PluginUi {
                 values: changed,
             });
         }
+        self.follow_dialogs();
         Ok(())
     }
 
@@ -345,6 +386,7 @@ impl PluginUi {
                 visible: view.requested_visible,
             });
         }
+        self.follow_dialogs();
     }
 
     fn find_control(&self, owner: &str, view: &str, control: &str) -> Option<(usize, usize)> {
@@ -420,6 +462,7 @@ impl PluginUi {
             if !attached {
                 self.hotkeys.set_client_chords(None);
                 self.follow_hotkeys();
+                self.detach_dialogs();
             }
         }
     }
@@ -1049,6 +1092,16 @@ impl PluginUi {
         }
         self.hotkeys.release(owner);
         self.follow_hotkeys();
+        let dialogs: Vec<u32> = self
+            .dialogs
+            .iter()
+            .filter(|d| same_owner(&d.owner.id, owner))
+            .map(|d| d.handle)
+            .collect();
+        for handle in dialogs {
+            self.dialogs.retain(|d| d.handle != handle);
+            self.changes.push(UiChange::DialogRemoved(handle));
+        }
         self.action_listeners.retain(|o| !same_owner(o, owner));
         self.events.retain(|(o, _)| o != owner);
         self.file_icons.remove(owner);
@@ -1081,6 +1134,15 @@ impl PluginUi {
         out.push(UiChange::Labels(self.merged_labels()));
         out.push(UiChange::Lines(self.merged_lines()));
         out.push(UiChange::Hotkeys(Arc::new(self.hotkeys.bound())));
+        out.extend(
+            self.dialogs
+                .iter()
+                .map(|d| UiChange::DialogAdded(Box::new(d.clone()))),
+        );
+        out.extend(self.modals.iter().map(|(panel, owner)| UiChange::Modal {
+            panel: *panel,
+            owner: Some(*owner),
+        }));
         out
     }
 
@@ -1168,6 +1230,7 @@ impl PluginUi {
                     self.theme_changed = true;
                 }
             }
+            UiInput::DialogAnswered { handle, button } => self.answer_dialog(handle, button),
         }
     }
 

@@ -17,6 +17,11 @@ mod raw {
         pub(super) fn ui_control_exists(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_control_label(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_control_visible(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_panel_register_typed(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_panel_set_typed(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_dialog_confirm(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_dialog_withdraw(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_panel_show_modal(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_client_window(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_canvas_register(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_canvas_paint(ptr: *const u8, len: usize) -> i32;
@@ -64,6 +69,11 @@ wrappers!(
     ui_control_exists,
     ui_control_label,
     ui_control_visible,
+    ui_panel_register_typed,
+    ui_panel_set_typed,
+    ui_dialog_confirm,
+    ui_dialog_withdraw,
+    ui_panel_show_modal,
     ui_client_window,
     ui_canvas_register,
     ui_canvas_paint,

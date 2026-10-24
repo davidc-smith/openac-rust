@@ -35,11 +35,30 @@ pub enum BindingKind {
     FloatAction,
     /// A handler taking a `string` (a field, a menu).
     TextAction,
+    /// `bool` or none (a checkbox's `bool?`: none is indeterminate).
+    OptionalBool,
+    /// A list of `float` (a list's column widths, numeric sort keys).
+    FloatList,
+    /// A list of item records (a `<repeat>`'s rows), each with the bindings
+    /// its item type declares.
+    Items,
+    /// A handler taking a `bool` (a checkbox, an expander).
+    BoolAction,
+    /// A handler taking a `uint` (a colour picker bound to a `uint`).
+    UintAction,
+    /// A handler taking an `int` and a `bool` (a list's sort request).
+    IntBoolAction,
+    /// A handler taking a `string` and a `bool` (a tree row's expansion).
+    TextBoolAction,
+    /// A handler taking a list of `float` (a list's column widths).
+    FloatListAction,
+    /// A handler taking a list of `int` (a multi-select list's rows).
+    IntListAction,
 }
 
 impl BindingKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 22] = [
         Self::Bool,
         Self::Int,
         Self::Uint,
@@ -53,6 +72,15 @@ impl BindingKind {
         Self::IntAction,
         Self::FloatAction,
         Self::TextAction,
+        Self::OptionalBool,
+        Self::FloatList,
+        Self::Items,
+        Self::BoolAction,
+        Self::UintAction,
+        Self::IntBoolAction,
+        Self::TextBoolAction,
+        Self::FloatListAction,
+        Self::IntListAction,
     ];
 
     /// A handler rather than a value.
@@ -60,7 +88,16 @@ impl BindingKind {
     pub const fn is_action(self) -> bool {
         matches!(
             self,
-            Self::Action | Self::IntAction | Self::FloatAction | Self::TextAction
+            Self::Action
+                | Self::IntAction
+                | Self::FloatAction
+                | Self::TextAction
+                | Self::BoolAction
+                | Self::UintAction
+                | Self::IntBoolAction
+                | Self::TextBoolAction
+                | Self::FloatListAction
+                | Self::IntListAction
         )
     }
 }
@@ -73,6 +110,9 @@ pub struct BindingSchema {
     /// The binding type's name (`MossTankBindings`, ...).
     pub type_name: String,
     kinds: BTreeMap<String, BindingKind>,
+    /// The item type of each [`BindingKind::Items`] binding: the names an
+    /// item record carries (OpenAC: the list's element type).
+    items: BTreeMap<String, BindingSchema>,
 }
 
 impl BindingSchema {
@@ -82,7 +122,29 @@ impl BindingSchema {
         Self {
             type_name: type_name.into(),
             kinds: BTreeMap::new(),
+            items: BTreeMap::new(),
         }
+    }
+
+    /// Declares `name` as a list of items of type `item` (a `<repeat>`'s
+    /// `items`).
+    #[must_use]
+    pub fn with_items(mut self, name: impl Into<String>, item: BindingSchema) -> Self {
+        self.declare_items(name, item);
+        self
+    }
+
+    /// Declares `name` as a list of items of type `item`.
+    pub fn declare_items(&mut self, name: impl Into<String>, item: BindingSchema) {
+        let name = name.into();
+        self.kinds.insert(name.clone(), BindingKind::Items);
+        self.items.insert(name, item);
+    }
+
+    /// The item type of list `name`, when it is declared as items.
+    #[must_use]
+    pub fn item_schema(&self, name: &str) -> Option<&BindingSchema> {
+        self.items.get(name)
     }
 
     /// Declares `name` as `kind` (a later declaration of the same name
@@ -131,6 +193,35 @@ pub enum UiValue {
     IntList(Vec<i32>),
     /// `bool`s.
     BoolList(Vec<bool>),
+    /// `bool` or none (indeterminate).
+    OptionalBool(Option<bool>),
+    /// `float`s.
+    FloatList(Vec<f32>),
+    /// Item records, in order (a `<repeat>`'s list).
+    Items(std::sync::Arc<Vec<ItemRecord>>),
+}
+
+/// One item of an [`UiValue::Items`] list: its values by binding name (the
+/// names its item type declares; a nested list is an [`UiValue::Items`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ItemRecord {
+    /// The item's values, by name.
+    pub values: BTreeMap<String, UiValue>,
+}
+
+impl ItemRecord {
+    /// An item with no values yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets one value.
+    #[must_use]
+    pub fn with(mut self, name: impl Into<String>, value: UiValue) -> Self {
+        self.values.insert(name.into(), value);
+        self
+    }
 }
 
 impl UiValue {
@@ -147,6 +238,9 @@ impl UiValue {
             Self::UintList(_) => BindingKind::UintList,
             Self::IntList(_) => BindingKind::IntList,
             Self::BoolList(_) => BindingKind::BoolList,
+            Self::OptionalBool(_) => BindingKind::OptionalBool,
+            Self::FloatList(_) => BindingKind::FloatList,
+            Self::Items(_) => BindingKind::Items,
         }
     }
 
@@ -165,6 +259,11 @@ impl UiValue {
             Self::UintList(_) => "System.UInt32[]".to_owned(),
             Self::IntList(_) => "System.Int32[]".to_owned(),
             Self::BoolList(_) => "System.Boolean[]".to_owned(),
+            // A `bool?` writes as its value, and null as nothing.
+            Self::OptionalBool(Some(v)) => Self::Bool(*v).display(),
+            Self::OptionalBool(None) => String::new(),
+            Self::FloatList(_) => "System.Single[]".to_owned(),
+            Self::Items(_) => "System.Object[]".to_owned(),
         }
     }
 

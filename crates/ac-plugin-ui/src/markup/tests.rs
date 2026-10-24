@@ -737,15 +737,22 @@ fn list_columns_bind_each_columns_own_source() {
                     items: "Names".into(),
                     colors: None,
                     onclick: None
-                }
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
             Column {
                 width: 20.0,
                 auto: false,
                 kind: ColumnKind::Check {
                     values: "Fester".into(),
-                    onchange: "ToggleFester".into()
-                }
+                    onchange: "ToggleFester".into(),
+                    boxed: false
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
             Column {
                 width: 20.0,
@@ -754,7 +761,10 @@ fn list_columns_bind_each_columns_own_source() {
                     values: "Icons".into(),
                     kind: IconKind::Did,
                     onclick: "ClickIcon".into()
-                }
+                },
+                header: ColumnHeader::None,
+                sort: SortKind::None,
+                sort_keys: None,
             },
         ]
     );
