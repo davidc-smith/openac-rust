@@ -149,6 +149,7 @@ fn apparatus_engine() -> PhysicsEngine {
         None,
         None,
         None,
+        None,
     );
     let mut engine = PhysicsEngine::new();
     engine.attach_world(world);
@@ -380,6 +381,7 @@ fn faithful_door_engine(d: &DatCollection) -> PhysicsEngine {
         &setup,
         1.0,
         &|id| world.gfx_obj(id).is_some_and(|g| g.has_physics()),
+        None,
         None,
         None,
         None,

@@ -993,3 +993,31 @@ fn a_fog_override_is_world_state_and_a_sound_cue_is_not() {
     world.apply(&Inbound::parse(&environ(0x00)).unwrap());
     assert_eq!(world.environ_override(), Some(0x00), "0 clears the fog");
 }
+
+/// OpenAC `SetupPartTransformsTests.ObjectPlacementId_FollowsWhatTheServerSent`:
+/// no placement and no motion data rests in the default placement, a named
+/// placement in that one, and motion data in the resting one.
+#[test]
+fn an_object_rests_in_the_placement_its_description_names() {
+    let mut desc = physics(stamps(1, 1), None);
+    assert_eq!(rest_placement(&desc), 0);
+
+    desc.animation_frame = Some(0x67);
+    assert_eq!(rest_placement(&desc), 0x67);
+
+    desc.animation_frame = None;
+    desc.movement = Some(ac_proto::PhysicsMovement::Present {
+        raw: vec![0; 4],
+        data: ac_proto::MovementData {
+            movement_type: 0,
+            motion_flags: 0,
+            current_style: 0x003D,
+            movement: ac_proto::Movement::Interpreted {
+                state: ac_proto::InterpretedMotionState::default(),
+                sticky_object: None,
+            },
+        },
+        is_autonomous: false,
+    });
+    assert_eq!(rest_placement(&desc), 0x65);
+}

@@ -225,6 +225,7 @@ fn view(local_id: u32, guid: u32, setup_id: u32) -> ObjectView {
         }),
         parent: None,
         placement: None,
+        rest_placement: 0,
         scale: None,
         translucency: None,
         state: 0,

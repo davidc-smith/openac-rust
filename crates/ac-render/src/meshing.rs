@@ -287,6 +287,13 @@ pub fn resting_frame<'a>(
         .or_else(|| setup.placement_frames.first().map(|(_, f)| f))
 }
 
+/// The frame a Setup is posed in for placement `id`: that placement's
+/// frame, else the default one, else none.
+#[must_use]
+pub fn placement_frame(setup: &Setup, id: u32) -> Option<&AnimationFrame> {
+    placement(setup, id).or_else(|| placement(setup, PLACEMENT_DEFAULT))
+}
+
 fn placement(setup: &Setup, id: u32) -> Option<&AnimationFrame> {
     setup
         .placement_frames
@@ -759,5 +766,50 @@ mod tests {
         assert_eq!(t.w_axis.truncate(), Vec3::new(6.0, 0.0, 0.0));
         let axis = t.transform_vector3(Vec3::X);
         assert!(axis.x.abs() < 1e-4 && (axis.y - 1.0).abs() < 1e-4);
+    }
+
+    // Golden cases: OpenAC tests/AcDream.Core.Tests/Meshing/SetupPartTransformsTests.cs
+    // (`ResolvePlacementFrame_*`).
+
+    /// Placement id of a house hook.
+    const PLACEMENT_HOOK: u32 = 0x67;
+    /// Placement id of a right hand in combat, a placement the item lacks.
+    const PLACEMENT_RIGHT_HAND_COMBAT: u32 = 0x01;
+
+    fn hooked_item_setup(with_default: bool) -> Setup {
+        let mut placements = vec![
+            (PLACEMENT_RESTING, pose(vec![identity_at(v(0.0, 0.0, 1.0))])),
+            (
+                PLACEMENT_HOOK,
+                pose(vec![frame(
+                    v(0.0, 0.0, 0.0),
+                    Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+                )]),
+            ),
+        ];
+        if with_default {
+            placements.push((PLACEMENT_DEFAULT, pose(vec![identity_at(v(0.0, 0.0, 0.0))])));
+        }
+        setup(&[0x0100_0100], vec![one()], placements)
+    }
+
+    #[test]
+    fn placement_frame_uses_the_server_placement_when_the_setup_has_it() {
+        let s = hooked_item_setup(true);
+        let frame = placement_frame(&s, PLACEMENT_HOOK).expect("hook frame");
+        assert_eq!(frame, &s.placement_frames[1].1);
+    }
+
+    #[test]
+    fn placement_frame_falls_back_to_default_when_the_placement_is_missing() {
+        let s = hooked_item_setup(true);
+        let frame = placement_frame(&s, PLACEMENT_RIGHT_HAND_COMBAT).expect("default frame");
+        assert_eq!(frame, &s.placement_frames[2].1);
+    }
+
+    #[test]
+    fn placement_frame_is_none_when_the_setup_has_neither() {
+        let s = hooked_item_setup(false);
+        assert!(placement_frame(&s, PLACEMENT_RIGHT_HAND_COMBAT).is_none());
     }
 }

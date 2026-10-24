@@ -410,6 +410,7 @@ fn player_at_arwic(scene: &mut Scene) {
             }),
             parent: None,
             placement: None,
+            rest_placement: 0,
             scale: None,
             translucency: None,
             state: 0,

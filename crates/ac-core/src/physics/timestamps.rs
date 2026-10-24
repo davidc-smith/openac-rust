@@ -105,6 +105,21 @@ impl PhysicsTimestampGate {
         disposition
     }
 
+    /// Start processing a re-sent description (an update-object message): it
+    /// replaces the object outright, so every counter is taken from it,
+    /// whatever its instance, and an object already seeded is a new
+    /// generation of itself.
+    pub fn seed_for_replacement(&mut self, incoming: PhysicsTimestamps) -> CreateDisposition {
+        let disposition = if self.seeded {
+            CreateDisposition::NewGeneration
+        } else {
+            CreateDisposition::InitialGeneration
+        };
+        self.stamps = incoming;
+        self.seeded = true;
+        disposition
+    }
+
     /// Classify a create-object message without changing any counter.
     #[must_use]
     pub fn preview_create_object(&self, instance: u16) -> CreateDisposition {
@@ -274,6 +289,27 @@ mod tests {
         ] {
             assert_eq!(is_newer(old, new), expected, "{old:#x} -> {new:#x}");
         }
+    }
+
+    /// OpenAC `PhysicsTimestampGateTests.Replacement_TakesEveryCounterWhateverItsInstance`.
+    #[test]
+    fn a_replacement_takes_every_counter_whatever_its_instance() {
+        let mut gate = PhysicsTimestampGate::new();
+        assert_eq!(
+            gate.seed_for_replacement(stamps(1, 1, 1, 1, 1, 1, 1, 1, 5)),
+            CreateDisposition::InitialGeneration
+        );
+        // The same instance and an older one both replace the object.
+        assert_eq!(
+            gate.seed_for_replacement(stamps(9, 9, 9, 9, 9, 9, 9, 9, 5)),
+            CreateDisposition::NewGeneration
+        );
+        assert_eq!(
+            gate.seed_for_replacement(stamps(2, 3, 4, 5, 6, 7, 8, 1, 4)),
+            CreateDisposition::NewGeneration
+        );
+        assert_eq!(gate.stamps(), stamps(2, 3, 4, 5, 6, 7, 8, 1, 4));
+        assert!(gate.try_accept_state(4, 5));
     }
 
     #[test]

@@ -5,7 +5,9 @@
 use ac_core::items::ClientObject;
 use ac_core::player::{LocalPlayerState, VitalKind};
 use ac_physics::movement::{InboundInterpretedState, inbound_interpreted_state};
-use ac_proto::{ModelData, MovementData, PhysicsAttachment, Position, Vector3};
+use ac_proto::{
+    ModelData, MovementData, PhysicsAttachment, PhysicsDesc, PhysicsMovement, Position, Vector3,
+};
 
 use super::{ObjectKey, World, WorldChange, WorldObject};
 
@@ -184,6 +186,24 @@ pub fn accepted_motion_state(data: &MovementData) -> Option<InboundInterpretedSt
     ))
 }
 
+/// Placement id of the resting pose.
+const PLACEMENT_RESTING: u32 = 0x65;
+/// Placement id of the default pose.
+const PLACEMENT_DEFAULT: u32 = 0;
+
+/// The placement an object rests in when no motion cycle poses it, the same
+/// for drawing and collision. An object described with motion data keeps
+/// the resting placement; otherwise it takes the placement the server named
+/// (an item hung on a house hook is sent its hook placement), and the
+/// default one when it named none.
+#[must_use]
+pub fn rest_placement(physics: &PhysicsDesc) -> u32 {
+    match &physics.movement {
+        Some(PhysicsMovement::Present { raw, .. }) if !raw.is_empty() => PLACEMENT_RESTING,
+        _ => physics.animation_frame.unwrap_or(PLACEMENT_DEFAULT),
+    }
+}
+
 /// One object as presentation sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectView {
@@ -202,6 +222,9 @@ pub struct ObjectView {
     pub parent: Option<PhysicsAttachment>,
     /// Placement frame index, if any.
     pub placement: Option<u32>,
+    /// The placement it rests in when no motion cycle poses it
+    /// ([`rest_placement`]).
+    pub rest_placement: u32,
     /// Size multiplier.
     pub scale: Option<f32>,
     /// Translucency, 0 opaque to 1 invisible.
@@ -240,6 +263,7 @@ impl ObjectView {
             },
             parent: physics.parent,
             placement: physics.animation_frame,
+            rest_placement: rest_placement(physics),
             scale: physics.scale,
             translucency: physics.translucency,
             state: physics.state,

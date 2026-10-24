@@ -16,7 +16,7 @@ use ac_dat::objects::Setup;
 use ac_motion::PartTransform;
 use glam::{Mat4, Vec3};
 
-use crate::meshing::{setup_part_transforms, vec3};
+use crate::meshing::{placement_frame, setup_part_transforms, vec3};
 
 /// One part's pose. See the module documentation.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,18 +27,21 @@ pub struct PartPose {
     pub rigid: Mat4,
 }
 
-/// The resting poses of a Setup's parts at `object_scale`: its resting
-/// placement (else the default one), each part at its default scale.
+/// The resting poses of a Setup's parts at `object_scale`, each part at its
+/// default scale. A server object rests in `placement` (see
+/// [`placement_frame`]); when the Setup has neither that placement nor the
+/// default one, every part sits at the object's origin, unrotated. With no
+/// placement (a static object) the resting placement is used, else the
+/// default one, else the first.
 #[must_use]
 pub fn rest_poses(setup: &Setup, placement: Option<u32>, object_scale: f32) -> Vec<PartPose> {
-    let frame = placement.and_then(|id| {
-        setup
-            .placement_frames
-            .iter()
-            .find(|(k, _)| *k == id)
-            .map(|(_, f)| f)
-    });
-    let rigid = setup_part_transforms(setup, frame, object_scale);
+    let rigid = match placement {
+        None => setup_part_transforms(setup, None, object_scale),
+        Some(id) => match placement_frame(setup, id) {
+            Some(frame) => setup_part_transforms(setup, Some(frame), object_scale),
+            None => vec![Mat4::IDENTITY; setup.parts.len()],
+        },
+    };
     (0..setup.parts.len())
         .map(|i| {
             let rigid = rigid.get(i).copied().unwrap_or(Mat4::IDENTITY);
@@ -181,5 +184,64 @@ mod tests {
             &mut poses,
         );
         assert_eq!(poses[1], presented);
+    }
+
+    /// A setup with a resting frame (lifted 1 m) and a hook frame (turned a
+    /// quarter turn about x), and no default frame.
+    fn placed(parts: usize) -> Setup {
+        use ac_dat::objects::AnimationFrame;
+        use ac_dat::types::{Frame, Quaternion};
+        let frame = |origin: Vector3, q: Quat| Frame {
+            origin,
+            orientation: Quaternion {
+                w: q.w,
+                x: q.x,
+                y: q.y,
+                z: q.z,
+            },
+        };
+        let pose = |f: Frame| AnimationFrame {
+            frames: vec![f; parts],
+            hooks: Vec::new(),
+        };
+        let mut s = setup(parts);
+        s.placement_frames = vec![
+            (
+                0x65,
+                pose(frame(
+                    Vector3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 1.0,
+                    },
+                    Quat::IDENTITY,
+                )),
+            ),
+            (
+                0x67,
+                pose(frame(
+                    Vector3::default(),
+                    Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+                )),
+            ),
+        ];
+        s
+    }
+
+    // OpenAC `SetupPartTransformsTests.ResolvePlacementFrame_*` and
+    // `ResolveObjectPose_WithNoFrame_LeavesEveryPartAtTheOrigin`.
+
+    #[test]
+    fn a_server_object_rests_in_its_placement() {
+        let poses = rest_poses(&placed(1), Some(0x67), 1.0);
+        let expected = Mat4::from_quat(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2));
+        assert!(close(poses[0].rigid, expected));
+    }
+
+    #[test]
+    fn without_its_placement_or_a_default_a_server_object_has_no_frame() {
+        let poses = rest_poses(&placed(2), Some(0x01), 1.0);
+        assert_eq!(poses.len(), 2);
+        assert!(poses.iter().all(|p| close(p.rigid, Mat4::IDENTITY)));
     }
 }

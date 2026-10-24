@@ -40,9 +40,11 @@ fn effective_part_gfx_obj_id(setup: &Setup, effective: Option<&[u32]>, index: us
     }
 }
 
-/// The setup's resting placement frame, else its default one, else its
-/// first.
-fn resolve_placement_frame(setup: &Setup) -> Option<&AnimationFrame> {
+/// The frame the parts rest in. A server object's parts collide in the
+/// placement they are drawn in: `placement`'s frame, else the default one,
+/// else none (every part at the object's origin). Without a placement (a
+/// static object), the resting frame, else the default one, else the first.
+fn resolve_placement_frame(setup: &Setup, placement: Option<u32>) -> Option<&AnimationFrame> {
     let find = |id: u32| {
         setup
             .placement_frames
@@ -50,6 +52,9 @@ fn resolve_placement_frame(setup: &Setup) -> Option<&AnimationFrame> {
             .find(|(k, _)| *k == id)
             .map(|(_, f)| f)
     };
+    if let Some(id) = placement {
+        return find(id).or_else(|| find(PLACEMENT_DEFAULT));
+    }
     find(PLACEMENT_RESTING)
         .or_else(|| find(PLACEMENT_DEFAULT))
         .or_else(|| setup.placement_frames.first().map(|(_, f)| f))
@@ -80,8 +85,9 @@ fn part_pose(
 ///
 /// When no part has a collision tree, the setup's cylinders (a zero height
 /// becomes four radii), else its spheres. Then one tree shape per part that
-/// has a collision tree, posed by `part_pose_override`, else the setup's
-/// resting (or default, or first) placement frame. `effective_part_ids`
+/// has a collision tree, posed by `part_pose_override`, else the frame of
+/// `placement` (a server object, the placement it is drawn in), else the
+/// setup's resting (or default, or first) frame. `effective_part_ids`
 /// replaces part models (appearance swaps). `physics_bsp_bounds` gives a
 /// part's geometry; without it a part is a 2 m sphere at its origin.
 #[must_use]
@@ -92,6 +98,7 @@ pub fn from_setup(
     part_pose_override: Option<&[Frame]>,
     effective_part_ids: Option<&[u32]>,
     physics_bsp_bounds: Option<&dyn Fn(u32) -> Option<ShadowPartGeometry>>,
+    placement: Option<u32>,
 ) -> Vec<ShadowShape> {
     let mut result = Vec::new();
 
@@ -135,7 +142,7 @@ pub fn from_setup(
         }
     }
 
-    let placement_frame = resolve_placement_frame(setup);
+    let placement_frame = resolve_placement_frame(setup, placement);
     for i in 0..setup.parts.len() {
         let gfx_id = effective_part_gfx_obj_id(setup, effective_part_ids, i);
         if !has_physics_bsp(gfx_id) {
@@ -241,9 +248,10 @@ pub fn from_setup_render_parts<'a>(
     part_pose_override: Option<&[Frame]>,
     get_gfx_obj: &dyn Fn(u32) -> Option<&'a GfxObjPhysics>,
     get_visual_bounds: &dyn Fn(u32) -> Option<VisualBounds>,
+    placement: Option<u32>,
 ) -> Vec<ShadowShape> {
     let mut shapes = Vec::with_capacity(setup.parts.len());
-    let placement_frame = resolve_placement_frame(setup);
+    let placement_frame = resolve_placement_frame(setup, placement);
     for i in 0..setup.parts.len() {
         let gfx_id = effective_part_gfx_obj_id(setup, effective_part_ids, i);
         let physics = get_gfx_obj(gfx_id);

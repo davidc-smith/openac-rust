@@ -271,6 +271,7 @@ fn view_shape(view: &ObjectView) -> Option<ServerObjectShape> {
             .map(|c| (usize::from(c.part_index), c.new_model_id))
             .collect(),
         motion_table_id: view.motion_table_id,
+        placement: view.rest_placement,
         flags: server_object_flags(
             Some(view.radar.public_weenie_bitfield),
             view.radar.item_type == ItemType::CREATURE.bits(),
@@ -709,6 +710,7 @@ mod tests {
             }),
             parent: None,
             placement: None,
+            rest_placement: 0,
             scale: None,
             translucency: None,
             state: 0,
