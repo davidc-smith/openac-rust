@@ -15,6 +15,10 @@ use std::fmt;
 
 use roxmltree::Node as XmlNode;
 
+pub use flex_attrs::{FlexContainer, FlexItem};
+
+mod flex_attrs;
+
 use crate::value::{
     BindingKind, BindingSchema, Rgba, UiValue, bound_color, parse_bool, parse_color, parse_float,
     parse_hex, parse_int,
@@ -474,6 +478,12 @@ pub enum Element {
         background: Option<ColorSource>,
         /// One-pixel border (none when absent).
         border: Option<ColorSource>,
+        /// `layout`: it places its children with flex.
+        layout: Option<FlexContainer>,
+        /// `scroll` includes x.
+        scroll_x: bool,
+        /// `scroll` includes y.
+        scroll_y: bool,
     },
     /// A bar filled to a share.
     Meter {
@@ -816,6 +826,8 @@ pub struct Node {
     pub parent: Option<usize>,
     /// Its children (groups, expanders and splits), in order.
     pub children: Vec<usize>,
+    /// Its flex item attributes, when its parent is a flex container.
+    pub flex: Option<FlexItem>,
 }
 
 /// The `<panel>` root's own attributes.
@@ -839,6 +851,32 @@ pub struct PanelSpec {
     pub title: Option<String>,
     /// `theme="plugin"`: follows the player's plugin theme.
     pub themed: bool,
+    /// `layout`: the content area is a flex container.
+    pub layout: Option<FlexContainer>,
+    /// The host title bar (`titlebar`, else on exactly with `layout`).
+    pub title_bar: bool,
+    /// `scroll` includes x (only with a content area).
+    pub scroll_x: bool,
+    /// `scroll` includes y (only with a content area).
+    pub scroll_y: bool,
+    /// A layout root's authored content size (`w`, `h`); `None` leaves it
+    /// to the content.
+    pub authored_size: (Option<f32>, Option<f32>),
+    /// A layout root's authored content minimums (`minw`, `minh`).
+    pub authored_min: (Option<f32>, Option<f32>),
+    /// The revision the window's saved geometry is kept under: from the
+    /// authored geometry attributes for a window with a content area, 0
+    /// otherwise.
+    pub geometry_revision: i32,
+}
+
+impl PanelSpec {
+    /// A window with chrome or a flex layout has a content area: its
+    /// authored sizes are the area inside the border (and title bar).
+    #[must_use]
+    pub fn has_content_area(&self) -> bool {
+        self.layout.is_some() || self.title_bar
+    }
 }
 
 /// A parsed, checked panel.
@@ -850,6 +888,9 @@ pub struct MarkupDocument {
     pub nodes: Vec<Node>,
     /// The root's children.
     pub roots: Vec<usize>,
+    /// What the build ignored, one line each: flex attributes on markup
+    /// that does not use flex, which older builds ignored silently.
+    pub warnings: Vec<String>,
 }
 
 impl MarkupDocument {
@@ -920,20 +961,105 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
         doc: MarkupDocument::default(),
     };
     let resizable = b(root, "resizable", false);
+    // A window with chrome or a flex layout has a content area: its
+    // authored sizes are the area inside the border (and title bar), and
+    // the frame adds the chrome. A root with layout gets the title bar by
+    // default.
+    let mut warnings = Vec::new();
+    let has_layout = flex_attrs::is_container(root, &mut warnings);
+    let title_bar = match attr(root, "titlebar") {
+        None => has_layout,
+        Some("false") => false,
+        Some("true") => true,
+        Some(other) => {
+            warnings.push(flex_attrs::ignored(
+                root,
+                "titlebar",
+                other,
+                "must be true or false",
+            ));
+            has_layout
+        }
+    };
+    let content_area = has_layout || title_bar;
+    let (mut scroll_x, mut scroll_y) = flex_attrs::scroll(root, &mut warnings);
+    if (scroll_x || scroll_y) && !content_area {
+        warnings.push(flex_attrs::ignored(
+            root,
+            "scroll",
+            attr(root, "scroll").unwrap_or_default(),
+            "scrolls the window's content area, which needs layout=\"row|column\" or titlebar=\"true\" on the panel",
+        ));
+        (scroll_x, scroll_y) = (false, false);
+    }
+    let chrome_w = if content_area {
+        crate::chrome::HORIZONTAL_INSETS
+    } else {
+        0.0
+    };
+    let chrome_h = if content_area {
+        crate::chrome::vertical_insets_for(title_bar)
+    } else {
+        0.0
+    };
+    if !has_layout {
+        flex_attrs::reject_container(root, &mut warnings);
+    }
+    let layout = if has_layout {
+        Some(flex_attrs::read_container(root)?)
+    } else {
+        None
+    };
+    // A layout root may leave its size to its content; it is measured once
+    // its children exist (by the window), so these are provisional for it.
+    let (authored_w, authored_h, authored_min_w, authored_min_h) = if has_layout {
+        (
+            flex_attrs::root_size(root, "w")?,
+            flex_attrs::root_size(root, "h")?,
+            flex_attrs::root_size(root, "minw")?,
+            flex_attrs::root_size(root, "minh")?,
+        )
+    } else {
+        (Some(f(root, "w")), Some(f(root, "h")), None, None)
+    };
+    let content_w = authored_w.unwrap_or(0.0);
+    let content_h = authored_h.unwrap_or(0.0);
     let rect = Rect {
         x: f(root, "x"),
         y: f(root, "y"),
-        w: f(root, "w"),
-        h: f(root, "h"),
+        w: content_w + chrome_w,
+        h: content_h + chrome_h,
+    };
+    let min_width = if content_area {
+        crate::chrome::frame_minimum_width(f_or(root, "minw", content_w), title_bar)
+    } else {
+        f_or(root, "minw", content_w)
     };
     let mut panel = PanelSpec {
         rect,
         resizable,
-        min_width: f_or(root, "minw", rect.w),
-        min_height: f_or(root, "minh", rect.h),
+        min_width,
+        min_height: f_or(root, "minh", content_h) + chrome_h,
         resize_x: resizable,
         resize_y: resizable,
         themed: attr(root, "theme") == Some("plugin"),
+        layout,
+        title_bar,
+        scroll_x,
+        scroll_y,
+        authored_size: if has_layout {
+            (authored_w, authored_h)
+        } else {
+            (None, None)
+        },
+        authored_min: (authored_min_w, authored_min_h),
+        geometry_revision: if content_area {
+            crate::chrome::authored_geometry_revision(&crate::chrome::authored_inputs(|n| {
+                attr(root, n)
+            }))
+        } else {
+            0
+        },
         ..PanelSpec::default()
     };
     if let Some(resize) = attr(root, "resize") {
@@ -956,6 +1082,7 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
     parser.doc.panel = panel;
+    parser.doc.warnings = warnings;
     for child in root.children().filter(XmlNode::is_element) {
         let index = parser.element(child, None)?;
         parser.doc.roots.push(index);
@@ -1985,6 +2112,7 @@ impl Parser<'_> {
             rect,
             parent,
             children: Vec::new(),
+            flex: None,
         });
         if let Some(p) = parent {
             self.doc.nodes[p].children.push(index);
@@ -1992,15 +2120,33 @@ impl Parser<'_> {
         index
     }
 
-    /// Builds `el` and its children, then its `<contextmenu>`.
+    /// Builds `el` and its children, then its `<contextmenu>`. Under a flex
+    /// container its item attributes are read; elsewhere a stray one is
+    /// reported and ignored.
     fn element(
         &mut self,
         el: XmlNode<'_, '_>,
         parent: Option<usize>,
     ) -> Result<usize, MarkupError> {
+        let flex_parent = match parent {
+            None => self.doc.panel.layout.is_some(),
+            Some(p) => matches!(
+                self.doc.nodes[p].element,
+                Element::Group {
+                    layout: Some(_),
+                    ..
+                }
+            ),
+        };
+        if !flex_parent {
+            flex_attrs::reject_item(el, &mut self.doc.warnings);
+        }
         let index = self.element_inner(el, parent)?;
         let menu = self.context_menu(el)?;
         self.doc.nodes[index].common.context_menu = menu;
+        if flex_parent {
+            self.doc.nodes[index].flex = Some(flex_attrs::read_item(el)?);
+        }
         Ok(index)
     }
 
@@ -2026,9 +2172,22 @@ impl Parser<'_> {
             "group" => {
                 let background = self.color(attr(el, "background"))?;
                 let border = self.color(attr(el, "border"))?;
+                let (scroll_x, scroll_y) = flex_attrs::scroll(el, &mut self.doc.warnings);
+                let layout = if flex_attrs::is_container(el, &mut self.doc.warnings) {
+                    Some(flex_attrs::read_container(el)?)
+                } else {
+                    flex_attrs::reject_container(el, &mut self.doc.warnings);
+                    None
+                };
                 let common = self.common(el)?;
                 let index = self.push(
-                    Element::Group { background, border },
+                    Element::Group {
+                        background,
+                        border,
+                        layout,
+                        scroll_x,
+                        scroll_y,
+                    },
                     common,
                     rect(el),
                     parent,

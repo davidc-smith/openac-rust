@@ -13,8 +13,10 @@
 //! state, the plugin host (`ac-plugin`) translates the plugins' calls, and
 //! the window (`ac-ui`, `ac-render`) draws the copy.
 
+pub mod chrome;
 pub mod color;
 pub mod control_state;
+pub mod flex;
 pub mod hotkeys;
 pub mod images;
 pub mod list;

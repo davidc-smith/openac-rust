@@ -342,6 +342,9 @@ impl Widget for MarkupExpander {
     }
 }
 
+/// Where an expander header's caption starts: after the arrow.
+pub const CAPTION_X: f32 = 14.0;
+
 /// An expander's header: an arrow and caption that toggles its expander on
 /// a press and release over it, or Enter/Space while focused (OpenAC
 /// `UiMarkupExpanderHeader`).
@@ -452,7 +455,7 @@ impl Widget for ExpanderHeader {
             rc.string_dat(
                 font,
                 &self.text,
-                14.0,
+                CAPTION_X,
                 y,
                 fade(self.color, is_live),
                 self.palette.is_none(),

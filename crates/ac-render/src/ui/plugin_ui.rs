@@ -658,11 +658,23 @@ impl WindowUi {
             )
             .with_modern_font(self.plugins.modern_font.clone())
             .with_title_color(&mut self.host.root, self.plugins.title_color());
+            for warning in controller.warnings() {
+                self.notices.push(format!(
+                    "ui: plugin window {}: {warning}",
+                    controller.window_name
+                ));
+            }
             let frame = controller.root;
             let name = controller.window_name.clone();
+            let revision = controller.geometry_revision();
+            let content = controller.content_root().unwrap_or(frame);
             let top = self.host.root.root();
             self.host.root.add_child(top, frame);
-            if let Err(e) = self.host.root.register_window(&name, frame, Some(frame), 0) {
+            if let Err(e) = self
+                .host
+                .root
+                .register_window(&name, frame, Some(content), revision)
+            {
                 self.notices
                     .push(format!("ui: plugin window {name}: {e:?}"));
                 self.host.root.destroy(frame);

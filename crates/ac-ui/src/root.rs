@@ -668,7 +668,13 @@ impl UiRoot {
             };
             x += n.element.left;
             y += n.element.top;
+            let chrome = n.element.scroll_chrome;
             cur = n.links.parent;
+            if let Some(p) = cur.and_then(|p| self.element(p)) {
+                let (ox, oy) = scroll_offset_for(p, chrome);
+                x -= ox;
+                y -= oy;
+            }
         }
         (x, y)
     }
@@ -1520,13 +1526,30 @@ impl UiRoot {
         }
         if !rc.current_clip_is_empty() {
             widget.draw(self, id, rc);
-            let (w, h) = self.element(id).map_or((0.0, 0.0), |e| (e.width, e.height));
-            for child in self.children(id) {
-                self.apply_anchor(child, w, h);
+            if !widget.layout_children(self, id) {
+                let (w, h) = self.element(id).map_or((0.0, 0.0), |e| (e.width, e.height));
+                for child in self.children(id) {
+                    self.apply_anchor(child, w, h);
+                }
             }
+            let scroll = self
+                .element(id)
+                .and_then(|e| e.content_viewport.map(|v| (v, e.content_offset)));
             let order = self.back_to_front(id);
             for &child in order.iter() {
-                self.draw_tree(child, rc);
+                let chrome = self.element(child).is_some_and(|e| e.scroll_chrome);
+                match scroll {
+                    // A scrolled child: clipped to the viewport, moved by
+                    // the offset.
+                    Some(((vw, vh), (ox, oy))) if !chrome => {
+                        rc.push_clip(0.0, 0.0, vw, vh);
+                        rc.push_transform(-ox, -oy);
+                        self.draw_tree(child, rc);
+                        rc.pop_transform();
+                        rc.pop_clip();
+                    }
+                    _ => self.draw_tree(child, rc),
+                }
             }
             widget.draw_after_children(self, id, rc);
             if self.window_blocks.contains_key(&id) {
@@ -1576,9 +1599,20 @@ impl UiRoot {
             if clips {
                 rc.push_clip(0.0, 0.0, w, h);
             }
+            let offset = self
+                .element(id)
+                .and_then(|e| e.content_viewport.map(|_| e.content_offset));
             let order = self.back_to_front(id);
             for &child in order.iter() {
-                self.draw_overlays(child, rc);
+                let chrome = self.element(child).is_some_and(|e| e.scroll_chrome);
+                match offset {
+                    Some((ox, oy)) if !chrome => {
+                        rc.push_transform(-ox, -oy);
+                        self.draw_overlays(child, rc);
+                        rc.pop_transform();
+                    }
+                    _ => self.draw_overlays(child, rc),
+                }
             }
             if clips {
                 rc.pop_clip();
@@ -1604,13 +1638,26 @@ impl UiRoot {
         if clips && !e.contains_local(x, y) {
             return None;
         }
+        let scroll = e.content_viewport.map(|v| (v, e.content_offset));
         if !node.links.children.is_empty() {
             for child in self.front_to_back(id) {
                 let Some(c) = self.element(child) else {
                     continue;
                 };
                 let (cl, ct) = (c.left, c.top);
-                if let Some(hit) = self.hit_test(child, x - cl, y - ct) {
+                let (mut cx, mut cy) = (x, y);
+                if let Some(((vw, vh), (ox, oy))) = scroll
+                    && !c.scroll_chrome
+                {
+                    // Scrolled children are only reachable through the
+                    // viewport.
+                    if cx < 0.0 || cy < 0.0 || cx >= vw || cy >= vh {
+                        continue;
+                    }
+                    cx += ox;
+                    cy += oy;
+                }
+                if let Some(hit) = self.hit_test(child, cx - cl, cy - ct) {
                     return Some(hit);
                 }
             }
@@ -1918,6 +1965,7 @@ impl UiRoot {
         if let Some(n) = e {
             let ev = self.event_for(n, kind::FOCUS_GAINED);
             self.send_event(n, &ev);
+            self.reveal_in_scrolling_ancestors(n);
         }
         self.emit(UiOutput::FocusChanged {
             old: previous,
@@ -2243,6 +2291,9 @@ impl UiRoot {
             return;
         };
 
+        // Focus may scroll a scrolling ancestor to reveal the target; the
+        // press is reported where it landed, so read the position first.
+        let (sx, sy) = self.screen_position(target);
         if button == MouseButton::Left {
             let accepts = self
                 .element(target)
@@ -2335,7 +2386,6 @@ impl UiRoot {
             MouseButton::Right => kind::RIGHT_DOWN,
             MouseButton::Middle => kind::MIDDLE_DOWN,
         };
-        let (sx, sy) = self.screen_position(target);
         let ev = self.event_for(target, raw).with_data(
             flags as i32,
             (x as f32 - sx) as i32,
@@ -2431,8 +2481,77 @@ impl UiRoot {
         self.drag_candidate = false;
     }
 
-    /// The wheel turned by `dy` notches (positive up) at the pointer.
+    /// The wheel turned by `dy` notches (positive up) at the pointer: a
+    /// vertical step.
     pub fn on_scroll(&mut self, dy: i32) {
+        self.on_scroll_xy(0, dy, false);
+    }
+
+    /// A wheel event with its horizontal and vertical steps (each -1, 0 or
+    /// +1; +1 is left or up) and whether Shift was held. Shift turns a
+    /// vertical step into a horizontal one before routing. A vertical step
+    /// goes to the element under the pointer and up through its parents
+    /// until one takes it, else to the world. A horizontal step goes the
+    /// same way as [`kind::SCROLL_HORIZONTAL`], which only a group scrolling
+    /// horizontally takes; nothing passes it to the world. A Shift step
+    /// that nothing horizontal takes is routed as the vertical step it was;
+    /// so is a sideways step with Shift held (what macOS sends for Shift
+    /// with a mouse wheel).
+    ///
+    /// A step the interface takes may move content under the pointer, so
+    /// the hover is checked again; and taken anywhere but over an open
+    /// popup, it closes the popup, which may have scrolled away with its
+    /// group.
+    pub fn on_scroll_xy(&mut self, dx: i32, dy: i32, shift: bool) {
+        let (mx, my) = self.mouse;
+        let over_popup = self.popup_hit(mx, my).is_some();
+        let taken = if shift && dx == 0 && dy != 0 {
+            self.route_horizontal(dy) || self.route_vertical(dy)
+        } else if shift && dy == 0 && dx != 0 {
+            self.route_horizontal(dx) || self.route_vertical(dx)
+        } else {
+            let mut taken = false;
+            if dx != 0 {
+                taken |= self.route_horizontal(dx);
+            }
+            if dy != 0 {
+                taken |= self.route_vertical(dy);
+            }
+            taken
+        };
+        if !taken {
+            return;
+        }
+        if !over_popup && let Some((popup, owner)) = self.active_popup.take() {
+            self.dismiss_popup(popup, owner);
+        }
+        // As a move would: not while a resize, window drag or capture owns
+        // the pointer.
+        if self.resize.is_none() && self.window_drag.is_none() && self.captured.is_none() {
+            self.update_hover(mx, my);
+        }
+    }
+
+    fn route_horizontal(&mut self, dx: i32) -> bool {
+        let (mx, my) = self.mouse;
+        let popup = self.popup_hit(mx, my);
+        let Some(target) = popup.or_else(|| self.hit_test_top_down(mx, my).map(|h| h.0)) else {
+            return false;
+        };
+        if popup.is_none() && self.blocker_for(target).is_some() {
+            return false;
+        }
+        let (sx, sy) = self.screen_position(target);
+        let ev = self.event_for(target, kind::SCROLL_HORIZONTAL).with_data(
+            dx.signum(),
+            (mx as f32 - sx) as i32,
+            (my as f32 - sy) as i32,
+        );
+        self.bubble_event(target, &ev)
+    }
+
+    /// Routes a vertical step; true when the interface took it.
+    fn route_vertical(&mut self, dy: i32) -> bool {
         let (mx, my) = self.mouse;
         if let Some(popup_target) = self.popup_hit(mx, my) {
             let (px, py) = self.screen_position(popup_target);
@@ -2441,20 +2560,30 @@ impl UiRoot {
                 (mx as f32 - px) as i32,
                 (my as f32 - py) as i32,
             );
-            self.bubble_event(popup_target, &ev);
-            return;
+            return self.bubble_event(popup_target, &ev);
         }
         let Some((target, lx, ly)) = self.hit_test_top_down(mx, my) else {
             self.emit(UiOutput::WorldScroll { dy });
-            return;
+            return false;
         };
         if self.blocker_for(target).is_some() {
-            return;
+            // A window-modal dialog owns this window: the step goes nowhere.
+            return false;
         }
         let ev = self
             .event_for(target, kind::SCROLL)
             .with_data(dy, lx as i32, ly as i32);
-        self.bubble_event(target, &ev);
+        self.bubble_event(target, &ev)
+    }
+
+    /// Scrolls each scrolling ancestor of `id`, innermost first, just far
+    /// enough to show it.
+    fn reveal_in_scrolling_ancestors(&mut self, id: ElementId) {
+        let mut cur = self.parent(id);
+        while let Some(p) = cur {
+            self.with_widget(p, |w, ui| w.reveal(ui, p, id));
+            cur = self.parent(p);
+        }
     }
 
     // ── Keyboard input ──────────────────────────────────────────────────
@@ -2689,5 +2818,14 @@ impl UiRoot {
     #[must_use]
     pub fn anchors_for(left: u32, top: u32, right: u32, bottom: u32) -> AnchorEdges {
         crate::element_info::to_anchors(left, top, right, bottom)
+    }
+}
+
+/// How far `parent`'s scrolling moves a child: nothing for its scroll
+/// chrome or when it does not scroll.
+fn scroll_offset_for(parent: &Element, chrome: bool) -> (f32, f32) {
+    match parent.content_viewport {
+        Some(_) if !chrome => parent.content_offset,
+        _ => (0.0, 0.0),
     }
 }

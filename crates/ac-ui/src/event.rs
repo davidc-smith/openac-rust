@@ -22,6 +22,10 @@ pub mod kind {
     pub const DOUBLE_CLICK: i32 = 0x08;
     /// Mouse wheel; `data0` is the wheel delta (positive up).
     pub const SCROLL: i32 = 0x0A;
+    /// A horizontal wheel step (a sideways swipe, a tilt wheel, or Shift
+    /// with the wheel); `data0` is +1 toward the start (left), -1 toward
+    /// the end.
+    pub const SCROLL_HORIZONTAL: i32 = 0x0B;
     /// A completed right click.
     pub const RIGHT_CLICK: i32 = 0x0E;
     /// A drag began from this element.

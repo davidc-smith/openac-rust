@@ -470,6 +470,22 @@ impl Scrollbar {
         }
     }
 
+    fn draw_plain_model(&self, m: &Scrollable, w: f32, h: f32, rc: &mut RenderContext<'_>) {
+        rc.fill(0.0, 0.0, w, h, self.plain_track_color);
+        rc.rect_outline(0.0, 0.0, w, h, self.plain_border_color, 1.0);
+        if self.horizontal {
+            let start = axis_extent(self.decrement_button_extent, w);
+            let len = (w - start - axis_extent(self.increment_button_extent, w)).max(0.0);
+            let (tx, tw) = self.model_thumb_rect(m, start, len);
+            rc.fill(tx, 3.0, tw, (h - 6.0).max(0.0), self.plain_nub_color);
+        } else {
+            let start = axis_extent(self.decrement_button_extent, h);
+            let len = (h - start - axis_extent(self.increment_button_extent, h)).max(0.0);
+            let (ty, th) = self.model_thumb_rect(m, start, len);
+            rc.fill(3.0, ty, (w - 6.0).max(0.0), th, self.plain_nub_color);
+        }
+    }
+
     fn draw_plain_scalar(&self, w: f32, h: f32, rc: &mut RenderContext<'_>) {
         rc.fill(0.0, 0.0, w, h, self.plain_track_color);
         rc.rect_outline(0.0, 0.0, w, h, self.plain_border_color, 1.0);
@@ -854,7 +870,12 @@ impl Widget for Scrollbar {
             return;
         }
         if !self.retail_art {
-            self.draw_plain_scalar(w, h, rc);
+            // A model-backed bar (a scrolling group, a log) has no scalar
+            // position: its thumb goes where the model puts it, flat, inset 3.
+            match model {
+                Some(m) if !self.scalar => self.draw_plain_model(&m, w, h, rc),
+                _ => self.draw_plain_scalar(w, h, rc),
+            }
             return;
         }
         if self.scalar {

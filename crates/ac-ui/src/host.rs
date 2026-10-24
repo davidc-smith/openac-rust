@@ -423,6 +423,13 @@ impl UiHost {
         self.pump();
     }
 
+    /// Wheel turned on either axis (each step -1, 0 or +1; +1 is left or
+    /// up), with Shift held or not.
+    pub fn scroll_xy(&mut self, dx: i32, dy: i32, shift: bool) {
+        self.root.on_scroll_xy(dx, dy, shift);
+        self.pump();
+    }
+
     /// Key down.
     pub fn key_down(&mut self, key: Key, modifiers: Modifiers) {
         self.root.on_key_down(key, modifiers);

@@ -171,26 +171,57 @@ pub fn moved<K>(ui: &mut UiHost, x: i32, y: i32, mouse_look: bool) -> Routed<K> 
     Routed::new(fell.then_some(WorldInput::Moved), outputs)
 }
 
-/// The wheel turned `notches` (positive away from the user; a touchpad
-/// gives fractions).
-pub fn wheel<K>(ui: &mut UiHost, notches: f32, mouse_look: bool) -> Routed<K> {
+/// The wheel turned: `(sideways, notches)`, sideways positive toward the
+/// left and notches positive away from the user (a touchpad gives
+/// fractions), with Shift held or not.
+pub fn wheel<K>(
+    ui: &mut UiHost,
+    (sideways, notches): (f32, f32),
+    shift: bool,
+    mouse_look: bool,
+) -> Routed<K> {
     if mouse_look {
         return Routed::new(Some(WorldInput::Wheel(notches)), Vec::new());
     }
-    // Each wheel event is one step in its direction, a small trackpad
-    // delta included.
-    let step = if notches > 0.0 {
-        1
-    } else if notches < 0.0 {
-        -1
-    } else {
+    // Each wheel event is one step in its direction on each axis, a small
+    // trackpad delta included. Trackpads add noise on the off axis, so only
+    // the dominant axis counts.
+    let (mut x, mut y) = (sideways, notches);
+    if x != 0.0 && y != 0.0 {
+        if x.abs() >= y.abs() {
+            y = 0.0;
+        } else {
+            x = 0.0;
+        }
+    }
+    let step = |v: f32| {
+        if v > 0.0 {
+            1
+        } else if v < 0.0 {
+            -1
+        } else {
+            0
+        }
+    };
+    let (dx, dy) = (step(x), step(y));
+    if dx == 0 && dy == 0 {
         let over_ui = ui.root.wants_mouse();
         return Routed::new((!over_ui).then_some(WorldInput::Wheel(notches)), Vec::new());
-    };
-    ui.scroll(step);
+    }
+    ui.scroll_xy(dx, dy, shift);
     let mut outputs = ui.take_outputs();
-    let fell = fell_through(&mut outputs, |o| matches!(o, UiOutput::WorldScroll { .. }));
-    Routed::new(fell.then_some(WorldInput::Wheel(notches)), outputs)
+    let mut fell_dy = None;
+    outputs.retain(|o| match o {
+        UiOutput::WorldScroll { dy } => {
+            fell_dy = Some(*dy);
+            false
+        }
+        _ => true,
+    });
+    // A step nothing took reaches the world as the vertical step it was
+    // routed as (a Shift sideways tick routes as one).
+    let world = fell_dy.map(|d| WorldInput::Wheel(if y != 0.0 { y } else { d as f32 }));
+    Routed::new(world, outputs)
 }
 
 #[cfg(test)]
@@ -332,7 +363,7 @@ mod tests {
         let r: Routed<u32> = moved(&mut ui, 20, 20, true);
         assert_eq!(r.world, Some(WorldInput::Moved));
         assert_eq!(ui.root.mouse(), (0, 0), "the UI saw no move");
-        let r: Routed<u32> = wheel(&mut ui, 1.0, true);
+        let r: Routed<u32> = wheel(&mut ui, (0.0, 1.0), false, true);
         assert_eq!(r.world, Some(WorldInput::Wheel(1.0)));
     }
 
@@ -340,12 +371,12 @@ mod tests {
     fn the_wheel_over_the_world_zooms_and_a_fraction_goes_by_the_pointer() {
         let (mut ui, _) = host();
         let _: Routed<u32> = moved(&mut ui, 80, 80, false);
-        let r: Routed<u32> = wheel(&mut ui, -1.0, false);
+        let r: Routed<u32> = wheel(&mut ui, (0.0, -1.0), false, false);
         assert_eq!(r.world, Some(WorldInput::Wheel(-1.0)));
-        let r: Routed<u32> = wheel(&mut ui, 0.25, false);
+        let r: Routed<u32> = wheel(&mut ui, (0.0, 0.25), false, false);
         assert_eq!(r.world, Some(WorldInput::Wheel(0.25)));
         let _: Routed<u32> = moved(&mut ui, 20, 20, false);
-        let r: Routed<u32> = wheel(&mut ui, 0.25, false);
+        let r: Routed<u32> = wheel(&mut ui, (0.0, 0.25), false, false);
         assert_eq!(r.world, None, "a fraction over the UI is not the camera's");
     }
 
@@ -378,15 +409,15 @@ mod tests {
         use ac_ui::widgets::ItemList;
         for delta in [-0.01, -0.5, -1.0, -3.0] {
             let (mut ui, list) = eight_cell_list();
-            let r: Routed<u32> = wheel(&mut ui, delta, false);
+            let r: Routed<u32> = wheel(&mut ui, (0.0, delta), false, false);
             assert_eq!(r.world, None);
             let scroll = ui.root.widget::<ItemList>(list).unwrap().scroll.scroll_y();
             assert_eq!(scroll, 36, "{delta}");
         }
         for delta in [0.01, 0.5, 1.0, 3.0] {
             let (mut ui, list) = eight_cell_list();
-            let _: Routed<u32> = wheel(&mut ui, -3.0, false);
-            let _: Routed<u32> = wheel(&mut ui, delta, false);
+            let _: Routed<u32> = wheel(&mut ui, (0.0, -3.0), false, false);
+            let _: Routed<u32> = wheel(&mut ui, (0.0, delta), false, false);
             let scroll = ui.root.widget::<ItemList>(list).unwrap().scroll.scroll_y();
             assert_eq!(scroll, 0, "{delta}");
         }

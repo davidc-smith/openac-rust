@@ -202,13 +202,18 @@ fn enabled(ui: &UiRoot, me: ElementId) -> bool {
 }
 
 /// The outline a tab stop with keyboard focus draws.
-const KEYBOARD_FOCUS_OUTLINE: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
+pub(crate) const KEYBOARD_FOCUS_OUTLINE: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
 
 /// Keyboard focus on a tab stop (OpenAC `UiSimpleButton`/`UiMarkupToggle`
 /// with `TabStop`): gaining and losing it switch the outline, and Enter,
 /// keypad Enter or Space activates an enabled control. `Some(activate)`
 /// when the event was one of those, which the control takes.
-fn tab_stop_event(ui: &UiRoot, me: ElementId, e: &UiEvent, focused: &mut bool) -> Option<bool> {
+pub(crate) fn tab_stop_event(
+    ui: &UiRoot,
+    me: ElementId,
+    e: &UiEvent,
+    focused: &mut bool,
+) -> Option<bool> {
     if e.target != Some(me) || !ui.element(me).is_some_and(|el| el.tab_stop) {
         return None;
     }
@@ -242,6 +247,11 @@ pub struct MarkupLabel {
     pub outline: bool,
     /// The interface font.
     pub font: Option<Arc<UiFont>>,
+    /// Inside a flex container: its size comes from the layout, so it no
+    /// longer sizes itself to its text, its line is centred in the height
+    /// it is given, and text wider than that is cut short with "...".
+    pub sized_by_layout: bool,
+    shown: Option<(String, f32, usize, String)>,
 }
 
 impl MarkupLabel {
@@ -253,14 +263,53 @@ impl MarkupLabel {
             color: Color::WHITE,
             outline: true,
             font,
+            sized_by_layout: false,
+            shown: None,
         }
+    }
+
+    /// The text shortened to `width` with "...", measured as the layout
+    /// measures, so a label given its text's width keeps it all. Cached per
+    /// text, width and font.
+    pub fn fitted(&mut self, width: f32) -> String {
+        let font = self.font.as_ref().map_or(0, |f| Arc::as_ptr(f) as usize);
+        if let Some((text, w, f, shown)) = &self.shown
+            && *text == self.text
+            && *w == width
+            && *f == font
+        {
+            return shown.clone();
+        }
+        let measure_font = self.font.clone();
+        let shown = ac_plugin_ui::chrome::ellipsize(
+            &self.text,
+            |s| measure(measure_font.as_ref(), s).ceil(),
+            width,
+        );
+        self.shown = Some((self.text.clone(), width, font, shown.clone()));
+        shown
     }
 }
 
 impl Widget for MarkupLabel {
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
-        let w = measure(self.font.as_ref(), &self.text);
         let h = line_height(self.font.as_ref());
+        if self.sized_by_layout {
+            let (width, height) = size(ui, me);
+            let y = ((height - h) / 2.0 + 0.5).floor();
+            let shown = self.fitted(width);
+            text(
+                rc,
+                self.font.as_ref(),
+                &shown,
+                0.0,
+                y,
+                self.color,
+                self.outline,
+            );
+            return;
+        }
+        let w = measure(self.font.as_ref(), &self.text);
         if let Some(e) = ui.element_mut(me) {
             e.width = w;
             e.height = h;
@@ -1331,8 +1380,9 @@ impl Widget for MarkupList {
         let (w, h) = self.rows_size(ui, me);
         let visible = self.visible(h);
         let count = self.rows.len();
+        // A list with nothing to scroll leaves the wheel to the group around it.
         match e.kind {
-            kind::SCROLL => {
+            kind::SCROLL if count > visible => {
                 self.top = if e.data0 > 0 {
                     self.top.saturating_sub(1)
                 } else {
@@ -1785,7 +1835,9 @@ impl Widget for MarkupLog {
         let (w, h) = size(ui, me);
         self.refresh(w, h);
         match e.kind {
-            kind::SCROLL => {
+            // A log with nothing to scroll leaves the wheel to the group
+            // around it.
+            kind::SCROLL if self.scroll.has_overflow() => {
                 self.scroll.scroll_by_lines(-e.data0 * 3);
                 self.follow_end = self.scroll.at_end();
                 true

@@ -2178,15 +2178,18 @@ impl AttachedWindow {
         self.input.mouse_look() || self.gameplay.mouse_look_active()
     }
 
-    /// The wheel turned `notches` (positive away from the user): the UI's
-    /// over a window, else the gameplay dispatcher's scroll (the camera
+    /// The wheel turned `notches` (positive away from the user) and
+    /// `sideways` (positive toward the left): the UI's over a window (Shift
+    /// turns it sideways), else the gameplay dispatcher's scroll (the camera
     /// zooms; toward the user zooms out).
-    pub(crate) fn wheel(&mut self, notches: f32) {
+    pub(crate) fn wheel(&mut self, sideways: f32, notches: f32) {
         let mouse_look = self.cursor_held();
+        let shift = self.modifiers.shift_key();
         let routed = match self.ui.as_mut() {
             Some(ui) if self.input.is_accepting() => Some(ui_input::wheel::<KeyCode>(
                 ui.host_mut(),
-                notches,
+                (sideways, notches),
+                shift,
                 mouse_look,
             )),
             _ => None,
