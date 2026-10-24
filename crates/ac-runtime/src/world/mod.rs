@@ -718,13 +718,29 @@ impl World {
     }
 
     fn apply_update_object(&mut self, update: &CreateObject) {
-        // A re-sent description (an icon underlay a rend adds, a revealed
-        // Aetheria) refreshes the item record, taking it as any description
-        // is taken; it never puts an object in the world.
-        if let Some(key) = self.objects.get(&update.guid).map(WorldObject::key) {
-            self.changes.push(WorldChange::Refreshed(key));
-        }
+        // A re-sent description of an object held deletes it and creates it
+        // again from the whole new description, whatever instance it
+        // carries: its setup, physics state, parent and position (a house
+        // hook given an item takes the item's setup and loses its no-draw
+        // bit). The item record is taken as any description is taken (an
+        // icon underlay a rend adds, a revealed Aetheria), keeping what was
+        // learned about it. One not held only refreshes the item record; it
+        // never puts an object in the world.
+        let Some(existing) = self.objects.get_mut(&update.guid) else {
+            self.ingest_description(update);
+            return;
+        };
+        let stamps = timestamps(update);
+        existing.gate.seed_for_replacement(stamps);
+        let gate = existing.gate.clone();
+        // The old incarnation's relations end with it.
+        self.attachments
+            .end_generation(update.guid, stamps.instance);
+        self.insert(update, gate, true);
         self.ingest_description(update);
+        self.queue_notes
+            .push(liveness::QueueNote::Spawned(update.guid));
+        self.attach_after_spawn(update);
     }
 
     fn apply_delete(&mut self, delete: &DeleteObject) {

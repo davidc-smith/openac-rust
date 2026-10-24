@@ -96,18 +96,118 @@ fn update_object_republishes_the_item_with_its_new_underlay() {
         Some(REND_UNDERLAY),
     ))));
 
+    // The held object is created again from the description (same
+    // incarnation, same identity); its item record is updated, not added.
     let key = world.object(ITEM).unwrap().key();
     let changes: Vec<_> = world.drain_changes().collect();
     assert_eq!(
         changes,
         [
-            WorldChange::Refreshed(key),
+            WorldChange::Respawned(key),
             WorldChange::Item(ItemChange::Updated(ITEM))
         ]
     );
     assert_eq!(world.item(ITEM).unwrap().icon_underlay_id, REND_UNDERLAY);
-    // The physics record keeps its incarnation and its place.
-    assert_eq!(world.object(ITEM).unwrap().key(), key);
+}
+
+// --- A re-sent description re-creates a held object --------------------
+//
+// OpenAC `LiveEntityHydrationControllerTests.DescriptionRefresh_*` and
+// `HeadlessSessionIsolationTests.ResentDescriptionRecreatesTheObjectWhereItNowSays`.
+
+const HOOK: u32 = 0x7000_0050;
+const NO_DRAW: u32 = 0x20;
+const ETHEREAL: u32 = 0x4;
+
+fn hook_description(instance: u16, setup_id: u32, state: u32, x: f32) -> CreateObject {
+    let Inbound::CreateObject(create) =
+        create(HOOK, stamps(instance, 1), Some(position(0x0101_0001, x)))
+    else {
+        unreachable!()
+    };
+    let mut desc = *create;
+    desc.physics.setup_id = Some(setup_id);
+    desc.physics.state = state;
+    desc
+}
+
+#[test]
+fn a_resent_description_recreates_the_object_with_its_new_physics_state() {
+    // DescriptionRefresh_RecreatesTheObjectWithItsNewPhysicsState: a hook
+    // hidden with no-draw is given an item.
+    let mut world = World::new();
+    world.apply(&Inbound::CreateObject(Box::new(hook_description(
+        1,
+        0x0200_0001,
+        NO_DRAW | ETHEREAL,
+        1.0,
+    ))));
+    world.drain_changes().for_each(drop);
+
+    world.apply(&Inbound::UpdateObject(Box::new(hook_description(
+        1,
+        0x0200_0002,
+        ETHEREAL,
+        2.0,
+    ))));
+
+    let object = world.object(HOOK).unwrap();
+    assert_eq!(object.physics().setup_id, Some(0x0200_0002));
+    assert_eq!(object.physics().state & NO_DRAW, 0);
+    assert_ne!(object.physics().state & ETHEREAL, 0);
+    assert_eq!(object.position().unwrap().origin.x, 2.0);
+    let key = object.key();
+    assert!(
+        world
+            .drain_changes()
+            .any(|c| c == WorldChange::Respawned(key))
+    );
+}
+
+#[test]
+fn a_resent_description_from_another_generation_is_taken() {
+    // DescriptionRefresh_FromAnotherGeneration_IsTaken.
+    let mut world = World::new();
+    world.apply(&Inbound::CreateObject(Box::new(hook_description(
+        2,
+        0x0200_0001,
+        0,
+        1.0,
+    ))));
+    world.apply(&Inbound::UpdateObject(Box::new(hook_description(
+        1,
+        0x0200_0002,
+        0,
+        1.0,
+    ))));
+
+    let object = world.object(HOOK).unwrap();
+    assert_eq!(object.key().incarnation, 1);
+    assert_eq!(object.physics().setup_id, Some(0x0200_0002));
+}
+
+#[test]
+fn a_repeated_resent_description_recreates_each_time() {
+    // DescriptionRefresh_Repeated_RecreatesEachTime.
+    let mut world = World::new();
+    world.apply(&Inbound::CreateObject(Box::new(hook_description(
+        1,
+        0x0200_0001,
+        0,
+        1.0,
+    ))));
+    world.drain_changes().for_each(drop);
+    for setup in [0x0200_0002, 0x0200_0003] {
+        world.apply(&Inbound::UpdateObject(Box::new(hook_description(
+            1, setup, 0, 1.0,
+        ))));
+    }
+
+    assert_eq!(
+        world.object(HOOK).unwrap().physics().setup_id,
+        Some(0x0200_0003)
+    );
+    assert_eq!(spawns(&mut world), 2);
 }
 
 #[test]

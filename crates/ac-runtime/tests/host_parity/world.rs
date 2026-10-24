@@ -240,7 +240,10 @@ pub fn carried_items() -> Vec<Vec<u8>> {
         )
     };
     vec![
-        player_with_room(10, 2).build_update(),
+        // The character described again at the same incarnation: its item
+        // record takes the room. (A re-sent description would create the
+        // character anew, as the original client does.)
+        player_with_room(10, 2).build(),
         kit.build(),
         side_pack.build(),
         tool.build(),
@@ -283,7 +286,7 @@ pub fn stage_a_full_inventory_over_a_stack(arm: &mut Arm) {
     let mut messages = carried_items();
     // Room for exactly what is staged: five things and one pack in the
     // main pack, one thing in the side pack.
-    messages[0] = player_with_room(5, 1).build_update();
+    messages[0] = player_with_room(5, 1).build();
     for message in messages {
         arm.server.send(&message);
     }
