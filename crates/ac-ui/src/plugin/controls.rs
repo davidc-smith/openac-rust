@@ -5,6 +5,8 @@
 //! into the plugin outbox; the plugin stores it and the control shows the
 //! value the session pushes back.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ac_plugin_ui::number::{Dec, NumberSpec};
@@ -19,22 +21,54 @@ use crate::widgets::Field;
 
 use super::{Palette, PluginOutbox};
 
-/// Where a control's handlers go: its panel and the outbox.
+/// Where a control's handlers go: its panel and the outbox, and for a
+/// control in a `<repeat>` row the row's steps its handlers are named after
+/// ([`ac_plugin_ui::row`]), which the window keeps current as rows move.
 #[derive(Debug, Clone)]
 pub struct Emit {
     /// The panel.
     pub panel: u32,
     /// The plugin outbox.
     pub outbox: PluginOutbox,
+    row: Option<Rc<RefCell<String>>>,
 }
 
 impl Emit {
+    /// A window control's.
+    #[must_use]
+    pub fn new(panel: u32, outbox: PluginOutbox) -> Self {
+        Self {
+            panel,
+            outbox,
+            row: None,
+        }
+    }
+
+    /// A row control's: its handlers are named after `row`'s text.
+    #[must_use]
+    pub fn row(panel: u32, outbox: PluginOutbox, row: Rc<RefCell<String>>) -> Self {
+        Self {
+            panel,
+            outbox,
+            row: Some(row),
+        }
+    }
+
+    /// The name `handler` reaches the plugin as.
+    #[must_use]
+    pub fn handler_name(&self, handler: &str) -> String {
+        match &self.row {
+            Some(row) => format!("{}{handler}", row.borrow()),
+            None => handler.to_owned(),
+        }
+    }
+
     /// Fires `handler` (when bound) with `value`.
     pub fn act(&self, handler: Option<&str>, value: ActionValue) {
         if let Some(handler) = handler {
             self.outbox.borrow_mut().push(UiInput::Action {
                 panel: self.panel,
-                handler: handler.to_owned(),
+                handler: self.handler_name(handler),
                 value,
             });
         }

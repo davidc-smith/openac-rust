@@ -26,6 +26,8 @@ struct Item {
     element: ElementId,
     /// Its markup element.
     markup: usize,
+    /// The nested container it is in (`None`: the root).
+    parent: Option<usize>,
     /// Its node in the tree.
     node: usize,
     /// A nested container's own items; empty for a leaf.
@@ -65,6 +67,10 @@ pub struct FlexBox {
     minimum_changed: Option<FlexSize>,
     /// Leaf measurements made, for the cost tests.
     pub measure_count: usize,
+    /// Item slots of removed items, reused by the next add.
+    free_items: Vec<usize>,
+    /// Tree node slots of removed items, reused by the next add.
+    free_nodes: Vec<usize>,
 }
 
 impl FlexBox {
@@ -84,6 +90,8 @@ impl FlexBox {
             minimum: FlexSize::default(),
             minimum_changed: None,
             measure_count: 0,
+            free_items: Vec::new(),
+            free_nodes: Vec::new(),
         }
     }
 
@@ -119,23 +127,98 @@ impl FlexBox {
         authored: Option<FlexMeasurement>,
     ) -> usize {
         let parent_node = parent.map_or(self.root, |p| self.items[p].node);
-        let node = self.tree.add_child(parent_node, node);
-        let index = self.items.len();
-        self.items.push(Item {
+        let node = match self.free_nodes.pop() {
+            Some(slot) => {
+                self.tree.nodes[slot] = node;
+                self.tree.nodes[parent_node].children.push(slot);
+                slot
+            }
+            None => self.tree.add_child(parent_node, node),
+        };
+        let item = Item {
             element,
             markup,
+            parent,
             node,
             children: Vec::new(),
             inner,
             authored,
             measured: None,
             expander: None,
-        });
+        };
+        let index = match self.free_items.pop() {
+            Some(slot) => {
+                self.items[slot] = item;
+                slot
+            }
+            None => {
+                self.items.push(item);
+                self.items.len() - 1
+            }
+        };
         match parent {
             Some(p) => self.items[p].children.push(index),
             None => self.top.push(index),
         }
+        // An item added after the first layout is laid out on the next.
+        self.laid = None;
         index
+    }
+
+    /// Takes item `item` and everything nested in it out of the layout
+    /// (OpenAC `UiFlexBox.Remove`); the next draw lays the rest out again.
+    /// Its slots are reused by later adds.
+    pub fn remove(&mut self, item: usize) {
+        let parent = self.items[item].parent;
+        let node = self.items[item].node;
+        let parent_node = parent.map_or(self.root, |p| self.items[p].node);
+        match parent {
+            Some(p) => self.items[p].children.retain(|&c| c != item),
+            None => self.top.retain(|&c| c != item),
+        }
+        self.tree.nodes[parent_node].children.retain(|&c| c != node);
+        self.free(item);
+        self.laid = None;
+    }
+
+    fn free(&mut self, item: usize) {
+        for child in std::mem::take(&mut self.items[item].children) {
+            self.free(child);
+        }
+        let node = self.items[item].node;
+        self.tree.nodes[node].children.clear();
+        self.items[item].measured = None;
+        self.free_nodes.push(node);
+        self.free_items.push(item);
+    }
+
+    /// Puts the items of `parent` (an item that is a nested container, or
+    /// the root for `None`) in the order `rank` gives their elements (equal
+    /// ranks keep their order), as the container's children stand after a
+    /// `<repeat>` moved its rows (OpenAC `UiFlexBox.Move`).
+    pub fn order_by(&mut self, parent: Option<usize>, rank: impl Fn(ElementId) -> usize) {
+        let mut list = match parent {
+            Some(p) => std::mem::take(&mut self.items[p].children),
+            None => std::mem::take(&mut self.top),
+        };
+        list.sort_by_key(|&i| rank(self.items[i].element));
+        let parent_node = parent.map_or(self.root, |p| self.items[p].node);
+        self.tree.nodes[parent_node].children = list.iter().map(|&i| self.items[i].node).collect();
+        match parent {
+            Some(p) => self.items[p].children = list,
+            None => self.top = list,
+        }
+        self.laid = None;
+    }
+
+    /// The elements of `parent`'s items, in layout order.
+    #[must_use]
+    pub fn elements(&self, parent: Option<usize>) -> Vec<ElementId> {
+        let list = match parent {
+            Some(p) => &self.items[p].children,
+            None => &self.top,
+        };
+        list.iter().map(|&i| self.items[i].element).collect()
     }
 
     /// Makes item `item` an expander placed by the layout: its `h` is the

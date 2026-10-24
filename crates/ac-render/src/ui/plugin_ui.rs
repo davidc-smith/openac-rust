@@ -696,6 +696,7 @@ impl WindowUi {
             facts,
             plugins,
             images,
+            notices,
             ..
         } = self;
         let mut markup_icons = WindowIcons {
@@ -708,9 +709,13 @@ impl WindowUi {
             let Some(name) = plugins.panels.get(&panel.id) else {
                 continue;
             };
-            host.with_controller::<PluginPanelController, _>(name, |c, ui| {
+            let noticed = host.with_controller::<PluginPanelController, _>(name, |c, ui| {
                 c.sync(ui, panel, revision, &mut markup_icons, theme);
+                c.take_notices()
             });
+            for notice in noticed.into_iter().flatten() {
+                notices.push(format!("ui: plugin window {name}: {notice}"));
+            }
         }
         if plugins.shelf {
             let mut shelf_icons = WindowShelfIcons {

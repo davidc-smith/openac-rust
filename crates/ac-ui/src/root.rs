@@ -579,6 +579,30 @@ impl UiRoot {
         true
     }
 
+    /// Moves `sequence` (children of `parent`, in that order) to just after
+    /// `after`, another child of `parent` (the end when it is not one);
+    /// the other children keep their order. Nothing is detached, so focus,
+    /// capture and popups inside them stay (OpenAC `UiElement.MoveChild`,
+    /// for a run of children at once).
+    pub fn place_after(&mut self, parent: ElementId, after: ElementId, sequence: &[ElementId]) {
+        let run: Vec<ElementId> = sequence
+            .iter()
+            .copied()
+            .filter(|c| *c != after && self.parent(*c) == Some(parent))
+            .collect();
+        let moving: std::collections::HashSet<ElementId> = run.iter().copied().collect();
+        let Some(p) = self.node_mut(parent) else {
+            return;
+        };
+        let children = &mut p.links.children;
+        children.retain(|c| !moving.contains(c));
+        let at = children
+            .iter()
+            .position(|c| *c == after)
+            .map_or(children.len(), |i| i + 1);
+        children.splice(at..at, run);
+    }
+
     /// Detach `id` if attached, then free it and its whole subtree.
     pub fn destroy(&mut self, id: ElementId) {
         if id == self.root {

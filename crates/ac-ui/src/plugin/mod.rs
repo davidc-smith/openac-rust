@@ -17,6 +17,7 @@ pub mod fold;
 pub mod hotkeys;
 pub mod layout;
 pub mod list_ext;
+mod repeat;
 pub mod shelf;
 pub mod title_bar;
 pub mod widgets;
@@ -29,8 +30,8 @@ use std::sync::Arc;
 use ac_plugin_ui::flex::{FlexMeasurement, FlexNode, FlexSize};
 use ac_plugin_ui::list::ColumnPress;
 use ac_plugin_ui::markup::{
-    Anchors, ColorSource, ColumnKind, EXPANDER_HEADER_HEIGHT, Element as Markup, IconKind,
-    IconSource, ListBody, MarkupDocument, normalize_icon,
+    Anchors, ColorSource, ColumnKind, Element as Markup, IconKind, IconSource, ListBody,
+    MarkupDocument, Values, normalize_icon,
 };
 use ac_plugin_ui::{ActionValue, PanelView, Rgba, UiInput, UiValue};
 
@@ -140,43 +141,43 @@ fn anchors(a: Anchors) -> AnchorEdges {
     edges
 }
 
-fn read_color(src: &ColorSource, view: &PanelView, palette: Option<&Palette>) -> Color {
+fn read_color(src: &ColorSource, values: &dyn Values, palette: Option<&Palette>) -> Color {
     if let ColorSource::Theme { token, classic } = src {
         return palette
             .and_then(|p| p.token(token))
             .unwrap_or_else(|| color(*classic));
     }
-    color(src.read(view))
+    color(src.read(values))
 }
 
-fn texts(view: &PanelView, name: &str) -> Vec<String> {
-    match view.values.get(name) {
+fn texts(values: &dyn Values, name: &str) -> Vec<String> {
+    match values.value(name) {
         Some(UiValue::TextList(v)) => v.clone(),
         _ => Vec::new(),
     }
 }
 
-fn uints(view: &PanelView, name: &str) -> Vec<u32> {
-    match view.values.get(name) {
+fn uints(values: &dyn Values, name: &str) -> Vec<u32> {
+    match values.value(name) {
         Some(UiValue::UintList(v)) => v.clone(),
         Some(UiValue::IntList(v)) => v.iter().map(|i| u32::try_from(*i).unwrap_or(0)).collect(),
         _ => Vec::new(),
     }
 }
 
-fn bools(view: &PanelView, name: &str) -> Vec<bool> {
-    match view.values.get(name) {
+fn bools(values: &dyn Values, name: &str) -> Vec<bool> {
+    match values.value(name) {
         Some(UiValue::BoolList(v)) => v.clone(),
         _ => Vec::new(),
     }
 }
 
-fn bool_value(view: &PanelView, name: &str) -> bool {
-    matches!(view.values.get(name), Some(UiValue::Bool(true)))
+fn bool_value(values: &dyn Values, name: &str) -> bool {
+    matches!(values.value(name), Some(UiValue::Bool(true)))
 }
 
-fn int_value(view: &PanelView, name: &str) -> i32 {
-    match view.values.get(name) {
+fn int_value(values: &dyn Values, name: &str) -> i32 {
+    match values.value(name) {
         Some(UiValue::Int(v)) => *v,
         _ => -1,
     }
@@ -193,8 +194,8 @@ fn icon(icons: &mut dyn MarkupIcons, kind: IconKind, id: u32) -> Option<Icon> {
     }
 }
 
-fn icon_of(icons: &mut dyn MarkupIcons, source: &IconSource, view: &PanelView) -> Option<Icon> {
-    icon(icons, source.kind, source.id.read(view))
+fn icon_of(icons: &mut dyn MarkupIcons, source: &IconSource, values: &dyn Values) -> Option<Icon> {
+    icon(icons, source.kind, source.id.read(values))
 }
 
 /// One plugin window built from its markup: its frame and an element per
@@ -208,16 +209,25 @@ pub struct PluginPanelController {
     /// The frame (the window's root).
     pub root: ElementId,
     document: Arc<MarkupDocument>,
-    nodes: Vec<ElementId>,
-    by_element: HashMap<ElementId, usize>,
+    /// The window's own elements ([`repeat::WINDOW_SET`]) and each
+    /// `<repeat>` row's, by set number.
+    sets: HashMap<u32, repeat::ElementSet>,
+    /// The number the next row's set gets.
+    next_set: u32,
+    /// The set and markup element each built element belongs to.
+    by_element: HashMap<ElementId, (u32, usize)>,
     title: Option<ElementId>,
     minimize: Option<ElementId>,
     outbox: PluginOutbox,
     expected_visible: bool,
-    menu_items: HashMap<usize, Vec<String>>,
-    /// Each element's context menu element, by markup element.
-    menus: HashMap<usize, ElementId>,
     synced: Option<u64>,
+    /// The window's remembered control values (rows read theirs by key).
+    control_state: Option<fold::SharedControlState>,
+    /// The window's expander shifts, which rows built later share.
+    shifts: fold::Shifts,
+    /// What the window noticed while running (a repeat's duplicate keys),
+    /// one line each, for the log.
+    notices: Vec<String>,
     /// The font the window was built with.
     classic_font: Option<Arc<UiFont>>,
     /// The bundled sans font the modern themes draw text in, when loaded.
@@ -231,8 +241,6 @@ pub struct PluginPanelController {
     content: Option<ElementId>,
     /// The chrome above and below the content area.
     chrome_h: f32,
-    /// Menus a flex container sizes: their popup follows their width.
-    flex_menus: Vec<ElementId>,
     /// The size the window had before its content grew it, and the size it
     /// grew to; cleared once the player sizes it otherwise.
     growth: Option<((f32, f32), (f32, f32))>,
@@ -242,7 +250,7 @@ pub struct PluginPanelController {
 /// container, into that container's layout: a flex group is already an
 /// inner node; an absolute group is a leaf of its authored size; any other
 /// control is a leaf measured from its content. The container places it, so
-/// it keeps no anchors.
+/// it keeps no anchors. Its item, when it added one.
 fn add_flex_item(
     ui: &mut UiRoot,
     flex_of: &HashMap<Option<usize>, (layout::SharedFlex, Option<usize>)>,
@@ -250,7 +258,7 @@ fn add_flex_item(
     index: usize,
     id: ElementId,
     attrs: &ac_plugin_ui::markup::FlexItem,
-) {
+) -> Option<usize> {
     ui.set_anchors(id, AnchorEdges::NONE);
     let nested_flex = matches!(
         node.element,
@@ -260,11 +268,9 @@ fn add_flex_item(
         }
     );
     if nested_flex {
-        return;
+        return None;
     }
-    let Some((shared, parent_item)) = flex_of.get(&node.parent) else {
-        return;
-    };
+    let (shared, parent_item) = flex_of.get(&node.parent)?;
     let mut flex_node = FlexNode::default();
     attrs.apply(&mut flex_node);
     let authored = match &node.element {
@@ -297,6 +303,7 @@ fn add_flex_item(
         }
         _ => {}
     }
+    Some(item)
 }
 
 /// An absolute group's content size in a flex container: its authored
@@ -347,21 +354,7 @@ pub fn build_panel_with_state(
 ) -> PluginPanelController {
     let doc = Arc::clone(&view.document);
     let window_name = view.window_name();
-    let emit = controls::Emit {
-        panel: view.id,
-        outbox: Rc::clone(&outbox),
-    };
     let shifts: fold::Shifts = Rc::default();
-    let remembered = |control: Option<&String>, kind: &'static str| {
-        fold::Remembered::new(
-            control_state.clone(),
-            &window_name,
-            control.map(String::as_str),
-            kind,
-        )
-    };
-    let mut containers: Vec<ElementId> = Vec::with_capacity(doc.nodes.len());
-    let mut menus: HashMap<usize, ElementId> = HashMap::new();
     let spec = &doc.panel;
     let mut frame_element = Element::at(spec.rect.x, spec.rect.y, spec.rect.w, spec.rect.h)
         .with_anchors(AnchorEdges::NONE)
@@ -460,455 +453,51 @@ pub fn build_panel_with_state(
             host.scroll = Some(area);
         }
     }
-    let mut flex_menus = Vec::new();
-    let mut nodes = Vec::with_capacity(doc.nodes.len());
+    let builder = repeat::Builder {
+        doc: &doc,
+        font: font.clone(),
+        emit: controls::Emit::new(view.id, Rc::clone(&outbox)),
+        control_state: control_state.clone(),
+        window_name: &window_name,
+        state_path: None,
+        shifts: Rc::clone(&shifts),
+    };
+    let mut containers = HashMap::new();
+    containers.insert(None, content_parent);
+    let window = repeat::build_set(ui, &builder, view, None, containers, flex_of.clone());
     let mut by_element = HashMap::new();
-    for (index, node) in doc.nodes.iter().enumerate() {
-        let parent = node.parent.map_or(content_parent, |p| containers[p]);
-        let mut container = None;
-        let mut e = Element::at(node.rect.x, node.rect.y, node.rect.w, node.rect.h)
-            .with_anchors(anchors(node.common.anchors));
-        e.name.clone_from(&node.common.name);
-        let font = font.clone();
-        let menu_font = font.clone();
-        let id = match &node.element {
-            Markup::Group {
-                layout: group_layout,
-                scroll_x,
-                scroll_y,
-                ..
-            } => {
-                let scrolls = *scroll_x || *scroll_y;
-                // A scrolling group is hit-testable so the wheel reaches it
-                // over empty space.
-                e.click_through = !scrolls;
-                let id = ui.add(parent, e, layout::MarkupGroup::new(transparent_panel()));
-                let mut flex = None;
-                if let Some(container) = group_layout {
-                    let mut flex_node = FlexNode::default();
-                    container.apply(&mut flex_node);
-                    if scrolls {
-                        flex_node.scroll_x = *scroll_x;
-                        flex_node.scroll_y = *scroll_y;
-                        flex_node.scrollbar_size = layout::BAR_SIZE;
-                    }
-                    let (shared, item) = match (&node.flex, flex_of.get(&node.parent)) {
-                        // Nested in a flex container: an inner node of its
-                        // root's tree.
-                        (Some(attrs), Some((shared, parent_item))) => {
-                            attrs.apply(&mut flex_node);
-                            let item = shared.borrow_mut().add(
-                                *parent_item,
-                                id,
-                                index,
-                                flex_node,
-                                true,
-                                None,
-                            );
-                            (Rc::clone(shared), Some(item))
-                        }
-                        _ => (
-                            Rc::new(RefCell::new(flex_box::FlexBox::new(
-                                Arc::clone(&doc),
-                                flex_node,
-                            ))),
-                            None,
-                        ),
-                    };
-                    flex_of.insert(Some(index), (Rc::clone(&shared), item));
-                    flex = Some(layout::FlexPart {
-                        layout: shared,
-                        item,
-                    });
-                }
-                let scroll = scrolls.then(|| layout::ScrollArea::new(ui, id, *scroll_x, *scroll_y));
-                if let Some(g) = ui.widget_mut::<layout::MarkupGroup>(id) {
-                    g.flex = flex;
-                    g.scroll = scroll;
-                }
-                id
-            }
-            Markup::Meter { sprites, .. } => {
-                Meter::configure(&mut e);
-                e.click_through = true;
-                let mut meter = Meter::default();
-                meter.font = font;
-                [
-                    meter.back_left,
-                    meter.back_tile,
-                    meter.back_right,
-                    meter.front_left,
-                    meter.front_tile,
-                    meter.front_right,
-                ] = *sprites;
-                meter.fill = None;
-                ui.add(parent, e, meter)
-            }
-            Markup::Label { .. } => {
-                e.click_through = node.common.tooltip.is_none();
-                ui.add(parent, e, MarkupLabel::new(font))
-            }
-            Markup::Button { .. } => ui.add(parent, keyboard_activated(e), MarkupButton::new(font)),
-            Markup::Tab { .. } => ui.add(parent, keyboard_activated(e), MarkupButton::tab(font)),
-            Markup::Toggle { .. } => ui.add(parent, keyboard_activated(e), MarkupToggle::new(font)),
-            Markup::Icon { .. } => {
-                e.click_through = node.common.tooltip.is_none();
-                ui.add(parent, e, MarkupIcon::default())
-            }
-            Markup::Slider { retail_art, .. } => {
-                Scrollbar::configure(&mut e);
-                let mut bar = Scrollbar::default();
-                bar.scalar = true;
-                bar.horizontal = true;
-                bar.retail_art = *retail_art;
-                if *retail_art {
-                    crate::panels::external_container::apply_horizontal_bar_art(&mut bar);
-                }
-                ui.add(parent, e, bar)
-            }
-            Markup::Field {
-                one_line,
-                editable,
-                max_length,
-                clear_on_submit,
-                text,
-                onup,
-                ondown,
-                onsubmit,
-                onblur,
-                ..
-            } => {
-                Field::configure(&mut e);
-                e.tab_stop = true;
-                let mut field = Field::default();
-                field.font = font;
-                field.one_line = *one_line;
-                field.selectable = true;
-                field.max_characters = usize::try_from(*max_length).unwrap_or(1).max(1);
-                field.clear_on_submit = *clear_on_submit;
-                field.record_history = false;
-                field.reports_focus_loss = onblur.is_some();
-                field.has_submit_handler = onsubmit.is_some();
-                field.set_editable_detached(&mut e, *editable);
-                field.set_text(&text.read(view).unwrap_or_default());
-                ui.add(
-                    parent,
-                    e,
-                    MarkupField {
-                        inner: field,
-                        panel: view.id,
-                        onup: onup.clone(),
-                        ondown: ondown.clone(),
-                        outbox: Rc::clone(&outbox),
-                    },
-                )
-            }
-            Markup::Menu {
-                rows,
-                row_height,
-                open_upward,
-                retail_art,
-                searchable,
-                ..
-            } => {
-                Menu::configure(&mut e);
-                let mut menu = Menu::default();
-                menu.searchable = *searchable;
-                menu.font = font.clone();
-                menu.rows_per_column = usize::try_from(*rows).unwrap_or(1).max(1);
-                menu.row_height = *row_height;
-                menu.column_width = node.rect.w.max(20.0);
-                menu.open_upward = *open_upward;
-                menu.scroll_track_sprite = widgets::vertical_bar::TRACK;
-                menu.scroll_thumb_sprite = widgets::vertical_bar::THUMB_MID;
-                menu.scroll_thumb_top_sprite = widgets::vertical_bar::THUMB_TOP;
-                menu.scroll_thumb_bottom_sprite = widgets::vertical_bar::THUMB_BOT;
-                menu.scroll_up_sprite = widgets::vertical_bar::UP;
-                menu.scroll_down_sprite = widgets::vertical_bar::DOWN;
-                menu.text_indent = 6.0;
-                menu.button_text_indent = 6.0;
-                menu.normal_sprite = 0x0600_4D65;
-                menu.pressed_sprite = 0x0600_4D66;
-                menu.popup_bg_sprite = 0x0600_124C;
-                menu.item_normal_sprite = 0x0600_124E;
-                menu.item_highlight_sprite = 0x0600_124D;
-                menu.retail_button_art = *retail_art;
-                menu.scrollable = true;
-                menu.popup_scrollbar_hide_when_disabled = true;
-                menu.fits_long_labels = true;
-                ui.add(parent, e, menu)
-            }
-            Markup::Log { .. } => ui.add(parent, e, MarkupLog::new(font)),
-            Markup::List {
-                row_height,
-                selection_band,
-                body,
-                header,
-                tree,
-                multi,
-                onchange,
-                ..
-            } => {
-                let mut list = MarkupList::new(font, *row_height);
-                list.selection_band = *selection_band;
-                if let ListBody::Columns(columns) = body {
-                    list.columns.clone_from(columns);
-                    list.markup_columns.clone_from(columns);
-                    let mut ext = list_ext::ListExt::new(
-                        columns,
-                        remembered(node.common.name.as_ref(), "sort"),
-                        remembered(node.common.name.as_ref(), "widths"),
-                        emit.clone(),
-                    );
-                    ext.header = header.show;
-                    ext.onsort.clone_from(&header.onsort);
-                    ext.resizable = header.resizable;
-                    ext.onresize.clone_from(&header.onresize);
-                    ext.multi = *multi;
-                    if *multi {
-                        ext.onchange.clone_from(onchange);
-                    }
-                    ext.tree = tree.as_ref().map(|t| {
-                        list_ext::TreeState::new(
-                            t.column,
-                            t.start_collapsed,
-                            t.onexpand.clone(),
-                            remembered(node.common.name.as_ref(), "expanded"),
-                        )
-                    });
-                    if *multi || tree.is_some() {
-                        e = keyboard_activated(e);
-                    }
-                    list.ext = Some(Box::new(ext));
-                }
-                ui.add(parent, e, list)
-            }
-            Markup::Checkbox { onchange, .. } => ui.add(
-                parent,
-                keyboard_activated(e),
-                controls::MarkupCheckbox::new(font, onchange.clone(), emit.clone()),
-            ),
-            Markup::Separator { .. } => {
-                e.click_through = true;
-                ui.add(parent, e, controls::MarkupSeparator::default())
-            }
-            Markup::Radio { onchange, .. } => ui.add(
-                parent,
-                keyboard_activated(e),
-                controls::MarkupRadio::new(font, onchange.clone(), emit.clone()),
-            ),
-            Markup::Number {
-                onchange,
-                kind,
-                spec: number_spec,
-                ..
-            } => {
-                Field::configure(&mut e);
-                e.tab_stop = true;
-                let mut field = Field::default();
-                field.font = font;
-                field.one_line = true;
-                field.selectable = true;
-                field.select_all_on_focus = true;
-                field.record_history = false;
-                field.max_characters = 41;
-                ui.add(
-                    parent,
-                    e,
-                    controls::MarkupNumber::new(
-                        field,
-                        *number_spec,
-                        *kind == ac_plugin_ui::markup::NumberKind::Int,
-                        onchange.clone(),
-                        emit.clone(),
-                    ),
-                )
-            }
-            Markup::Hotkey { onchange, .. } => {
-                e.accepts_focus = true;
-                e.focus_on_mouse_click = true;
-                e.tab_stop = true;
-                ui.add(
-                    parent,
-                    e,
-                    controls::MarkupHotkey::new(font, onchange.clone(), emit.clone()),
-                )
-            }
-            Markup::Color { .. } => {
-                e.accepts_focus = true;
-                e.focus_on_mouse_click = false;
-                e.tab_stop = true;
-                ui.add(
-                    parent,
-                    e,
-                    color::MarkupColor::new(font, &node.element, emit.clone()),
-                )
-            }
-            Markup::Expander { open, onchange, .. } => {
-                e.click_through = true;
-                let h = node.rect.h;
-                // In flex without a w: start at the content width, so the
-                // content's anchors are captured against a real box.
-                let w = if node.flex.is_some() && node.rect.w <= 0.0 {
-                    content_size::LIST_WIDTH
-                } else {
-                    node.rect.w
-                };
-                e.width = w;
-                let mut header_element =
-                    keyboard_activated(Element::at(0.0, 0.0, w, EXPANDER_HEADER_HEIGHT))
-                        .with_anchors(AnchorEdges::LEFT | AnchorEdges::RIGHT | AnchorEdges::TOP);
-                header_element.runtime_tooltip_text =
-                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
-                let header = ui.insert(header_element, fold::ExpanderHeader::new(font));
-                let mut content_element = Element::at(
-                    0.0,
-                    EXPANDER_HEADER_HEIGHT,
-                    w,
-                    (h - EXPANDER_HEADER_HEIGHT).max(0.0),
-                )
-                .with_anchors(
-                    AnchorEdges::LEFT | AnchorEdges::TOP | AnchorEdges::RIGHT | AnchorEdges::BOTTOM,
-                );
-                content_element.click_through = true;
-                let content = ui.insert(content_element, transparent_panel());
-                let expander = fold::MarkupExpander::new(
-                    header,
-                    content,
-                    *open,
-                    remembered(node.common.name.as_ref(), "expanded"),
-                    Rc::clone(&shifts),
-                    onchange.clone(),
-                    emit.clone(),
-                );
-                let id = ui.add(parent, e, expander);
-                ui.add_child(id, header);
-                ui.add_child(id, content);
-                container = Some(content);
-                id
-            }
-            Markup::Split {
-                horizontal,
-                min,
-                max,
-                default_position,
-                at_given,
-                onchange,
-                ..
-            } => {
-                e.click_through = true;
-                let mut bar_element = keyboard_activated(Element::at(0.0, 0.0, 0.0, 0.0))
-                    .with_anchors(AnchorEdges::NONE)
-                    .with_z_order(1);
-                bar_element.captures_pointer_drag = true;
-                bar_element.runtime_tooltip_text =
-                    node.common.tooltip.as_ref().and_then(|t| t.read(view));
-                let bar = ui.insert(bar_element, fold::SplitBar::new(*horizontal));
-                let mut split = fold::MarkupSplit::new(
-                    *horizontal,
-                    bar,
-                    remembered(node.common.name.as_ref(), "position"),
-                    onchange.clone(),
-                    emit.clone(),
-                );
-                split.min = *min;
-                split.max = *max;
-                split.default_position = *default_position;
-                if node.flex.is_some() && (e.width <= 0.0 || e.height <= 0.0) {
-                    // In flex without a w or h: start at the content size,
-                    // so the panes' children capture their anchors against
-                    // real panes.
-                    if e.width <= 0.0 {
-                        e.width = content_size::LIST_WIDTH;
-                    }
-                    if e.height <= 0.0 {
-                        e.height = content_size::LIST_HEIGHT;
-                    }
-                    if !*at_given {
-                        let room = if *horizontal { e.width } else { e.height }
-                            - ac_plugin_ui::markup::SPLIT_BAR_SIZE;
-                        split.default_position = (room.max(0.0) / 2.0).floor();
-                    }
-                }
-                let id = ui.add(parent, e, split);
-                ui.add_child(id, bar);
-                id
-            }
-        };
-        if let Some(attrs) = &node.flex {
-            add_flex_item(ui, &flex_of, node, index, id, attrs);
-            if matches!(node.element, Markup::Menu { .. }) {
-                flex_menus.push(id);
-            }
-        }
-        if let Some(t) = &node.common.tooltip
-            && let Some(el) = ui.element_mut(id)
-        {
-            el.runtime_tooltip_text = t.read(view);
-        }
-        if let Some(menu) = &node.common.context_menu {
-            let mut menu_element = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
-            menu_element.accepts_focus = true;
-            menu_element.focus_on_mouse_click = true;
-            menu_element.captures_pointer_drag = true;
-            let menu = ui.add(
-                id,
-                menu_element,
-                fold::MarkupContextMenu::new(
-                    menu_font,
-                    menu.onselect.clone(),
-                    menu.onopen.clone(),
-                    emit.clone(),
-                ),
-            );
-            if let Some(el) = ui.element_mut(id) {
-                el.context_menu = Some(menu);
-            }
-            menus.insert(index, menu);
-        }
-        by_element.insert(id, index);
-        nodes.push(id);
-        containers.push(container.unwrap_or(id));
+    for (&node, &id) in &window.nodes {
+        by_element.insert(id, (repeat::WINDOW_SET, node));
     }
-    // A split sizes its two panes: lay it out at its authored start now,
-    // so the panes' children record their anchors against those sizes.
-    for (index, node) in doc.nodes.iter().enumerate() {
-        if let Markup::Split { .. } = node.element {
-            let id = nodes[index];
-            let panes: Vec<ElementId> = node.children.iter().map(|c| nodes[*c]).collect();
-            for pane in &panes {
-                ui.set_anchors(*pane, AnchorEdges::NONE);
-            }
-            ui.with::<fold::MarkupSplit, _>(id, |split, ui| {
-                split.first = panes.first().copied();
-                split.second = panes.get(1).copied();
-                split.layout_at_default(ui, id);
-            });
-        }
-    }
+    let mut sets = HashMap::new();
+    sets.insert(repeat::WINDOW_SET, window);
     let mut controller = PluginPanelController {
         panel: view.id,
         window_name: view.window_name(),
         root,
         document: Arc::clone(&doc),
-        nodes,
+        sets,
+        next_set: repeat::WINDOW_SET + 1,
         by_element,
         title,
         minimize: None,
         outbox,
         expected_visible: false,
-        menu_items: HashMap::new(),
-        menus,
         synced: None,
+        control_state,
+        shifts,
+        notices: Vec::new(),
         classic_font: font.clone(),
         modern_font: None,
         title_color: Color::WHITE,
         title_bar,
         content,
         chrome_h,
-        flex_menus,
         growth: None,
     };
+    // Each `<repeat>`'s first rows, before the first measurement, so the
+    // window opens at a size that holds them.
+    controller.update_repeats(ui, view);
     if let Some((shared, _)) = flex_of.get(&None).cloned() {
         // The window's first measurement, with the values and fonts known
         // now (a seeding sync: captions, and what is bound hidden, such as
@@ -1002,6 +591,18 @@ const MINIMIZE_BORDER: Color = Color::rgba(0.58, 0.46, 0.17, 1.0);
 /// resolves them).
 struct NoMarkupIcons;
 
+/// The look one sync shows: the palette on a themed window under a modern
+/// theme, and with the bundled font loaded the text font and a menu's
+/// caption font for the theme (none: the fonts stay as built).
+#[derive(Debug, Default)]
+struct Look {
+    palette: Option<Palette>,
+    fonts: Option<ThemeFonts>,
+}
+
+/// A theme's text font and a menu's caption font.
+type ThemeFonts = (Option<Arc<UiFont>>, Option<Arc<UiFont>>);
+
 impl MarkupIcons for NoMarkupIcons {
     fn surface(&mut self, _id: u32) -> Option<Icon> {
         None
@@ -1044,7 +645,9 @@ impl PluginPanelController {
     /// The element built for markup element `node`.
     #[must_use]
     pub fn element(&self, node: usize) -> Option<ElementId> {
-        self.nodes.get(node).copied()
+        self.sets
+            .get(&repeat::WINDOW_SET)
+            .and_then(|s| s.nodes.get(&node).copied())
     }
 
     /// The minimize button, on a window that is on the shelf.
@@ -1127,13 +730,19 @@ impl PluginPanelController {
         self.outbox.borrow_mut().push(input);
     }
 
-    fn action(&self, handler: &Option<String>, value: ActionValue) -> bool {
+    /// Fires `handler` of an element of set `set` (a row's handler is
+    /// named after its row).
+    fn action(&self, set: u32, handler: &Option<String>, value: ActionValue) -> bool {
         let Some(handler) = handler else {
             return false;
         };
+        let handler = match self.sets.get(&set) {
+            Some(s) => format!("{}{handler}", s.prefix.borrow()),
+            None => handler.clone(),
+        };
         self.push(UiInput::Action {
             panel: self.panel,
-            handler: handler.clone(),
+            handler,
             value,
         });
         true
@@ -1221,16 +830,47 @@ impl PluginPanelController {
                 b.font.clone_from(f);
             }
         }
-        for (index, node) in doc.nodes.iter().enumerate() {
-            let el = self.nodes[index];
-            if let (Some(menu), Some(&menu_el)) =
-                (&node.common.context_menu, self.menus.get(&index))
-            {
-                let items = menu.items.read(view);
+        let look = Look { palette, fonts };
+        self.sync_set(ui, repeat::WINDOW_SET, view, Some(view), icons, &look);
+        self.sync_repeats(ui, repeat::WINDOW_SET, view, icons, &look);
+    }
+
+    /// Shows set `set`'s elements as `values` says (OpenAC's per-frame
+    /// bindings, read through the set's binding source: the panel's values
+    /// for the window's own elements, a row's item for a `<repeat>` row's).
+    /// `overrides` carries the plugin's by-name labels and visibility,
+    /// which only the window's own elements take.
+    #[allow(clippy::too_many_lines)]
+    fn sync_set(
+        &mut self,
+        ui: &mut UiRoot,
+        set: u32,
+        values: &dyn Values,
+        overrides: Option<&PanelView>,
+        icons: &mut dyn MarkupIcons,
+        look: &Look,
+    ) {
+        let doc = Arc::clone(&self.document);
+        let Some(s) = self.sets.get_mut(&set) else {
+            return;
+        };
+        let palette = look.palette;
+        let p = palette.as_ref();
+        let fonts = &look.fonts;
+        let text_font = fonts.as_ref().map(|(text, _)| text);
+        for k in 0..s.order.len() {
+            let index = s.order[k];
+            let node = &doc.nodes[index];
+            if let Markup::Repeat { .. } = node.element {
+                continue;
+            }
+            let el = s.nodes[&index];
+            if let (Some(menu), Some(&menu_el)) = (&node.common.context_menu, s.menus.get(&index)) {
+                let items = menu.items.read(values);
                 let enabled = menu
                     .enabled
                     .as_ref()
-                    .map(|e| bools(view, e))
+                    .map(|e| bools(values, e))
                     .unwrap_or_default();
                 if let Some(w) = ui.widget_mut::<fold::MarkupContextMenu>(menu_el) {
                     w.items = items;
@@ -1241,14 +881,17 @@ impl PluginPanelController {
                     }
                 }
             }
-            ui.set_visible(el, view.node_visible(index));
-            ui.set_enabled(el, node.common.enabled.read(view, true));
+            let visible = overrides
+                .and_then(|v| v.visible_overrides.get(&index).copied())
+                .unwrap_or_else(|| node.common.visible.read(values, true));
+            ui.set_visible(el, visible);
+            ui.set_enabled(el, node.common.enabled.read(values, true));
             if let Some(t) = &node.common.tooltip
                 && let Some(e) = ui.element_mut(el)
             {
-                e.runtime_tooltip_text = t.read(view);
+                e.runtime_tooltip_text = t.read(values);
             }
-            let label = view.label_overrides.get(&index).cloned();
+            let label = overrides.and_then(|v| v.label_overrides.get(&index).cloned());
             match &node.element {
                 Markup::Group {
                     background, border, ..
@@ -1258,10 +901,10 @@ impl PluginPanelController {
                         let w = &mut g.panel;
                         w.background_color = background
                             .as_ref()
-                            .map_or(Color::TRANSPARENT, |c| read_color(c, view, p));
+                            .map_or(Color::TRANSPARENT, |c| read_color(c, values, p));
                         w.border_color = border
                             .as_ref()
-                            .map_or(Color::TRANSPARENT, |c| read_color(c, view, p));
+                            .map_or(Color::TRANSPARENT, |c| read_color(c, values, p));
                         w.border_thickness = if border.is_some() { 1.0 } else { 0.0 };
                         bars.clone_from(&g.scroll);
                     }
@@ -1276,21 +919,21 @@ impl PluginPanelController {
                     color: bar,
                     ..
                 } => {
-                    let caption = match (cur.read_u32(view), max.read_u32(view)) {
+                    let caption = match (cur.read_u32(values), max.read_u32(values)) {
                         (Some(c), Some(m)) => Some(format!("{c}/{m}")),
                         _ => None,
                     };
-                    let bar_color = read_color(bar, view, p);
+                    let bar_color = read_color(bar, values, p);
                     if let Some(w) = ui.widget_mut::<Meter>(el) {
-                        w.fill = fill.read_f32(view);
+                        w.fill = fill.read_f32(values);
                         w.label = caption;
                         w.bar_color = bar_color;
                     }
                 }
                 Markup::Label { text, color: c } => {
-                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let s = label.or_else(|| text.read(values)).unwrap_or_default();
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(Color::WHITE, |p| p.text),
                     };
                     if let Some(w) = ui.widget_mut::<MarkupLabel>(el) {
@@ -1310,18 +953,18 @@ impl PluginPanelController {
                     icon: source,
                     ..
                 } => {
-                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
-                    let resolved = source.as_ref().and_then(|s| icon_of(icons, s, view));
+                    let s = label.or_else(|| text.read(values)).unwrap_or_default();
+                    let resolved = source.as_ref().and_then(|s| icon_of(icons, s, values));
                     let text_color = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(Color::WHITE, |p| p.text),
                     };
                     let bg = match background {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(Color::rgba(0.1, 0.1, 0.15, 0.8), |p| p.field),
                     };
                     let edge = match border {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(Color::rgba(0.45, 0.45, 0.55, 1.0), |p| p.border),
                     };
                     if let Some(w) = ui.widget_mut::<MarkupButton>(el) {
@@ -1338,7 +981,7 @@ impl PluginPanelController {
                     }
                 }
                 Markup::Icon { icon: source } => {
-                    let resolved = icon_of(icons, source, view);
+                    let resolved = icon_of(icons, source, values);
                     if let Some(w) = ui.widget_mut::<MarkupIcon>(el) {
                         w.icon = resolved;
                     }
@@ -1350,8 +993,8 @@ impl PluginPanelController {
                     ..
                 } => {
                     let s = label.unwrap_or_else(|| text.clone());
-                    let on = bool_value(view, selected);
-                    let resolved = source.as_ref().and_then(|s| icon_of(icons, s, view));
+                    let on = bool_value(values, selected);
+                    let resolved = source.as_ref().and_then(|s| icon_of(icons, s, values));
                     if let Some(w) = ui.widget_mut::<MarkupButton>(el) {
                         w.text = s;
                         w.icon = resolved;
@@ -1369,12 +1012,12 @@ impl PluginPanelController {
                     color: c,
                     ..
                 } => {
-                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let s = label.or_else(|| text.read(values)).unwrap_or_default();
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(Color::rgba(0.86, 0.84, 0.74, 1.0), |p| p.text),
                     };
-                    let on = bool_value(view, checked);
+                    let on = bool_value(values, checked);
                     if let Some(w) = ui.widget_mut::<MarkupToggle>(el) {
                         w.text = s;
                         w.checked = on;
@@ -1393,7 +1036,7 @@ impl PluginPanelController {
                     ..
                 } => {
                     let position = value
-                        .read_f32(view)
+                        .read_f32(values)
                         .map(|v| ((v - min) / (max - min)).clamp(0.0, 1.0));
                     if let Some(w) = ui.widget_mut::<Scrollbar>(el) {
                         // OpenAC `PluginMarkupTheme`: themed, flat in the
@@ -1418,14 +1061,14 @@ impl PluginPanelController {
                     default_color,
                     ..
                 } => {
-                    let bound = text.read(view).unwrap_or_default();
+                    let bound = text.read(values).unwrap_or_default();
                     let bg = match (p, default_background) {
                         (Some(p), true) => p.field,
-                        _ => read_color(background, view, p),
+                        _ => read_color(background, values, p),
                     };
                     let col = match (p, default_color) {
                         (Some(p), true) => p.text,
-                        _ => read_color(c, view, p),
+                        _ => read_color(c, values, p),
                     };
                     if let Some(w) = ui.widget_mut::<MarkupField>(el) {
                         w.inner.follow_bound_text(&bound);
@@ -1442,8 +1085,8 @@ impl PluginPanelController {
                     retail_art,
                     ..
                 } => {
-                    let entries = texts(view, items);
-                    let chosen = selected.read(view);
+                    let entries = texts(values, items);
+                    let chosen = selected.read(values);
                     if let Some(w) = ui.widget_mut::<Menu>(el) {
                         w.set_items(
                             entries
@@ -1479,11 +1122,11 @@ impl PluginPanelController {
                             w.button_font.clone_from(caption);
                         }
                     }
-                    self.menu_items.insert(index, entries);
+                    s.menu_items.insert(index, entries);
                 }
                 Markup::Log { items, first_index } => {
-                    let entries = texts(view, items);
-                    let first = first_index.as_ref().map_or(0, |f| int_value(view, f));
+                    let entries = texts(values, items);
+                    let first = first_index.as_ref().map_or(0, |f| int_value(values, f));
                     if let Some(w) = ui.widget_mut::<MarkupLog>(el) {
                         w.set_entries(&entries, first);
                         w.palette = palette;
@@ -1503,14 +1146,14 @@ impl PluginPanelController {
                     let selected_row = if *multi {
                         -1
                     } else {
-                        int_value(view, selected)
+                        int_value(values, selected)
                     };
-                    let (rows, column_rows, row_icons) = list_rows(view, body, icons, p);
-                    let floats = |name: &str| match view.values.get(name) {
+                    let (rows, column_rows, row_icons) = list_rows(values, body, icons, p);
+                    let floats = |name: &str| match values.value(name) {
                         Some(UiValue::FloatList(v)) => Some(v.clone()),
                         _ => None,
                     };
-                    let ints = |name: &str| match view.values.get(name) {
+                    let ints = |name: &str| match values.value(name) {
                         Some(UiValue::IntList(v)) => v.clone(),
                         _ => Vec::new(),
                     };
@@ -1519,14 +1162,14 @@ impl PluginPanelController {
                             ext.bound_sort = header
                                 .sort
                                 .as_ref()
-                                .map(|(c, d)| (int_value(view, c), bool_value(view, d)));
+                                .map(|(c, d)| (int_value(values, c), bool_value(values, d)));
                             ext.bound_widths = header
                                 .widths
                                 .as_deref()
                                 .map(|n| floats(n).unwrap_or_default());
                             for (i, column) in columns.iter().enumerate() {
                                 ext.captions[i] = match &column.header {
-                                    ac_plugin_ui::markup::ColumnHeader::Text(t) => t.read(view),
+                                    ac_plugin_ui::markup::ColumnHeader::Text(t) => t.read(values),
                                     _ => None,
                                 };
                                 ext.number_keys[i] = None;
@@ -1536,7 +1179,7 @@ impl PluginPanelController {
                                         ext.number_keys[i] = Some(floats(n).unwrap_or_default());
                                     }
                                     Some(ac_plugin_ui::markup::SortKeysSource::Texts(n)) => {
-                                        ext.text_keys[i] = Some(texts(view, n));
+                                        ext.text_keys[i] = Some(texts(values, n));
                                     }
                                     None => {}
                                 }
@@ -1546,11 +1189,11 @@ impl PluginPanelController {
                             }
                             if let (Some(state), Some(spec)) = (ext.tree.as_mut(), tree) {
                                 state.levels = ints(&spec.levels);
-                                state.keys = texts(view, &spec.keys);
+                                state.keys = texts(values, &spec.keys);
                                 state.bound = spec
                                     .expanded
                                     .as_deref()
-                                    .map(|n| texts(view, n).into_iter().collect());
+                                    .map(|n| texts(values, n).into_iter().collect());
                             }
                             w.all_rows = rows;
                             w.row_icons = row_icons;
@@ -1573,14 +1216,14 @@ impl PluginPanelController {
                     color: c,
                     ..
                 } => {
-                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
-                    let state = match view.values.get(checked) {
+                    let s = label.or_else(|| text.read(values)).unwrap_or_default();
+                    let state = match values.value(checked) {
                         Some(UiValue::Bool(b)) => Some(*b),
                         Some(UiValue::OptionalBool(b)) => *b,
                         _ => Some(false),
                     };
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
                     };
                     if let Some(w) = ui.widget_mut::<controls::MarkupCheckbox>(el) {
@@ -1595,7 +1238,7 @@ impl PluginPanelController {
                 }
                 Markup::Separator { color: c } => {
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(controls::UNLIT_INNER, |p| p.border),
                     };
                     if let Some(w) = ui.widget_mut::<controls::MarkupSeparator>(el) {
@@ -1610,10 +1253,10 @@ impl PluginPanelController {
                     color: c,
                     ..
                 } => {
-                    let entries = items.read(view);
-                    let chosen = int_value(view, selected);
+                    let entries = items.read(values);
+                    let chosen = int_value(values, selected);
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
                     };
                     if let Some(w) = ui.widget_mut::<controls::MarkupRadio>(el) {
@@ -1636,18 +1279,18 @@ impl PluginPanelController {
                     default_color,
                     ..
                 } => {
-                    let current = match view.values.get(value) {
+                    let current = match values.value(value) {
                         Some(UiValue::Int(v)) => ac_plugin_ui::number::Dec::from_i64(i64::from(*v)),
                         Some(UiValue::Float(v)) => ac_plugin_ui::number::Dec::from_f32(*v),
                         _ => ac_plugin_ui::number::Dec::ZERO,
                     };
                     let bg = match (p, default_background) {
                         (Some(p), true) => p.field,
-                        _ => read_color(background, view, p),
+                        _ => read_color(background, values, p),
                     };
                     let col = match (p, default_color) {
                         (Some(p), true) => p.text,
-                        _ => read_color(c, view, p),
+                        _ => read_color(c, values, p),
                     };
                     if let Some(w) = ui.widget_mut::<controls::MarkupNumber>(el) {
                         w.set_current(current);
@@ -1660,7 +1303,7 @@ impl PluginPanelController {
                     }
                 }
                 Markup::Hotkey { value, .. } => {
-                    let text = match view.values.get(value) {
+                    let text = match values.value(value) {
                         Some(UiValue::Text(t)) => t.clone(),
                         _ => String::new(),
                     };
@@ -1673,7 +1316,7 @@ impl PluginPanelController {
                     }
                 }
                 Markup::Color { value, kind, .. } => {
-                    let argb = color::MarkupColor::read(*kind, view.values.get(value));
+                    let argb = color::MarkupColor::read(*kind, values.value(value));
                     if let Some(w) = ui.widget_mut::<color::MarkupColor>(el) {
                         w.value = argb;
                         w.palette = palette;
@@ -1688,12 +1331,12 @@ impl PluginPanelController {
                     color: c,
                     ..
                 } => {
-                    let s = label.or_else(|| text.read(view)).unwrap_or_default();
+                    let s = label.or_else(|| text.read(values)).unwrap_or_default();
                     let col = match c {
-                        Some(c) => read_color(c, view, p),
+                        Some(c) => read_color(c, values, p),
                         None => p.map_or(controls::CLASSIC_CAPTION, |p| p.text),
                     };
-                    let bound = expanded.as_ref().map(|e| bool_value(view, e));
+                    let bound = expanded.as_ref().map(|e| bool_value(values, e));
                     let header = ui.widget_mut::<fold::MarkupExpander>(el).map(|w| {
                         w.bound = bound;
                         w.header
@@ -1707,8 +1350,11 @@ impl PluginPanelController {
                         }
                     }
                 }
+                // A marker shows nothing; its rows are synced as sets of
+                // their own.
+                Markup::Repeat { .. } => {}
                 Markup::Split { position, .. } => {
-                    let bound = position.as_ref().map(|name| match view.values.get(name) {
+                    let bound = position.as_ref().map(|name| match values.value(name) {
                         Some(UiValue::Float(v)) => *v,
                         _ => 0.0,
                     });
@@ -1729,7 +1375,7 @@ type Rows = (Vec<Vec<Cell>>, Vec<usize>, Option<Vec<Option<Icon>>>);
 
 /// A list's rows from the panel's values (OpenAC `UiMarkupList`'s sources).
 fn list_rows(
-    view: &PanelView,
+    values: &dyn Values,
     body: &ListBody,
     icons: &mut dyn MarkupIcons,
     palette: Option<&Palette>,
@@ -1743,10 +1389,10 @@ fn list_rows(
             colors,
             icons: row_icons,
         } => {
-            let entries = texts(view, items);
+            let entries = texts(values, items);
             let colors = colors
                 .as_deref()
-                .map(|c| uints(view, c))
+                .map(|c| uints(values, c))
                 .unwrap_or_default();
             let rows: Vec<Vec<Cell>> = entries
                 .iter()
@@ -1754,7 +1400,7 @@ fn list_rows(
                 .map(|(i, s)| vec![Cell::Text(s.clone(), row_color(&colors, i))])
                 .collect();
             let resolved = row_icons.as_ref().map(|(name, kind)| {
-                uints(view, name)
+                uints(values, name)
                     .into_iter()
                     .map(|id| icon(icons, *kind, id))
                     .collect()
@@ -1770,23 +1416,25 @@ fn list_rows(
                     ColumnKind::Text { items, colors, .. } => {
                         let colors = colors
                             .as_deref()
-                            .map(|c| uints(view, c))
+                            .map(|c| uints(values, c))
                             .unwrap_or_default();
-                        texts(view, items)
+                        texts(values, items)
                             .into_iter()
                             .enumerate()
                             .map(|(i, s)| Cell::Text(s, row_color(&colors, i)))
                             .collect()
                     }
-                    ColumnKind::Check { values, .. } => {
-                        bools(view, values).into_iter().map(Cell::Check).collect()
+                    ColumnKind::Check { values: name, .. } => {
+                        bools(values, name).into_iter().map(Cell::Check).collect()
                     }
-                    ColumnKind::Icon { values, kind, .. } => uints(view, values)
+                    ColumnKind::Icon {
+                        values: name, kind, ..
+                    } => uints(values, name)
                         .into_iter()
                         .map(|id| Cell::Icon(icon(icons, *kind, id)))
                         .collect(),
                     ColumnKind::Button { items, .. } => {
-                        texts(view, items).into_iter().map(Cell::Button).collect()
+                        texts(values, items).into_iter().map(Cell::Button).collect()
                     }
                 };
                 counts.push(column_cells.len());
@@ -1819,7 +1467,7 @@ impl PanelController for PluginPanelController {
         self.track_content_minimum(ui);
         // A flex menu has no authored w (the container sizes it): its popup
         // column follows the laid-out menu.
-        for &menu in &self.flex_menus {
+        for &menu in self.sets.values().flat_map(|s| &s.flex_menus) {
             let width = ui.element(menu).map_or(0.0, |e| e.width);
             if let Some(m) = ui.widget_mut::<Menu>(menu) {
                 m.column_width = width.max(20.0);
@@ -1869,7 +1517,7 @@ impl PanelController for PluginPanelController {
             }
             return true;
         }
-        let Some(&index) = self.by_element.get(&element) else {
+        let Some(&(set, index)) = self.by_element.get(&element) else {
             return false;
         };
         let doc = Arc::clone(&self.document);
@@ -1879,30 +1527,35 @@ impl PanelController for PluginPanelController {
                 | Markup::Tab { onclick, .. }
                 | Markup::Toggle { onclick, .. },
                 ElementMessage::Clicked { .. },
-            ) => self.action(onclick, ActionValue::None),
+            ) => self.action(set, onclick, ActionValue::None),
             (
                 Markup::Slider {
                     onchange, min, max, ..
                 },
                 ElementMessage::ScalarChanged(position),
-            ) => self.action(onchange, ActionValue::Float(min + position * (max - min))),
+            ) => self.action(
+                set,
+                onchange,
+                ActionValue::Float(min + position * (max - min)),
+            ),
             (Markup::Field { onchange, .. }, ElementMessage::TextChanged(text)) => {
-                self.action(onchange, ActionValue::Text(text.clone()))
+                self.action(set, onchange, ActionValue::Text(text.clone()))
             }
             (Markup::Field { onsubmit, .. }, ElementMessage::Submitted(text)) => {
-                self.action(onsubmit, ActionValue::Text(text.clone()))
+                self.action(set, onsubmit, ActionValue::Text(text.clone()))
             }
             (Markup::Field { onblur, .. }, ElementMessage::FocusLost(text)) => {
-                self.action(onblur, ActionValue::Text(text.clone()))
+                self.action(set, onblur, ActionValue::Text(text.clone()))
             }
             (Markup::Menu { onchange, .. }, ElementMessage::MenuSelected(payload)) => {
                 let chosen = self
-                    .menu_items
-                    .get(&index)
+                    .sets
+                    .get(&set)
+                    .and_then(|s| s.menu_items.get(&index))
                     .and_then(|items| items.get(usize::try_from(*payload).ok()?))
                     .cloned();
                 match chosen {
-                    Some(text) => self.action(onchange, ActionValue::Text(text)),
+                    Some(text) => self.action(set, onchange, ActionValue::Text(text)),
                     None => true,
                 }
             }
@@ -1924,27 +1577,27 @@ impl PanelController for PluginPanelController {
                     ListBody::Single { .. } => None,
                 };
                 match list.press(w, h, *x as f32, *y as f32) {
-                    ColumnPress::Select(i) => self.action(onchange, row(i)),
+                    ColumnPress::Select(i) => self.action(set, onchange, row(i)),
                     ColumnPress::TextClicked(c, i) => {
                         let handler = column_handler(c, |k| match k {
                             ColumnKind::Text { onclick, .. } => onclick.as_ref(),
                             _ => None,
                         });
-                        self.action(&handler, row(i))
+                        self.action(set, &handler, row(i))
                     }
                     ColumnPress::CheckChanged(c, i) => {
                         let handler = column_handler(c, |k| match k {
                             ColumnKind::Check { onchange, .. } => Some(onchange),
                             _ => None,
                         });
-                        self.action(&handler, row(i))
+                        self.action(set, &handler, row(i))
                     }
                     ColumnPress::IconClicked(c, i) => {
                         let handler = column_handler(c, |k| match k {
                             ColumnKind::Icon { onclick, .. } => Some(onclick),
                             _ => None,
                         });
-                        self.action(&handler, row(i))
+                        self.action(set, &handler, row(i))
                     }
                     ColumnPress::Nothing => true,
                 }
@@ -1964,6 +1617,7 @@ impl PanelController for PluginPanelController {
                     .widget::<MarkupList>(element)
                     .map_or(*row, |l| l.plugin_row(*row));
                 self.action(
+                    set,
                     &handler,
                     ActionValue::Int(i32::try_from(plugin).unwrap_or(i32::MAX)),
                 )
@@ -1980,10 +1634,9 @@ impl PanelController for PluginPanelController {
 pub struct MarkupField {
     /// The text field.
     pub inner: Field,
-    panel: u32,
+    emit: controls::Emit,
     onup: Option<String>,
     ondown: Option<String>,
-    outbox: PluginOutbox,
 }
 
 impl crate::tree::Widget for MarkupField {
@@ -1995,11 +1648,7 @@ impl crate::tree::Widget for MarkupField {
                 _ => None,
             };
             if let Some(handler) = handler {
-                self.outbox.borrow_mut().push(UiInput::Action {
-                    panel: self.panel,
-                    handler,
-                    value: ActionValue::None,
-                });
+                self.emit.act(Some(&handler), ActionValue::None);
                 return true;
             }
         }
@@ -2048,5 +1697,7 @@ impl crate::tree::Widget for MarkupField {
 mod flex_tests;
 #[cfg(test)]
 mod list_button_tests;
+#[cfg(test)]
+mod repeat_tests;
 #[cfg(test)]
 mod tests;

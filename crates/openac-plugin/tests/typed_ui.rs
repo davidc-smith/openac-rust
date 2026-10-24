@@ -184,3 +184,82 @@ fn a_dialog_is_asked_only_with_a_window_and_answered_once() {
     assert!(host.with_host(|h| stale.withdraw(h)));
     assert!(!host.with_host(|h| stale.withdraw(h)));
 }
+
+const ROWS: &str = r#"<panel w="300" h="200" layout="column">
+  <repeat items="{Rows}" key="{Id}">
+    <group layout="row" h="22">
+      <checkbox checked="{On}" onchange="{SetOn}" w="20"/>
+      <label text="{Label}" grow="1"/>
+    </group>
+  </repeat>
+</panel>"#;
+
+/// A row's handler names its row (OpenAC `MarkupRepeatBuildTests.
+/// A_copy_reads_its_item_and_calls_back_on_its_item`: the click reaches
+/// that row's item only).
+#[derive(Default)]
+struct Rows {
+    changes: Vec<(String, Option<String>, Option<bool>)>,
+}
+
+impl Plugin for Rows {
+    fn enable(&mut self, host: &mut Host<'_>, _: &StartInfo) -> Result<(), String> {
+        let spec = PanelSpec::new("rows", "Rows", ROWS).bind_items(
+            "Rows",
+            ItemType::new("Row")
+                .bind("Id", TypedBindingKind::Int)
+                .bind("Label", TypedBindingKind::Text)
+                .bind("On", TypedBindingKind::Bool)
+                .bind("SetOn", TypedBindingKind::BoolAction),
+        );
+        let mut panel = host.register_panel(&spec)?;
+        panel.set(
+            "Rows",
+            (1..=3)
+                .map(|i| {
+                    Item::new()
+                        .set("Id", i)
+                        .set("Label", format!("Row {i}"))
+                        .set("On", false)
+                })
+                .collect::<Items>(),
+        );
+        panel.flush(host)?;
+        Ok(())
+    }
+
+    fn on_event(&mut self, _: &mut Host<'_>, event: Event) {
+        let Event::Ui(UiEvent::Action(action)) = event else {
+            return;
+        };
+        let Some(row) = action.row_action() else {
+            return;
+        };
+        self.changes
+            .push((row.handler, row.rows[0].key.clone(), action.value.as_bool()));
+    }
+}
+
+#[test]
+fn a_row_handler_reaches_the_plugin_with_its_row() {
+    let mut host = FakeHost::new("example.rows");
+    let mut plugin = Rows::default();
+    host.enable(&mut plugin).unwrap();
+    host.act(
+        &mut plugin,
+        1,
+        "Rows[1:2]/SetOn",
+        ActionValue::from_bool(true),
+    );
+    // Not a name of the row's item type: dropped.
+    host.act(
+        &mut plugin,
+        1,
+        "Rows[1:2]/Nope",
+        ActionValue::from_bool(true),
+    );
+    assert_eq!(
+        plugin.changes,
+        [("SetOn".to_owned(), Some("2".to_owned()), Some(true))]
+    );
+}

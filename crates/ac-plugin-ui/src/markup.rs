@@ -744,6 +744,15 @@ pub enum Element {
         /// The picker has an alpha strip.
         alpha: bool,
     },
+    /// Where a `<repeat>` stands in its flex container: its children are
+    /// the template the window builds once per item of the list, as flex
+    /// items of that container in list order. It takes no space itself.
+    Repeat {
+        /// The list (an items binding of the enclosing scope).
+        items: String,
+        /// The item name each row is kept by (a value of the item type).
+        key: Option<String>,
+    },
 }
 
 impl Element {
@@ -771,6 +780,7 @@ impl Element {
             Self::Split { .. } => "split",
             Self::Hotkey { .. } => "hotkey",
             Self::Color { .. } => "color",
+            Self::Repeat { .. } => "repeat",
         }
     }
 
@@ -828,6 +838,10 @@ pub struct Node {
     pub children: Vec<usize>,
     /// Its flex item attributes, when its parent is a flex container.
     pub flex: Option<FlexItem>,
+    /// The innermost `<repeat>` whose template it is in (`None`: the
+    /// window's own element). Its bindings resolve on that repeat's item
+    /// type, and the window builds it once per item.
+    pub repeat: Option<usize>,
 }
 
 /// The `<panel>` root's own attributes.
@@ -894,12 +908,39 @@ pub struct MarkupDocument {
 }
 
 impl MarkupDocument {
-    /// The first element (document order) named `name`.
+    /// The first element (document order) named `name`, outside every
+    /// `<repeat>`: a name in a template is on every row, so it names no one
+    /// control.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<usize> {
         self.nodes
             .iter()
-            .position(|n| n.common.name.as_deref() == Some(name))
+            .position(|n| n.repeat.is_none() && n.common.name.as_deref() == Some(name))
+    }
+
+    /// Whether `node` is in the template of `repeat`, at any depth.
+    #[must_use]
+    pub fn is_within(&self, node: usize, repeat: usize) -> bool {
+        let mut around = self.nodes.get(node).and_then(|n| n.repeat);
+        while let Some(r) = around {
+            if r == repeat {
+                return true;
+            }
+            around = self.nodes[r].repeat;
+        }
+        false
+    }
+
+    /// The remembered names (`name`, else `id`) in `repeat`'s template,
+    /// nested templates included.
+    #[must_use]
+    pub fn template_names(&self, repeat: usize) -> std::collections::BTreeSet<String> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.is_within(*i, repeat))
+            .filter_map(|(_, n)| n.common.name.clone())
+            .collect()
     }
 }
 
@@ -959,6 +1000,7 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
     let mut parser = Parser {
         schema,
         doc: MarkupDocument::default(),
+        repeats: Vec::new(),
     };
     let resizable = b(root, "resizable", false);
     // A window with chrome or a flex layout has a content area: its
@@ -1093,6 +1135,8 @@ pub fn parse(xml: &str, schema: &BindingSchema) -> Result<MarkupDocument, Markup
 struct Parser<'a> {
     schema: &'a BindingSchema,
     doc: MarkupDocument,
+    /// The `<repeat>`s around the element being read, outermost first.
+    repeats: Vec<usize>,
 }
 
 fn attr<'a>(el: XmlNode<'a, '_>, name: &str) -> Option<&'a str> {
@@ -1181,7 +1225,7 @@ fn parse_uint_literal(text: &str, context: &str) -> Result<u32, MarkupError> {
     parsed.ok_or_else(|| MarkupError(format!("{context}=\"{text}\" is not a valid uint literal")))
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
     fn kind(&self, name: &str) -> Option<BindingKind> {
         self.schema.kind(name)
     }
@@ -2113,6 +2157,7 @@ impl Parser<'_> {
             parent,
             children: Vec::new(),
             flex: None,
+            repeat: self.repeats.last().copied(),
         });
         if let Some(p) = parent {
             self.doc.nodes[p].children.push(index);
@@ -2130,14 +2175,19 @@ impl Parser<'_> {
     ) -> Result<usize, MarkupError> {
         let flex_parent = match parent {
             None => self.doc.panel.layout.is_some(),
+            // A template's top elements are items of the container the
+            // `<repeat>` stands in, which is always a flex container.
             Some(p) => matches!(
                 self.doc.nodes[p].element,
                 Element::Group {
                     layout: Some(_),
                     ..
-                }
+                } | Element::Repeat { .. }
             ),
         };
+        if el.tag_name().name() == "repeat" {
+            return self.repeat(el, parent, flex_parent);
+        }
         if !flex_parent {
             flex_attrs::reject_item(el, &mut self.doc.warnings);
         }
@@ -2148,6 +2198,133 @@ impl Parser<'_> {
             self.doc.nodes[index].flex = Some(flex_attrs::read_item(el)?);
         }
         Ok(index)
+    }
+
+    /// OpenAC `MarkupRepeat.Build` (its checks) and `RejectUnkeyedNames`:
+    /// a `<repeat>` stands directly in a flex container, takes only `items`
+    /// (an items list of the enclosing scope) and `key` (a value of the
+    /// item type), and its template is read against the item type. A named
+    /// element in a template needs `key` on every enclosing repeat, as its
+    /// remembered state is kept per key.
+    fn repeat(
+        &mut self,
+        el: XmlNode<'_, '_>,
+        parent: Option<usize>,
+        flex_parent: bool,
+    ) -> Result<usize, MarkupError> {
+        if !flex_parent {
+            return err("<repeat> goes in a flex container (a window or <group> with layout)");
+        }
+        for attribute in el.attributes() {
+            let name = attribute.name();
+            if name != "items" && name != "key" {
+                return err(format!(
+                    "<repeat> takes only items= and key=, not {name}=; put layout attributes on the template's elements"
+                ));
+            }
+        }
+        if el
+            .children()
+            .any(|c| c.is_element() && c.tag_name().name() == "contextmenu")
+        {
+            return err(
+                "<contextmenu> goes inside a <repeat>'s template element, not directly in <repeat>",
+            );
+        }
+        let Some(items_expression) = attr(el, "items").filter(|e| is_binding(e)) else {
+            return err("<repeat items=\"…\"> must be a {binding} to a list");
+        };
+        let items = inner(items_expression);
+        let item: &'a BindingSchema = match self.kind(items) {
+            None => {
+                return err(format!(
+                    "<repeat items=\"{items_expression}\"> did not resolve to a property on {}",
+                    self.type_name()
+                ));
+            }
+            Some(BindingKind::Items) => match self.schema.item_schema(items) {
+                Some(item) => item,
+                None => {
+                    return err(format!(
+                        "<repeat items=\"{items_expression}\"> has no item type on {}",
+                        self.type_name()
+                    ));
+                }
+            },
+            Some(kind) => {
+                return err(format!(
+                    "<repeat items=\"{items_expression}\"> must be a list of items (declared with its item type), not {kind:?}"
+                ));
+            }
+        };
+        let key = match attr(el, "key") {
+            None => None,
+            Some(expression) => {
+                if !is_binding(expression) {
+                    return err(format!(
+                        "<repeat key=\"{expression}\"> must be a {{binding}} to a property of the item"
+                    ));
+                }
+                let name = inner(expression);
+                match item.kind(name) {
+                    None => {
+                        return err(format!(
+                            "<repeat key=\"{expression}\"> did not resolve to a property on {}",
+                            item.type_name
+                        ));
+                    }
+                    Some(
+                        BindingKind::Bool
+                        | BindingKind::Int
+                        | BindingKind::Uint
+                        | BindingKind::Float
+                        | BindingKind::Text
+                        | BindingKind::OptionalBool,
+                    ) => Some(name.to_owned()),
+                    Some(kind) => {
+                        return err(format!(
+                            "<repeat key=\"{expression}\"> must be a bool, int, uint, float or string property of {}, not {kind:?}",
+                            item.type_name
+                        ));
+                    }
+                }
+            }
+        };
+        if key.is_none() {
+            for d in el.descendants().skip(1).filter(XmlNode::is_element) {
+                let named = d.attribute_node("name").or_else(|| d.attribute_node("id"));
+                if let Some(a) = named {
+                    return err(format!(
+                        "<{} {}=\"{}\"> inside a <repeat> needs key= on every enclosing repeat",
+                        d.tag_name().name(),
+                        a.name(),
+                        a.value()
+                    ));
+                }
+            }
+        }
+        let index = self.push(
+            Element::Repeat {
+                items: items.to_owned(),
+                key,
+            },
+            Common::default(),
+            Rect::default(),
+            parent,
+        );
+        let outer = self.schema;
+        self.schema = item;
+        self.repeats.push(index);
+        let mut result = Ok(());
+        for child in el.children().filter(XmlNode::is_element) {
+            if let Err(e) = self.element(child, Some(index)) {
+                result = Err(e);
+                break;
+            }
+        }
+        self.repeats.pop();
+        self.schema = outer;
+        result.map(|()| index)
     }
 
     /// The children of a container, its `<contextmenu>` left out.
@@ -2793,5 +2970,7 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod controls_tests;
+#[cfg(test)]
+mod repeat_tests;
 #[cfg(test)]
 mod tests;

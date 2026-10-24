@@ -511,6 +511,66 @@ wire_record! {
     }
 }
 
+/// One row around a handler fired inside `<repeat>` ([`RowAction`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowStep {
+    /// The list's binding name (on the window, or on the enclosing item).
+    pub list: String,
+    /// The row's place in the list as the window last read it.
+    pub index: usize,
+    /// The row's key as text (`Display` of the key value), on a repeat
+    /// with `key`.
+    pub key: Option<String>,
+}
+
+/// A handler fired inside `<repeat>` rows ([`UiAction::row_action`]): the
+/// rows around the control, outermost first, and the handler's name on the
+/// innermost item type. On the wire the handler name carries them as
+/// `List[index]/` or `List[index:key]/` before the name (a key's `%` and
+/// `/` written `%25` and `%2F`): `Sections[0:a]/Rows[2:7]/SetOn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowAction {
+    /// The rows, outermost first.
+    pub rows: Vec<RowStep>,
+    /// The handler's name on the row's item type.
+    pub handler: String,
+}
+
+impl RowAction {
+    /// Reads a handler name; `None` for a window handler.
+    #[must_use]
+    pub fn parse(handler: &str) -> Option<Self> {
+        let (path, name) = handler.rsplit_once('/')?;
+        if name.is_empty() {
+            return None;
+        }
+        let rows = path
+            .split('/')
+            .map(|step| {
+                let (list, rest) = step.split_once('[')?;
+                let inside = rest.strip_suffix(']')?;
+                let (index, key) = match inside.split_once(':') {
+                    Some((i, k)) => (i, Some(k.replace("%2F", "/").replace("%25", "%"))),
+                    None => (inside, None),
+                };
+                if list.is_empty() || index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit())
+                {
+                    return None;
+                }
+                Some(RowStep {
+                    list: list.to_owned(),
+                    index: index.parse().ok()?,
+                    key,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            rows,
+            handler: name.to_owned(),
+        })
+    }
+}
+
 /// The panel number a dialog's answer arrives on ([`UiAction::dialog_answer`]):
 /// no window has it.
 pub const DIALOG_PANEL: u32 = 0;
@@ -520,6 +580,13 @@ pub const DIALOG_PANEL: u32 = 0;
 pub const DIALOG_HANDLER_PREFIX: &str = "dialog:";
 
 impl UiAction {
+    /// The rows and handler of a handler fired inside `<repeat>` rows;
+    /// `None` for a window handler.
+    #[must_use]
+    pub fn row_action(&self) -> Option<RowAction> {
+        RowAction::parse(&self.handler)
+    }
+
     /// A dialog's answer: its handle and the button picked (by index).
     #[must_use]
     pub fn dialog_answer(&self) -> Option<(u32, i32)> {
