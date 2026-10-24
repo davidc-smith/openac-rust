@@ -24,25 +24,33 @@ use crate::surface::block_on;
 pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
     static DEVICE: OnceLock<Option<(wgpu::Device, wgpu::Queue)>> = OnceLock::new();
     DEVICE
-        .get_or_init(|| {
-            let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-            descriptor.flags = wgpu::InstanceFlags::from_build_config()
-                .difference(wgpu::InstanceFlags::VALIDATION);
-            // As the window: FXC, which ships with Windows, not a dxcompiler.dll found on PATH.
-            descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
-            let instance = wgpu::Instance::new(descriptor);
-            let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: None,
-                ..Default::default()
-            }))
-            .ok()?;
-            let required_features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
-            block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("ac-render unit tests"),
-                required_features,
-                ..Default::default()
-            }))
-            .ok()
-        })
+        .get_or_init(|| new_device("ac-render unit tests"))
         .clone()
+}
+
+/// A device of its own, for a test that ends it (`destroy`): the shared one
+/// must outlive every test.
+pub(crate) fn own_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    new_device("ac-render test, ended by its test")
+}
+
+fn new_device(label: &'static str) -> Option<(wgpu::Device, wgpu::Queue)> {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.flags =
+        wgpu::InstanceFlags::from_build_config().difference(wgpu::InstanceFlags::VALIDATION);
+    // As the window: FXC, which ships with Windows, not a dxcompiler.dll found on PATH.
+    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    let instance = wgpu::Instance::new(descriptor);
+    let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        compatible_surface: None,
+        ..Default::default()
+    }))
+    .ok()?;
+    let required_features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
+    block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some(label),
+        required_features,
+        ..Default::default()
+    }))
+    .ok()
 }

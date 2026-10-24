@@ -52,6 +52,11 @@ impl CrashReporter {
         let hook_reporter = reporter.clone();
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
+            // A lost GPU device met inside a poll is caught there and ends
+            // only the window, which reports it; the process goes on.
+            if ac_render::device_health::contained_device_loss(info.payload()) {
+                return;
+            }
             previous(info);
             hook_reporter.report(info);
         }));
