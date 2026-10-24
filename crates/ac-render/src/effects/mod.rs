@@ -693,7 +693,7 @@ impl WindowEffects {
                 rotation,
                 cell_id: cell,
                 script_id: setup.default_script,
-                part_transforms: rigid_parts(&setup, view.placement, scale),
+                part_transforms: rigid_parts(&setup, Some(view.rest_placement), scale),
                 part_availability: None,
                 effect_profile: None,
             };

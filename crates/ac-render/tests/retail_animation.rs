@@ -46,6 +46,7 @@ fn human(motion: Option<MotionView>) -> ObjectView {
         }),
         parent: None,
         placement: None,
+        rest_placement: 0,
         scale: None,
         translucency: None,
         // Gravity: falling needs it.

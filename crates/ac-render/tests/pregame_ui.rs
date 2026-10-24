@@ -269,6 +269,7 @@ fn horan_created() -> PresentationEvent {
         }),
         parent: None,
         placement: None,
+        rest_placement: 0,
         scale: None,
         translucency: None,
         state: 0,

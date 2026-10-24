@@ -329,6 +329,7 @@ mod tests {
             position: None,
             parent: None,
             placement: None,
+            rest_placement: 0,
             scale: None,
             translucency: None,
             state: 0,

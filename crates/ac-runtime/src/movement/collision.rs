@@ -299,6 +299,7 @@ fn server_object_shape(
             .map(|c| (usize::from(c.part_index), c.new_model_id))
             .collect(),
         motion_table_id: physics.motion_table_id,
+        placement: crate::world::rest_placement(physics),
         flags: server_object_flags(
             item.and_then(|i| i.public_weenie_bitfield)
                 .map(|b| b.bits()),

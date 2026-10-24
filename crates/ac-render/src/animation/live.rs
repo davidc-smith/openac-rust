@@ -100,15 +100,12 @@ impl LiveAnimation {
         obj.sequencer = Some(sequencer);
         obj.sink = MotionSink::Sequencer;
         let scale = view.scale.filter(|s| *s > 0.0).unwrap_or(1.0);
-        let placement = view
-            .placement
-            .filter(|p| setup.placement_frames.iter().any(|(k, _)| k == p));
         let mut animation = Self {
             key: view.key,
             guid: view.guid,
             setup_id: view.setup_id.unwrap_or(0),
             motion_table_id: view.motion_table_id,
-            poses: rest_poses(&setup, placement, scale),
+            poses: rest_poses(&setup, Some(view.rest_placement), scale),
             setup,
             obj,
             interpreted,

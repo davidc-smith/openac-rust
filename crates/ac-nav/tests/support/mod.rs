@@ -261,7 +261,7 @@ fn register_static(
                     .gfx_obj(id)
                     .map(|g| ShadowPartGeometry::new(g.bounding_sphere, g.visual_bounds.as_ref()))
             };
-            from_setup(&setup, 1.0, &has_bsp, None, None, Some(&bounds))
+            from_setup(&setup, 1.0, &has_bsp, None, None, Some(&bounds), None)
         }
         _ => return,
     };

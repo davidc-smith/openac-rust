@@ -712,6 +712,9 @@ pub struct ServerObjectShape {
     pub part_changes: Vec<(usize, u32)>,
     /// Its motion table, whose default state poses its parts.
     pub motion_table_id: Option<u32>,
+    /// The placement its parts rest in when its motion table gives no pose:
+    /// the one it is drawn in.
+    pub placement: u32,
     /// Its collision flags ([`server_object_flags`]).
     pub flags: EntityCollisionFlags,
 }
@@ -856,6 +859,7 @@ pub fn register_server_object<D: DatSource>(
         pose.as_deref(),
         Some(&parts),
         Some(&bounds),
+        Some(shape.placement),
     );
     let render_parts = shadow_builder::from_setup_render_parts(
         &setup,
@@ -864,6 +868,7 @@ pub fn register_server_object<D: DatSource>(
         pose.as_deref(),
         &|id| collision_world.gfx_obj(id),
         &|id| collision_world.visual_bounds(id).copied(),
+        Some(shape.placement),
     );
     if shapes.is_empty() && render_parts.is_empty() {
         return Ok(false);

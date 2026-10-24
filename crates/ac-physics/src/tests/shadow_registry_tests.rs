@@ -1805,7 +1805,15 @@ fn from_setup_cylsphere_and_bsp_setup_floods_the_bsp_footprint() {
         (id == PART)
             .then(|| ShadowPartGeometry::new(Sphere::new(Vec3::new(0.0, 18.0, 0.0), 14.0), None))
     };
-    let shapes = from_setup(&setup, 1.0, &|id| id == PART, None, None, Some(&bounds));
+    let shapes = from_setup(
+        &setup,
+        1.0,
+        &|id| id == PART,
+        None,
+        None,
+        Some(&bounds),
+        None,
+    );
     assert_eq!(shapes.len(), 1);
     assert_eq!(shapes[0].collision_type, ShadowCollisionType::Bsp);
     assert_eq!(shapes[0].radius, 14.0);
@@ -2972,7 +2980,7 @@ fn shapes_of(
     has_bsp: &dyn Fn(u32) -> bool,
     effective: Option<&[u32]>,
 ) -> Vec<ShadowShape> {
-    from_setup(setup, scale, has_bsp, None, effective, None)
+    from_setup(setup, scale, has_bsp, None, effective, None, None)
 }
 
 #[test]
@@ -3028,7 +3036,15 @@ fn closed_leaf(x: f32) -> ac_motion::Frame {
 #[test]
 fn from_setup_a_pose_override_replaces_the_placement_frames() {
     let closed = [closed_leaf(0.85), closed_leaf(-0.85)];
-    let shapes = from_setup(&two_part_door(), 1.0, &|_| true, Some(&closed), None, None);
+    let shapes = from_setup(
+        &two_part_door(),
+        1.0,
+        &|_| true,
+        Some(&closed),
+        None,
+        None,
+        None,
+    );
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0].local_position, Vec3::new(0.85, 0.0, 1.37));
     assert_eq!(shapes[0].local_rotation, Quat::IDENTITY);
@@ -3038,7 +3054,7 @@ fn from_setup_a_pose_override_replaces_the_placement_frames() {
 /// OpenAC `HubDoorPoseInspectionTests.FromSetup_NoOverride_KeepsPlacementFrames`.
 #[test]
 fn from_setup_without_an_override_keeps_the_placement_frames() {
-    let shapes = from_setup(&two_part_door(), 1.0, &|_| true, None, None, None);
+    let shapes = from_setup(&two_part_door(), 1.0, &|_| true, None, None, None, None);
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0].local_position, Vec3::new(0.88, -0.44, 1.37));
     assert_eq!(
@@ -3047,11 +3063,103 @@ fn from_setup_without_an_override_keeps_the_placement_frames() {
     );
 }
 
+/// An item with a resting frame (lifted 1 m), a hook frame (a quarter turn
+/// about x) and, when asked, a default frame.
+fn placed_item(with_default: bool) -> Setup {
+    let mut s = empty_setup();
+    s.parts = vec![0x0100_0001];
+    let frame = |z: f32, q: Quat| AnimationFrame {
+        frames: vec![DatFrame {
+            origin: dv(0.0, 0.0, z),
+            orientation: DatQuat {
+                w: q.w,
+                x: q.x,
+                y: q.y,
+                z: q.z,
+            },
+        }],
+        hooks: Vec::new(),
+    };
+    s.placement_frames = vec![
+        (0x65, frame(1.0, Quat::IDENTITY)),
+        (
+            0x67,
+            frame(0.0, Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
+        ),
+    ];
+    if with_default {
+        s.placement_frames.push((0, frame(0.0, Quat::IDENTITY)));
+    }
+    s
+}
+
+/// OpenAC `LiveEntityCollisionBuilderTests.Build_CollidesInThePlacementTheServerNamed`.
+#[test]
+fn from_setup_collides_in_the_placement_the_object_is_drawn_in() {
+    let shapes = from_setup(
+        &placed_item(true),
+        1.0,
+        &|_| true,
+        None,
+        None,
+        None,
+        Some(0x67),
+    );
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes[0].local_position, Vec3::ZERO);
+    assert!(
+        shapes[0]
+            .local_rotation
+            .abs_diff_eq(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2), 1e-6)
+    );
+}
+
+/// OpenAC `LiveEntityCollisionBuilderTests.Build_WithoutAPlacementOrMotion_CollidesInDefault`.
+#[test]
+fn from_setup_with_the_default_placement_collides_in_default() {
+    let shapes = from_setup(
+        &placed_item(true),
+        1.0,
+        &|_| true,
+        None,
+        None,
+        None,
+        Some(0),
+    );
+    assert_eq!(shapes[0].local_position, Vec3::ZERO);
+    assert_eq!(shapes[0].local_rotation, Quat::IDENTITY);
+}
+
+/// A placement the setup lacks, with no default either: no frame, the part
+/// at the object's origin (not the resting frame).
+#[test]
+fn from_setup_without_the_placement_or_a_default_has_no_frame() {
+    let shapes = from_setup(
+        &placed_item(false),
+        1.0,
+        &|_| true,
+        None,
+        None,
+        None,
+        Some(0x01),
+    );
+    assert_eq!(shapes[0].local_position, Vec3::ZERO);
+    assert_eq!(shapes[0].local_rotation, Quat::IDENTITY);
+}
+
 /// OpenAC `HubDoorPoseInspectionTests.FromSetup_ShortOverride_FallsBackPerPart`.
 #[test]
 fn from_setup_a_short_override_falls_back_part_by_part() {
     let short = [closed_leaf(0.85)];
-    let shapes = from_setup(&two_part_door(), 1.0, &|_| true, Some(&short), None, None);
+    let shapes = from_setup(
+        &two_part_door(),
+        1.0,
+        &|_| true,
+        Some(&short),
+        None,
+        None,
+        None,
+    );
     assert_eq!(shapes.len(), 2);
     assert_eq!(shapes[0].local_position, Vec3::new(0.85, 0.0, 1.37));
     assert_eq!(shapes[1].local_position, Vec3::new(-0.88, -0.44, 1.37));

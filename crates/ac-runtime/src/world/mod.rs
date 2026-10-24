@@ -42,7 +42,7 @@ pub use player::PlayerState;
 pub use presentation::{
     AppliedMotion, AttackBarView, BodyFacts, EffectFacts, MotionView, ObjectDelta, ObjectView,
     PlayerView, RadarFacts, VitalReading, WorldSnapshot, accepted_motion_state, motion_line,
-    motion_log_stamp,
+    motion_log_stamp, rest_placement,
 };
 pub use time::GameClock;
 use transit::TeleportDestination;

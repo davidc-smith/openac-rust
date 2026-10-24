@@ -444,7 +444,7 @@ mod rock_jump {
                     .filter(|g| g.has_physics())
                     .map(|g| ShadowPartGeometry::new(g.bounding_sphere, g.visual_bounds.as_ref()))
             };
-            let shapes = from_setup(&setup, 1.0, &has_bsp, None, None, Some(&bounds));
+            let shapes = from_setup(&setup, 1.0, &has_bsp, None, None, Some(&bounds), None);
             if index == 0 {
                 let cylinders = shapes
                     .iter()
