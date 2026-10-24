@@ -148,7 +148,7 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
     };
     let curated = monitor
         .as_ref()
-        .map(|m| size(m.size()))
+        .and_then(crate::platform::monitor_size)
         .filter(|(w, h)| *w > 0 && *h > 0)
         .map(|desktop| {
             let modes: Vec<(i32, i32)> = monitor
@@ -172,13 +172,7 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
 /// The resolutions the display menu offers for the monitor `window` is on.
 fn resolution_choices_of(window: &Window) -> Vec<String> {
     let monitor = window.current_monitor();
-    let desktop = monitor.as_ref().map(|m| {
-        let s = m.size();
-        (
-            i32::try_from(s.width).unwrap_or(0),
-            i32::try_from(s.height).unwrap_or(0),
-        )
-    });
+    let desktop = monitor.as_ref().and_then(crate::platform::monitor_size);
     let modes: Vec<(i32, i32)> = monitor
         .iter()
         .flat_map(winit::monitor::MonitorHandle::video_modes)

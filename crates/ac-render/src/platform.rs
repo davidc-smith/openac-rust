@@ -175,6 +175,49 @@ fn windows_key_name(scan: u8, extended: bool) -> Option<String> {
     ))
 }
 
+/// The size in pixels of a monitor's desktop, or `None` when the system no
+/// longer knows that monitor. Windows can drop a monitor while the display
+/// is changing (a Remote Desktop connect or disconnect), and the windowing
+/// library's own size query panics then.
+#[must_use]
+pub(crate) fn monitor_size(monitor: &winit::monitor::MonitorHandle) -> Option<(i32, i32)> {
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::MonitorHandleExtWindows;
+        windows_monitor_size(monitor.hmonitor())
+    }
+    #[cfg(not(windows))]
+    {
+        let size = monitor.size();
+        Some((
+            i32::try_from(size.width).unwrap_or(0),
+            i32::try_from(size.height).unwrap_or(0),
+        ))
+    }
+}
+
+/// `GetMonitorInfoW`'s monitor rectangle, as a width and a height.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_monitor_size(hmonitor: isize) -> Option<(i32, i32)> {
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).ok()?,
+        ..MONITORINFO::default()
+    };
+    // A monitor handle is an opaque number, not an address.
+    let handle = std::ptr::without_provenance_mut(hmonitor as usize);
+    // SAFETY: `info` is a live, writable MONITORINFO whose `cbSize` names
+    // its own size; the call writes at most that many bytes, and an unknown
+    // handle makes it fail without writing.
+    let ok = unsafe { GetMonitorInfoW(handle, &raw mut info) };
+    if ok == 0 {
+        return None;
+    }
+    let rect = info.rcMonitor;
+    Some((rect.right - rect.left, rect.bottom - rect.top))
+}
+
 #[cfg(test)]
 mod tests {
     //! Cases from OpenAC `tests/AcDream.App.Tests/Platform/GraphicalWindowBackendSelectionTests.cs`.
@@ -255,5 +298,14 @@ mod tests {
                 expected
             );
         }
+    }
+
+    /// A monitor Windows no longer knows (here a handle that never named
+    /// one) has no size rather than ending the client.
+    #[cfg(windows)]
+    #[test]
+    fn a_monitor_the_system_no_longer_knows_has_no_size() {
+        assert_eq!(windows_monitor_size(0), None);
+        assert_eq!(windows_monitor_size(0x0bad_f00d), None);
     }
 }
