@@ -24,6 +24,7 @@ pub mod list_view;
 pub mod markup;
 pub mod model;
 pub mod number;
+pub mod row;
 mod state;
 pub mod theme;
 pub mod value;

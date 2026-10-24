@@ -888,3 +888,34 @@ mod theme_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+
+    /// The plugin reads a row handler as the window writes it.
+    #[test]
+    fn a_row_handler_reads_back_as_the_window_writes_it() {
+        let text = format!(
+            "{}{}SetOn",
+            ui::row::step_text("Sections", 0, Some("a/b%")),
+            ui::row::step_text("Rows", 7, None)
+        );
+        let action = abi::RowAction::parse(&text).unwrap();
+        let (steps, name) = ui::row::split(&text).unwrap();
+        assert_eq!(action.handler, name);
+        assert_eq!(
+            action
+                .rows
+                .iter()
+                .map(|s| (s.list.clone(), s.index, s.key.clone()))
+                .collect::<Vec<_>>(),
+            steps
+                .into_iter()
+                .map(|s| (s.list, s.index, s.key))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(action.rows[0].key.as_deref(), Some("a/b%"));
+        assert_eq!(abi::RowAction::parse("SetOn"), None);
+    }
+}

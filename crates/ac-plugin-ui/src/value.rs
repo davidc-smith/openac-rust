@@ -166,6 +166,22 @@ impl BindingSchema {
         self.kinds.get(name).copied()
     }
 
+    /// The kind of a handler a control fired: a window handler's own, or
+    /// for a handler in `<repeat>` rows (`List[i]/.../Name`, see
+    /// [`crate::row`]) the kind its item type declares, each list resolved
+    /// on the item type around it.
+    #[must_use]
+    pub fn handler_kind(&self, handler: &str) -> Option<BindingKind> {
+        let Some((steps, name)) = crate::row::split(handler) else {
+            return self.kind(handler);
+        };
+        let mut scope = self;
+        for step in &steps {
+            scope = scope.item_schema(&step.list)?;
+        }
+        scope.kind(name)
+    }
+
     /// Every declared name and its kind, by name.
     pub fn iter(&self) -> impl Iterator<Item = (&str, BindingKind)> {
         self.kinds.iter().map(|(n, k)| (n.as_str(), *k))

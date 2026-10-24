@@ -63,8 +63,8 @@ use std::collections::BTreeMap;
 
 pub use ac_plugin_abi::ui::{
     ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, PaintCmd,
-    PointerEvent, ProjectileSample, Rect, TypedBindingDecl, TypedBindingKind, TypedValue, UiAction,
-    UiEvent, UiValue, WorldLabel, WorldLine,
+    PointerEvent, ProjectileSample, Rect, RowAction, RowStep, TypedBindingDecl, TypedBindingKind,
+    TypedValue, UiAction, UiEvent, UiValue, WorldLabel, WorldLine,
 };
 use ac_plugin_abi::ui::{
     CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
@@ -121,7 +121,8 @@ pub struct PanelSpec {
 }
 
 /// The item type of a `<repeat>`'s list: the names each item carries
-/// (OpenAC: the list's element type).
+/// (OpenAC: the list's element type). A handler it declares fires for one
+/// row: its [`UiAction`] names the row, read with [`UiAction::row_action`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ItemType {
     type_name: String,

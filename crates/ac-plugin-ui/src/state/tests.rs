@@ -1167,3 +1167,93 @@ fn a_snapshot_carries_the_dialogs_and_modals() {
     assert_eq!(view.dialogs[0].handle, handle);
     assert_eq!(view.modals, [(b, a)]);
 }
+
+/// A handler in a `<repeat>` row belongs to the row's item (OpenAC: the
+/// delegate is the item's own): it is checked against the item type the
+/// rows name and reaches the plugin with its rows
+/// (`MarkupRepeatBuildTests.A_copy_reads_its_item_and_calls_back_on_its_item`).
+#[test]
+fn a_row_handler_is_checked_against_its_item_type() {
+    let mut ui = PluginUi::new();
+    let row = BindingSchema::new("Row")
+        .with("Id", BindingKind::Text)
+        .with("On", BindingKind::Bool)
+        .with("SetOn", BindingKind::BoolAction);
+    let section = BindingSchema::new("Section")
+        .with("Id", BindingKind::Text)
+        .with_items("Rows", row.clone());
+    let schema = BindingSchema::new("B")
+        .with_items("Rows", row)
+        .with_items("Sections", section)
+        .with("Go", BindingKind::Action);
+    let id = ui
+        .register_panel(
+            &tank(),
+            PanelDescriptor::new("p", "P"),
+            "<panel layout=\"column\"><repeat items=\"{Rows}\" key=\"{Id}\">\
+             <checkbox checked=\"{On}\" onchange=\"{SetOn}\"/></repeat></panel>",
+            schema,
+        )
+        .unwrap();
+    let act = |ui: &mut PluginUi, handler: &str, value: ActionValue| {
+        ui.input(UiInput::Action {
+            panel: id,
+            handler: handler.into(),
+            value,
+        });
+    };
+    act(&mut ui, "Rows[1:b]/SetOn", ActionValue::Bool(true));
+    act(
+        &mut ui,
+        "Sections[0:s]/Rows[2]/SetOn",
+        ActionValue::Bool(false),
+    );
+    // Not on the item type, a list the scope does not have, the wrong
+    // argument, or a window handler inside a row: dropped.
+    act(&mut ui, "Rows[1:b]/Go", ActionValue::None);
+    act(&mut ui, "Names[1]/SetOn", ActionValue::Bool(true));
+    act(&mut ui, "Rows[1]/SetOn", ActionValue::Int(1));
+    act(&mut ui, "Rows[0]/Rows[0]/SetOn", ActionValue::Bool(true));
+    assert_eq!(
+        ui.take_events()
+            .into_iter()
+            .map(|(_, e)| match e {
+                UiEvent::Action { handler, .. } => handler,
+                other => panic!("{other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            "Rows[1:b]/SetOn".to_owned(),
+            "Sections[0:s]/Rows[2]/SetOn".to_owned()
+        ]
+    );
+    assert_eq!(
+        ui.handler_kind(id, "Sections[0:s]/Rows[2]/SetOn"),
+        Some(BindingKind::BoolAction)
+    );
+}
+
+/// OpenAC `BufferedUiRegistryTests.NamedControlLookupsSkipRepeatRowsButFindTheControlsAfterThem`:
+/// a name in a `<repeat>` template is on every row, so the by-name calls
+/// do not reach it; a control after the repeat is still found.
+#[test]
+fn named_control_lookups_skip_repeat_rows_but_find_the_controls_after_them() {
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("RepeatBinding").with_items(
+        "Rows",
+        BindingSchema::new("RepeatRow").with("Id", BindingKind::Text),
+    );
+    ui.register_panel(
+        &tank(),
+        PanelDescriptor::new("meta", "Status View"),
+        "<panel x=\"0\" y=\"0\" w=\"300\" h=\"400\" layout=\"column\">\
+         <repeat items=\"{Rows}\" key=\"{Id}\"><label name=\"row\" h=\"20\" text=\"{Id}\"/></repeat>\
+         <label name=\"after\" h=\"20\" text=\"after\"/></panel>",
+        schema,
+    )
+    .unwrap();
+    assert!(!ui.control_exists("edwards.tank", "Status View", "row"));
+    assert!(!ui.set_control_visible("edwards.tank", "Status View", "row", false));
+    assert!(!ui.set_control_label("edwards.tank", "Status View", "row", "x"));
+    assert!(ui.control_exists("edwards.tank", "Status View", "after"));
+}

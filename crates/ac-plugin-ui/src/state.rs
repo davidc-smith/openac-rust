@@ -1165,7 +1165,7 @@ impl PluginUi {
                 let Some(p) = self.panels.iter().find(|p| p.view.id == panel) else {
                     return;
                 };
-                if p.schema.kind(&handler) != Some(value.kind()) {
+                if p.schema.handler_kind(&handler) != Some(value.kind()) {
                     return;
                 }
                 let owner = p.view.owner.id.clone();
@@ -1275,7 +1275,7 @@ impl PluginUi {
         self.panels
             .iter()
             .find(|p| p.view.id == panel)
-            .and_then(|p| p.schema.kind(handler))
+            .and_then(|p| p.schema.handler_kind(handler))
             .filter(|k| k.is_action())
     }
 }
