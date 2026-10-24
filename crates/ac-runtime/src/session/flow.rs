@@ -487,6 +487,8 @@ impl SessionFlow {
             | Inbound::PrivateUpdatePropertyInt64(_)
             | Inbound::PrivateUpdatePropertyBool(_)
             | Inbound::PublicUpdatePropertyBool(_)
+            | Inbound::PublicUpdatePropertyString(_)
+            | Inbound::PrivateUpdatePropertyString(_)
             | Inbound::PublicUpdatePropertyDataId(_)
             | Inbound::PrivateUpdatePropertyDataId(_)
             | Inbound::PublicUpdatePropertyInstanceId(_)

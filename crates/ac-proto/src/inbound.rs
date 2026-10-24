@@ -6,9 +6,10 @@ use crate::{
 use crate::{
     InventoryRemoveObject, PrivateUpdateAttribute, PrivateUpdatePosition,
     PrivateUpdatePropertyBool, PrivateUpdatePropertyDataId, PrivateUpdatePropertyInstanceId,
-    PrivateUpdatePropertyInt, PrivateUpdatePropertyInt64, PrivateUpdateSkill, PrivateUpdateVital,
-    PrivateUpdateVitalCurrent, PublicUpdatePropertyBool, PublicUpdatePropertyDataId,
-    PublicUpdatePropertyInstanceId, PublicUpdatePropertyInt, SetStackSize,
+    PrivateUpdatePropertyInt, PrivateUpdatePropertyInt64, PrivateUpdatePropertyString,
+    PrivateUpdateSkill, PrivateUpdateVital, PrivateUpdateVitalCurrent, PublicUpdatePropertyBool,
+    PublicUpdatePropertyDataId, PublicUpdatePropertyInstanceId, PublicUpdatePropertyInt,
+    PublicUpdatePropertyString, SetStackSize,
 };
 
 /// An inbound game message, classified.
@@ -52,6 +53,10 @@ pub enum Inbound<'a> {
     PrivateUpdatePropertyBool(PrivateUpdatePropertyBool),
     /// A true/false property changed on a visible object.
     PublicUpdatePropertyBool(PublicUpdatePropertyBool),
+    /// A string property changed on a visible object.
+    PublicUpdatePropertyString(PublicUpdatePropertyString),
+    /// A string property changed on the player.
+    PrivateUpdatePropertyString(PrivateUpdatePropertyString),
     /// A data-id property changed on a visible object.
     PublicUpdatePropertyDataId(PublicUpdatePropertyDataId),
     /// A data-id property changed on the player.
@@ -171,6 +176,12 @@ impl<'a> Inbound<'a> {
             }
             Some(Opcode::PublicUpdatePropertyBool) => {
                 Self::PublicUpdatePropertyBool(PublicUpdatePropertyBool::parse(body)?)
+            }
+            Some(Opcode::PublicUpdatePropertyString) => {
+                Self::PublicUpdatePropertyString(PublicUpdatePropertyString::parse(body)?)
+            }
+            Some(Opcode::PrivateUpdatePropertyString) => {
+                Self::PrivateUpdatePropertyString(PrivateUpdatePropertyString::parse(body)?)
             }
             Some(Opcode::PublicUpdatePropertyDataId) => {
                 Self::PublicUpdatePropertyDataId(PublicUpdatePropertyDataId::parse(body)?)
@@ -527,6 +538,25 @@ mod tests {
             // A truncated message of a handled kind is an error, not Other.
             assert!(Inbound::parse(&body[..body.len() - 1]).is_err());
         }
+    }
+
+    #[test]
+    fn string_updates_classify() {
+        // Opcode, sequence, (object,) property, padding to 4, u16 length, text.
+        let public = [
+            0xD6, 0x02, 0, 0, 1, 0x2A, 0, 0, 0x50, 1, 0, 0, 0, 0, 0, 0, 2, 0, b'O', b'k',
+        ];
+        assert!(matches!(
+            Inbound::parse(&public).unwrap(),
+            Inbound::PublicUpdatePropertyString(p) if p.guid == 0x5000_002A && p.value == "Ok"
+        ));
+        let private = [0xD5, 0x02, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 2, 0, b'O', b'k'];
+        assert!(matches!(
+            Inbound::parse(&private).unwrap(),
+            Inbound::PrivateUpdatePropertyString(p) if p.property == 1 && p.value == "Ok"
+        ));
+        assert!(Inbound::parse(&public[..public.len() - 1]).is_err());
+        assert!(Inbound::parse(&private[..private.len() - 1]).is_err());
     }
 
     #[test]
