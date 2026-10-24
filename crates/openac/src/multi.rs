@@ -643,11 +643,7 @@ pub(crate) fn monitor(
     };
     handle.join();
     let error = summary.error.clone().or(policy_failure);
-    let code = match &error {
-        None => HostExit::Success,
-        Some(error) if error.contains("connect") => HostExit::Connection,
-        Some(_) => HostExit::Runtime,
-    };
+    let code = end_code(error.as_deref());
     status.disconnected(id, error.as_deref().unwrap_or("logoff"));
     status.exited(
         id,
@@ -871,9 +867,42 @@ fn window_session<'a, T>(
     }
 }
 
+/// How a session that ended reports itself: no error is success, a
+/// failure to connect or a login that found no character to enter is a
+/// connection error (as OpenAC's headless client: any start that does
+/// not reach the world), anything else a runtime error.
+fn end_code(error: Option<&str>) -> HostExit {
+    match error {
+        None => HostExit::Success,
+        Some(error) if error.contains("connect") || error.starts_with("no available character") => {
+            HostExit::Connection
+        }
+        Some(_) => HostExit::Runtime,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // OpenAC HeadlessSessionHost.ResolveTerminalStatus: a start that does
+    // not reach the world (no character included) exits 5.
+    #[test]
+    fn a_login_that_finds_no_character_is_a_connection_error() {
+        assert_eq!(
+            end_code(Some("no available character matches Id(1342177999)")),
+            HostExit::Connection
+        );
+        assert_eq!(
+            end_code(Some("could not connect to 127.0.0.1:9000")),
+            HostExit::Connection
+        );
+        assert_eq!(
+            end_code(Some("the world thread panicked")),
+            HostExit::Runtime
+        );
+        assert_eq!(end_code(None), HostExit::Success);
+    }
 
     fn two_sessions() -> BTreeMap<String, ()> {
         [("alpha".to_owned(), ()), ("beta".to_owned(), ())].into()
