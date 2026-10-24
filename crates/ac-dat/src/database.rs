@@ -2,8 +2,6 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ac_bits::Reader;
-
 use crate::btree::{DatEntry, Node, is_valid_offset};
 use crate::cache::{CacheStats, DEFAULT_NODE_CACHE_LIMIT, NodeCache};
 use crate::error::{DatError, Result};
@@ -189,8 +187,8 @@ impl DatFile {
         let Some(bytes) = self.get_bytes(id)? else {
             return Ok(None);
         };
-        let mut object = T::unpack(&mut Reader::new(&bytes))
-            .map_err(|source| DatError::Decode { id, source })?;
+        let mut object =
+            T::unpack_owned(bytes).map_err(|source| DatError::Decode { id, source })?;
         object.set_id(id);
         Ok(Some(object))
     }
@@ -236,14 +234,26 @@ impl DatFile {
     /// retail dats about one block in 200 jumps elsewhere), so the blocks
     /// still needed are read as one run with one system call, and a block
     /// is read again from the file only when the chain leaves the run.
+    ///
+    /// The run is read into the returned buffer itself, just past the bytes
+    /// gathered so far, and each block's data is moved down over the block
+    /// headers: one allocation, the size of the file plus its headers.
+    /// Everything at or past the gathered bytes is still the run as read, so
+    /// a later block is taken from the run only when it lies there.
     fn read_chain(&self, start: i32, len: usize) -> Result<Vec<u8>> {
         let block_size = self.header.block_size as usize;
         let data_per_block = block_size - 4;
-        let mut out = vec![0u8; len];
+        // A run is at most the blocks still needed, whole; gathered bytes
+        // plus that never pass the file's length, its headers and one block.
+        let capacity = len
+            .saturating_add(4 * len.div_ceil(data_per_block))
+            .saturating_add(block_size);
+        let mut buf: Vec<u8> = Vec::with_capacity(capacity.min(len.saturating_add(MAX_RUN_BYTES)));
         let mut filled = 0;
         let mut block = start;
-        let mut run: Vec<u8> = Vec::new();
+        // The current run: where it starts in the file and in `buf`.
         let mut run_start = 0u64;
+        let mut run_at = 0usize;
         while block != 0 && filled < len {
             let take = data_per_block.min(len - filled);
             let need = (4 + take) as u64;
@@ -256,25 +266,31 @@ impl DatFile {
                     file_len: self.file_len,
                 });
             };
-            let in_run = offset >= run_start && offset + need <= run_start + run.len() as u64;
+            let run_end = run_start + (buf.len() - run_at) as u64;
+            let in_run = offset >= run_start
+                && offset + need <= run_end
+                && run_at + (offset - run_start) as usize >= filled;
             if !in_run {
                 let blocks_left = (len - filled).div_ceil(data_per_block);
                 let run_len = (blocks_left * block_size)
                     .min(MAX_RUN_BYTES)
                     .min(usize::try_from(self.file_len - offset).unwrap_or(usize::MAX))
                     .max(4 + take);
-                run.resize(run_len, 0);
-                read_exact_at(&self.file, &mut run, offset).map_err(|source| DatError::Io {
-                    path: self.path.clone(),
-                    source,
+                buf.resize(filled + run_len, 0);
+                read_exact_at(&self.file, &mut buf[filled..], offset).map_err(|source| {
+                    DatError::Io {
+                        path: self.path.clone(),
+                        source,
+                    }
                 })?;
                 run_start = offset;
+                run_at = filled;
             }
-            let at = (offset - run_start) as usize;
-            let span = &run[at..at + 4 + take];
-            out[filled..filled + take].copy_from_slice(&span[4..]);
+            let at = run_at + (offset - run_start) as usize;
+            let next = i32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]);
+            buf.copy_within(at + 4..at + 4 + take, filled);
             filled += take;
-            block = i32::from_le_bytes([span[0], span[1], span[2], span[3]]);
+            block = next;
         }
         if filled < len {
             return Err(DatError::ChainEnded {
@@ -283,7 +299,8 @@ impl DatFile {
                 read: filled,
             });
         }
-        Ok(out)
+        buf.truncate(len);
+        Ok(buf)
     }
 }
 
@@ -403,6 +420,28 @@ mod tests {
             for i in 0..blocks {
                 let next = if i + 1 < blocks { at(i + 1) as i32 } else { 0 };
                 let chunk = &data[(i * per).min(data.len())..((i + 1) * per).min(data.len())];
+                let o = at(i);
+                self.bytes[o..o + 4].copy_from_slice(&next.to_le_bytes());
+                self.bytes[o + 4..o + 4 + chunk.len()].copy_from_slice(chunk);
+            }
+            at(0) as i32
+        }
+
+        /// Append `data` as a chain whose block `i` lies at slot `slots[i]`
+        /// of the space it takes; returns its first block offset.
+        fn chain_in_slots(&mut self, data: &[u8], slots: &[usize]) -> i32 {
+            let per = self.block_size - 4;
+            assert_eq!(slots.len(), data.len().div_ceil(per));
+            let base = self.bytes.len();
+            let at = |i: usize| base + slots[i] * self.block_size;
+            self.bytes.resize(base + slots.len() * self.block_size, 0);
+            for i in 0..slots.len() {
+                let next = if i + 1 < slots.len() {
+                    at(i + 1) as i32
+                } else {
+                    0
+                };
+                let chunk = &data[i * per..((i + 1) * per).min(data.len())];
                 let o = at(i);
                 self.bytes[o..o + 4].copy_from_slice(&next.to_le_bytes());
                 self.bytes[o + 4..o + 4 + chunk.len()].copy_from_slice(chunk);
@@ -654,6 +693,29 @@ mod tests {
         assert_eq!(dat.get_bytes(1).unwrap().unwrap(), long);
         assert_eq!(dat.get_bytes(2).unwrap().unwrap(), long);
         assert_eq!(dat.get_bytes(3).unwrap().unwrap(), b"0123456789");
+        std::fs::remove_file(path).ok();
+    }
+
+    /// The blocks are gathered in place over the run they were read with:
+    /// a chain that steps back to a block of the run whose bytes the
+    /// gathering has already covered reads that block again from the file.
+    #[test]
+    fn chains_that_step_back_inside_their_run_read_whole() {
+        let mut b = DatBuilder::new(64);
+        let long: Vec<u8> = (0..300u32).map(|i| (i * 13 % 251) as u8).collect();
+        // Five blocks: forward over slots 1 and 3, back to 2 (covered by
+        // then), forward to 4, back to the first slot.
+        let stepping = b.chain_in_slots(&long, &[1, 3, 2, 4, 0]);
+        // Forward to the run's far end, then back to a slot not yet covered.
+        let skipping = b.chain_in_slots(&long[..180], &[0, 2, 1]);
+        let leaf = b.chain(&node_bytes(
+            &[],
+            &[entry(1, stepping, 300), entry(2, skipping, 180)],
+        ));
+        let path = write_temp("step-back", &b.finish(1, leaf));
+        let dat = DatFile::open(&path).unwrap();
+        assert_eq!(dat.get_bytes(1).unwrap().unwrap(), long);
+        assert_eq!(dat.get_bytes(2).unwrap().unwrap(), &long[..180]);
         std::fs::remove_file(path).ok();
     }
 
