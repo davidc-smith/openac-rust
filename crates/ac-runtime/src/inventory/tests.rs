@@ -2928,3 +2928,152 @@ fn a_yes_rechecks_the_inventory_gate_before_the_use() {
     assert!(f.sent().is_empty());
     assert_eq!(f.notices(), [Notice::Interface(REQUEST_BUSY.into())]);
 }
+
+// -- The slumlord window -------------------------------------------------------
+
+const SLUMLORD: u32 = 0x7000_0100;
+
+/// A 0x021D profile from `SLUMLORD` for a house nobody owns, its price
+/// eight gems (class 10, named "Gem"), no maintenance lines.
+fn gem_house_profile() -> Vec<u32> {
+    vec![
+        SLUMLORD,
+        0x1234_0001, // dwelling
+        0,           // owner
+        1,           // bitmask
+        u32::MAX,    // min level -1
+        u32::MAX,    // max level
+        u32::MAX,    // min rank
+        u32::MAX,    // max rank
+        0,           // maintenance free
+        1,           // cottage
+        0,           // owner name ""
+        1,           // one buy line
+        8,
+        0,
+        10,
+        u32::from_le_bytes([3, 0, b'G', b'e']),
+        u32::from_le_bytes([b'm', 0, 0, 0]),
+        0, // plural ""
+        0, // no rent lines
+    ]
+}
+
+fn house(command: HousePurchaseCommand) -> ItemCommand {
+    ItemCommand::HousePurchase(command)
+}
+
+// OpenAC #244: `RuntimeHousePurchaseWiringTests` (the profile reaches the
+// state), `HousePurchaseUiControllerTests.Drop_StagesAndEnablesTheButton_*`
+// (the button sends the staged guids and empties the strip; a yes after the
+// window moved on sends nothing) and `Drop_Refused_OnlyAnItemNotCarriedIsReported`.
+#[test]
+fn a_house_profile_opens_the_slumlord_window_and_its_button_buys_with_the_staged_items() {
+    let mut f = Fixture::new();
+    f.server(GameEventType::HOUSE_PROFILE, &gem_house_profile());
+    let view = f.inventory.house_purchase_view(&f.world);
+    assert!(view.is_open());
+    assert_eq!(view.profile.as_ref().unwrap().buy[0].name, "Gem");
+
+    // An item the player does not carry is refused, and said.
+    assert!(!f.run(house(HousePurchaseCommand::Stage {
+        tab: HousePurchaseTab::Buy,
+        item: LOOSE,
+    })));
+    assert_eq!(
+        f.notices(),
+        [Notice::Text(
+            house_purchase::NOT_CARRYING.into(),
+            ac_core::chat::LogTextType::ClientLocal
+        )]
+    );
+
+    for gem in [GEM, GEM2] {
+        assert!(f.run(house(HousePurchaseCommand::Stage {
+            tab: HousePurchaseTab::Buy,
+            item: gem,
+        })));
+    }
+    assert!(f.notices().is_empty());
+    assert!(
+        f.inventory
+            .house_purchase_view(&f.world)
+            .can_submit(HousePurchaseTab::Buy)
+    );
+
+    // A yes that names another slumlord (the window moved on) sends nothing.
+    assert!(!f.run(house(HousePurchaseCommand::Submit {
+        tab: HousePurchaseTab::Buy,
+        slumlord: SLUMLORD + 1,
+    })));
+    assert!(f.sent().is_empty());
+
+    assert!(f.run(house(HousePurchaseCommand::Submit {
+        tab: HousePurchaseTab::Buy,
+        slumlord: SLUMLORD,
+    })));
+    assert_eq!(
+        f.sent(),
+        [ac_proto::house::build_buy_house(1, SLUMLORD, &[GEM, GEM2])]
+    );
+    let view = f.inventory.house_purchase_view(&f.world);
+    assert!(view.buy.is_empty(), "sending empties the strip");
+    assert_eq!(view.staged_amount(HousePurchaseTab::Buy, 0), 0);
+}
+
+// OpenAC #244: `RuntimeHousePurchaseRangeQueryTests` (a teleport closes the
+// window) and `HousePurchaseUiControllerTests.AnItemLeavingTheInventory_IsUnstaged`.
+#[test]
+fn a_teleport_closes_the_slumlord_window_and_a_staged_item_leaving_is_unstaged() {
+    let mut f = Fixture::new();
+    f.server(GameEventType::HOUSE_PROFILE, &gem_house_profile());
+    f.run(house(HousePurchaseCommand::Stage {
+        tab: HousePurchaseTab::Buy,
+        item: GEM,
+    }));
+    f.world.apply(&Inbound::InventoryRemoveObject(
+        ac_proto::InventoryRemoveObject { guid: GEM },
+    ));
+    let mut inventory = std::mem::take(&mut f.inventory);
+    inventory.observe(&mut f.ctx());
+    f.inventory = inventory;
+    let view = f.inventory.house_purchase_view(&f.world);
+    assert!(view.buy.is_empty());
+    assert_eq!(view.staged_amount(HousePurchaseTab::Buy, 0), 0);
+
+    let teleport = Inbound::PlayerTeleport(ac_proto::PlayerTeleport {
+        teleport_sequence: 1,
+    });
+    let mut inventory = std::mem::take(&mut f.inventory);
+    inventory.apply(&teleport, &mut f.ctx());
+    f.inventory = inventory;
+    assert!(!f.inventory.house_purchase_view(&f.world).is_open());
+}
+
+// HousePurchaseUiControllerTests.Drop_NotCarried_IsReportedEvenWhenTheTabTakesNothing
+// (review of #244, defect 4): the not-carried refusal comes before the
+// tab's own, so a ground item dropped on Buy of an owned house is said.
+#[test]
+fn an_item_not_carried_is_said_even_when_the_tab_takes_nothing() {
+    let mut f = Fixture::new();
+    let mut owned = gem_house_profile();
+    owned[2] = PLAYER;
+    f.server(GameEventType::HOUSE_PROFILE, &owned);
+    f.run(house(HousePurchaseCommand::Stage {
+        tab: HousePurchaseTab::Buy,
+        item: LOOSE,
+    }));
+    assert_eq!(
+        f.notices(),
+        [Notice::Text(
+            house_purchase::NOT_CARRYING.into(),
+            ac_core::chat::LogTextType::ClientLocal
+        )]
+    );
+    // An item the player carries is refused silently there.
+    f.run(house(HousePurchaseCommand::Stage {
+        tab: HousePurchaseTab::Buy,
+        item: GEM,
+    }));
+    assert!(f.notices().is_empty());
+}

@@ -16,7 +16,7 @@ use ac_ui::panels::selected_object::{SelectionFacts, SelectionHealth};
 use ac_ui::panels::spew_box::{self, SpewBoxController};
 
 use super::social_panels::SocialPage;
-use super::social_panels::{TRADE_WINDOW, VENDOR_WINDOW};
+use super::social_panels::{HOUSE_PURCHASE_WINDOW, TRADE_WINDOW, VENDOR_WINDOW};
 use super::window::{COMBAT_WINDOW, Hotkey, RADAR_WINDOW, VITALS_WINDOW, WindowUi};
 use crate::scene::Scene;
 use ac_ui::input::InputAction;
@@ -27,7 +27,7 @@ use ac_ui::panels::toolbar::ToolbarKey;
 
 /// The windows whose visibility the game decides (OpenAC's
 /// state-managed windows): their visibility is neither restored nor saved.
-const STATE_MANAGED: [&str; 8] = [
+const STATE_MANAGED: [&str; 9] = [
     super::salvage_window::SALVAGE_WINDOW,
     COMBAT_WINDOW,
     JUMP_POWERBAR_WINDOW,
@@ -36,6 +36,7 @@ const STATE_MANAGED: [&str; 8] = [
     super::window::SIDE_VITALS_WINDOW,
     VENDOR_WINDOW,
     TRADE_WINDOW,
+    HOUSE_PURCHASE_WINDOW,
 ];
 
 /// The jump power bar's window.

@@ -63,7 +63,7 @@ use super::icons::RuntimeImages;
 use super::input::{self as ui_input, Routed, WorldInput};
 pub use super::mount::{Chrome, MountOptions, mount_window};
 pub use super::social_panels::{
-    JOURNAL_WINDOW, SOCIAL_WINDOW, SocialPage, TRADE_WINDOW, VENDOR_WINDOW,
+    HOUSE_PURCHASE_WINDOW, JOURNAL_WINDOW, SOCIAL_WINDOW, SocialPage, TRADE_WINDOW, VENDOR_WINDOW,
 };
 use crate::scene::Scene;
 
@@ -224,6 +224,7 @@ pub fn session_command(output: &PanelOutput) -> Option<SessionCommand> {
         | PanelOutput::ClosePanel(_)
         | PanelOutput::ResetSplitQuantity { .. }
         | PanelOutput::Confirm { .. }
+        | PanelOutput::ConfirmEither { .. }
         | PanelOutput::FavoriteSpell(_)
         | PanelOutput::ExamineSpell(_)
         | PanelOutput::CloseExamination
@@ -415,6 +416,9 @@ pub(super) enum DialogAction {
     Session(ClientConfirmation),
     /// A panel's question: a yes acts on this request.
     Panel(PanelOutput),
+    /// A panel's question with an answer for each: a yes acts on the
+    /// first request, a no on the second.
+    Either(PanelOutput, PanelOutput),
     /// The training confirmation: a yes trains, a no frees the raise
     /// buttons.
     Train {
@@ -1398,6 +1402,11 @@ impl WindowUi {
             PanelOutput::Confirm { message, on_yes } => {
                 self.ask(message, DialogAction::Panel(*on_yes))
             }
+            PanelOutput::ConfirmEither {
+                message,
+                on_yes,
+                on_no,
+            } => self.ask(message, DialogAction::Either(*on_yes, *on_no)),
             PanelOutput::TrainSkill { skill, credits } => {
                 let name = self
                     .host
@@ -1469,6 +1478,9 @@ impl WindowUi {
             }
             DialogAction::Panel(output) if accept => self.panel_output(output, commands),
             DialogAction::Panel(_) => {}
+            DialogAction::Either(yes, no) => {
+                self.panel_output(if accept { yes } else { no }, commands);
+            }
             DialogAction::Train { skill, credits } if accept => {
                 commands.push(SessionCommand::Character(CharacterCommand::TrainSkill {
                     skill,

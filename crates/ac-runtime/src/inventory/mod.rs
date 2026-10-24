@@ -14,6 +14,7 @@
 
 mod actions;
 mod approach;
+pub mod house_purchase;
 mod interaction;
 pub mod pickup;
 pub mod shop;
@@ -48,6 +49,9 @@ pub use actions::{REQUEST_NOT_SENT, target_compatible};
 pub use approach::{
     APPROACH_NEVER_COMPLETED, ApproachCompletion, ApproachPlan, ApproachSource, ApproachToken,
     CHARGE_DISTANCE, DEFAULT_USE_RADIUS, STALLED_APPROACH_GIVE_UP_TICKS,
+};
+pub use house_purchase::{
+    HousePurchaseCommand, HousePurchaseState, HousePurchaseTab, HousePurchaseView, HouseStageResult,
 };
 pub use interaction::{
     APPRAISAL_REQUEST_TIMEOUT_MS, AppraisalAcceptance, AppraisalOrigin, Interaction,
@@ -213,6 +217,8 @@ pub enum ItemCommand {
     ResetTrade,
     /// Close the trade window.
     CloseTrade,
+    /// The slumlord window: staging its payment, sending it, closing it.
+    HousePurchase(HousePurchaseCommand),
     /// Put an item into a pack at a slot, as a drop on an item window does
     /// (the inventory's grid and pack column, an outside container's
     /// contents): part of a stack (`amount` short of it) splits off; the
@@ -596,6 +602,8 @@ pub struct Inventory {
     /// The side pack a window shows open (0: none).
     open_pack: u32,
     trade: TradeState,
+    /// The slumlord window.
+    house_purchase: HousePurchaseState,
     /// What the next object clicked does.
     mode: InteractionMode,
     /// The toolbar's shortcut bar (character state: the description loads
@@ -830,6 +838,106 @@ impl Inventory {
         }
     }
 
+    /// The slumlord window's state.
+    #[must_use]
+    pub fn house_purchase(&self) -> &HousePurchaseState {
+        &self.house_purchase
+    }
+
+    /// The slumlord window as a host shows it.
+    #[must_use]
+    pub fn house_purchase_view(&self, world: &World) -> HousePurchaseView {
+        self.house_purchase
+            .view(world.items(), world.player_guid().unwrap_or(0))
+    }
+
+    /// The trade-note classes the slumlord window pays with, each with its
+    /// value in pyreals (the dats' trade-note map).
+    pub fn install_trade_notes(
+        &mut self,
+        notes: std::sync::Arc<std::collections::HashMap<u32, i32>>,
+    ) {
+        self.house_purchase.install_trade_notes(notes);
+    }
+
+    /// Close the slumlord window (out of range, the slumlord gone);
+    /// nothing when none is open.
+    pub fn close_house_purchase(&mut self) {
+        self.house_purchase.close();
+    }
+
+    /// An item-table change while the slumlord window is open: staged items
+    /// the player no longer carries leave the strips, and a staged item
+    /// changed in place (a stack merged or split) is read again.
+    fn follow_house_purchase(&mut self, event: &TableEvent, world: &World) {
+        if !self.house_purchase.is_open() {
+            return;
+        }
+        let player = world.player_guid().unwrap_or(0);
+        if self.house_purchase.revalidate(world.items(), player) {
+            return;
+        }
+        if let TableEvent::Updated { object_id, .. }
+        | TableEvent::StackSizeUpdated { object_id, .. } = event
+            && self.house_purchase.is_staged(*object_id)
+        {
+            self.house_purchase.touch();
+        }
+    }
+
+    /// The slumlord window's request.
+    fn run_house_purchase(
+        &mut self,
+        command: HousePurchaseCommand,
+        ctx: &mut ItemContext<'_>,
+    ) -> bool {
+        let player = ctx.player();
+        match command {
+            HousePurchaseCommand::Stage { tab, item } => {
+                let result = self
+                    .house_purchase
+                    .stage(tab, item, ctx.world.items(), player);
+                // Of the refusals only an item the player does not carry is
+                // said.
+                if result == HouseStageResult::NotInInventory {
+                    self.notices.push(Notice::Text(
+                        house_purchase::NOT_CARRYING.to_owned(),
+                        ac_core::chat::LogTextType::ClientLocal,
+                    ));
+                }
+                result == HouseStageResult::Staged
+            }
+            HousePurchaseCommand::Unstage { tab, item } => {
+                self.house_purchase.unstage(tab, item, ctx.world.items())
+            }
+            HousePurchaseCommand::Submit { tab, slumlord } => {
+                // Checked again here: the window may have closed or moved on
+                // to another slumlord while a question was answered.
+                let view = self.house_purchase_view(ctx.world);
+                if self.house_purchase.slumlord() != slumlord
+                    || slumlord == 0
+                    || !view.can_submit(tab)
+                {
+                    return false;
+                }
+                let items = view.staged(tab).to_vec();
+                let sent = ctx.send(|seq| match tab {
+                    HousePurchaseTab::Buy => {
+                        ac_proto::house::build_buy_house(seq, slumlord, &items)
+                    }
+                    HousePurchaseTab::Rent => {
+                        ac_proto::house::build_rent_house(seq, slumlord, &items)
+                    }
+                });
+                if sent {
+                    self.house_purchase.clear_staged(tab);
+                }
+                sent
+            }
+            HousePurchaseCommand::Close => self.house_purchase.close(),
+        }
+    }
+
     /// The viewed ground container.
     #[must_use]
     pub fn external_containers(&self) -> &ExternalContainerState {
@@ -989,8 +1097,11 @@ impl Inventory {
                         .insert(create.guid, weenie.use_radius.unwrap_or(0.0));
                 }
             }
-            // A teleport closes the vendor's window.
-            Inbound::PlayerTeleport(_) => self.close_vendor(ctx),
+            // A teleport closes the vendor's window and the slumlord's.
+            Inbound::PlayerTeleport(_) => {
+                self.close_vendor(ctx);
+                self.house_purchase.close();
+            }
             _ => {}
         }
         self.observe(ctx);
@@ -1122,6 +1233,10 @@ impl Inventory {
                     answer.valid,
                 );
                 self.events.push(InventoryEvent::ItemMana(change));
+            }
+            GameEventType::HOUSE_PROFILE => {
+                let profile = ac_proto::house::HouseProfile::parse(payload)?;
+                self.house_purchase.apply_profile(profile);
             }
             _ => {}
         }
@@ -1330,6 +1445,7 @@ impl Inventory {
                     self.notices.push(Notice::WeenieError(failure.weenie_error));
                 }
                 self.observe_wield(event, ctx);
+                self.follow_house_purchase(event, ctx.world);
             }
         }
     }
@@ -1464,6 +1580,7 @@ impl Inventory {
         self.mark_salvage(&[], world);
         let marks = self.trade.clear();
         mark(world, &marks);
+        self.house_purchase.close();
         self.mode = InteractionMode::None;
         self.shortcuts.clear();
         self.item_mana.clear();

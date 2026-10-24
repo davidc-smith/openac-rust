@@ -9,7 +9,9 @@ use ac_core::items::{ClientObjectTable, ItemManaChange, StackSplitQuantity};
 use ac_core::player::{AttributeKind, LocalPlayerState};
 use ac_runtime::communication::JournalView;
 use ac_runtime::gameplay::{BookView, HouseView};
-use ac_runtime::inventory::{AppraisalView, InteractionMode, TradeView, VendorView};
+use ac_runtime::inventory::{
+    AppraisalView, HousePurchaseView, InteractionMode, TradeView, VendorView,
+};
 use ac_runtime::session::interface::{ChatEntryView, TitleFacts};
 use ac_runtime::session::interface::{
     ContractFacts, InterfaceEvent, InterfaceState, PlayerFacts, SocialFacts, apply_items_update,
@@ -35,6 +37,8 @@ pub struct Dirty {
     pub book: bool,
     /// The house.
     pub house: bool,
+    /// The slumlord window.
+    pub house_purchase: bool,
     /// The journal.
     pub journal: bool,
     /// The titles.
@@ -81,6 +85,8 @@ pub struct InterfaceFacts {
     pub book: Option<BookView>,
     /// The house, once sent.
     pub house: Option<HouseView>,
+    /// The slumlord window.
+    pub house_purchase: HousePurchaseView,
     /// The journal, once sent.
     pub journal: Option<JournalView>,
     /// The titles, once sent.
@@ -142,6 +148,10 @@ impl InterfaceFacts {
             InterfaceEvent::House(view) => {
                 self.house = Some(*view);
                 self.dirty.house = true;
+            }
+            InterfaceEvent::HousePurchase(view) => {
+                self.house_purchase = *view;
+                self.dirty.house_purchase = true;
             }
             InterfaceEvent::Journal(view) => {
                 self.journal = Some(*view);

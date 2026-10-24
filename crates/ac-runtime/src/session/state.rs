@@ -809,6 +809,8 @@ impl SessionState {
             .set_filter_language_patterns(tables.chat_taboo().patterns());
         self.communication
             .install_chat_poses(Arc::clone(tables.chat_poses()));
+        self.inventory
+            .install_trade_notes(Arc::clone(tables.trade_notes()));
         self.gameplay = Gameplay::new(tables, account.to_owned());
     }
 
@@ -846,6 +848,7 @@ impl SessionState {
                 .advance_before_network(&mut self.world, outbox, clocks.session);
             self.drive_approaches(outbox, in_world, clocks);
             self.enforce_vendor_range(outbox, in_world, clocks);
+            self.enforce_house_purchase_range();
         }
         self.forward();
     }
@@ -1946,6 +1949,36 @@ impl SessionState {
             approach: None,
         };
         self.inventory.close_vendor(&mut ctx);
+    }
+
+    /// Once a frame: the slumlord window closes when the player is more
+    /// than its fixed reach from the slumlord (measured as the vendor's
+    /// is), or the slumlord left the world.
+    fn enforce_house_purchase_range(&mut self) {
+        use crate::inventory::house_purchase::stays_open;
+        use crate::inventory::shop::global_position;
+        use ac_physics::object_range::RangeBody;
+        let slumlord = self.inventory.house_purchase().slumlord();
+        if slumlord == 0 {
+            return;
+        }
+        let body = |guid: u32| {
+            let position = self.world.object(guid)?.position()?;
+            // A shape not to hand measures as a point.
+            let (radius, height) = self
+                .movement
+                .body_shape(&self.world, guid)
+                .unwrap_or((0.0, 0.0));
+            Some(RangeBody {
+                position: global_position(position),
+                radius,
+                height,
+            })
+        };
+        let player = self.world.player_guid().and_then(body);
+        if !stays_open(player, body(slumlord)) {
+            self.inventory.close_house_purchase();
+        }
     }
 
     /// Move what the owners produced into the host events: chat lines and

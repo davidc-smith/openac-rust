@@ -78,6 +78,86 @@ impl HouseData {
     }
 }
 
+/// What a slumlord asks for to buy its house or pay its maintenance
+/// ([`crate::GameEventType::HOUSE_PROFILE`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HouseProfile {
+    /// The slumlord.
+    pub slumlord_guid: u32,
+    /// The house's dwelling id.
+    pub dwelling_id: u32,
+    /// The owner (0: nobody owns it).
+    pub owner_guid: u32,
+    /// The profile's flags.
+    pub bitmask: u32,
+    /// The lowest level that may buy it (-1: none).
+    pub min_level: i32,
+    /// The highest level that may buy it (-1: none).
+    pub max_level: i32,
+    /// The lowest allegiance rank that may buy it (-1: none).
+    pub min_allegiance_rank: i32,
+    /// The highest allegiance rank that may buy it (-1: none).
+    pub max_allegiance_rank: i32,
+    /// No maintenance is due.
+    pub maintenance_free: bool,
+    /// House type (1 cottage, 2 villa, 3 mansion, 4 apartment).
+    pub house_type: u32,
+    /// The owner's name (empty when nobody owns it).
+    pub owner_name: String,
+    /// The purchase price.
+    pub buy: Vec<HousePayment>,
+    /// The maintenance.
+    pub rent: Vec<HousePayment>,
+}
+
+impl HouseProfile {
+    /// Parse the event payload: slumlord, dwelling id, owner, flags, the
+    /// level and allegiance-rank limits, the maintenance-free word, the
+    /// type, the owner's name, the buy list and the rent list.
+    pub fn parse(payload: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(payload);
+        Ok(Self {
+            slumlord_guid: r.u32()?,
+            dwelling_id: r.u32()?,
+            owner_guid: r.u32()?,
+            bitmask: r.u32()?,
+            min_level: r.i32()?,
+            max_level: r.i32()?,
+            min_allegiance_rank: r.i32()?,
+            max_allegiance_rank: r.i32()?,
+            maintenance_free: read_bool32(&mut r)?,
+            house_type: r.u32()?,
+            owner_name: read_string(&mut r)?,
+            buy: read_payments(&mut r)?,
+            rent: read_payments(&mut r)?,
+        })
+    }
+}
+
+/// Buy the house at `slumlord` with the `items` offered: the slumlord,
+/// then the count and each item.
+#[must_use]
+pub fn build_buy_house(sequence: u32, slumlord: u32, items: &[u32]) -> Vec<u8> {
+    guid_list_action(sequence, GameActionType::BUY_HOUSE, slumlord, items)
+}
+
+/// Pay the maintenance of the house at `slumlord` with the `items`
+/// offered: the same body as [`build_buy_house`].
+#[must_use]
+pub fn build_rent_house(sequence: u32, slumlord: u32, items: &[u32]) -> Vec<u8> {
+    guid_list_action(sequence, GameActionType::RENT_HOUSE, slumlord, items)
+}
+
+fn guid_list_action(sequence: u32, action: GameActionType, target: u32, guids: &[u32]) -> Vec<u8> {
+    let mut w = crate::wire::action(sequence, action);
+    w.u32(target);
+    w.u32(u32::try_from(guids.len()).unwrap_or(u32::MAX));
+    for &guid in guids {
+        w.u32(guid);
+    }
+    w.into_vec()
+}
+
 /// The rent now due ([`crate::GameEventType::UPDATE_RENT_PAYMENT`]).
 pub fn parse_rent_payment(payload: &[u8]) -> Result<Vec<HousePayment>> {
     read_payments(&mut Reader::new(payload))
@@ -546,6 +626,116 @@ mod tests {
         w.u16(64);
         w.u32(0x5000_0002);
         assert!(HouseAccess::parse(w.as_slice()).is_err());
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn profile_header(
+        w: &mut Writer,
+        owner: u32,
+        min_level: i32,
+        max_level: i32,
+        min_rank: i32,
+        max_rank: i32,
+        maintenance_free: bool,
+        house_type: u32,
+        owner_name: &str,
+    ) {
+        w.u32(0x7000_0100);
+        w.u32(0x1234_0001); // dwelling id
+        w.u32(owner);
+        w.u32(1); // bitmask: active
+        w.i32(min_level);
+        w.i32(max_level);
+        w.i32(min_rank);
+        w.i32(max_rank);
+        w.u32(u32::from(maintenance_free));
+        w.u32(house_type);
+        w.string16l(owner_name).unwrap();
+    }
+
+    // HouseEventsTests.ParseHouseProfile_Unowned_EmptyLists
+    #[test]
+    fn house_profile_unowned_with_empty_lists() {
+        let mut w = Writer::new();
+        profile_header(&mut w, 0, -1, -1, -1, -1, false, 1, "");
+        w.u32(0);
+        w.u32(0);
+        let p = HouseProfile::parse(w.as_slice()).unwrap();
+        assert_eq!(p.slumlord_guid, 0x7000_0100);
+        assert_eq!(p.dwelling_id, 0x1234_0001);
+        assert_eq!(p.owner_guid, 0);
+        assert_eq!(p.bitmask, 1);
+        assert_eq!(p.min_level, -1);
+        assert_eq!(p.max_allegiance_rank, -1);
+        assert!(!p.maintenance_free);
+        assert_eq!(p.house_type, 1);
+        assert_eq!(p.owner_name, "");
+        assert!(p.buy.is_empty() && p.rent.is_empty());
+    }
+
+    // HouseEventsTests.ParseHouseProfile_Owned_ReadsHeaderAndBothLists
+    #[test]
+    fn house_profile_owned_reads_the_header_and_both_lists() {
+        let mut w = Writer::new();
+        profile_header(&mut w, 0x5000_0042, 20, 99, 6, 10, true, 3, "Sammy");
+        w.u32(2);
+        payment(&mut w, 50_000, 50_000, 273, "Pyreal", "Pyreals");
+        payment(&mut w, 1, 1, 9000, "Bone Totem", "");
+        w.u32(1);
+        payment(&mut w, 5_000, 1_250, 273, "Pyreal", "Pyreals");
+        let p = HouseProfile::parse(w.as_slice()).unwrap();
+        assert_eq!(p.owner_guid, 0x5000_0042);
+        assert_eq!(p.min_level, 20);
+        assert_eq!(p.max_level, 99);
+        assert_eq!(p.min_allegiance_rank, 6);
+        assert_eq!(p.max_allegiance_rank, 10);
+        assert!(p.maintenance_free);
+        assert_eq!(p.house_type, 3);
+        assert_eq!(p.owner_name, "Sammy");
+        assert_eq!(p.buy.len(), 2);
+        assert_eq!(
+            p.buy[1],
+            HousePayment {
+                num: 1,
+                paid: 1,
+                weenie_id: 9000,
+                name: "Bone Totem".into(),
+                plural_name: String::new(),
+            }
+        );
+        assert_eq!(p.rent.len(), 1);
+        assert_eq!((p.rent[0].num, p.rent[0].paid), (5_000, 1_250));
+        // The last string's alignment padding is not required (the reader
+        // stops at the end of the body); every shorter prefix fails.
+        let body = w.as_slice();
+        assert_every_prefix_fails(&body[..body.len() - 3], HouseProfile::parse);
+    }
+
+    // HouseEventsTests.ParseHouseProfile_TruncatedHeader_ReturnsNull and
+    // ParseHouseProfile_TruncatedPayment_ReturnsNull
+    #[test]
+    fn a_truncated_house_profile_is_refused() {
+        assert!(HouseProfile::parse(&words(&[0x7000_0100, 1])).is_err());
+        let mut w = Writer::new();
+        profile_header(&mut w, 0, -1, -1, -1, -1, false, 1, "");
+        w.u32(1);
+        w.i32(50_000);
+        w.i32(0); // the weenie class and names are missing
+        assert!(HouseProfile::parse(w.as_slice()).is_err());
+    }
+
+    // HouseEventsTests.BuildBuyHouse_WritesSlumlordCountAndGuids and
+    // BuildRentHouse_EmptyList_WritesZeroCount
+    #[test]
+    fn buy_and_rent_name_the_slumlord_and_the_items_offered() {
+        assert_eq!(
+            build_buy_house(7, 0x7000_0100, &[0x6000_0001, 0x6000_0002]),
+            words(&[0xF7B1, 7, 0x021C, 0x7000_0100, 2, 0x6000_0001, 0x6000_0002])
+        );
+        assert_eq!(
+            build_rent_house(3, 0x7000_0100, &[]),
+            words(&[0xF7B1, 3, 0x0221, 0x7000_0100, 0])
+        );
     }
 
     #[test]

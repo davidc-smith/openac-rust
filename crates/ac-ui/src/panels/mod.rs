@@ -18,6 +18,7 @@ pub mod dialog_factory;
 pub mod external_container;
 pub mod floating_chat;
 pub mod fps;
+pub mod house_purchase;
 pub mod indicators;
 pub mod inventory;
 pub mod item_cooldown;
@@ -388,5 +389,14 @@ pub enum PanelOutput {
         message: String,
         /// What a yes does.
         on_yes: Box<PanelOutput>,
+    },
+    /// Ask the player yes or no; on yes act on `on_yes`, on no on `on_no`.
+    ConfirmEither {
+        /// The question.
+        message: String,
+        /// What a yes does.
+        on_yes: Box<PanelOutput>,
+        /// What a no does.
+        on_no: Box<PanelOutput>,
     },
 }

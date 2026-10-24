@@ -32,6 +32,9 @@ const COMPONENT_ID_MAP_ID: u32 = 0x2700_0002;
 const MAGIC_PACK_ENUM_CATEGORY: u32 = 0x1000_0001;
 /// The slot in that category holding each school's focus (magic pack).
 const MAGIC_PACK_ENUM_VALUE: u32 = 4;
+/// The slot in that category holding the trade notes (denomination to
+/// weenie class).
+const TRADE_NOTE_ENUM_VALUE: u32 = 0xA;
 
 /// Why the tables could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +120,8 @@ pub struct GameTables {
     component_details: HashMap<u32, ComponentDetails>,
     magic_packs: HashMap<u32, u32>,
     skills: HashMap<u32, SkillBase>,
+    /// Each trade note's value in pyreals, by its weenie class.
+    trade_notes: Arc<HashMap<u32, i32>>,
     chargen: Arc<ChargenOptions>,
     contracts: Arc<ContractCatalog>,
     /// The language filter's banned patterns for chat.
@@ -153,6 +158,7 @@ impl GameTables {
             component_details: HashMap::new(),
             magic_packs: HashMap::new(),
             skills,
+            trade_notes: Arc::default(),
             chargen: Arc::default(),
             contracts: Arc::default(),
             chat_taboo: ChatTaboo::default(),
@@ -323,6 +329,7 @@ impl GameTables {
         }
 
         let magic_packs = magic_packs(dats)?;
+        let trade_notes = trade_note_denominations(dats)?;
         let skills = dats
             .get::<SkillTable>(SKILL_TABLE_ID)?
             .map(|table| {
@@ -371,6 +378,7 @@ impl GameTables {
             magic_packs,
             skills,
             chargen: Arc::new(chargen),
+            trade_notes: Arc::new(trade_notes),
             contracts: Arc::new(contracts),
             chat_taboo,
             chat_poses: Arc::new(chat_poses),
@@ -460,6 +468,55 @@ impl GameTables {
     pub fn magic_pack_wcid(&self, school: u32) -> Option<u32> {
         self.magic_packs.get(&school).copied()
     }
+
+    /// Each trade note's value in pyreals, by its weenie class: only these
+    /// classes pay as trade notes.
+    #[must_use]
+    pub fn trade_notes(&self) -> &Arc<HashMap<u32, i32>> {
+        &self.trade_notes
+    }
+
+    /// The same tables with these trade notes (tests, tools).
+    #[must_use]
+    pub fn with_trade_notes(mut self, notes: HashMap<u32, i32>) -> Self {
+        self.trade_notes = Arc::new(notes);
+        self
+    }
+}
+
+/// The trade notes: the master map names the category's map, whose slot
+/// names the dual map from each denomination (pyreals) to its weenie class.
+fn trade_note_denominations(dats: &DatCollection) -> Result<HashMap<u32, i32>, TablesError> {
+    let master_id = dats.portal.header().master_map_id.cast_unsigned();
+    if master_id == 0 {
+        return Ok(HashMap::new());
+    }
+    let resolve = |map_id: u32, key: u32| -> Result<Option<u32>, TablesError> {
+        Ok(dats
+            .portal
+            .get::<EnumIdMap>(map_id)?
+            .and_then(|m| m.client_id(key)))
+    };
+    let Some(category) = resolve(master_id, MAGIC_PACK_ENUM_CATEGORY)? else {
+        return Ok(HashMap::new());
+    };
+    let Some(notes_id) = resolve(category, TRADE_NOTE_ENUM_VALUE)? else {
+        return Ok(HashMap::new());
+    };
+    Ok(dats
+        .portal
+        .get::<ac_dat::objects::DualEnumIdMap>(notes_id)?
+        .map(|m| {
+            m.map
+                .client_enum_to_id
+                .into_iter()
+                .filter_map(|(value, wcid)| {
+                    let value = i32::try_from(value).ok().filter(|v| *v > 0)?;
+                    (wcid != 0).then_some((wcid, value))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Each school's focus weenie class: the master map names the category's
@@ -570,6 +627,22 @@ mod tests {
                 Some(43173)
             ]
         );
+    }
+
+    // TradeNoteDenominationsInstalledDatTests.TheInstalledMapGivesEachNoteClassItsValue
+    #[test]
+    #[ignore = "needs the retail dat files"]
+    fn the_trade_note_map_gives_each_note_class_its_value() {
+        let tables = GameTables::load(&dats()).unwrap();
+        let notes = tables.trade_notes();
+        assert_eq!(notes.len(), 14);
+        assert_eq!(notes[&2621], 100);
+        assert_eq!(notes[&2622], 500);
+        assert_eq!(notes[&2623], 1_000);
+        assert_eq!(notes[&2624], 5_000);
+        assert_eq!(notes[&2625], 10_000);
+        assert_eq!(notes[&20630], 250_000);
+        assert!(!notes.contains_key(&273));
     }
 
     #[test]

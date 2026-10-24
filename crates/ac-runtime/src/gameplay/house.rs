@@ -248,7 +248,10 @@ fn compose_payments(payments: &[HousePayment], include_paid: bool) -> String {
         .join(", ")
 }
 
-fn payment_name(p: &HousePayment) -> String {
+/// A payment line's item name: singular for one, else the plural the
+/// server sent, or an English plural.
+#[must_use]
+pub fn payment_name(p: &HousePayment) -> String {
     if p.num == 1 {
         return p.name.clone();
     }
