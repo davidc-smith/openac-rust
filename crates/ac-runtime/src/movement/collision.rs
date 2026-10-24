@@ -131,13 +131,18 @@ impl ObjectCollision {
     }
 
     /// The local player's rows follow its body: again only once it moved
-    /// more than a centimetre, turned or changed cell. A hidden player's
+    /// more than a centimetre, turned or changed cell. With no cell its
     /// rows leave every cell (kept registered, they come back where it
-    /// stands when it is seen again).
+    /// stands once it has a cell again).
+    ///
+    /// Hiding does not take the player out of collision: a hidden player
+    /// still stands in its cell and still blocks. The server hides the
+    /// player for the whole portal-space stay, and an object created at the
+    /// destination in that time has to be placed against the player, not on
+    /// top of it.
     ///
     /// # Errors
     /// The rows could not be flooded from the new position.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn follow_player(
         &mut self,
         engine: &mut PhysicsEngine,
@@ -146,12 +151,11 @@ impl ObjectCollision {
         position: Vec3,
         orientation: Quat,
         cell_id: u32,
-        hidden: bool,
     ) -> Result<(), CollisionError> {
         let Some(entry) = self.registered.get_mut(&local_id) else {
             return Ok(());
         };
-        if hidden || cell_id == 0 {
+        if cell_id == 0 {
             entry.followed = None;
             if !entry.suspended {
                 entry.suspended = true;

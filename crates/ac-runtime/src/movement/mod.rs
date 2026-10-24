@@ -2702,12 +2702,11 @@ impl Movement {
             return;
         };
         let c = &player.controller;
-        let (local_id, at, orientation, cell_id, hidden) = (
+        let (local_id, at, orientation, cell_id) = (
             player.key.local_id,
             c.position(),
             c.body_orientation(),
             c.cell_id(),
-            player.hidden,
         );
         if let Err(error) = self.collision.follow_player(
             &mut self.engine,
@@ -2716,7 +2715,6 @@ impl Movement {
             at,
             orientation,
             cell_id,
-            hidden,
         ) {
             self.refuse(&format!(
                 "the character's collision could not follow it: {error}"

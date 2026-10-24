@@ -1259,7 +1259,9 @@ fn a_player_killer_status_update_refreshes_the_registered_collision_flags() {
 fn the_characters_own_rows_follow_it_so_other_bodies_meet_it() {
     // OpenAC `LocalPlayerShadowSynchronizer.SyncPose`: the player is
     // registered like any object and its rows follow the body once it moved
-    // more than a centimetre; a hidden player's rows leave the cells.
+    // more than a centimetre; a hidden player keeps its rows (OpenAC
+    // `RuntimePlacementShadowCompositionTests
+    // .PortalPlace_HiddenPlayerKeepsItsCollisionAtTheDestination`).
     let mut rig = Rig::entered();
     let local = rig.world.object(PLAYER).unwrap().key().local_id;
     assert!(rig.movement.collision.is_registered(local));
@@ -1299,8 +1301,169 @@ fn the_characters_own_rows_follow_it_so_other_bodies_meet_it() {
     rig.movement
         .observe(&mut rig.world, &hide, mark, &mut rig.outbox, rig.now);
     rig.frames(1);
-    assert!(rows_at(&rig).is_none(), "a hidden character meets nobody");
+    let hidden = rows_at(&rig).expect("a hidden character keeps its rows");
+    assert!(
+        hidden.distance(moved) < 2.0,
+        "its rows stay at the body: {hidden}, body {moved}"
+    );
     assert!(rig.movement.collision.is_registered(local));
+}
+
+/// The server's lifestone: its setup and physics state (gravity, ignore
+/// collisions).
+const LIFESTONE: u32 = 0x7AA0_C34F;
+const LIFESTONE_SETUP: u32 = 0x0200_02EE;
+const LIFESTONE_STATE: u32 = 0x0000_0410;
+/// The server's teleporting character: hidden, ignore collisions, gravity.
+const PORTAL_SPACE_STATE: u32 = 0x0000_4410;
+
+fn lifestone_at(rig: &mut Rig, position: Position) {
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(position),
+    );
+    physics.setup_id = Some(LIFESTONE_SETUP);
+    physics.state = LIFESTONE_STATE;
+    apply(
+        rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: LIFESTONE,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+}
+
+/// The character's teleport to `to` (its notice, then the position), the
+/// arrival held.
+fn teleport_to(rig: &mut Rig, to: Position) {
+    apply(
+        rig,
+        &Inbound::PlayerTeleport(ac_proto::PlayerTeleport {
+            teleport_sequence: 1,
+        }),
+    );
+    rig.movement.set_arrival_held(true);
+    apply(
+        rig,
+        &Inbound::UpdatePosition(ac_proto::UpdatePosition {
+            guid: PLAYER,
+            flags: 0,
+            position: to,
+            velocity: None,
+            placement_id: None,
+            instance_sequence: 1,
+            position_sequence: 2,
+            teleport_sequence: 1,
+            force_position_sequence: 0,
+        }),
+    );
+}
+
+/// OpenAC `RuntimePlacementShadowCompositionTests
+/// .PortalPlace_HiddenPlayerKeepsItsCollisionAtTheDestination`: the server
+/// hides the character for the whole portal-space stay; hidden first, the
+/// teleport's placement still leaves its rows at the destination.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_hidden_character_keeps_its_collision_at_the_portal_destination() {
+    let mut rig = Rig::entered();
+    set_state(&mut rig, PORTAL_SPACE_STATE, 1);
+    rig.frames(1);
+    let to = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 20.0, SPOT.1);
+    teleport_to(&mut rig, to);
+    rig.frames(1);
+    let destination = Vec2::new(to.origin.x, to.origin.y);
+    let rows = rows_at(&rig, PLAYER).expect("the hidden character keeps its rows");
+    assert!(
+        rows.distance(destination) < 0.05,
+        "its rows stand at the destination: {rows}, {destination}"
+    );
+}
+
+/// OpenAC `RuntimePlacementShadowCompositionTests
+/// .PortalPlace_ThenHide_PlayerKeepsItsCollisionAtTheDestination`: the
+/// server sends the teleport's position before the hidden state, so the
+/// placement lands a frame before the hide; the hide does not take the
+/// placed rows away.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn hiding_after_the_portal_placement_keeps_the_characters_collision() {
+    let mut rig = Rig::entered();
+    let to = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 20.0, SPOT.1);
+    teleport_to(&mut rig, to);
+    rig.frames(1);
+    let destination = Vec2::new(to.origin.x, to.origin.y);
+    let placed = rows_at(&rig, PLAYER).expect("placed at the destination");
+    assert!(placed.distance(destination) < 0.05, "placed: {placed}");
+    set_state(&mut rig, PORTAL_SPACE_STATE, 1);
+    rig.frames(1);
+    let rows = rows_at(&rig, PLAYER).expect("the hide keeps the character's rows");
+    assert!(
+        rows.distance(destination) < 0.05,
+        "its rows stay at the destination: {rows}, {destination}"
+    );
+}
+
+/// OpenAC `LifestoneLateCreateOverlapInstalledDatTests
+/// .LifestoneArrivingOnAHiddenPlayer_SlidesClearAndThePlayerCanWalk`: a
+/// recall places the character before the server creates the lifestone it
+/// arrives on. The hidden character still blocks, so the stone's create
+/// placement (placement | slide) puts it clear of the character, and the
+/// character walks off once it arrives.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_lifestone_created_on_a_hidden_character_slides_clear_and_it_can_walk() {
+    let mut rig = Rig::entered();
+    let to = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 20.0, SPOT.1);
+    teleport_to(&mut rig, to);
+    set_state(&mut rig, PORTAL_SPACE_STATE, 1);
+    rig.frames(1);
+    let (placed, _, _) = rig.body();
+    lifestone_at(&mut rig, to);
+    let stone = shown_at(&rig, LIFESTONE).expect("the lifestone entered the world");
+    let apart = stone.distance(placed.truncate());
+    println!("stone {stone:.3}, character {placed:.3}, apart {apart:.3}");
+    assert!(
+        apart > 2.0,
+        "the stone slid clear of the character: {stone}, {placed}"
+    );
+
+    rig.movement.arrive();
+    set_state(&mut rig, 0x0000_0408, 2);
+    rig.frames(1);
+    rig.command(run(1.0));
+    rig.frames(90);
+    let (walked, _, _) = rig.body();
+    assert!(
+        (walked - placed).truncate().length() > 0.4,
+        "the character walks off: {placed} -> {walked}"
+    );
+}
+
+/// OpenAC `LifestoneLateCreateOverlapInstalledDatTests
+/// .LifestoneKnownBeforeThePlacement_PlacesThePlayerBesideIt`: with the
+/// stone already there, the teleport's placement puts the character beside
+/// it.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_lifestone_known_before_the_teleport_has_the_character_placed_beside_it() {
+    let mut rig = Rig::entered();
+    let to = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 20.0, SPOT.1);
+    lifestone_at(&mut rig, to);
+    teleport_to(&mut rig, to);
+    let (placed, _, _) = rig.body();
+    let spot = Vec2::new(to.origin.x, to.origin.y);
+    println!("character {placed:.3}, spot {spot:.3}");
+    assert!(
+        placed.truncate().distance(spot) > 2.0,
+        "placed beside the stone: {placed}, {spot}"
+    );
 }
 
 #[test]
