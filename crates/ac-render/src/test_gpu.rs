@@ -16,7 +16,7 @@
 
 use std::sync::OnceLock;
 
-use crate::surface::block_on;
+use crate::surface::{block_on, device_descriptor};
 
 /// The shared device and queue, or `None` on a machine without an adapter
 /// (the GPU tests are then skipped). Asks for what the window asks for when
@@ -34,6 +34,13 @@ pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
 /// GPU-less Windows CI machine has, faults the whole test process.
 pub(crate) fn own_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     new_device_on("ac-render test, ended by its test", wgpu::Backends::VULKAN)
+}
+
+/// A fresh device with the window's settings, kept to its test: for a
+/// test that reads the device's own memory blocks, which other tests'
+/// resources on the shared device would fill.
+pub(crate) fn fresh_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    new_device("ac-render test, alone on its device")
 }
 
 fn new_device(label: &'static str) -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -57,10 +64,5 @@ fn new_device_on(
     }))
     .ok()?;
     let required_features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
-    block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some(label),
-        required_features,
-        ..Default::default()
-    }))
-    .ok()
+    block_on(adapter.request_device(&device_descriptor(label, required_features))).ok()
 }
