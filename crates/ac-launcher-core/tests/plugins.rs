@@ -1047,11 +1047,14 @@ fn direct_install_refuses_a_file_symlink_and_a_fifo() {
     assert!(direct_install_refusal(&directory, &valid_direct()).is_some());
 
     let directory = write_valid_plugin(&root, "with-fifo");
-    let status = std::process::Command::new("mkfifo")
-        .arg(directory.join("icon.png"))
-        .status()
-        .unwrap();
-    assert!(status.success());
+    // Made in-process, not by the mkfifo program: a child process started
+    // here keeps every lock file other tests hold open until it runs its
+    // program, and their installs are refused as busy meanwhile.
+    nix::unistd::mkfifo(
+        &directory.join("icon.png"),
+        nix::sys::stat::Mode::from_bits_truncate(0o644),
+    )
+    .unwrap();
     assert!(direct_install_refusal(&directory, &valid_direct()).is_some());
 }
 
