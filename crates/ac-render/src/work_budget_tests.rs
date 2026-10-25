@@ -304,6 +304,23 @@ fn widening_for_a_destination_hold_scales_every_dimension() {
     assert_eq!(widened.destination_reserve_fraction(), 0.9375);
 }
 
+// OpenAC `FrameUploadAllowanceTests.RevealMeshLimits_WidenEveryDimensionWithTheFrameBudget`:
+// the authored profile's reveal widens the 2 ms frame to its 4 ms hold
+// ceiling, twice, and every limit with it.
+#[test]
+fn a_reveal_widens_the_authored_profile_to_four_milliseconds() {
+    let options = StreamingWorkBudgetOptions::default();
+    assert_eq!(options.hold_destination_ceiling_ms, 4.0);
+    let widened = options
+        .to_budget()
+        .unwrap()
+        .widen_for_destination_hold(options.hold_destination_ceiling_ms);
+    assert_eq!(widened.max_update_time(), Duration::from_millis(4));
+    assert_eq!(widened.max_completion_admissions(), 128);
+    assert_eq!(widened.max_adopted_cpu_bytes(), 16 * MIB);
+    assert_eq!(widened.max_gpu_upload_bytes(), 16 * MIB);
+}
+
 #[test]
 fn widening_is_a_no_op_at_or_below_the_current_ceiling() {
     let authored = StreamingWorkBudgetOptions::default().to_budget().unwrap();
