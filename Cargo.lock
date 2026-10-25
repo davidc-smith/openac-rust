@@ -242,6 +242,7 @@ dependencies = [
  "ac-core",
  "ac-dat",
  "glam",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
