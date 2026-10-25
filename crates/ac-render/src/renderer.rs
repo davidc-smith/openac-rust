@@ -435,7 +435,7 @@ pub(crate) struct WorldRenderer {
     ambient_region: Option<AmbientRegion>,
     lights: WindowLights,
     /// Bounds and lights of each model.
-    model_info: HashMap<u32, ModelInfo>,
+    model_info: crate::IdMap<u32, ModelInfo>,
     /// Bounds of each appearance's parts.
     appearance_bounds: HashMap<AppearanceKey, Option<(Vec3, Vec3)>>,
     /// The player's cell and whether it is sealed (no view outside).
@@ -498,14 +498,14 @@ pub(crate) struct WorldRenderer {
     /// The plugins' world lines as this frame draws them.
     world_lines: world_lines::WorldLinesGpu,
 
-    models: HashMap<u32, Option<Vec<MeshRef>>>,
+    models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
     requested_models: crate::model_requests::ModelRequests,
     /// Server objects' models drawn with their appearance.
     appearances: HashMap<AppearanceKey, Option<Vec<MeshRef>>>,
     requested_appearances: HashSet<AppearanceKey>,
     /// Part surface substitutions: variant id to (surface id, handle).
     variants: HashMap<u32, Vec<(u32, u32)>>,
-    meshes: HashMap<MeshKey, GfxGpu>,
+    meshes: crate::IdMap<MeshKey, GfxGpu>,
     /// GfxObjs and surfaces asked for again after a release.
     requested_gfx: HashSet<u32>,
     requested_surfaces: HashSet<u32>,
@@ -530,6 +530,8 @@ pub(crate) struct WorldRenderer {
     stats: WorldStats,
     /// Draw stream built by `prepare`, consumed by `draw`.
     frame: FrameDraws,
+    /// The room earlier frames' draws took, for the next frame's.
+    draw_scratch: crate::draws::DrawScratch,
     /// Part poses of the animated objects and statics.
     animations: AnimationPresenter,
     /// Setups, motion tables and animations for them (once the dats are
@@ -793,7 +795,7 @@ impl WorldRenderer {
             sky_models: HashSet::new(),
             ambient_region: None,
             lights: WindowLights::new(),
-            model_info: HashMap::new(),
+            model_info: crate::IdMap::default(),
             appearance_bounds: HashMap::new(),
             player_cell_sealed: None,
             clear: None,
@@ -840,12 +842,12 @@ impl WorldRenderer {
             ),
             portal_vertices_capacity,
             world_lines: world_lines::WorldLinesGpu::default(),
-            models: HashMap::new(),
+            models: crate::IdMap::default(),
             requested_models: crate::model_requests::ModelRequests::default(),
             appearances: HashMap::new(),
             requested_appearances: HashSet::new(),
             variants: HashMap::new(),
-            meshes: HashMap::new(),
+            meshes: crate::IdMap::default(),
             requested_gfx: HashSet::new(),
             requested_surfaces: HashSet::new(),
             last_sweep: Instant::now(),
@@ -881,6 +883,7 @@ impl WorldRenderer {
             last_update: None,
             stats: WorldStats::default(),
             frame: FrameDraws::new(),
+            draw_scratch: crate::draws::DrawScratch::default(),
             animations: AnimationPresenter::new(),
             animation_source: None,
             effects: None,
@@ -2005,6 +2008,7 @@ impl WorldRenderer {
             .as_mut()
             .map(|a| std::mem::take(&mut a.caster_frame))
             .unwrap_or_default();
+        let scratch = std::mem::take(&mut self.draw_scratch);
         let (mut objects, poses) = self.object_draws(scene);
         // A hidden object is not drawn, casts no shadow and cannot be
         // picked; its pose stays in `poses` for its emitters.
@@ -2156,7 +2160,7 @@ impl WorldRenderer {
                     .as_ref()
                     .is_some_and(|a| a.config.wind.enabled),
             },
-            out: StreamBuilder::new(),
+            out: StreamBuilder::with_scratch(scratch),
             views: Vec::new(),
             portals_drawn_count: self.portals_drawn_count,
             missing: HashSet::new(),
@@ -2179,7 +2183,7 @@ impl WorldRenderer {
                 |p| (p.visible_cells, p.missing_surfaces, p.missing_gfx),
             );
         let land_cells = std::mem::take(&mut sink.land_cells);
-        let frame = sink.out.finish();
+        let (frame, scratch) = sink.out.finish_keeping();
         // The shadow casters stand in the land cells the walk reached.
         let caster_started = Instant::now();
         let casters = if self.atmosphere.as_ref().is_some_and(|a| a.shadows_on()) {
@@ -2195,6 +2199,7 @@ impl WorldRenderer {
         drop(block_refs);
         drop(blocks);
         self.walk = walk;
+        self.draw_scratch = scratch;
         if let Some(a) = self.atmosphere.as_mut() {
             a.caster_frame = casters.unwrap_or_default();
             a.cpu_added += caster_time;
@@ -2258,7 +2263,8 @@ impl WorldRenderer {
         self.stats.objects_drawn = frame.objects_drawn;
         self.stats.cells_drawn = frame.cells_drawn;
         self.stats.particles_drawn = frame.billboards.len() + frame.particle_meshes.len();
-        self.frame = frame;
+        let drawn = std::mem::replace(&mut self.frame, frame);
+        self.draw_scratch.keep(drawn);
     }
 
     /// The model a building's part 0 draws at its distance from the eye
@@ -3676,6 +3682,7 @@ impl WorldRenderer {
             pass.set_bind_group(3, atmosphere, &[]);
         }
         pass.set_vertex_buffer(1, self.instances.slice(..));
+        let mut state = MeshPassState::default();
         for group in &self.frame.groups[range] {
             let Some(gfx) = self.meshes.get(&group.mesh) else {
                 continue;
@@ -3689,6 +3696,7 @@ impl WorldRenderer {
                 self.draw_sub(
                     pass,
                     p,
+                    &mut state,
                     sub,
                     group.variant,
                     group.shell,
@@ -3710,6 +3718,7 @@ impl WorldRenderer {
     ) {
         pass.set_bind_group(0, &self.globals_group, &[]);
         let items = &self.frame.alpha[range];
+        let mut state = MeshPassState::default();
         let mut i = 0;
         while i < items.len() {
             match items[i] {
@@ -3727,6 +3736,7 @@ impl WorldRenderer {
                     self.draw_sub(
                         pass,
                         p,
+                        &mut state,
                         sub,
                         draw.variant,
                         draw.shell,
@@ -3756,6 +3766,8 @@ impl WorldRenderer {
                     let Some(material) = material else {
                         continue;
                     };
+                    // Set directly: the mesh draws set everything again.
+                    state = MeshPassState::default();
                     pass.set_pipeline(&p.billboard[usize::from(first.additive)]);
                     pass.set_bind_group(1, material, &[]);
                     pass.set_vertex_buffer(0, self.particle_gpu.billboards.slice(..));
@@ -3775,6 +3787,8 @@ impl WorldRenderer {
                     let Some(pipeline) = p.particle_meshes.get(&(draw.blend, draw.cull)) else {
                         continue;
                     };
+                    // Set directly: the mesh draws set everything again.
+                    state = MeshPassState::default();
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(
                         1,
@@ -3799,23 +3813,28 @@ impl WorldRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_sub(
-        &self,
+    fn draw_sub<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        state: &mut MeshPassState<'a>,
         sub: &SubMeshRange,
         variant: u32,
         shell: bool,
         instances: std::ops::Range<u32>,
         faded: bool,
     ) {
-        if let Some(atmosphere) = p.atmosphere {
+        if let Some(atmosphere) = p.atmosphere
+            && !state.atmosphere_set
+        {
             pass.set_bind_group(3, atmosphere, &[]);
+            state.atmosphere_set = true;
         }
         self.draw_sub_with(
             p.meshes,
             p.clip_map_meshes,
             pass,
+            state,
             sub,
             variant,
             shell,
@@ -3829,11 +3848,12 @@ impl WorldRenderer {
     /// clip-mapped surface takes its own pipeline (the atmospheric wind's
     /// leaves) instead of the solid one.
     #[allow(clippy::too_many_arguments)]
-    fn draw_sub_with(
-        &self,
-        meshes: &HashMap<(Translucency, crate::meshing::Cull), wgpu::RenderPipeline>,
+    fn draw_sub_with<'a>(
+        &'a self,
+        meshes: &'a HashMap<(Translucency, crate::meshing::Cull), wgpu::RenderPipeline>,
         clip_map_meshes: bool,
         pass: &mut wgpu::RenderPass<'_>,
+        state: &mut MeshPassState<'a>,
         sub: &SubMeshRange,
         variant: u32,
         shell: bool,
@@ -3854,23 +3874,42 @@ impl WorldRenderer {
             }
             kind => kind,
         };
-        pass.set_pipeline(&meshes[&(kind, sub.cull)]);
-        pass.set_bind_group(2, &self.detail.group, &[]);
-        pass.set_bind_group(
-            1,
-            if sub.repeat {
-                &surface.repeat
-            } else {
-                &surface.clamp
-            },
-            &[],
-        );
+        let pipeline = &meshes[&(kind, sub.cull)];
+        if !state.pipeline.is_some_and(|p| std::ptr::eq(p, pipeline)) {
+            pass.set_pipeline(pipeline);
+            state.pipeline = Some(pipeline);
+        }
+        if !state.detail_set {
+            pass.set_bind_group(2, &self.detail.group, &[]);
+            state.detail_set = true;
+        }
+        let material = if sub.repeat {
+            &surface.repeat
+        } else {
+            &surface.clamp
+        };
+        if !state.material.is_some_and(|m| std::ptr::eq(m, material)) {
+            pass.set_bind_group(1, material, &[]);
+            state.material = Some(material);
+        }
         pass.draw_indexed(
             sub.first_index..sub.first_index + sub.index_count,
             sub.base_vertex,
             instances,
         );
     }
+}
+
+/// What the mesh draws of one pass have set so far, so that a pipeline or
+/// a texture already set is not set again: every set costs wgpu's
+/// validation and a driver call, and neighbouring draws mostly share both.
+/// Anything else that sets the pass's state starts a new one.
+#[derive(Default)]
+pub(crate) struct MeshPassState<'a> {
+    pipeline: Option<&'a wgpu::RenderPipeline>,
+    material: Option<&'a wgpu::BindGroup>,
+    detail_set: bool,
+    atmosphere_set: bool,
 }
 
 /// The player stands in an outdoor land cell: the sky's effects and the
@@ -4044,7 +4083,7 @@ fn sky_group(
 /// What the renderer has loaded, as the reveal rule asks it.
 struct RevealState<'a> {
     residents: &'a HashMap<LandblockCoord, Resident>,
-    models: &'a HashMap<u32, Option<Vec<MeshRef>>>,
+    models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
     walk: &'a FrameWalk,
     server_models_ready: bool,
     unavailable: bool,
