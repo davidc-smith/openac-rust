@@ -166,6 +166,13 @@ impl PluginServices {
         self.zone.utc_offset_seconds(unix_ms)
     }
 
+    /// A fixed zone for tests: the machine's own changes its offset twice
+    /// a year, and a test's fixed wall time then sits on the other side.
+    #[cfg(test)]
+    pub(super) fn set_zone(&mut self, zone: LocalZone) {
+        self.zone = zone;
+    }
+
     /// Milliseconds since the session began; never goes back.
     pub(super) fn monotonic_ms(&self) -> u64 {
         u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)

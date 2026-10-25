@@ -338,6 +338,11 @@ fn closing_the_session_waits_for_the_plugin_call_to_return() {
 #[test]
 fn the_clock_reads_the_wall_the_zone_and_a_fresh_seed() {
     let mut state = in_world();
+    // A fixed zone: the machine's own may change its offset between the
+    // test's fixed wall time and the real instant the fine ticks read.
+    state
+        .plugin_services
+        .set_zone(crate::local_time::LocalZone::fixed(3600));
     let mut outbox = Outbox::new();
     with_binding(&mut state, &mut outbox, |b| {
         let first = call::<calls::HostClock>(b, &());
