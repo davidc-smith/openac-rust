@@ -95,6 +95,31 @@ fn loaded_stage(item: &Loaded) -> &'static str {
     item.stage()
 }
 
+/// What releasing a landblock that left the window costs: one GPU
+/// retirement (its buffers go together) and an entity operation per
+/// placement it held, as adopting it was counted.
+fn retirement_cost(r: &Resident) -> crate::work_budget::StreamingWorkCost {
+    let placements = r.near.as_ref().map_or(0, |n| {
+        n.statics.len()
+            + n.buildings.len()
+            + n.cells.iter().map(|c| 1 + c.statics.len()).sum::<usize>()
+    });
+    crate::work_budget::StreamingWorkCost {
+        retire_operations: 1,
+        entity_operations: i32::try_from(placements).unwrap_or(i32::MAX),
+        ..crate::work_budget::StreamingWorkCost::default()
+    }
+}
+
+/// Drop `value` on a short-lived thread of its own: freeing a structure of
+/// thousands of allocations does not hold up the frame. Should no thread
+/// start, it is dropped here.
+fn release_in_background<T: Send + 'static>(value: T) {
+    let _ = std::thread::Builder::new()
+        .name("release".into())
+        .spawn(move || drop(value));
+}
+
 /// How often meshes, textures and models nothing uses any more are
 /// released.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
@@ -457,6 +482,8 @@ pub(crate) struct WorldRenderer {
     /// Inside a sealed dungeon: the landblock streaming collapsed onto.
     dungeon: Option<u32>,
     residents: HashMap<LandblockCoord, Resident>,
+    /// Landblocks that left the window, released a few per frame.
+    retiring: crate::retirement::RetirementQueue<Resident>,
     /// The frame walk and the cells it can reach.
     walk: FrameWalk,
     /// Interior cells and buildings for finding the viewer's cell when the
@@ -807,6 +834,7 @@ impl WorldRenderer {
             region: None,
             dungeon: None,
             residents: HashMap::new(),
+            retiring: crate::retirement::RetirementQueue::default(),
             walk: FrameWalk::new(),
             collision: ac_physics::CollisionWorld::new(),
             camera_collision: CameraCollision::new(),
@@ -1147,7 +1175,7 @@ impl WorldRenderer {
             let block = LandblockCoord::of_cell(pos.cell_id);
             // The origin stays put while the player is within the far
             // window of it; beyond it (a teleport) it moves to the player.
-            if let OriginMove::Recentered { shift } =
+            let recentered = if let OriginMove::Recentered { shift } =
                 follow_player(&mut self.origin, block, self.far_radius + 1)
             {
                 // Everything placed per frame from landblock-relative data
@@ -1163,15 +1191,26 @@ impl WorldRenderer {
                         b.walk.inverse = b.walk.world.inverse();
                     }
                 }
-                self.rebuild_collision();
                 let origin = &self.origin;
                 if let Some(effects) = self.effects.as_mut() {
                     effects.origin_moved(&|landblock| {
                         landblock_offset(origin, LandblockCoord::of_cell(landblock))
                     });
                 }
-            }
+                // The collision world is placed in the drawing frame, so it
+                // is built again, once the landblocks leaving the window
+                // are gone: a teleport, whose whole old window leaves,
+                // builds none of it only to drop it. The old one is freed
+                // off the frame.
+                release_in_background(std::mem::take(&mut self.collision));
+                true
+            } else {
+                false
+            };
             self.stream(block, pos.cell_id);
+            if recentered {
+                self.install_resident_collision();
+            }
             self.begin_reveal(pos.cell_id);
             let feet = to_frame(
                 &self.origin,
@@ -1463,6 +1502,11 @@ impl WorldRenderer {
     }
 
     fn load(&mut self, coord: LandblockCoord, tier: Tier) {
+        // Wanted again before it was released: released whole first, so
+        // the new copy never meets what is left of the old one.
+        if let Some(r) = self.retiring.take(coord) {
+            self.retire_landblock(coord, r);
+        }
         if self.residents.contains_key(&coord) {
             if tier == Tier::Near {
                 self.promote(coord);
@@ -1512,13 +1556,37 @@ impl WorldRenderer {
     }
 
     fn unload(&mut self, coord: LandblockCoord) {
-        if let Some(r) = self.residents.remove(&coord)
-            && let Some(near) = r.near
-        {
-            self.drop_near(coord, &near);
+        // It leaves the window now (nothing of it is drawn or waited for);
+        // what it holds is released over the next frames.
+        match self.residents.remove(&coord) {
+            Some(r) => self.retiring.push(coord, r),
+            None => self
+                .collision
+                .remove_landblock_from_graph(coord.terrain_id()),
+        }
+    }
+
+    /// Release what a landblock that left the window still holds: its
+    /// terrain buffer, its cells' meshes and walk cells, its collision, its
+    /// lights, animations and effects. Whole, in one step.
+    fn retire_landblock(&mut self, coord: LandblockCoord, r: Resident) {
+        if let Some(near) = &r.near {
+            self.drop_near(coord, near);
         }
         self.collision
             .remove_landblock_from_graph(coord.terrain_id());
+    }
+
+    /// Release landblocks that left the window, oldest first, while
+    /// `meter` admits them.
+    fn advance_retirement(
+        &mut self,
+        meter: &mut crate::work_budget::StreamingWorkMeter<crate::work_budget::InstantClock>,
+    ) {
+        while let Some((coord, r)) = self.retiring.next_admitted(meter, retirement_cost) {
+            self.retire_landblock(coord, r);
+            let _ = meter.complete();
+        }
     }
 
     fn drop_near(&mut self, coord: LandblockCoord, near: &NearResident) {
@@ -1685,9 +1753,11 @@ impl WorldRenderer {
         }
     }
 
-    /// Rebuild the collision world after the drawing frame moved.
-    fn rebuild_collision(&mut self) {
-        self.collision = ac_physics::CollisionWorld::new();
+    /// Put every resident landblock's collision into the collision world,
+    /// placed in the drawing frame: its outdoor cells where its terrain
+    /// arrived, its interior cells and buildings where its near content
+    /// did.
+    fn install_resident_collision(&mut self) {
         let residents = std::mem::take(&mut self.residents);
         for (coord, r) in &residents {
             if r.tile.is_some() {
@@ -3030,6 +3100,7 @@ impl WorldRenderer {
             models: &self.models,
             walk: &self.walk,
             server_models_ready: self.server_models_ready,
+            retiring: !self.retiring.is_empty(),
             unavailable: self.failure.is_some(),
             window: apply_reveal_radius_override(
                 RevealWindow {
@@ -3067,11 +3138,19 @@ impl WorldRenderer {
         use crate::work_budget::{
             InstantClock, StreamingWorkAdmission, StreamingWorkBudgetOptions, StreamingWorkMeter,
         };
-        let mut budget = self.work_budget.to_budget().unwrap_or_else(|_| {
+        let ordinary = self.work_budget.to_budget().unwrap_or_else(|_| {
             StreamingWorkBudgetOptions::default()
                 .to_budget()
                 .expect("the authored profile is valid")
         });
+        // Landblocks that left the window are released with what adoption
+        // leaves of an ordinary frame's budget, counted from the frame's
+        // start: a reveal's widened budget is for its destination.
+        let Ok(mut retirement) = StreamingWorkMeter::new(ordinary, InstantClock::default(), false)
+        else {
+            return;
+        };
+        let mut budget = ordinary;
         if self.reveal.upload_priority() {
             budget =
                 budget.widen_for_destination_hold(self.work_budget.hold_destination_ceiling_ms);
@@ -3094,6 +3173,8 @@ impl WorldRenderer {
             let _ = meter.complete();
         }
         let _ = meter.finish_frame();
+        self.advance_retirement(&mut retirement);
+        let _ = retirement.finish_frame();
         self.stats.landblocks = self.residents.values().filter(|r| r.tile.is_some()).count();
         self.stats.meshes = self.meshes.len();
         self.stats.surfaces = self.surfaces.len();
@@ -4088,6 +4169,8 @@ struct RevealState<'a> {
     models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
     walk: &'a FrameWalk,
     server_models_ready: bool,
+    /// Landblocks that left the window are still being released.
+    retiring: bool,
     unavailable: bool,
     window: RevealWindow,
 }
@@ -4118,7 +4201,9 @@ impl RevealFacts for RevealState<'_> {
     }
 
     fn render_neighborhood_ready(&self, cell: u32, near: u32, far: u32) -> bool {
-        neighborhood_loaded(cell, far, |b| self.terrain_arrived(b))
+        // Nothing of the window left behind is shown with the new one.
+        !self.retiring
+            && neighborhood_loaded(cell, far, |b| self.terrain_arrived(b))
             && neighborhood_loaded(cell, near, |b| self.statics_arrived(b))
     }
 
@@ -4153,6 +4238,9 @@ impl RevealFacts for RevealState<'_> {
                 .is_some_and(|r| r.missing)
     }
 }
+
+#[cfg(test)]
+mod retirement_tests;
 
 #[cfg(test)]
 mod tests {
