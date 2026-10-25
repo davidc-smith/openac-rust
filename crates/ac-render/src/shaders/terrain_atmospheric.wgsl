@@ -139,7 +139,8 @@ fn sample_terrain(uv: vec2<f32>, layer: f32) -> vec4<f32> {
 }
 
 fn sample_alpha(uv: vec2<f32>, layer: f32) -> vec4<f32> {
-    return textureSample(alpha_tex, alpha_sampler, uv, u32(layer));
+    // One byte a texel (the blend weight), given in every channel.
+    return vec4<f32>(textureSample(alpha_tex, alpha_sampler, uv, u32(layer)).r);
 }
 
 fn mask_blend3(t0: vec4<f32>, t1: vec4<f32>, t2: vec4<f32>, h0: f32, h1: f32, h2: f32) -> vec4<f32> {

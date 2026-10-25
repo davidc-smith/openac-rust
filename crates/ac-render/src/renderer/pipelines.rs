@@ -107,6 +107,19 @@ pub fn write_layer(
     height: u32,
     pixels: &[u8],
 ) {
+    write_layer_texels(queue, texture, mip_level, layer, (width, height, 4), pixels);
+}
+
+/// [`write_layer`] for `bytes_per_texel` bytes a texel (`size` is width,
+/// height and bytes per texel).
+pub fn write_layer_texels(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    mip_level: u32,
+    layer: u32,
+    (width, height, bytes_per_texel): (u32, u32, u32),
+    pixels: &[u8],
+) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -121,7 +134,7 @@ pub fn write_layer(
         pixels,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(4 * width),
+            bytes_per_row: Some(bytes_per_texel * width),
             rows_per_image: Some(height),
         },
         wgpu::Extent3d {
