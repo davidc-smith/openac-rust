@@ -42,14 +42,15 @@ pub const REGION_ID: u32 = 0x1300_0000;
 /// The terrain-type value of roads in the region's texture list.
 const ROAD_TERRAIN_TYPE: i32 = 0x20;
 
-/// An RGBA image with its mip chain (level 0 first).
+/// A four-byte-per-texel image with its mip chain (level 0 first): RGBA,
+/// or BGRA for the terrain layers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MipChain {
     /// Width of level 0.
     pub width: u32,
     /// Height of level 0.
     pub height: u32,
-    /// RGBA pixels per level, each half the size of the one before.
+    /// Pixels per level, each half the size of the one before.
     pub levels: Vec<Vec<u8>>,
 }
 
@@ -57,13 +58,15 @@ pub struct MipChain {
 /// builder need.
 #[derive(Debug, Clone)]
 pub struct TerrainAtlasData {
-    /// One layer per terrain texture, all the same size, with mips.
+    /// One layer per terrain texture, all the same size, with mips; BGRA,
+    /// the dats' own order for 32-bit colour, so those images are taken as
+    /// stored.
     pub layers: Vec<MipChain>,
     /// Alpha blend maps (corner, side, road), all the same size, no mips.
     pub alpha_width: u32,
     /// Height of every alpha layer.
     pub alpha_height: u32,
-    /// RGBA pixels per alpha layer.
+    /// One byte per texel per alpha layer: the blend weight.
     pub alpha_layers: Vec<Vec<u8>>,
     /// Repeats per 24 m cell, by texture layer.
     pub tiling: [f32; TERRAIN_LAYER_CAPACITY],
@@ -160,8 +163,9 @@ fn decode_render_surface(
 }
 
 /// Build the terrain texture arrays from the region: one layer per terrain
-/// type (first listing wins), resampled to the largest; the alpha maps
-/// decoded as "additive" so every channel holds the blend weight.
+/// type (first listing wins), resampled to the largest, in BGRA order; the
+/// alpha maps one byte per texel, the blend weight (the value an
+/// "additive" decode puts in every channel).
 #[must_use]
 pub fn build_terrain_atlas(
     content: &Content,
@@ -181,28 +185,20 @@ pub fn build_terrain_atlas(
     // The layers are independent: decode them, then resample them, on
     // several threads (the result is the same in the same order).
     let decoded = parallel_map(&descs, |desc| {
-        decode_surface_texture(
-            content,
-            desc.terrain_tex.texture_id,
-            DecodeOptions::default(),
-        )
-        .map_or_else(magenta, |(d, _)| d)
+        terrain_layer_texels(content, desc.terrain_tex.texture_id)
+            .unwrap_or_else(|| LayerTexels::bgra(&magenta()))
     });
-    let types: Vec<(i32, Arc<DecodedTexture>, u32)> = descs
-        .iter()
-        .zip(decoded)
-        .map(|(desc, d)| (desc.terrain_type, d, desc.terrain_tex.tex_tiling))
-        .collect();
     // The layers at the landscape texture detail (alpha maps keep theirs).
-    let max_w = detail.landscape_size(types.iter().map(|(_, d, _)| d.width).max().unwrap_or(1));
-    let max_h = detail.landscape_size(types.iter().map(|(_, d, _)| d.height).max().unwrap_or(1));
+    let max_w = detail.landscape_size(decoded.iter().map(|d| d.width).max().unwrap_or(1));
+    let max_h = detail.landscape_size(decoded.iter().map(|d| d.height).max().unwrap_or(1));
 
-    let layers = parallel_map(&types, |(_, decoded, _)| {
-        mip_chain(resample(decoded, max_w, max_h), max_w, max_h)
+    let layers = parallel_map_owned(decoded, |texels| {
+        mip_chain(resample(texels, max_w, max_h), max_w, max_h)
     });
     let mut blending = TerrainBlendingContext::empty();
     let mut tiling_entries = Vec::new();
-    for (layer, (terrain_type, _, tiling)) in types.iter().enumerate() {
+    for (layer, desc) in descs.iter().enumerate() {
+        let (terrain_type, tiling) = (&desc.terrain_type, &desc.terrain_tex.tex_tiling);
         let layer = layer as u8;
         if let Some(slot) = usize::try_from(*terrain_type)
             .ok()
@@ -236,6 +232,113 @@ pub fn build_terrain_atlas(
         blending,
         details: [details.next().flatten(), details.next().flatten()],
     }
+}
+
+/// `f` of every item, taken by value, in the items' order, computed on
+/// several threads as [`parallel_map`] does.
+fn parallel_map_owned<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
+    let slots: Vec<std::sync::Mutex<Option<T>>> = items
+        .into_iter()
+        .map(|item| std::sync::Mutex::new(Some(item)))
+        .collect();
+    parallel_map(&slots, |slot| {
+        let item = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("each item is taken once");
+        f(item)
+    })
+}
+
+/// One terrain source image as the arrays take it: four bytes per texel
+/// (BGRA) for a terrain layer, one (the blend weight) for an alpha map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayerTexels {
+    width: u32,
+    height: u32,
+    texels: Vec<u8>,
+}
+
+impl LayerTexels {
+    /// A decoded RGBA image in BGRA order.
+    fn bgra(decoded: &DecodedTexture) -> Self {
+        let mut texels = decoded.rgba.clone();
+        for texel in texels.chunks_exact_mut(4) {
+            texel.swap(0, 2);
+        }
+        Self {
+            width: decoded.width,
+            height: decoded.height,
+            texels,
+        }
+    }
+
+    /// The image's stored bytes, `bytes_per_texel` a texel, when the dats
+    /// hold the whole image.
+    fn stored(rs: &RenderSurface, bytes_per_texel: usize) -> Option<Self> {
+        let len = (rs.width as usize)
+            .checked_mul(rs.height as usize)?
+            .checked_mul(bytes_per_texel)?;
+        if len == 0 {
+            return None;
+        }
+        Some(Self {
+            width: rs.width,
+            height: rs.height,
+            texels: rs.data.get(..len)?.to_vec(),
+        })
+    }
+}
+
+/// The first (full-detail) render surface of a surface texture.
+fn first_render_surface(content: &Content, surface_texture_id: u32) -> Option<Arc<RenderSurface>> {
+    let st = content
+        .dats
+        .get::<SurfaceTexture>(surface_texture_id)
+        .ok()??;
+    content
+        .dats
+        .get::<RenderSurface>(*st.textures.first()?)
+        .ok()?
+}
+
+/// A terrain layer's BGRA texels: a 32-bit colour image is already BGRA
+/// and is taken as stored; any other is decoded with its default palette.
+fn terrain_layer_texels(content: &Content, surface_texture_id: u32) -> Option<LayerTexels> {
+    let rs = first_render_surface(content, surface_texture_id)?;
+    if rs.format == PixelFormat::A8R8G8B8
+        && let Some(stored) = LayerTexels::stored(&rs, 4)
+    {
+        return Some(stored);
+    }
+    decode_render_surface(content, rs.id, DecodeOptions::default())
+        .map(|(decoded, _)| LayerTexels::bgra(&decoded))
+}
+
+/// An alpha map's blend weights, one byte per texel: a one-byte alpha
+/// image is taken as stored (its "additive" decode puts that byte in every
+/// channel); any other gives its decoded alpha, the channel the terrain
+/// shader takes the weight from.
+fn alpha_map_texels(content: &Content, surface_texture_id: u32) -> Option<LayerTexels> {
+    let rs = first_render_surface(content, surface_texture_id)?;
+    if matches!(
+        rs.format,
+        PixelFormat::A8 | PixelFormat::CUSTOM_LSCAPE_ALPHA
+    ) && let Some(stored) = LayerTexels::stored(&rs, 1)
+    {
+        return Some(stored);
+    }
+    let additive = DecodeOptions {
+        clip_map: false,
+        additive: true,
+    };
+    let (decoded, _) = decode_render_surface(content, rs.id, additive)?;
+    Some(LayerTexels {
+        width: decoded.width,
+        height: decoded.height,
+        texels: decoded.rgba.iter().skip(3).step_by(4).copied().collect(),
+    })
 }
 
 /// `f` of every item, in the items' order, computed on up to as many
@@ -281,12 +384,8 @@ fn decode_alpha_maps(
     tex_merge: &TexMerge,
     blending: &mut TerrainBlendingContext,
 ) -> (Vec<Vec<u8>>, u32, u32) {
-    let additive = DecodeOptions {
-        clip_map: false,
-        additive: true,
-    };
-    // Every map's image, decoded on several threads, then listed in order
-    // (a map whose image cannot be decoded takes no layer).
+    // Every map's image, read on several threads, then listed in order
+    // (a map whose image cannot be read takes no layer).
     let maps: Vec<(u32, u32, usize)> = tex_merge
         .corner_terrain_maps
         .iter()
@@ -305,9 +404,9 @@ fn decode_alpha_maps(
         )
         .collect();
     let images = parallel_map(&maps, |&(texture_id, _, _)| {
-        decode_surface_texture(content, texture_id, additive).map(|(d, _)| d)
+        alpha_map_texels(content, texture_id)
     });
-    let mut decoded: Vec<Arc<DecodedTexture>> = Vec::new();
+    let mut decoded: Vec<LayerTexels> = Vec::new();
     for (&(_, code, list), image) in maps.iter().zip(images) {
         let Some(d) = image else {
             continue;
@@ -324,37 +423,44 @@ fn decode_alpha_maps(
         decoded.push(d);
     }
     if decoded.is_empty() {
-        return (vec![vec![0xFF; 4]], 1, 1);
+        return (vec![vec![0xFF]], 1, 1);
     }
     let w = decoded.iter().map(|d| d.width).max().unwrap_or(1);
     let h = decoded.iter().map(|d| d.height).max().unwrap_or(1);
-    let layers = decoded.iter().map(|d| resize_nearest(d, w, h)).collect();
+    let layers = decoded
+        .into_iter()
+        .map(|d| resize_nearest(d, 1, w, h))
+        .collect();
     (layers, w, h)
 }
 
-/// Box-average when the image only shrinks; nearest neighbour otherwise.
-fn resample(src: &DecodedTexture, w: u32, h: u32) -> Vec<u8> {
+/// Box-average a four-byte image when it only shrinks; nearest neighbour
+/// otherwise.
+fn resample(src: LayerTexels, w: u32, h: u32) -> Vec<u8> {
     let grows = w > src.width || h > src.height;
     let shrinks = w < src.width || h < src.height;
     if !grows && shrinks {
-        downsample_box(&src.rgba, src.width, src.height, w, h)
+        downsample_box(&src.texels, src.width, src.height, w, h)
     } else {
-        resize_nearest(src, w, h)
+        resize_nearest(src, 4, w, h)
     }
 }
 
-fn resize_nearest(src: &DecodedTexture, w: u32, h: u32) -> Vec<u8> {
+/// Nearest-neighbour resize of `bytes_per_texel` texels; an image already
+/// that size is returned as it is.
+fn resize_nearest(src: LayerTexels, bytes_per_texel: usize, w: u32, h: u32) -> Vec<u8> {
     if src.width == w && src.height == h {
-        return src.rgba.clone();
+        return src.texels;
     }
-    let mut out = vec![0u8; (w * h * 4) as usize];
+    let n = bytes_per_texel;
+    let mut out = vec![0u8; w as usize * h as usize * n];
     for y in 0..h {
         let sy = (y as u64 * u64::from(src.height) / u64::from(h)) as u32;
         for x in 0..w {
             let sx = (x as u64 * u64::from(src.width) / u64::from(w)) as u32;
-            let si = ((sy * src.width + sx) * 4) as usize;
-            let di = ((y * w + x) * 4) as usize;
-            out[di..di + 4].copy_from_slice(&src.rgba[si..si + 4]);
+            let si = (sy * src.width + sx) as usize * n;
+            let di = (y * w + x) as usize * n;
+            out[di..di + n].copy_from_slice(&src.texels[si..si + n]);
         }
     }
     out
@@ -1270,12 +1376,28 @@ mod tests {
 
     #[test]
     fn nearest_resize_repeats_pixels() {
-        let src = DecodedTexture {
+        let src = LayerTexels {
             width: 1,
             height: 1,
-            rgba: vec![1, 2, 3, 4],
+            texels: vec![1, 2, 3, 4],
         };
-        assert_eq!(resize_nearest(&src, 2, 1), [1, 2, 3, 4, 1, 2, 3, 4]);
+        assert_eq!(resize_nearest(src, 4, 2, 1), [1, 2, 3, 4, 1, 2, 3, 4]);
+        let weights = LayerTexels {
+            width: 2,
+            height: 1,
+            texels: vec![7, 9],
+        };
+        assert_eq!(resize_nearest(weights, 1, 4, 2), [7, 7, 9, 9, 7, 7, 9, 9]);
+    }
+
+    #[test]
+    fn bgra_swaps_red_and_blue() {
+        let decoded = DecodedTexture {
+            width: 2,
+            height: 1,
+            rgba: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        };
+        assert_eq!(LayerTexels::bgra(&decoded).texels, [3, 2, 1, 4, 7, 6, 5, 8]);
     }
 
     #[test]

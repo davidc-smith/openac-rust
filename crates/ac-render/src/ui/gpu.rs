@@ -18,13 +18,60 @@ use super::batch::{UiBatch, UiTexture, UiTextureKey};
 /// Where the UI's texture pixels come from.
 pub trait UiTextureSource {
     /// The pixels of `texture`, `None` when there are none.
-    fn decode(&mut self, texture: TextureRef) -> Option<DecodedTexture>;
+    fn decode(&mut self, texture: TextureRef) -> Option<UiPixels>;
+}
+
+/// A UI texture's pixels as they are uploaded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiPixels {
+    /// 8-bit RGBA.
+    Rgba(DecodedTexture),
+    /// One byte a texel, drawn as white with that alpha (a font's glyphs):
+    /// exactly what the four-channel image (255, 255, 255, value) draws, at
+    /// a quarter of the memory.
+    Coverage {
+        /// Width in texels.
+        width: u32,
+        /// Height in texels.
+        height: u32,
+        /// The alpha of each texel, rows top to bottom.
+        alpha: Vec<u8>,
+    },
+}
+
+impl UiPixels {
+    /// Width and height in texels.
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        match self {
+            Self::Rgba(t) => (t.width, t.height),
+            Self::Coverage { width, height, .. } => (*width, *height),
+        }
+    }
+
+    /// The bytes, bytes a texel and the texture format they upload as.
+    fn texels(&self) -> (&[u8], u32, wgpu::TextureFormat) {
+        match self {
+            Self::Rgba(t) => (&t.rgba, 4, wgpu::TextureFormat::Rgba8Unorm),
+            Self::Coverage { alpha, .. } => (alpha, 1, wgpu::TextureFormat::R8Unorm),
+        }
+    }
+
+    /// The bytes fill the size.
+    #[must_use]
+    pub fn is_whole(&self) -> bool {
+        let (w, h) = self.size();
+        let (bytes, per_texel, _) = self.texels();
+        w > 0 && h > 0 && bytes.len() as u64 == u64::from(per_texel) * u64::from(w) * u64::from(h)
+    }
 }
 
 struct GpuTexture {
     /// The texture the UI uploaded (`None`: one the renderer draws into,
     /// bound by [`UiRenderer::bind_view`]).
     _texture: Option<wgpu::Texture>,
+    /// One byte a texel, drawn by the coverage pipeline.
+    coverage: bool,
     linear: wgpu::BindGroup,
     nearest: wgpu::BindGroup,
 }
@@ -49,6 +96,8 @@ struct PreparedRun {
 /// The UI's GPU objects. Built with the window, dropped with it.
 pub struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// The pipeline of one-byte coverage textures.
+    coverage_pipeline: wgpu::RenderPipeline,
     texture_layout: wgpu::BindGroupLayout,
     screen_buffer: wgpu::Buffer,
     screen_group: wgpu::BindGroup,
@@ -77,12 +126,12 @@ impl std::fmt::Debug for UiRenderer {
 }
 
 /// The magenta placeholder of a surface that cannot be read.
-fn magenta() -> DecodedTexture {
-    DecodedTexture {
+fn magenta() -> UiPixels {
+    UiPixels::Rgba(DecodedTexture {
         width: 1,
         height: 1,
         rgba: vec![0xFF, 0x00, 0xFF, 0xFF],
-    }
+    })
 }
 
 fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu::Sampler {
@@ -137,38 +186,42 @@ impl UiRenderer {
             },
             alpha: wgpu::BlendComponent::OVER,
         };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<super::batch::UiVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &attributes,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline_for = |label: &str, fragment: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<super::batch::UiVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &attributes,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = pipeline_for("ui", "fs_main");
+        let coverage_pipeline = pipeline_for("ui coverage", "fs_coverage");
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ui screen"),
             size: 16,
@@ -197,14 +250,15 @@ impl UiRenderer {
             &texture_layout,
             (&linear, &nearest),
             "ui white",
-            &DecodedTexture {
+            &UiPixels::Rgba(DecodedTexture {
                 width: 1,
                 height: 1,
                 rgba: vec![0xFF; 4],
-            },
+            }),
         );
         Self {
             pipeline,
+            coverage_pipeline,
             texture_layout,
             screen_buffer,
             screen_group,
@@ -322,6 +376,7 @@ impl UiRenderer {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
+        let mut coverage = false;
         pass.set_bind_group(0, &self.screen_group, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         for run in &self.prepared {
@@ -332,6 +387,14 @@ impl UiRenderer {
                     None => continue,
                 },
             };
+            if texture.coverage != coverage {
+                coverage = texture.coverage;
+                pass.set_pipeline(if coverage {
+                    &self.coverage_pipeline
+                } else {
+                    &self.pipeline
+                });
+            }
             pass.set_bind_group(1, texture.bind_group(run.key.filter), &[]);
             pass.draw(run.first..run.first + run.count, 0..1);
         }
@@ -384,44 +447,43 @@ fn upload(
     layout: &wgpu::BindGroupLayout,
     (linear, nearest): (&wgpu::Sampler, &wgpu::Sampler),
     label: &str,
-    pixels: &DecodedTexture,
+    pixels: &UiPixels,
 ) -> GpuTexture {
-    let whole = pixels.width > 0
-        && pixels.height > 0
-        && pixels.rgba.len() as u64 == 4 * u64::from(pixels.width) * u64::from(pixels.height);
     let fallback;
-    let pixels = if whole {
+    let pixels = if pixels.is_whole() {
         pixels
     } else {
         fallback = magenta();
         &fallback
     };
+    let (width, height) = pixels.size();
+    let (bytes, per_texel, format) = pixels.texels();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
-            width: pixels.width,
-            height: pixels.height,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    crate::renderer::pipelines::write_layer(
+    crate::renderer::pipelines::write_layer_texels(
         queue,
         &texture,
         0,
         0,
-        pixels.width,
-        pixels.height,
-        &pixels.rgba,
+        (width, height, per_texel),
+        bytes,
     );
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     GpuTexture {
         _texture: Some(texture),
+        coverage: matches!(pixels, UiPixels::Coverage { .. }),
         ..bind(device, layout, (linear, nearest), label, &view)
     }
 }
@@ -454,5 +516,151 @@ fn bind(
         linear: group(linear),
         nearest: group(nearest),
         _texture: None,
+        coverage: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::batch::{UiRun, UiVertex};
+    use super::*;
+
+    struct Source(HashMap<TextureRef, UiPixels>);
+
+    impl UiTextureSource for Source {
+        fn decode(&mut self, texture: TextureRef) -> Option<UiPixels> {
+            self.0.remove(&texture)
+        }
+    }
+
+    const W: u32 = 24;
+    const H: u32 = 4;
+
+    /// A quad over pixel columns `x0..x1`, the whole texture stretched
+    /// over it (so linear filtering blends texels), tinted.
+    fn quad(x0: f32, x1: f32) -> [UiVertex; 6] {
+        let tint = [0.9, 0.5, 0.25, 0.8];
+        let v = |x: f32, y: f32, u: f32, w: f32| UiVertex {
+            position: [x, y],
+            uv: [u, w],
+            color: tint,
+        };
+        let h = H as f32;
+        [
+            v(x0, 0.0, 0.0, 0.0),
+            v(x1, 0.0, 1.0, 0.0),
+            v(x0, h, 0.0, 1.0),
+            v(x1, 0.0, 1.0, 0.0),
+            v(x1, h, 1.0, 1.0),
+            v(x0, h, 0.0, 1.0),
+        ]
+    }
+
+    /// Three quads side by side: texture 1, texture 2, texture 1 again,
+    /// over a grey background; the target's RGBA bytes.
+    fn draw(device: &wgpu::Device, queue: &wgpu::Queue, second: UiPixels) -> Vec<u8> {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: W,
+                height: H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let background: Vec<u8> = (0..W * H).flat_map(|_| [40, 80, 120, 255]).collect();
+        crate::renderer::pipelines::write_layer(queue, &target, 0, 0, W, H, &background);
+        let first = UiPixels::Rgba(DecodedTexture {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 200, 100, 50, 255,
+            ],
+        });
+        let mut source = Source(HashMap::from([
+            (TextureRef::Surface(1), first),
+            (TextureRef::Surface(2), second),
+        ]));
+        let mut renderer = UiRenderer::new(device, queue, format);
+        let run = |texture: u32, first: u32| UiRun {
+            key: UiTextureKey {
+                texture: UiTexture::Named(TextureRef::Surface(texture)),
+                filter: Filter::Linear,
+            },
+            first,
+            count: 6,
+        };
+        let batch = UiBatch {
+            vertices: [quad(0.0, 8.0), quad(8.0, 16.0), quad(16.0, 24.0)].concat(),
+            runs: vec![run(1, 0), run(2, 6), run(1, 12)],
+            skipped_zero_ids: 0,
+        };
+        renderer.prepare(device, queue, &batch, (W, H), &mut source);
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(256 * H),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        renderer.draw(&mut encoder, &view);
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(H),
+                },
+            },
+            target.size(),
+        );
+        queue.submit([encoder.finish()]);
+        readback.map_async(wgpu::MapMode::Read, .., |_| {});
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the GPU finishes");
+        let mapped = readback.slice(..).get_mapped_range().expect("mapped");
+        mapped
+            .chunks(256)
+            .flat_map(|row| row[..(W * 4) as usize].to_vec())
+            .collect()
+    }
+
+    /// A one-byte coverage texture draws exactly as its four-channel image
+    /// (255, 255, 255, value) did, filtered and tinted, and the draws after
+    /// it go back to the four-channel pipeline.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_coverage_texture_draws_as_its_white_four_channel_image() {
+        let (device, queue) = crate::test_gpu::device().expect("a GPU device");
+        let alpha: Vec<u8> = vec![0, 30, 90, 160, 200, 255, 10, 250];
+        let rgba = UiPixels::Rgba(DecodedTexture {
+            width: 4,
+            height: 2,
+            rgba: alpha.iter().flat_map(|&a| [255, 255, 255, a]).collect(),
+        });
+        let coverage = UiPixels::Coverage {
+            width: 4,
+            height: 2,
+            alpha,
+        };
+        let expected = draw(&device, &queue, rgba);
+        let drawn = draw(&device, &queue, coverage);
+        assert!(
+            expected.chunks(4).any(|p| p != [40, 80, 120, 255]),
+            "the quads drew"
+        );
+        assert_eq!(drawn, expected);
     }
 }

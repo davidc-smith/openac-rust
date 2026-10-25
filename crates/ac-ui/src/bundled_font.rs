@@ -58,12 +58,12 @@ pub enum BundledFontError {
     GlyphOutOfRange(u32),
 }
 
-/// The baked atlas: RGBA pixels (white, coverage in alpha), the line
-/// metrics and the glyph records.
+/// The baked atlas: one coverage byte per pixel (drawn white with that
+/// alpha), the line metrics and the glyph records.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BakedFont {
-    /// Width x height x 4 bytes, rows top to bottom.
-    pub pixels: Vec<u8>,
+    /// Width x height bytes, the coverage, rows top to bottom.
+    pub coverage: Vec<u8>,
     /// Width, pixels.
     pub width: u32,
     /// Height, pixels (one page per range).
@@ -121,16 +121,11 @@ pub fn bake(pixel_height: f32) -> Result<BakedFont, BundledFontError> {
     let baker = Baker::new(&face, pixel_height)?;
     let baseline = (ascent as f32 * baker.scale).round_ties_even();
     let page = (ATLAS_SIZE * ATLAS_SIZE) as usize;
-    let mut rgba = vec![0u8; page * RANGES.len() * 4];
+    let mut coverage = vec![0u8; page * RANGES.len()];
     let mut glyphs = Vec::new();
     for (range, &(first, count)) in RANGES.iter().enumerate() {
-        let mut coverage = vec![0u8; page];
-        let baked = baker.bake_range(&mut coverage, ATLAS_SIZE as i32, first, count)?;
-        for (i, &alpha) in coverage.iter().enumerate() {
-            let target = (range * page + i) * 4;
-            rgba[target..target + 3].fill(255);
-            rgba[target + 3] = alpha;
-        }
+        let page_coverage = &mut coverage[range * page..(range + 1) * page];
+        let baked = baker.bake_range(page_coverage, ATLAS_SIZE as i32, first, count)?;
         let page_top = range as i32 * ATLAS_SIZE as i32;
         for (i, g) in baked.iter().enumerate() {
             let codepoint = first + i as u32;
@@ -144,7 +139,7 @@ pub fn bake(pixel_height: f32) -> Result<BakedFont, BundledFontError> {
         }
     }
     Ok(BakedFont {
-        pixels: rgba,
+        coverage,
         width: ATLAS_SIZE,
         height: ATLAS_SIZE * RANGES.len() as u32,
         pixel_height,

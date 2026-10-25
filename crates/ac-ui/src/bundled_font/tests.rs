@@ -14,9 +14,9 @@ fn numbers(line: &str) -> Vec<i64> {
         .collect()
 }
 
-/// Every pixel's alpha, the coverage.
+/// A pixel's coverage.
 fn alpha(b: &BakedFont, x: u32, y: u32) -> u8 {
-    b.pixels[((y * b.width + x) * 4 + 3) as usize]
+    b.coverage[(y * b.width + x) as usize]
 }
 
 #[test]
@@ -24,10 +24,7 @@ fn embedded_font_bakes_without_system_fonts() {
     for size in [12.0, 16.0, 24.0, 32.0] {
         let atlas = bake(size).unwrap();
         let font = atlas.create_font(TextureRef::Runtime(1));
-        assert!(
-            atlas.pixels.chunks(4).any(|p| p[3] > 0 && p[3] < 255),
-            "{size}"
-        );
+        assert!(atlas.coverage.iter().any(|&a| a > 0 && a < 255), "{size}");
         for c in "BuffProfile_Banes åäö Ω Ж —".chars() {
             assert!(atlas.glyphs.iter().any(|g| g.unicode == c as u16), "{c}");
             let glyph = font.glyph(c).unwrap();
@@ -121,11 +118,10 @@ fn coverage_is_openacs_within_the_rasteriser_difference() {
 }
 
 #[test]
-fn every_atlas_pixel_is_white_with_the_coverage_in_alpha() {
+fn the_atlas_is_one_coverage_byte_per_pixel() {
     let atlas = bake(DEFAULT_PIXEL_HEIGHT).unwrap();
     assert_eq!((atlas.width, atlas.height), (512, 1536));
-    assert_eq!(atlas.pixels.len(), 512 * 1536 * 4);
-    assert!(atlas.pixels.chunks(4).all(|p| p[..3] == [255, 255, 255]));
+    assert_eq!(atlas.coverage.len(), 512 * 1536);
     // The one-pixel margin the packer keeps at the page's top and left.
     for page in 0..3 {
         assert!((0..512).all(|x| alpha(&atlas, x, page * 512) == 0));

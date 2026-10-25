@@ -39,7 +39,7 @@ use detail::DetailGpu;
 use particles::ParticleGpu;
 use pipelines::{
     depth_view, msaa_color_view, sampler_entry, storage_buffer, storage_entry, texture_entry,
-    uniform_entry, vertex_buffer, write_layer,
+    uniform_entry, vertex_buffer, write_layer, write_layer_texels,
 };
 use sink::{BuildingDraw, FrameSink, SinkInputs, SinkParticles, sphere_of};
 use world_pipelines::{PipelineLayouts, WorldPipelines, usable_sample_count};
@@ -3193,7 +3193,8 @@ impl WorldRenderer {
             mip_level_count: levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            // The layers are BGRA, as the dats store 32-bit colour.
+            format: wgpu::TextureFormat::Bgra8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -3214,18 +3215,19 @@ impl WorldRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            // One byte a texel, the blend weight; the terrain shader reads
+            // it from the red channel.
+            format: wgpu::TextureFormat::R8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         for (layer, pixels) in atlas.alpha_layers.iter().enumerate() {
-            write_layer(
+            write_layer_texels(
                 queue,
                 &alpha,
                 0,
                 layer as u32,
-                atlas.alpha_width,
-                atlas.alpha_height,
+                (atlas.alpha_width, atlas.alpha_height, 1),
                 pixels,
             );
         }
