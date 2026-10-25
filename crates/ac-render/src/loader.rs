@@ -207,21 +207,14 @@ impl Loaded {
                 gpu_upload_bytes: gfx_bytes(gfx),
                 ..StreamingWorkCost::default()
             },
-            Loaded::Atlas(atlas) => StreamingWorkCost {
-                gpu_upload_bytes: atlas
-                    .layers
-                    .iter()
-                    .flat_map(|l| &l.levels)
-                    .map(|level| bytes(level))
-                    .chain(atlas.alpha_layers.iter().map(|level| bytes(level)))
-                    .sum(),
-                ..StreamingWorkCost::default()
-            },
+            // Adopting an atlas makes its textures; its pieces are
+            // charged as they are written, a frame's budget at a time.
             Loaded::Model { .. } | Loaded::Appearance { .. } => StreamingWorkCost {
                 entity_operations: 1,
                 ..StreamingWorkCost::default()
             },
             Loaded::Failed(_)
+            | Loaded::Atlas(_)
             | Loaded::Icon(_)
             | Loaded::Variant { .. }
             | Loaded::CameraCollision { .. }
