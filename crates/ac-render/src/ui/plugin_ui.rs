@@ -340,9 +340,11 @@ impl WindowUi {
         // The bundled sans font of the modern themes, baked into an atlas
         // texture of this window (OpenAC `BundledUiFont.Load`).
         match bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT) {
-            Ok(atlas) => {
-                let image = Rgba::new(atlas.width, atlas.height, atlas.pixels.clone());
-                let texture = self.images.uploader().upload(&image);
+            Ok(mut atlas) => {
+                let coverage = std::mem::take(&mut atlas.coverage);
+                let texture = self
+                    .images
+                    .add_coverage(atlas.width, atlas.height, coverage);
                 self.plugins.modern_font = Some(Arc::new(atlas.create_font(texture)));
             }
             Err(e) => self.notices.push(format!("ui: bundled font: {e}")),

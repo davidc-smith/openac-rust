@@ -201,7 +201,7 @@ fn the_credits_draw_their_pictures_and_text_over_the_window() {
     let mut surfaces = ui.surfaces();
     if let UiTexture::Named(t) = picture.key.texture {
         let pixels = surfaces.decode(t).expect("the picture decodes");
-        assert_eq!((pixels.width, pixels.height), (400, 300));
+        assert_eq!(pixels.size(), (400, 300));
     }
     eprintln!("picture vertex {:?} count {}", first, picture.count);
 }

@@ -39,5 +39,5 @@ pub mod viewports;
 pub mod window;
 
 pub use batch::UiBatch;
-pub use gpu::{UiRenderer, UiTextureSource};
+pub use gpu::{UiPixels, UiRenderer, UiTextureSource};
 pub use window::WindowUi;

@@ -12,10 +12,20 @@ use ac_dat::texture::DecodedTexture;
 use ac_ui::draw::TextureRef;
 use ac_ui::icons::{IconUploader, Rgba};
 
+use super::gpu::UiPixels;
+
 #[derive(Debug, Default)]
 struct Store {
     next: u32,
-    images: HashMap<u32, DecodedTexture>,
+    images: HashMap<u32, UiPixels>,
+}
+
+impl Store {
+    fn insert(&mut self, pixels: UiPixels) -> TextureRef {
+        self.next += 1;
+        self.images.insert(self.next, pixels);
+        TextureRef::Runtime(self.next)
+    }
 }
 
 /// The images uploaded and not yet taken by the renderer. Clones share
@@ -38,8 +48,18 @@ impl RuntimeImages {
 
     /// The pixels of runtime texture `id`, handed over once.
     #[must_use]
-    pub fn take(&self, id: u32) -> Option<DecodedTexture> {
+    pub fn take(&self, id: u32) -> Option<UiPixels> {
         self.0.borrow_mut().images.remove(&id)
+    }
+
+    /// Keep a one-byte coverage image (drawn white with that alpha) under
+    /// a new runtime texture name.
+    pub fn add_coverage(&self, width: u32, height: u32, alpha: Vec<u8>) -> TextureRef {
+        self.0.borrow_mut().insert(UiPixels::Coverage {
+            width,
+            height,
+            alpha,
+        })
     }
 
     /// Images waiting for the renderer.
@@ -53,18 +73,11 @@ struct Uploader(RuntimeImages);
 
 impl IconUploader for Uploader {
     fn upload(&mut self, image: &Rgba) -> TextureRef {
-        let mut store = self.0.0.borrow_mut();
-        store.next += 1;
-        let id = store.next;
-        store.images.insert(
-            id,
-            DecodedTexture {
-                width: image.width,
-                height: image.height,
-                rgba: image.pixels.clone(),
-            },
-        );
-        TextureRef::Runtime(id)
+        self.0.0.borrow_mut().insert(UiPixels::Rgba(DecodedTexture {
+            width: image.width,
+            height: image.height,
+            rgba: image.pixels.clone(),
+        }))
     }
 }
 
@@ -81,9 +94,30 @@ mod tests {
             panic!("a runtime texture");
         };
         assert_eq!(images.waiting(), 1);
-        let pixels = images.take(id).unwrap();
+        let Some(UiPixels::Rgba(pixels)) = images.take(id) else {
+            panic!("RGBA pixels");
+        };
         assert_eq!((pixels.width, pixels.height, pixels.rgba.len()), (2, 1, 8));
         assert!(images.take(id).is_none());
         assert_ne!(up.upload(&Rgba::new(1, 1, vec![0; 4])), t);
+    }
+
+    #[test]
+    fn a_coverage_image_is_kept_one_byte_a_texel_under_a_new_name() {
+        let images = RuntimeImages::new();
+        let rgba = images.uploader().upload(&Rgba::new(1, 1, vec![0; 4]));
+        let coverage = images.add_coverage(2, 1, vec![7, 9]);
+        assert_ne!(coverage, rgba);
+        let TextureRef::Runtime(id) = coverage else {
+            panic!("a runtime texture");
+        };
+        assert_eq!(
+            images.take(id),
+            Some(UiPixels::Coverage {
+                width: 2,
+                height: 1,
+                alpha: vec![7, 9]
+            })
+        );
     }
 }

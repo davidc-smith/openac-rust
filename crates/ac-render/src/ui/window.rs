@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ac_dat::DatCollection;
-use ac_dat::objects::{Palette, RenderSurface, SkillTable, SpellComponentTable};
-use ac_dat::texture::{DecodeOptions, DecodedTexture};
+use ac_dat::objects::{Palette, PixelFormat, RenderSurface, SkillTable, SpellComponentTable};
+use ac_dat::texture::DecodeOptions;
 use ac_host::settings::PlayerSettings;
 use ac_proto::Position;
 use ac_runtime::character::{CharacterCommand, option_id};
@@ -58,7 +58,7 @@ use glam::{Quat, Vec3};
 
 use super::clipboard::SystemClipboard;
 use super::facts::{Dirty, InterfaceFacts};
-use super::gpu::UiTextureSource;
+use super::gpu::{UiPixels, UiTextureSource};
 use super::icons::RuntimeImages;
 use super::input::{self as ui_input, Routed, WorldInput};
 pub use super::mount::{Chrome, MountOptions, mount_window};
@@ -438,12 +438,15 @@ pub struct DatSurfaces<'a> {
 }
 
 impl UiTextureSource for DatSurfaces<'_> {
-    fn decode(&mut self, texture: TextureRef) -> Option<DecodedTexture> {
+    fn decode(&mut self, texture: TextureRef) -> Option<UiPixels> {
         let id = match texture {
             TextureRef::Surface(id) => id,
             TextureRef::Runtime(id) => return self.images.take(id),
         };
         let surface = self.dats.get::<RenderSurface>(id).ok()??;
+        if let Some(coverage) = coverage_pixels(&surface) {
+            return Some(coverage);
+        }
         let palette = if surface.default_palette_id != 0 {
             self.dats
                 .get::<Palette>(surface.default_palette_id)
@@ -452,8 +455,31 @@ impl UiTextureSource for DatSurfaces<'_> {
         } else {
             None
         };
-        ac_dat::texture::decode(&surface, palette.as_ref(), DecodeOptions::default()).ok()
+        ac_dat::texture::decode(&surface, palette.as_ref(), DecodeOptions::default())
+            .ok()
+            .map(UiPixels::Rgba)
     }
+}
+
+/// A one-byte alpha image (the font atlases) as stored, drawn white with
+/// that alpha: what its four-channel decode (255, 255, 255, value) draws.
+/// `None` for any other image, or one whose stored bytes are short.
+fn coverage_pixels(surface: &RenderSurface) -> Option<UiPixels> {
+    if !matches!(
+        surface.format,
+        PixelFormat::A8 | PixelFormat::CUSTOM_LSCAPE_ALPHA
+    ) {
+        return None;
+    }
+    let len = (surface.width as usize).checked_mul(surface.height as usize)?;
+    if len == 0 {
+        return None;
+    }
+    Some(UiPixels::Coverage {
+        width: surface.width,
+        height: surface.height,
+        alpha: surface.data.get(..len)?.to_vec(),
+    })
 }
 
 /// The UI of one window. See the module documentation.
