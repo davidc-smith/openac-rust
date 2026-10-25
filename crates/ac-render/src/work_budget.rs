@@ -210,7 +210,12 @@ impl Default for StreamingWorkBudgetOptions {
             max_gpu_upload_bytes: 8 * MIB,
             max_retire_operations: 64,
             destination_reserve_fraction: 0.75,
-            hold_destination_ceiling_ms: 8.0,
+            // While a reveal waits on its destination the frame may give the
+            // streaming work twice its ordinary share, not more: the login
+            // tunnel's frames also carry the tunnel's own drawing and the
+            // session's first scene, and the destination readies in well
+            // under a second of a tunnel that lasts five and a half.
+            hold_destination_ceiling_ms: 4.0,
         }
     }
 }

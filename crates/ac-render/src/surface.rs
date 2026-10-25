@@ -148,7 +148,7 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
     };
     let curated = monitor
         .as_ref()
-        .map(|m| size(m.size()))
+        .and_then(crate::platform::monitor_size)
         .filter(|(w, h)| *w > 0 && *h > 0)
         .map(|desktop| {
             let modes: Vec<(i32, i32)> = monitor
@@ -172,13 +172,7 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
 /// The resolutions the display menu offers for the monitor `window` is on.
 fn resolution_choices_of(window: &Window) -> Vec<String> {
     let monitor = window.current_monitor();
-    let desktop = monitor.as_ref().map(|m| {
-        let s = m.size();
-        (
-            i32::try_from(s.width).unwrap_or(0),
-            i32::try_from(s.height).unwrap_or(0),
-        )
-    });
+    let desktop = monitor.as_ref().and_then(crate::platform::monitor_size);
     let modes: Vec<(i32, i32)> = monitor
         .iter()
         .flat_map(winit::monitor::MonitorHandle::video_modes)
@@ -348,11 +342,8 @@ impl AttachedWindow {
         {
             features |= wgpu::Features::TEXTURE_COMPRESSION_BC;
         }
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("ac-render device"),
-            required_features: features,
-            ..Default::default()
-        }))?;
+        let (device, queue) =
+            block_on(adapter.request_device(&device_descriptor("ac-render device", features)))?;
         let health = DeviceHealth::watch(&device);
 
         let mut pacing = DisplayPacing::new(options.vsync, options.uncapped);
@@ -2895,6 +2886,31 @@ fn set_icon(window: &Window, image: &ac_dat::texture::DecodedTexture) {
     }
 }
 
+/// What the window asks of the GPU device: `required_features`, and memory
+/// blocks sized to what the client uses.
+///
+/// wgpu's default memory hint ("performance") takes GPU memory in blocks of
+/// 128 to 256 MB, plus 64 to 128 MB for each kind of CPU-visible memory
+/// (uploads, read-backs). The client fills them slowly or never: about
+/// 290 MB used of 512 MB taken right after login, and 4 KB of timer
+/// read-backs holding a whole 64 MB block. Each block counts in full in the
+/// process's committed memory as soon as it is taken, so the slack showed up
+/// as ~220 MB of commit nothing used. The "memory usage" hint takes blocks of
+/// 8 to 64 MB (4 to 32 MB CPU-visible), so the slack stays within one block.
+/// A resource larger than a block still gets a block of its own, and nothing
+/// drawn changes: only where resources sit inside the GPU's memory.
+pub(crate) fn device_descriptor(
+    label: &'static str,
+    required_features: wgpu::Features,
+) -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor {
+        label: Some(label),
+        required_features,
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        ..Default::default()
+    }
+}
+
 /// Runs a future to completion on this thread.
 ///
 /// wgpu's adapter and device requests are futures so they can run in a browser; on desktop they
@@ -2976,6 +2992,42 @@ mod tests {
     use super::{
         Screenshots, block_on, framebuffer_resize, retail_screenshot_path, revealed_selection,
     };
+
+    #[test]
+    fn the_device_takes_gpu_memory_in_small_blocks() {
+        // A 1 MB vertex buffer and a 1 MB upload buffer: each lands in the
+        // first block of its kind, which must be small (8 MB for GPU memory,
+        // 4 MB CPU-visible), not the 128 MB / 64 MB the default hint takes.
+        let Some((device, _queue)) = crate::test_gpu::fresh_device() else {
+            return;
+        };
+        const MB: u64 = 1 << 20;
+        let _vertices = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("one MB of vertices"),
+            size: MB,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let _upload = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("one MB to upload"),
+            size: MB,
+            usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        // A backend without its own sub-allocator reports nothing to check.
+        let Some(report) = device.generate_allocator_report() else {
+            return;
+        };
+        assert!(!report.blocks.is_empty());
+        for block in &report.blocks {
+            assert!(
+                block.size <= 8 * MB,
+                "a {} MB block for {} MB used",
+                block.size / MB,
+                report.total_allocated_bytes / MB
+            );
+        }
+    }
 
     #[test]
     fn a_reveal_clears_only_a_selection_the_world_shows() {

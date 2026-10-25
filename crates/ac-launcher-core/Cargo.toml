@@ -27,6 +27,10 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Securit
 [dev-dependencies]
 ctrlc.workspace = true
 
+# The FIFO test makes its FIFO with a call, not a child process.
+[target.'cfg(unix)'.dev-dependencies]
+nix = { workspace = true, features = ["fs"] }
+
 # The self-update process tests copy their own test program into a launcher
 # folder and run it as the launcher; it takes the launcher's internal
 # arguments, which the standard test harness would refuse, so the binary has

@@ -13,7 +13,6 @@
 //! Draws reached through a portal view are drawn whole (the depth buffer
 //! sorts them); only the portal polygons are limited to their view.
 
-use std::collections::HashMap;
 use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
@@ -401,6 +400,61 @@ impl FrameDraws {
         self.clips.push(region);
         (self.clips.len() - 1) as u32
     }
+
+    /// Empty again, as [`Self::new`] makes it, keeping the lists' room.
+    fn reset(&mut self) {
+        let Self {
+            clips,
+            instances,
+            groups,
+            alpha,
+            billboards,
+            particle_meshes,
+            terrain,
+            terrain_draws,
+            sky,
+            portals,
+            steps,
+            cells_drawn,
+            objects_drawn,
+        } = self;
+        clips.clear();
+        clips.push(ClipRegionGpu::zeroed());
+        instances.clear();
+        groups.clear();
+        alpha.clear();
+        billboards.clear();
+        particle_meshes.clear();
+        terrain.clear();
+        terrain_draws.clear();
+        sky.clear();
+        portals.clear();
+        steps.clear();
+        *cells_drawn = 0;
+        *objects_drawn = 0;
+    }
+}
+
+/// The room a frame's draws took, kept for the next frame's builder: a
+/// frame of about the same size as the last then allocates nothing. Holds
+/// the lists of the frame before last (the last one is being drawn) and
+/// the opaque groups' lists by mesh.
+#[derive(Debug, Default)]
+pub struct DrawScratch {
+    draws: Option<FrameDraws>,
+    groups: crate::IdMap<(MeshKey, bool, u32), Vec<InstanceGpu>>,
+    keys: Vec<(MeshKey, bool, u32)>,
+}
+
+/// The most meshes whose group lists are kept from frame to frame; past
+/// it the kept lists are let go (a view of many different meshes).
+const KEPT_GROUP_LISTS: usize = 8192;
+
+impl DrawScratch {
+    /// Keep a drawn frame's lists for a later frame.
+    pub fn keep(&mut self, drawn: FrameDraws) {
+        self.draws = Some(drawn);
+    }
 }
 
 /// Whether a view polygon is the whole viewport.
@@ -452,11 +506,11 @@ pub fn cull_views(views: &ViewSet, count: usize) -> Vec<ActiveView> {
 /// Terrain and groups being gathered for the current segment.
 #[derive(Debug, Default)]
 pub struct Segment {
-    groups: HashMap<(MeshKey, bool, u32), Vec<InstanceGpu>>,
+    groups: crate::IdMap<(MeshKey, bool, u32), Vec<InstanceGpu>>,
     /// Land cells by landblock, in the order the landblocks were first
     /// reached: (landblock, its corner, its cells' mask).
     terrain: Vec<(LandblockCoord, Vec3, u64)>,
-    terrain_index: HashMap<LandblockCoord, usize>,
+    terrain_index: crate::IdMap<LandblockCoord, usize>,
 }
 
 /// What waits for the sort.
@@ -501,6 +555,8 @@ pub struct StreamBuilder {
     /// The output.
     pub draws: FrameDraws,
     segment: Segment,
+    /// The current segment's group keys, sorted when it ends.
+    keys: Vec<(MeshKey, bool, u32)>,
     cell: Vec<(AlphaList, PendingAlpha)>,
     clip: Vec<PendingAlpha>,
     alpha: Vec<PendingAlpha>,
@@ -514,6 +570,27 @@ impl StreamBuilder {
     pub fn new() -> Self {
         Self {
             draws: FrameDraws::new(),
+            ..Self::default()
+        }
+    }
+
+    /// An empty builder that keeps its lists in the room `scratch` holds.
+    #[must_use]
+    pub fn with_scratch(scratch: DrawScratch) -> Self {
+        let DrawScratch {
+            draws,
+            groups,
+            keys,
+        } = scratch;
+        let mut draws = draws.unwrap_or_default();
+        draws.reset();
+        Self {
+            draws,
+            segment: Segment {
+                groups,
+                ..Segment::default()
+            },
+            keys,
             ..Self::default()
         }
     }
@@ -628,20 +705,38 @@ impl StreamBuilder {
         if self.segment.groups.is_empty() {
             return;
         }
-        let mut keys: Vec<(MeshKey, bool, u32)> = self.segment.groups.keys().copied().collect();
+        // The lists stay in the map, emptied: their room serves the next
+        // segment and the next frame.
+        let mut keys = std::mem::take(&mut self.keys);
+        keys.clear();
+        keys.extend(
+            self.segment
+                .groups
+                .iter()
+                .filter(|(_, list)| !list.is_empty())
+                .map(|(key, _)| *key),
+        );
+        if keys.is_empty() {
+            self.keys = keys;
+            return;
+        }
         keys.sort_unstable();
         let first = self.draws.groups.len();
-        for key in keys {
-            let list = self.segment.groups.remove(&key).unwrap_or_default();
+        for key in &keys {
+            let Some(list) = self.segment.groups.get_mut(key) else {
+                continue;
+            };
             let start = self.draws.instances.len() as u32;
-            self.draws.instances.extend_from_slice(&list);
+            self.draws.instances.extend_from_slice(list);
             self.draws.groups.push(Group {
                 mesh: key.0,
                 shell: key.1,
                 variant: key.2,
                 instances: start..start + list.len() as u32,
             });
+            list.clear();
         }
+        self.keys = keys;
         let last = self.draws.groups.len();
         self.draws.steps.push(Step::Groups(first..last));
     }
@@ -797,9 +892,24 @@ impl StreamBuilder {
 
     /// Finish: flush what is held.
     #[must_use]
-    pub fn finish(mut self) -> FrameDraws {
+    pub fn finish(self) -> FrameDraws {
+        self.finish_keeping().0
+    }
+
+    /// The frame's draws, and the room this builder's working lists took
+    /// for the next frame's builder ([`Self::with_scratch`]).
+    pub fn finish_keeping(mut self) -> (FrameDraws, DrawScratch) {
         self.flush_alpha();
-        self.draws
+        let mut groups = self.segment.groups;
+        if groups.len() > KEPT_GROUP_LISTS {
+            groups = crate::IdMap::default();
+        }
+        let scratch = DrawScratch {
+            draws: None,
+            groups,
+            keys: self.keys,
+        };
+        (self.draws, scratch)
     }
 }
 
@@ -900,6 +1010,46 @@ mod tests {
             ]
         );
         assert_eq!(d.terrain[1].offset, [1.0, 0.0, 0.0]);
+    }
+
+    /// A frame built in the room an earlier frame left draws exactly what
+    /// a fresh builder draws: nothing of the earlier frame shows.
+    #[test]
+    fn a_builder_from_the_last_frames_room_draws_as_a_fresh_one() {
+        let at = |x: f32| {
+            instance(
+                Mat4::from_translation(Vec3::new(x, 0.0, 0.0)),
+                NO_LIGHTS,
+                false,
+            )
+        };
+        let block = LandblockCoord { x: 1, y: 1 };
+        let frame = |b: &mut StreamBuilder, n: u64| {
+            b.push_terrain(block, Vec3::ZERO, land_cell_bit(0));
+            for mesh in 0..n {
+                b.push_opaque(mesh % 3 + 1, mesh % 2 == 0, 0, at(mesh as f32));
+            }
+            b.push_portal(&[Vec3::ZERO, Vec3::X, Vec3::Y], 0, PUNCH_DEPTH);
+            b.push_opaque(9, false, 1, at(-1.0));
+        };
+        // The earlier frames are larger and draw meshes this one does not.
+        let mut scratch = DrawScratch::default();
+        for n in [12, 7] {
+            let mut b = StreamBuilder::with_scratch(scratch);
+            frame(&mut b, n);
+            b.push_opaque(40 + n, true, 2, at(5.0));
+            let (drawn, kept) = b.finish_keeping();
+            scratch = kept;
+            scratch.keep(drawn);
+        }
+        let mut reused = StreamBuilder::with_scratch(scratch);
+        let mut fresh = StreamBuilder::new();
+        frame(&mut reused, 4);
+        frame(&mut fresh, 4);
+        assert_eq!(
+            format!("{:?}", reused.finish()),
+            format!("{:?}", fresh.finish())
+        );
     }
 
     /// OpenAC `TerrainLandCellIndexRunsTests`: a land cell `x * 8 + y` is

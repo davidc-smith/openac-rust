@@ -6,7 +6,7 @@
 //! alpha is opacity 0..1.
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -209,14 +209,19 @@ struct Bucket {
     renderable: BTreeSet<EmitterHandle>,
 }
 
+/// Emitter buckets by owner or cell id. The renderer asks for every land
+/// cell it walks each frame, so the lookup takes the fast hash (ids are not
+/// attacker-chosen; the maps are only looked up, never iterated).
+type Buckets = rustc_hash::FxHashMap<u32, Bucket>;
+
 /// The render worksets: renderable emitters per pass, unattached ones per
 /// pass, and per owner and per cell (each with a logical count).
 #[derive(Debug, Default)]
 struct RenderIndexes {
     renderable: [BTreeSet<EmitterHandle>; ParticleRenderPass::COUNT],
     unattached: [BTreeSet<EmitterHandle>; ParticleRenderPass::COUNT],
-    owners: [HashMap<u32, Bucket>; ParticleRenderPass::COUNT],
-    cells: [HashMap<u32, Bucket>; ParticleRenderPass::COUNT],
+    owners: [Buckets; ParticleRenderPass::COUNT],
+    cells: [Buckets; ParticleRenderPass::COUNT],
 }
 
 impl RenderIndexes {
@@ -292,7 +297,7 @@ impl RenderIndexes {
     }
 }
 
-fn release(buckets: &mut HashMap<u32, Bucket>, key: u32, handle: EmitterHandle) {
+fn release(buckets: &mut Buckets, key: u32, handle: EmitterHandle) {
     if let Some(bucket) = buckets.get_mut(&key) {
         bucket.renderable.remove(&handle);
         bucket.logical_count -= 1;

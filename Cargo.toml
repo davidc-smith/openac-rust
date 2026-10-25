@@ -53,6 +53,9 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"] }
 # Plain-data casts for GPU uploads (ac-render), pure Rust; already in the graph through wgpu.
 bytemuck = { version = "1.25", features = ["derive"] }
+# A fast hash for the per-frame draw maps keyed by model and mesh ids (ac-render), pure Rust;
+# already in the graph through wasmtime.
+rustc-hash = "2.1"
 # MPEG audio decoding for the one MP3 wave in the portal dat (ac-audio). Pure Rust, no build
 # scripts; only the layer-3 decoder is enabled.
 symphonia-core = { version = "0.6.1", default-features = false }

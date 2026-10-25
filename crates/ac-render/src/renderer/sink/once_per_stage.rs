@@ -46,9 +46,9 @@ struct Area {
     coord: LandblockCoord,
     near: NearData,
     resident: NearResident,
-    models: HashMap<u32, Option<Vec<MeshRef>>>,
-    model_info: HashMap<u32, ModelInfo>,
-    meshes: HashMap<MeshKey, GfxGpu>,
+    models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
+    model_info: crate::IdMap<u32, ModelInfo>,
+    meshes: crate::IdMap<MeshKey, GfxGpu>,
 }
 
 impl Area {
@@ -74,14 +74,14 @@ impl Area {
             };
             GfxGpu::new(buffer(), buffer(), gfx, |id| translucency.get(&id).copied())
         };
-        let mut meshes = HashMap::new();
+        let mut meshes = crate::IdMap::default();
         for cell in &near.cells {
             if let Some(mesh) = &cell.mesh {
                 meshes.insert(cell_mesh_key(cell.id), gpu_mesh(mesh));
             }
         }
-        let mut models = HashMap::new();
-        let mut model_info = HashMap::new();
+        let mut models = crate::IdMap::default();
+        let mut model_info = crate::IdMap::default();
         let mut gfx_bounds = HashMap::new();
         let ids: HashSet<u32> = near.model_ids().collect();
         for id in ids {

@@ -44,3 +44,15 @@ fn fs_main(v: VertexOut) -> @location(0) vec4<f32> {
     }
     return color;
 }
+
+// A one-byte coverage texture (a font's glyphs): white with that alpha,
+// times tint, as the four-channel image (255, 255, 255, value) draws.
+@fragment
+fn fs_coverage(v: VertexOut) -> @location(0) vec4<f32> {
+    let coverage = textureSample(ui_texture, ui_sampler, v.uv).r;
+    let color = vec4<f32>(1.0, 1.0, 1.0, coverage) * v.color;
+    if (color.a < 0.005) {
+        discard;
+    }
+    return color;
+}

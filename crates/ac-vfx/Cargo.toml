@@ -13,6 +13,7 @@ ac-bits.workspace = true
 ac-core.workspace = true
 ac-dat.workspace = true
 glam.workspace = true
+rustc-hash.workspace = true
 
 [lints]
 workspace = true

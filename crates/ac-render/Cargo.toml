@@ -23,6 +23,7 @@ winit.workspace = true
 wgpu.workspace = true
 glam.workspace = true
 bytemuck.workspace = true
+rustc-hash.workspace = true
 ac-ui.workspace = true
 # The window's copy of the session's plugin UI (data only; the plugin host
 # stays out of the window's graph).
@@ -31,7 +32,7 @@ ac-host.workspace = true
 arboard.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [lints]
 workspace = true

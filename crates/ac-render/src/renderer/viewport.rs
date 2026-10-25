@@ -233,6 +233,7 @@ impl WorldRenderer {
             let Some(mut pass) = gpu.begin(encoder) else {
                 continue;
             };
+            let mut state = super::MeshPassState::default();
             for blended in [false, true] {
                 for (i, part) in gpu.parts.iter().enumerate() {
                     let Some(mesh) = self.meshes.get(&u64::from(part.gfx_obj_id)) else {
@@ -249,6 +250,7 @@ impl WorldRenderer {
                             &self.pipelines.viewport_meshes,
                             false,
                             &mut pass,
+                            &mut state,
                             sub,
                             part.variant,
                             false,

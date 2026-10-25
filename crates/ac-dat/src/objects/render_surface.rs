@@ -131,9 +131,18 @@ pub struct RenderSurface {
     pub default_palette_id: u32,
 }
 
-impl DatObject for RenderSurface {
-    const DAT: DatFileType = DatFileType::Portal;
+/// A render surface's fields, with where its pixels lie in the file bytes.
+struct Header {
+    id: u32,
+    data_category: u32,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
+    data: core::ops::Range<usize>,
+    default_palette_id: u32,
+}
 
+impl Header {
     fn unpack(r: &mut Reader<'_>) -> Result<Self> {
         let id = r.u32()?;
         let data_category = r.u32()?;
@@ -142,7 +151,8 @@ impl DatObject for RenderSurface {
         let format = PixelFormat(r.u32()?);
         let len = r.i32()?;
         let len = usize::try_from(len).map_err(|_| DecodeError::NegativeLength(len))?;
-        let data = r.bytes(len)?.to_vec();
+        let at = r.position();
+        r.bytes(len)?;
         let mut default_palette_id = 0;
         if format.is_paletted() {
             r.align(4)?;
@@ -154,9 +164,43 @@ impl DatObject for RenderSurface {
             width,
             height,
             format,
-            data,
+            data: at..at + len,
             default_palette_id,
         })
+    }
+
+    fn with_data(self, data: Vec<u8>) -> RenderSurface {
+        RenderSurface {
+            id: self.id,
+            data_category: self.data_category,
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            data,
+            default_palette_id: self.default_palette_id,
+        }
+    }
+}
+
+impl DatObject for RenderSurface {
+    const DAT: DatFileType = DatFileType::Portal;
+
+    fn unpack(r: &mut Reader<'_>) -> Result<Self> {
+        let start = r.position();
+        let all = r.peek_rest();
+        let header = Header::unpack(r)?;
+        let data = all[header.data.start - start..header.data.end - start].to_vec();
+        Ok(header.with_data(data))
+    }
+
+    /// The pixels stay in the file's own buffer: the header before them and
+    /// the palette id after them are cut away, without a copy of the pixels
+    /// into a new buffer.
+    fn unpack_owned(mut bytes: Vec<u8>) -> Result<Self> {
+        let header = Header::unpack(&mut Reader::new(&bytes))?;
+        bytes.truncate(header.data.end);
+        bytes.drain(..header.data.start);
+        Ok(header.with_data(bytes))
     }
 
     fn set_id(&mut self, id: u32) {
@@ -215,6 +259,31 @@ mod tests {
         let s = RenderSurface::unpack(&mut r).unwrap();
         assert_eq!(r.remaining(), 0);
         assert_eq!(s.default_palette_id, 0);
+    }
+
+    /// Taking the file's bytes decodes exactly as reading them does, and
+    /// fails where reading fails.
+    #[test]
+    fn taking_the_bytes_decodes_as_reading_them() {
+        for (format, data) in [
+            (PixelFormat::INDEX16, &[1u8, 0, 2, 0][..]),
+            (PixelFormat::P8, &[1, 2]),
+            (PixelFormat::R8G8B8, &[1, 2, 3, 4, 5, 6]),
+            (PixelFormat::DXT1, &[9; 8]),
+            (PixelFormat::A8, &[]),
+        ] {
+            let bytes = sample(format, data);
+            let read = RenderSurface::unpack(&mut Reader::new(&bytes)).unwrap();
+            let taken = RenderSurface::unpack_owned(bytes.clone()).unwrap();
+            assert_eq!(taken, read);
+            assert_eq!(taken.data, data);
+            for len in 0..bytes.len() {
+                assert_eq!(
+                    RenderSurface::unpack_owned(bytes[..len].to_vec()),
+                    RenderSurface::unpack(&mut Reader::new(&bytes[..len])),
+                );
+            }
+        }
     }
 
     #[test]

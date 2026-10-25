@@ -884,3 +884,132 @@ fn returning_to_an_old_resolution_keeps_the_current_arrangement() {
     assert_eq!((l, t), (700.0, 550.0));
     assert!(host.root.is_window_visible("options"));
 }
+
+/// A settings store that counts how the persistence calls it.
+#[derive(Clone)]
+struct Counting {
+    store: std::rc::Rc<SettingsStore>,
+    calls: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+}
+
+impl Counting {
+    fn new(store: SettingsStore) -> Self {
+        Self {
+            store: std::rc::Rc::new(store),
+            calls: std::rc::Rc::default(),
+        }
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.calls.borrow_mut())
+    }
+}
+
+impl ac_ui::layout_persistence::LayoutStore for Counting {
+    fn load_window_placement(
+        &self,
+        character: &str,
+        resolution: &str,
+        window: &str,
+        fallback: &UiWindowLayout,
+    ) -> Option<ac_host::settings::UiWindowPlacement> {
+        self.calls.borrow_mut().push("load one");
+        self.store
+            .load_window_placement(character, resolution, window, fallback)
+    }
+    fn save_window_placement(
+        &self,
+        character: &str,
+        window: &str,
+        placement: &ac_host::settings::UiWindowPlacement,
+    ) -> std::io::Result<()> {
+        self.calls.borrow_mut().push("save one");
+        self.store
+            .save_window_placement(character, window, placement)
+    }
+    fn load_window_placements(
+        &self,
+        character: &str,
+        resolution: &str,
+        windows: &[(&str, UiWindowLayout)],
+    ) -> std::collections::HashMap<String, ac_host::settings::UiWindowPlacement> {
+        self.calls.borrow_mut().push("load all");
+        self.store
+            .load_window_placements(character, resolution, windows)
+    }
+    fn save_window_placements(
+        &self,
+        character: &str,
+        placements: &[(&str, ac_host::settings::UiWindowPlacement)],
+    ) -> std::io::Result<()> {
+        self.calls.borrow_mut().push("save all");
+        self.store.save_window_placements(character, placements)
+    }
+    fn load_named_window_layout(
+        &self,
+        profile: &str,
+        window: &str,
+        fallback: &UiWindowLayout,
+    ) -> Option<UiWindowLayout> {
+        self.store
+            .load_named_window_layout(profile, window, fallback)
+    }
+    fn save_named_window_layout(
+        &self,
+        profile: &str,
+        window: &str,
+        layout: &UiWindowLayout,
+    ) -> std::io::Result<()> {
+        self.store.save_named_window_layout(profile, window, layout)
+    }
+}
+
+const BATCH_WINDOWS: [&str; 5] = ["chat", "radar", "combat", "vitals", "toolbar"];
+
+/// Restoring or saving every window reads the settings file once and
+/// writes it once, however many windows there are: the file holds every
+/// section, so a read and a write per window froze the first world frame.
+#[test]
+fn restore_all_and_save_all_load_once_and_save_once() {
+    let d = Dir::new();
+    let seed = d.store();
+    for (i, name) in BATCH_WINDOWS.iter().enumerate() {
+        let i = i as f32;
+        seed.save_window_placement(
+            "Alice",
+            name,
+            &ac_host::settings::UiWindowPlacement {
+                layout: layout(30.0 + i, 40.0 + i, 200.0, 100.0, true, false, false),
+                screen_width: 800,
+                screen_height: 600,
+            },
+        )
+        .unwrap();
+    }
+    let mut h = host(800.0, 600.0);
+    for name in BATCH_WINDOWS {
+        mount_default(&mut h, name);
+    }
+    let store = Counting::new(d.store());
+    let mut p = LayoutPersistence::new(
+        &mut h,
+        Some(Box::new(store.clone()) as Box<dyn ac_ui::layout_persistence::LayoutStore>),
+        "Alice",
+        (800, 600),
+        &[],
+    );
+
+    p.restore_all(&mut h);
+    assert_eq!(store.calls(), ["load all", "save all"]);
+    for (i, name) in BATCH_WINDOWS.iter().enumerate() {
+        let i = i as f32;
+        assert_eq!(geometry(&h, name), (30.0 + i, 40.0 + i, 200.0, 100.0));
+    }
+
+    p.save_all(&mut h);
+    assert_eq!(store.calls(), ["save all"]);
+
+    p.restore_after_display_change(&mut h);
+    assert_eq!(store.calls(), ["load all"]);
+    assert!(p.take_failures().is_empty());
+}

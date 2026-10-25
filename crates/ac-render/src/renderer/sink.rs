@@ -71,9 +71,9 @@ pub(super) struct SinkInputs<'a> {
     pub buildings: &'a [BuildingDraw<'a>],
     pub cells: &'a HashMap<u32, CellRef<'a>>,
     pub objects: &'a HashMap<u32, Vec<ObjectDraw<'a>>>,
-    pub models: &'a HashMap<u32, Option<Vec<MeshRef>>>,
-    pub model_info: &'a HashMap<u32, ModelInfo>,
-    pub meshes: &'a HashMap<MeshKey, GfxGpu>,
+    pub models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
+    pub model_info: &'a crate::IdMap<u32, ModelInfo>,
+    pub meshes: &'a crate::IdMap<MeshKey, GfxGpu>,
     pub lights: &'a WindowLights,
     pub sky_pre: &'a [usize],
     pub sky_post: &'a [usize],
@@ -117,9 +117,9 @@ pub(super) struct FrameSink<'a> {
 #[derive(Debug, Default)]
 pub(super) struct StageDrawn {
     /// Interior cells whose room mesh is drawn.
-    cells: HashSet<u32>,
+    cells: crate::IdSet<u32>,
     /// Objects drawn.
-    objects: HashSet<DrawnObject>,
+    objects: crate::IdSet<DrawnObject>,
 }
 
 /// An object a stage drew.
@@ -145,7 +145,7 @@ pub(crate) const SCENERY_WIND_BIT: u32 = 2;
 
 /// A model has a clip-mapped sub-mesh in one of its parts (OpenAC
 /// `FoliageWindClassification.ComputeEntityHasCutoutSubset`).
-pub(super) fn has_cutout_subset(parts: &[MeshRef], meshes: &HashMap<MeshKey, GfxGpu>) -> bool {
+pub(super) fn has_cutout_subset(parts: &[MeshRef], meshes: &crate::IdMap<MeshKey, GfxGpu>) -> bool {
     parts.iter().any(|p| {
         meshes
             .get(&u64::from(p.gfx_obj_id))
@@ -256,7 +256,13 @@ impl FrameSink<'_> {
                 (0, Some((id, turned))) => (id, turned.unwrap_or(world * part.transform)),
                 _ => (part.gfx_obj_id, world * part.transform),
             };
-            if gfx_id == 0 || self.is_hidden_marker(gfx_id) {
+            if gfx_id == 0 {
+                continue;
+            }
+            let gpu = self.input.meshes.get(&u64::from(gfx_id));
+            // An editor-only marker is never drawn (a mesh not here yet is
+            // not known to be one).
+            if gpu.is_some_and(|g| g.hidden_marker) {
                 continue;
             }
             let mut lighting = whole.unwrap_or(NORMAL_LIGHT);
@@ -276,8 +282,9 @@ impl FrameSink<'_> {
                     world: part_world,
                 });
             }
-            self.draw_mesh(
+            self.draw_found_mesh(
                 u64::from(gfx_id),
+                gpu,
                 part.variant,
                 shell,
                 part_world,
@@ -287,15 +294,6 @@ impl FrameSink<'_> {
                 lighting,
             );
         }
-    }
-
-    /// Whether the model `gfx_id` is an editor-only placement marker (a
-    /// mesh not here yet is not known to be one).
-    fn is_hidden_marker(&self, gfx_id: u32) -> bool {
-        self.input
-            .meshes
-            .get(&u64::from(gfx_id))
-            .is_some_and(|gpu| gpu.hidden_marker)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -310,7 +308,28 @@ impl FrameSink<'_> {
         opacity: f32,
         lighting: SelectionLighting,
     ) {
-        let Some(gpu) = self.input.meshes.get(&mesh) else {
+        let gpu = self.input.meshes.get(&mesh);
+        self.draw_found_mesh(
+            mesh, gpu, variant, shell, world, lights, indoor, opacity, lighting,
+        );
+    }
+
+    /// [`Self::draw_mesh`] with `mesh`'s GPU mesh already looked up
+    /// (`None`: not here yet, and asked for).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_found_mesh(
+        &mut self,
+        mesh: MeshKey,
+        gpu: Option<&GfxGpu>,
+        variant: u32,
+        shell: bool,
+        world: Mat4,
+        lights: LightSet,
+        indoor: bool,
+        opacity: f32,
+        lighting: SelectionLighting,
+    ) {
+        let Some(gpu) = gpu else {
             if mesh >> 32 == 0 {
                 self.missing.insert(mesh as u32);
             }
@@ -491,7 +510,8 @@ impl WalkSink for FrameSink<'_> {
 
     fn land_cell(&mut self, block: usize, cell: usize) {
         let (coord, near) = self.input.blocks[block];
-        let views = self.views.clone();
+        // The views are lent out for the cell (nothing it draws changes them).
+        let views = std::mem::take(&mut self.views);
         if let Some(near) = near {
             let offset = Mat4::from_translation(landblock_offset(self.input.origin, coord));
             let landblock = coord.terrain_id() & 0xFFFF_0000;
@@ -536,6 +556,7 @@ impl WalkSink for FrameSink<'_> {
         }
         self.cell_particles(key);
         self.out.sort_cell_exit();
+        self.views = views;
     }
 
     fn building_drawable(&mut self, building: usize) -> bool {
@@ -691,7 +712,7 @@ pub(super) struct SinkParticles<'a> {
     /// The player stands outdoors: the weather's particles are drawn.
     pub weather: bool,
     /// Cells whose particles were drawn this frame (each once).
-    pub drawn_cells: HashSet<u32>,
+    pub drawn_cells: crate::IdSet<u32>,
     /// Outdoor land cells the frame drew (the next frame's view).
     pub visible_cells: Vec<u32>,
     /// Textures to ask the loader for.
@@ -721,7 +742,7 @@ impl<'a> SinkParticles<'a> {
             surfaces,
             ledger,
             weather,
-            drawn_cells: HashSet::new(),
+            drawn_cells: crate::IdSet::default(),
             visible_cells: Vec::new(),
             missing_surfaces: HashSet::new(),
             missing_gfx: HashSet::new(),
@@ -737,7 +758,7 @@ impl<'a> SinkParticles<'a> {
     /// particles wait.
     fn items(
         &mut self,
-        meshes: &HashMap<MeshKey, GfxGpu>,
+        meshes: &crate::IdMap<MeshKey, GfxGpu>,
     ) -> Vec<(f32, AlphaList, PendingParticle)> {
         self.frame.clear();
         let system = self.system;

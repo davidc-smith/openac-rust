@@ -2,6 +2,7 @@
 //! seeded the same way (`new Random(42)`; [`DotNetRandom`] is that
 //! generator). The death-callback cases become cases on the died list.
 
+use std::collections::HashMap;
 use std::f32::consts::FRAC_PI_2;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -142,6 +142,21 @@ pub fn decode_level(
     height: u32,
 ) -> Result<Vec<u8>, CodecError> {
     check_size(width, height)?;
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    decode_level_into(format, blocks, width, height, &mut rgba)?;
+    Ok(rgba)
+}
+
+/// Decode one level into the first `width * height` RGBA texels of
+/// `rgba`; every one of them is written.
+pub fn decode_level_into(
+    format: BcFormat,
+    blocks: &[u8],
+    width: u32,
+    height: u32,
+    rgba: &mut [u8],
+) -> Result<(), CodecError> {
+    check_size(width, height)?;
     let size = format.block_size();
     let (bx_count, by_count) = (block_count(width) as usize, block_count(height) as usize);
     let needed = bx_count * by_count * size;
@@ -154,7 +169,14 @@ pub fn decode_level(
         });
     }
     let (w, h) = (width as usize, height as usize);
-    let mut rgba = vec![0u8; w * h * 4];
+    if rgba.len() < w * h * 4 {
+        return Err(CodecError::TooShort {
+            width,
+            height,
+            needed: w * h * 4,
+            len: rgba.len(),
+        });
+    }
     let mut texels = [0u8; 64];
     for by in 0..by_count {
         for bx in 0..bx_count {
@@ -177,7 +199,7 @@ pub fn decode_level(
             }
         }
     }
-    Ok(rgba)
+    Ok(())
 }
 
 /// Decode one block into 16 RGBA texels, row by row. `block` holds at
@@ -523,6 +545,12 @@ pub fn build_compressed(
 
 /// Levels 1.. of an RGBA level 0: each halves the one before with a 2 x 2
 /// box filter, and is encoded in `format` (kept RGBA when `None`).
+///
+/// An RGBA level is itself the level returned, and the next is filtered
+/// from it. A compressed level is encoded from a filtered working image;
+/// two working images, each the size of level 1, take turns (one is
+/// filtered into the other), so the chain allocates only the levels it
+/// returns and those two.
 pub fn build_from_rgba(
     format: Option<BcFormat>,
     rgba: &[u8],
@@ -531,22 +559,38 @@ pub fn build_from_rgba(
     mip_level_count: u32,
 ) -> Result<Vec<MipLevel>, CodecError> {
     check_size(width, height)?;
-    let mut levels = Vec::with_capacity(mip_level_count.saturating_sub(1) as usize);
-    let mut current: Option<Vec<u8>> = None;
+    let mut levels: Vec<MipLevel> = Vec::with_capacity(mip_level_count.saturating_sub(1) as usize);
+    if mip_level_count <= 1 {
+        return Ok(levels);
+    }
     let (mut w, mut h) = (width, height);
+    let Some(format) = format else {
+        for level in 1..mip_level_count {
+            let above = levels.last().map_or(rgba, |l| l.data.as_slice());
+            let (data, nw, nh) = downsample(above, w, h)?;
+            levels.push(MipLevel {
+                mip_level: level,
+                width: nw,
+                height: nh,
+                data,
+            });
+            (w, h) = (nw, nh);
+        }
+        return Ok(levels);
+    };
+    let first = (width / 2).max(1) as usize * (height / 2).max(1) as usize * 4;
+    let (mut target, mut above) = (vec![0u8; first], vec![0u8; first]);
     for level in 1..mip_level_count {
-        let (next, nw, nh) = downsample(current.as_deref().unwrap_or(rgba), w, h)?;
-        let data = match format {
-            Some(format) => encode_level(format, &next, nw, nh)?,
-            None => next.clone(),
-        };
+        let source = if level == 1 { rgba } else { above.as_slice() };
+        let (nw, nh) = downsample_into(source, w, h, &mut target)?;
+        let next = &target[..nw as usize * nh as usize * 4];
         levels.push(MipLevel {
             mip_level: level,
             width: nw,
             height: nh,
-            data,
+            data: encode_level(format, next, nw, nh)?,
         });
-        current = Some(next);
+        std::mem::swap(&mut target, &mut above);
         (w, h) = (nw, nh);
     }
     Ok(levels)
@@ -556,6 +600,21 @@ pub fn build_from_rgba(
 /// the rounded mean of the 2 x 2 texels above it, alpha averaged like the
 /// colours; at an odd edge the last row or column is read twice.
 pub fn downsample(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, u32, u32), CodecError> {
+    check_size(width, height)?;
+    let (nw, nh) = ((width / 2).max(1), (height / 2).max(1));
+    let mut output = vec![0u8; nw as usize * nh as usize * 4];
+    downsample_into(rgba, width, height, &mut output)?;
+    Ok((output, nw, nh))
+}
+
+/// [`downsample`] into the first texels of `output`, which must hold the
+/// halved image; every texel of it is written. Returns its size.
+pub fn downsample_into(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    output: &mut [u8],
+) -> Result<(u32, u32), CodecError> {
     check_size(width, height)?;
     let needed = width as usize * height as usize * 4;
     if rgba.len() < needed {
@@ -567,8 +626,15 @@ pub fn downsample(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, u32,
         });
     }
     let (nw, nh) = ((width / 2).max(1), (height / 2).max(1));
+    if output.len() < nw as usize * nh as usize * 4 {
+        return Err(CodecError::TooShort {
+            width: nw,
+            height: nh,
+            needed: nw as usize * nh as usize * 4,
+            len: output.len(),
+        });
+    }
     let (w, h) = (width as usize, height as usize);
-    let mut output = vec![0u8; nw as usize * nh as usize * 4];
     for y in 0..nh as usize {
         let y0 = (y * 2).min(h - 1);
         let y1 = (y * 2 + 1).min(h - 1);
@@ -589,7 +655,7 @@ pub fn downsample(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, u32,
             }
         }
     }
-    Ok((output, nw, nh))
+    Ok((nw, nh))
 }
 
 #[cfg(test)]
@@ -804,6 +870,62 @@ mod tests {
     }
 
     // ── the chain ────────────────────────────────────────────────────
+
+    /// The chain built in two working images is the chain of a fresh
+    /// image per level (each level filtered from the one above, then
+    /// encoded), for every format and for sides that reach one texel at
+    /// different levels, where a working image still holds the larger
+    /// level's texels past the smaller one's end.
+    #[test]
+    fn the_chain_in_working_images_is_the_chain_of_fresh_images() {
+        for (w, h) in [(64, 64), (64, 8), (8, 64), (20, 12)] {
+            let source = noise(w as usize * h as usize * 4, 0x5eed + u64::from(w * h));
+            let count = full_mip_level_count(w, h);
+            for format in [BcFormat::Bc1, BcFormat::Bc2, BcFormat::Bc3] {
+                let mut expected = Vec::new();
+                let (mut above, mut lw, mut lh) = (source.clone(), w, h);
+                for level in 1..count {
+                    let (next, nw, nh) = downsample(&above, lw, lh).unwrap();
+                    expected.push(MipLevel {
+                        mip_level: level,
+                        width: nw,
+                        height: nh,
+                        data: encode_level(format, &next, nw, nh).unwrap(),
+                    });
+                    (above, lw, lh) = (next, nw, nh);
+                }
+                let built = build_from_rgba(Some(format), &source, w, h, count).unwrap();
+                assert_eq!(built, expected, "{w}x{h} {format:?}");
+            }
+            let mut rgba_levels = Vec::new();
+            let (mut above, mut lw, mut lh) = (source.clone(), w, h);
+            for _ in 1..count {
+                let (next, nw, nh) = downsample(&above, lw, lh).unwrap();
+                rgba_levels.push(next.clone());
+                (above, lw, lh) = (next, nw, nh);
+            }
+            let built: Vec<Vec<u8>> = build_from_rgba(None, &source, w, h, count)
+                .unwrap()
+                .into_iter()
+                .map(|l| l.data)
+                .collect();
+            assert_eq!(built, rgba_levels, "{w}x{h} rgba");
+        }
+    }
+
+    #[test]
+    fn decoding_into_a_larger_image_writes_the_level_at_its_start() {
+        let source = noise(8 * 8 * 4, 77);
+        let blocks = encode_level(BcFormat::Bc3, &source, 8, 8).unwrap();
+        let mut into = vec![0xAB; 8 * 8 * 4 + 16];
+        decode_level_into(BcFormat::Bc3, &blocks, 8, 8, &mut into).unwrap();
+        assert_eq!(
+            into[..256],
+            decode_level(BcFormat::Bc3, &blocks, 8, 8).unwrap()[..]
+        );
+        assert_eq!(into[256..], [0xAB; 16]);
+        assert!(decode_level_into(BcFormat::Bc3, &blocks, 8, 8, &mut [0; 255]).is_err());
+    }
 
     #[test]
     fn chain_halves_each_level_and_stops_at_one_by_one() {

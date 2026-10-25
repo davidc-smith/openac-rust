@@ -302,10 +302,7 @@ fn the_chat_vitals_and_radar_mount_feed_and_draw_from_the_dats() {
             let pixels = surfaces
                 .decode(t)
                 .unwrap_or_else(|| panic!("{id:#010x} decodes"));
-            assert_eq!(
-                pixels.rgba.len(),
-                4 * pixels.width as usize * pixels.height as usize
-            );
+            assert!(pixels.is_whole(), "{id:#010x} fills its size");
         }
     }
 

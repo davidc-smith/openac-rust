@@ -10,6 +10,7 @@
 //! cell, walks the frame from it (portal visibility) and draws what the
 //! walk reached.
 
+mod atlas_upload;
 pub(crate) mod atmosphere;
 mod detail;
 mod particles;
@@ -39,7 +40,7 @@ use detail::DetailGpu;
 use particles::ParticleGpu;
 use pipelines::{
     depth_view, msaa_color_view, sampler_entry, storage_buffer, storage_entry, texture_entry,
-    uniform_entry, vertex_buffer, write_layer,
+    uniform_entry, vertex_buffer,
 };
 use sink::{BuildingDraw, FrameSink, SinkInputs, SinkParticles, sphere_of};
 use world_pipelines::{PipelineLayouts, WorldPipelines, usable_sample_count};
@@ -52,7 +53,6 @@ use crate::animation::{AnimationPresenter, FiredHook, HookOwner, StaticKey};
 use crate::appearance::AppearanceKey;
 use crate::assets::{
     GfxObjData, LandblockData, NearData, StaticInstance, SubMeshRange, SurfaceData,
-    TerrainAtlasData,
 };
 use crate::camera::{
     CameraController, CameraMode, ChaseCollision, ChaseSubject, FlyInput, Lens, OrbitOverrides,
@@ -94,6 +94,36 @@ fn loaded_cost(item: &Loaded) -> crate::work_budget::StreamingWorkCost {
 fn loaded_stage(item: &Loaded) -> &'static str {
     item.stage()
 }
+
+/// What releasing a landblock that left the window costs: one GPU
+/// retirement (its buffers go together) and an entity operation per
+/// placement it held, as adopting it was counted.
+fn retirement_cost(r: &Resident) -> crate::work_budget::StreamingWorkCost {
+    let placements = r.near.as_ref().map_or(0, |n| {
+        n.statics.len()
+            + n.buildings.len()
+            + n.cells.iter().map(|c| 1 + c.statics.len()).sum::<usize>()
+    });
+    crate::work_budget::StreamingWorkCost {
+        retire_operations: 1,
+        entity_operations: i32::try_from(placements).unwrap_or(i32::MAX),
+        ..crate::work_budget::StreamingWorkCost::default()
+    }
+}
+
+/// Drop `value` on a short-lived thread of its own: freeing a structure of
+/// thousands of allocations does not hold up the frame. Should no thread
+/// start, it is dropped here.
+fn release_in_background<T: Send + 'static>(value: T) {
+    let _ = std::thread::Builder::new()
+        .name("release".into())
+        .spawn(move || drop(value));
+}
+
+/// How long a frame may spend building the camera's collision for server
+/// objects new to its neighbourhood (the first is always built): the
+/// neighbourhood that arrives at login holds the whole town's objects.
+const CAMERA_OBJECT_BUILD_BUDGET: Duration = Duration::from_millis(1);
 
 /// How often meshes, textures and models nothing uses any more are
 /// released.
@@ -195,6 +225,14 @@ struct SkyParamsGpu {
 
 /// Distance between sky parameter blocks: the uniform offset alignment.
 const SKY_PARAMS_STRIDE: usize = 256;
+
+/// The world's instance buffer is made this many instances big (about
+/// 7.6 MB) when the window opens. Growing it later costs a fresh GPU memory
+/// block now and then, 8 to 13 ms in one frame, and the first frame of a
+/// new area is where it grows: the first world frame after a teleport.
+/// Twice the densest frame measured (a teleport destination of 16 to 32
+/// thousand instances) is made up front; a denser frame still grows it.
+const INITIAL_INSTANCE_CAPACITY: usize = 65_536;
 
 /// Bytes of the scene-lighting block.
 const SCENE_BYTES: u64 = SceneLightingUbo::SIZE_IN_BYTES as u64;
@@ -389,6 +427,9 @@ pub(crate) struct WorldRenderer {
     /// The terrain atlas's views and tiling table, kept so its sampler can
     /// change.
     terrain_atlas: Option<(wgpu::TextureView, wgpu::TextureView, wgpu::Buffer)>,
+    /// A region's atlas being written a piece a frame; the one in use
+    /// stays until it is done.
+    atlas_upload: Option<atlas_upload::AtlasUpload>,
     /// The streaming work budget's profile, scaled by the preset's
     /// completions per frame.
     work_budget: crate::work_budget::StreamingWorkBudgetOptions,
@@ -435,7 +476,7 @@ pub(crate) struct WorldRenderer {
     ambient_region: Option<AmbientRegion>,
     lights: WindowLights,
     /// Bounds and lights of each model.
-    model_info: HashMap<u32, ModelInfo>,
+    model_info: crate::IdMap<u32, ModelInfo>,
     /// Bounds of each appearance's parts.
     appearance_bounds: HashMap<AppearanceKey, Option<(Vec3, Vec3)>>,
     /// The player's cell and whether it is sealed (no view outside).
@@ -457,6 +498,8 @@ pub(crate) struct WorldRenderer {
     /// Inside a sealed dungeon: the landblock streaming collapsed onto.
     dungeon: Option<u32>,
     residents: HashMap<LandblockCoord, Resident>,
+    /// Landblocks that left the window, released a few per frame.
+    retiring: crate::retirement::RetirementQueue<Resident>,
     /// The frame walk and the cells it can reach.
     walk: FrameWalk,
     /// Interior cells and buildings for finding the viewer's cell when the
@@ -498,14 +541,14 @@ pub(crate) struct WorldRenderer {
     /// The plugins' world lines as this frame draws them.
     world_lines: world_lines::WorldLinesGpu,
 
-    models: HashMap<u32, Option<Vec<MeshRef>>>,
+    models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
     requested_models: crate::model_requests::ModelRequests,
     /// Server objects' models drawn with their appearance.
     appearances: HashMap<AppearanceKey, Option<Vec<MeshRef>>>,
     requested_appearances: HashSet<AppearanceKey>,
     /// Part surface substitutions: variant id to (surface id, handle).
     variants: HashMap<u32, Vec<(u32, u32)>>,
-    meshes: HashMap<MeshKey, GfxGpu>,
+    meshes: crate::IdMap<MeshKey, GfxGpu>,
     /// GfxObjs and surfaces asked for again after a release.
     requested_gfx: HashSet<u32>,
     requested_surfaces: HashSet<u32>,
@@ -530,6 +573,8 @@ pub(crate) struct WorldRenderer {
     stats: WorldStats,
     /// Draw stream built by `prepare`, consumed by `draw`.
     frame: FrameDraws,
+    /// The room earlier frames' draws took, for the next frame's.
+    draw_scratch: crate::draws::DrawScratch,
     /// Part poses of the animated objects and statics.
     animations: AnimationPresenter,
     /// Setups, motion tables and animations for them (once the dats are
@@ -548,6 +593,9 @@ pub(crate) struct WorldRenderer {
     portal: crate::portal_space::PortalSpace,
     /// The portal tunnel, once its assets are looked for.
     tunnel: portal::TunnelAssets,
+    /// A teleport's placement puts the chase camera's eye back on the
+    /// player.
+    viewer_reseat: portal::ViewerReseat,
     /// The tunnel's Setup (its models are never released).
     tunnel_setup: Option<u32>,
     /// Portal space's sounds and wait lines, until the window takes them.
@@ -738,7 +786,7 @@ impl WorldRenderer {
         );
         let terrain_instances_capacity = 256;
         let portal_vertices_capacity = 256;
-        let instances_capacity = 1024;
+        let instances_capacity = INITIAL_INSTANCE_CAPACITY;
         let (near_radius, far_radius) = quality.radii();
         let work_budget = crate::work_budget::StreamingWorkBudgetOptions::default()
             .scale_for_legacy_completion_count(
@@ -768,6 +816,7 @@ impl WorldRenderer {
             alpha_to_coverage: quality.alpha_to_coverage,
             anisotropic_level: quality.anisotropic_level,
             terrain_atlas: None,
+            atlas_upload: None,
             work_budget,
             held_loaded: None,
             quality_overrides: settings.quality_overrides,
@@ -793,7 +842,7 @@ impl WorldRenderer {
             sky_models: HashSet::new(),
             ambient_region: None,
             lights: WindowLights::new(),
-            model_info: HashMap::new(),
+            model_info: crate::IdMap::default(),
             appearance_bounds: HashMap::new(),
             player_cell_sealed: None,
             clear: None,
@@ -805,6 +854,7 @@ impl WorldRenderer {
             region: None,
             dungeon: None,
             residents: HashMap::new(),
+            retiring: crate::retirement::RetirementQueue::default(),
             walk: FrameWalk::new(),
             collision: ac_physics::CollisionWorld::new(),
             camera_collision: CameraCollision::new(),
@@ -840,12 +890,12 @@ impl WorldRenderer {
             ),
             portal_vertices_capacity,
             world_lines: world_lines::WorldLinesGpu::default(),
-            models: HashMap::new(),
+            models: crate::IdMap::default(),
             requested_models: crate::model_requests::ModelRequests::default(),
             appearances: HashMap::new(),
             requested_appearances: HashSet::new(),
             variants: HashMap::new(),
-            meshes: HashMap::new(),
+            meshes: crate::IdMap::default(),
             requested_gfx: HashSet::new(),
             requested_surfaces: HashSet::new(),
             last_sweep: Instant::now(),
@@ -881,6 +931,7 @@ impl WorldRenderer {
             last_update: None,
             stats: WorldStats::default(),
             frame: FrameDraws::new(),
+            draw_scratch: crate::draws::DrawScratch::default(),
             animations: AnimationPresenter::new(),
             animation_source: None,
             effects: None,
@@ -889,6 +940,7 @@ impl WorldRenderer {
             pending_server_effects: Vec::new(),
             portal: crate::portal_space::PortalSpace::new(),
             tunnel: portal::TunnelAssets::default(),
+            viewer_reseat: portal::ViewerReseat::default(),
             tunnel_setup: None,
             portal_cues: Vec::new(),
             held_roots: HashMap::new(),
@@ -1144,7 +1196,7 @@ impl WorldRenderer {
             let block = LandblockCoord::of_cell(pos.cell_id);
             // The origin stays put while the player is within the far
             // window of it; beyond it (a teleport) it moves to the player.
-            if let OriginMove::Recentered { shift } =
+            let recentered = if let OriginMove::Recentered { shift } =
                 follow_player(&mut self.origin, block, self.far_radius + 1)
             {
                 // Everything placed per frame from landblock-relative data
@@ -1160,15 +1212,26 @@ impl WorldRenderer {
                         b.walk.inverse = b.walk.world.inverse();
                     }
                 }
-                self.rebuild_collision();
                 let origin = &self.origin;
                 if let Some(effects) = self.effects.as_mut() {
                     effects.origin_moved(&|landblock| {
                         landblock_offset(origin, LandblockCoord::of_cell(landblock))
                     });
                 }
-            }
+                // The collision world is placed in the drawing frame, so it
+                // is built again, once the landblocks leaving the window
+                // are gone: a teleport, whose whole old window leaves,
+                // builds none of it only to drop it. The old one is freed
+                // off the frame.
+                release_in_background(std::mem::take(&mut self.collision));
+                true
+            } else {
+                false
+            };
             self.stream(block, pos.cell_id);
+            if recentered {
+                self.install_resident_collision();
+            }
             self.begin_reveal(pos.cell_id);
             let feet = to_frame(
                 &self.origin,
@@ -1183,9 +1246,10 @@ impl WorldRenderer {
             // The session's server objects collide with the eye as they do
             // in the session's engine (OpenAC sweeps that engine itself).
             if let (Some(scene), Some(content)) = (scene, self.content.get_if_open()) {
-                for (id, error) in self
-                    .camera_collision
-                    .sync_objects(&content.dats, scene.objects())
+                let deadline = Instant::now() + CAMERA_OBJECT_BUILD_BUDGET;
+                for (id, error) in
+                    self.camera_collision
+                        .sync_objects(&content.dats, scene.objects(), || Instant::now() < deadline)
                 {
                     self.notices
                         .push(format!("camera collision of object {id}: {error}"));
@@ -1226,6 +1290,14 @@ impl WorldRenderer {
                 tracked_target,
                 ..ChaseSubject::standing(feet, yaw)
             };
+            // The session placed the body at a teleport's destination: the
+            // eye restarts on the player and the boom re-extends from there
+            // (OpenAC `LocalPlayerTeleportPlacement.Place`).
+            if !self.portal.is_active() {
+                self.viewer_reseat.clear();
+            } else if self.viewer_reseat.take(pos.cell_id) {
+                self.cameras.chase.reset_viewer_to_player(feet, yaw);
+            }
             self.cameras.chase.update(&subject, dt, collision);
         }
         if self.cameras.mode() == CameraMode::Fly {
@@ -1460,6 +1532,11 @@ impl WorldRenderer {
     }
 
     fn load(&mut self, coord: LandblockCoord, tier: Tier) {
+        // Wanted again before it was released: released whole first, so
+        // the new copy never meets what is left of the old one.
+        if let Some(r) = self.retiring.take(coord) {
+            self.retire_landblock(coord, r);
+        }
         if self.residents.contains_key(&coord) {
             if tier == Tier::Near {
                 self.promote(coord);
@@ -1509,13 +1586,37 @@ impl WorldRenderer {
     }
 
     fn unload(&mut self, coord: LandblockCoord) {
-        if let Some(r) = self.residents.remove(&coord)
-            && let Some(near) = r.near
-        {
-            self.drop_near(coord, &near);
+        // It leaves the window now (nothing of it is drawn or waited for);
+        // what it holds is released over the next frames.
+        match self.residents.remove(&coord) {
+            Some(r) => self.retiring.push(coord, r),
+            None => self
+                .collision
+                .remove_landblock_from_graph(coord.terrain_id()),
+        }
+    }
+
+    /// Release what a landblock that left the window still holds: its
+    /// terrain buffer, its cells' meshes and walk cells, its collision, its
+    /// lights, animations and effects. Whole, in one step.
+    fn retire_landblock(&mut self, coord: LandblockCoord, r: Resident) {
+        if let Some(near) = &r.near {
+            self.drop_near(coord, near);
         }
         self.collision
             .remove_landblock_from_graph(coord.terrain_id());
+    }
+
+    /// Release landblocks that left the window, oldest first, while
+    /// `meter` admits them.
+    fn advance_retirement(
+        &mut self,
+        meter: &mut crate::work_budget::StreamingWorkMeter<crate::work_budget::InstantClock>,
+    ) {
+        while let Some((coord, r)) = self.retiring.next_admitted(meter, retirement_cost) {
+            self.retire_landblock(coord, r);
+            let _ = meter.complete();
+        }
     }
 
     fn drop_near(&mut self, coord: LandblockCoord, near: &NearResident) {
@@ -1682,9 +1783,11 @@ impl WorldRenderer {
         }
     }
 
-    /// Rebuild the collision world after the drawing frame moved.
-    fn rebuild_collision(&mut self) {
-        self.collision = ac_physics::CollisionWorld::new();
+    /// Put every resident landblock's collision into the collision world,
+    /// placed in the drawing frame: its outdoor cells where its terrain
+    /// arrived, its interior cells and buildings where its near content
+    /// did.
+    fn install_resident_collision(&mut self) {
         let residents = std::mem::take(&mut self.residents);
         for (coord, r) in &residents {
             if r.tile.is_some() {
@@ -2005,6 +2108,7 @@ impl WorldRenderer {
             .as_mut()
             .map(|a| std::mem::take(&mut a.caster_frame))
             .unwrap_or_default();
+        let scratch = std::mem::take(&mut self.draw_scratch);
         let (mut objects, poses) = self.object_draws(scene);
         // A hidden object is not drawn, casts no shadow and cannot be
         // picked; its pose stays in `poses` for its emitters.
@@ -2156,7 +2260,7 @@ impl WorldRenderer {
                     .as_ref()
                     .is_some_and(|a| a.config.wind.enabled),
             },
-            out: StreamBuilder::new(),
+            out: StreamBuilder::with_scratch(scratch),
             views: Vec::new(),
             portals_drawn_count: self.portals_drawn_count,
             missing: HashSet::new(),
@@ -2179,7 +2283,7 @@ impl WorldRenderer {
                 |p| (p.visible_cells, p.missing_surfaces, p.missing_gfx),
             );
         let land_cells = std::mem::take(&mut sink.land_cells);
-        let frame = sink.out.finish();
+        let (frame, scratch) = sink.out.finish_keeping();
         // The shadow casters stand in the land cells the walk reached.
         let caster_started = Instant::now();
         let casters = if self.atmosphere.as_ref().is_some_and(|a| a.shadows_on()) {
@@ -2195,6 +2299,7 @@ impl WorldRenderer {
         drop(block_refs);
         drop(blocks);
         self.walk = walk;
+        self.draw_scratch = scratch;
         if let Some(a) = self.atmosphere.as_mut() {
             a.caster_frame = casters.unwrap_or_default();
             a.cpu_added += caster_time;
@@ -2258,7 +2363,8 @@ impl WorldRenderer {
         self.stats.objects_drawn = frame.objects_drawn;
         self.stats.cells_drawn = frame.cells_drawn;
         self.stats.particles_drawn = frame.billboards.len() + frame.particle_meshes.len();
-        self.frame = frame;
+        let drawn = std::mem::replace(&mut self.frame, frame);
+        self.draw_scratch.keep(drawn);
     }
 
     /// The model a building's part 0 draws at its distance from the eye
@@ -3024,6 +3130,7 @@ impl WorldRenderer {
             models: &self.models,
             walk: &self.walk,
             server_models_ready: self.server_models_ready,
+            retiring: !self.retiring.is_empty(),
             unavailable: self.failure.is_some(),
             window: apply_reveal_radius_override(
                 RevealWindow {
@@ -3061,11 +3168,19 @@ impl WorldRenderer {
         use crate::work_budget::{
             InstantClock, StreamingWorkAdmission, StreamingWorkBudgetOptions, StreamingWorkMeter,
         };
-        let mut budget = self.work_budget.to_budget().unwrap_or_else(|_| {
+        let ordinary = self.work_budget.to_budget().unwrap_or_else(|_| {
             StreamingWorkBudgetOptions::default()
                 .to_budget()
                 .expect("the authored profile is valid")
         });
+        // Landblocks that left the window are released with what adoption
+        // leaves of an ordinary frame's budget, counted from the frame's
+        // start: a reveal's widened budget is for its destination.
+        let Ok(mut retirement) = StreamingWorkMeter::new(ordinary, InstantClock::default(), false)
+        else {
+            return;
+        };
+        let mut budget = ordinary;
         if self.reveal.upload_priority() {
             budget =
                 budget.widen_for_destination_hold(self.work_budget.hold_destination_ceiling_ms);
@@ -3074,6 +3189,21 @@ impl WorldRenderer {
             return;
         };
         loop {
+            // A region's atlas goes up a piece at a time, before anything
+            // the loader sent after it.
+            if let Some(cost) = self
+                .atlas_upload
+                .as_ref()
+                .and_then(atlas_upload::AtlasUpload::next_cost)
+            {
+                match meter.try_reserve(cost, "terrain atlas", false) {
+                    Ok(StreamingWorkAdmission::Yielded) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                self.advance_atlas(device, queue);
+                let _ = meter.complete();
+                continue;
+            }
             let Some(item) = self.held_loaded.take().or_else(|| self.loader.try_next()) else {
                 break;
             };
@@ -3088,6 +3218,8 @@ impl WorldRenderer {
             let _ = meter.complete();
         }
         let _ = meter.finish_frame();
+        self.advance_retirement(&mut retirement);
+        let _ = retirement.finish_frame();
         self.stats.landblocks = self.residents.values().filter(|r| r.tile.is_some()).count();
         self.stats.meshes = self.meshes.len();
         self.stats.surfaces = self.surfaces.len();
@@ -3097,7 +3229,7 @@ impl WorldRenderer {
         {
             match item {
                 Loaded::Failed(reason) => self.failure = Some(reason),
-                Loaded::Atlas(atlas) => self.upload_atlas(device, queue, &atlas),
+                Loaded::Atlas(atlas) => self.begin_atlas(device, atlas),
                 Loaded::Landblock(block) => self.upload_landblock(device, *block),
                 Loaded::NoLandblock(coord) => {
                     if let Some(r) = self.residents.get_mut(&coord) {
@@ -3164,83 +3296,6 @@ impl WorldRenderer {
                 }
             }
         }
-    }
-
-    fn upload_atlas(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        atlas: &TerrainAtlasData,
-    ) {
-        let Some(first) = atlas.layers.first() else {
-            self.failure = Some("the region lists no terrain textures".into());
-            return;
-        };
-        let levels = first.levels.len() as u32;
-        let terrain = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terrain atlas"),
-            size: wgpu::Extent3d {
-                width: first.width,
-                height: first.height,
-                depth_or_array_layers: atlas.layers.len() as u32,
-            },
-            mip_level_count: levels,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for (layer, chain) in atlas.layers.iter().enumerate() {
-            let (mut w, mut h) = (chain.width, chain.height);
-            for (level, pixels) in chain.levels.iter().enumerate() {
-                write_layer(queue, &terrain, level as u32, layer as u32, w, h, pixels);
-                (w, h) = ((w / 2).max(1), (h / 2).max(1));
-            }
-        }
-        let alpha = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terrain alpha atlas"),
-            size: wgpu::Extent3d {
-                width: atlas.alpha_width,
-                height: atlas.alpha_height,
-                depth_or_array_layers: atlas.alpha_layers.len() as u32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for (layer, pixels) in atlas.alpha_layers.iter().enumerate() {
-            write_layer(
-                queue,
-                &alpha,
-                0,
-                layer as u32,
-                atlas.alpha_width,
-                atlas.alpha_height,
-                pixels,
-            );
-        }
-        let tiling = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("terrain tiling"),
-            size: size_of_val(&atlas.tiling) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&tiling, 0, bytemuck::cast_slice(&atlas.tiling));
-
-        let array_view = |t: &wgpu::Texture| {
-            t.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            })
-        };
-        self.terrain_atlas = Some((array_view(&terrain), array_view(&alpha), tiling));
-        self.rebuild_terrain_group(device);
-        self.detail
-            .set_textures(device, queue, &self.detail_layout, &atlas.details);
     }
 
     /// The terrain's bind group: the atlas with the quality's anisotropic
@@ -3577,26 +3632,30 @@ impl WorldRenderer {
 
     /// The draw stream in order, with `p`'s pipelines.
     fn draw_steps(&self, pass: &mut wgpu::RenderPass<'_>, p: &shadows::PassPipelines<'_>) {
+        // The vertex and index buffers bound so far in this pass, kept
+        // across the steps: a buffer already bound is not bound again.
+        let mut buffers = BufferBinds::default();
         for step in &self.frame.steps {
             match step {
-                Step::Sky { range, .. } => self.draw_sky(pass, p, range.clone()),
-                Step::Terrain(range) => self.draw_terrain(pass, p, range.clone()),
-                Step::Groups(range) => self.draw_groups(pass, p, range.clone()),
-                Step::Alpha(range) => self.draw_alpha(pass, p, range.clone()),
+                Step::Sky { range, .. } => self.draw_sky(pass, p, &mut buffers, range.clone()),
+                Step::Terrain(range) => self.draw_terrain(pass, p, &mut buffers, range.clone()),
+                Step::Groups(range) => self.draw_groups(pass, p, &mut buffers, range.clone()),
+                Step::Alpha(range) => self.draw_alpha(pass, p, &mut buffers, range.clone()),
                 Step::Portals(range) => {
                     pass.set_pipeline(p.portal);
                     pass.set_bind_group(0, &self.globals_group, &[]);
-                    pass.set_vertex_buffer(0, self.portal_vertices.slice(..));
+                    buffers.vertex(pass, 0, &self.portal_vertices);
                     pass.draw(range.clone(), 0..1);
                 }
             }
         }
     }
 
-    fn draw_sky(
-        &self,
+    fn draw_sky<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
         p: &shadows::PassPipelines<'_>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         for i in range {
@@ -3622,8 +3681,7 @@ impl WorldRenderer {
                 },
                 &[],
             );
-            pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-            pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+            buffers.mesh(pass, &gfx.vertices, &gfx.indices);
             pass.draw_indexed(
                 sub.first_index..sub.first_index + sub.index_count,
                 sub.base_vertex,
@@ -3632,10 +3690,11 @@ impl WorldRenderer {
         }
     }
 
-    fn draw_terrain(
-        &self,
+    fn draw_terrain<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
         p: &shadows::PassPipelines<'_>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         let Some(terrain) = &self.terrain_group else {
@@ -3647,7 +3706,7 @@ impl WorldRenderer {
         if let Some(atmosphere) = p.atmosphere {
             pass.set_bind_group(2, atmosphere, &[]);
         }
-        pass.set_vertex_buffer(1, self.terrain_instances.slice(..));
+        buffers.vertex(pass, 1, &self.terrain_instances);
         for i in range {
             let draw = &self.frame.terrain_draws[i];
             let Some(tile) = self
@@ -3657,7 +3716,7 @@ impl WorldRenderer {
             else {
                 continue;
             };
-            pass.set_vertex_buffer(0, tile.vertices.slice(..));
+            buffers.vertex(pass, 0, &tile.vertices);
             let i = i as u32;
             for run in draw.vertex_runs() {
                 pass.draw(run, i..i + 1);
@@ -3665,23 +3724,24 @@ impl WorldRenderer {
         }
     }
 
-    fn draw_groups(
-        &self,
+    fn draw_groups<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         pass.set_bind_group(0, &self.globals_group, &[]);
         if let Some(atmosphere) = p.atmosphere {
             pass.set_bind_group(3, atmosphere, &[]);
         }
-        pass.set_vertex_buffer(1, self.instances.slice(..));
+        buffers.vertex(pass, 1, &self.instances);
+        let mut state = MeshPassState::default();
         for group in &self.frame.groups[range] {
             let Some(gfx) = self.meshes.get(&group.mesh) else {
                 continue;
             };
-            pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-            pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+            buffers.mesh(pass, &gfx.vertices, &gfx.indices);
             for (i, sub) in gfx.sub_meshes.iter().enumerate() {
                 if gfx.sub_blended.get(i).copied().unwrap_or(false) {
                     continue;
@@ -3689,6 +3749,7 @@ impl WorldRenderer {
                 self.draw_sub(
                     pass,
                     p,
+                    &mut state,
                     sub,
                     group.variant,
                     group.shell,
@@ -3700,37 +3761,43 @@ impl WorldRenderer {
     }
 
     /// Blended sub-meshes and particles, in list order. Neighbouring
-    /// particle quads with the same texture and blend are drawn as one
-    /// instanced draw (their instances are consecutive).
-    fn draw_alpha(
-        &self,
+    /// particle quads with the same texture and blend, and neighbouring
+    /// draws of the same blended sub-mesh, are drawn as one instanced draw
+    /// (their instances are consecutive, and a draw's instances are drawn
+    /// in order, so the picture is the same).
+    fn draw_alpha<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         pass.set_bind_group(0, &self.globals_group, &[]);
         let items = &self.frame.alpha[range];
+        let mut state = MeshPassState::default();
         let mut i = 0;
         while i < items.len() {
             match items[i] {
                 AlphaItem::Mesh(draw) => {
-                    i += 1;
+                    let end = i + alpha_mesh_run(&items[i..]);
+                    let count = (end - i) as u32;
+                    i = end;
                     let Some(gfx) = self.meshes.get(&draw.mesh) else {
                         continue;
                     };
                     let Some(sub) = gfx.sub_meshes.get(draw.sub as usize) else {
                         continue;
                     };
-                    pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.instances.slice(..));
-                    pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    buffers.mesh(pass, &gfx.vertices, &gfx.indices);
+                    buffers.vertex(pass, 1, &self.instances);
                     self.draw_sub(
                         pass,
                         p,
+                        &mut state,
                         sub,
                         draw.variant,
                         draw.shell,
-                        draw.instance..draw.instance + 1,
+                        draw.instance..draw.instance + count,
                         draw.faded,
                     );
                 }
@@ -3756,9 +3823,11 @@ impl WorldRenderer {
                     let Some(material) = material else {
                         continue;
                     };
+                    // Set directly: the mesh draws set everything again.
+                    state = MeshPassState::default();
                     pass.set_pipeline(&p.billboard[usize::from(first.additive)]);
                     pass.set_bind_group(1, material, &[]);
-                    pass.set_vertex_buffer(0, self.particle_gpu.billboards.slice(..));
+                    buffers.vertex(pass, 0, &self.particle_gpu.billboards);
                     pass.draw(0..6, first.instance..first.instance + count);
                 }
                 AlphaItem::ParticleMesh(draw) => {
@@ -3775,6 +3844,8 @@ impl WorldRenderer {
                     let Some(pipeline) = p.particle_meshes.get(&(draw.blend, draw.cull)) else {
                         continue;
                     };
+                    // Set directly: the mesh draws set everything again.
+                    state = MeshPassState::default();
                     pass.set_pipeline(pipeline);
                     pass.set_bind_group(
                         1,
@@ -3785,9 +3856,8 @@ impl WorldRenderer {
                         },
                         &[],
                     );
-                    pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.particle_gpu.mesh_instances.slice(..));
-                    pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    buffers.mesh(pass, &gfx.vertices, &gfx.indices);
+                    buffers.vertex(pass, 1, &self.particle_gpu.mesh_instances);
                     pass.draw_indexed(
                         sub.first_index..sub.first_index + sub.index_count,
                         sub.base_vertex,
@@ -3799,23 +3869,28 @@ impl WorldRenderer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_sub(
-        &self,
+    fn draw_sub<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        state: &mut MeshPassState<'a>,
         sub: &SubMeshRange,
         variant: u32,
         shell: bool,
         instances: std::ops::Range<u32>,
         faded: bool,
     ) {
-        if let Some(atmosphere) = p.atmosphere {
+        if let Some(atmosphere) = p.atmosphere
+            && !state.atmosphere_set
+        {
             pass.set_bind_group(3, atmosphere, &[]);
+            state.atmosphere_set = true;
         }
         self.draw_sub_with(
             p.meshes,
             p.clip_map_meshes,
             pass,
+            state,
             sub,
             variant,
             shell,
@@ -3829,11 +3904,12 @@ impl WorldRenderer {
     /// clip-mapped surface takes its own pipeline (the atmospheric wind's
     /// leaves) instead of the solid one.
     #[allow(clippy::too_many_arguments)]
-    fn draw_sub_with(
-        &self,
-        meshes: &HashMap<(Translucency, crate::meshing::Cull), wgpu::RenderPipeline>,
+    fn draw_sub_with<'a>(
+        &'a self,
+        meshes: &'a HashMap<(Translucency, crate::meshing::Cull), wgpu::RenderPipeline>,
         clip_map_meshes: bool,
         pass: &mut wgpu::RenderPass<'_>,
+        state: &mut MeshPassState<'a>,
         sub: &SubMeshRange,
         variant: u32,
         shell: bool,
@@ -3854,23 +3930,117 @@ impl WorldRenderer {
             }
             kind => kind,
         };
-        pass.set_pipeline(&meshes[&(kind, sub.cull)]);
-        pass.set_bind_group(2, &self.detail.group, &[]);
-        pass.set_bind_group(
-            1,
-            if sub.repeat {
-                &surface.repeat
-            } else {
-                &surface.clamp
-            },
-            &[],
-        );
+        let pipeline = &meshes[&(kind, sub.cull)];
+        if !state.pipeline.is_some_and(|p| std::ptr::eq(p, pipeline)) {
+            pass.set_pipeline(pipeline);
+            state.pipeline = Some(pipeline);
+        }
+        if !state.detail_set {
+            pass.set_bind_group(2, &self.detail.group, &[]);
+            state.detail_set = true;
+        }
+        let material = if sub.repeat {
+            &surface.repeat
+        } else {
+            &surface.clamp
+        };
+        if !state.material.is_some_and(|m| std::ptr::eq(m, material)) {
+            pass.set_bind_group(1, material, &[]);
+            state.material = Some(material);
+        }
         pass.draw_indexed(
             sub.first_index..sub.first_index + sub.index_count,
             sub.base_vertex,
             instances,
         );
     }
+}
+
+/// What the mesh draws of one pass have set so far, so that a pipeline or
+/// a texture already set is not set again: every set costs wgpu's
+/// validation and a driver call, and neighbouring draws mostly share both.
+/// Anything else that sets the pass's state starts a new one.
+#[derive(Default)]
+pub(crate) struct MeshPassState<'a> {
+    pipeline: Option<&'a wgpu::RenderPipeline>,
+    material: Option<&'a wgpu::BindGroup>,
+    detail_set: bool,
+    atmosphere_set: bool,
+}
+
+/// How many blended mesh draws from the start of `items` are one instanced
+/// draw: the same sub-mesh drawn the same way, on consecutive instances.
+fn alpha_mesh_run(items: &[AlphaItem]) -> usize {
+    let Some(AlphaItem::Mesh(first)) = items.first() else {
+        return 0;
+    };
+    1 + items[1..]
+        .iter()
+        .enumerate()
+        .take_while(|(k, item)| match item {
+            AlphaItem::Mesh(next) => {
+                next.instance == first.instance + 1 + *k as u32
+                    && (next.mesh, next.sub, next.variant, next.shell, next.faded)
+                        == (
+                            first.mesh,
+                            first.sub,
+                            first.variant,
+                            first.shell,
+                            first.faded,
+                        )
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// The vertex buffers (slots 0 and 1, whole) and the index buffer (whole,
+/// 32-bit) a pass has bound, so that a buffer already bound is not bound
+/// again: every bind costs wgpu's validation and tracking when the frame's
+/// commands are encoded, and consecutive draws often share the instance
+/// buffer or a mesh.
+#[derive(Default)]
+pub(crate) struct BufferBinds<'a> {
+    vertex: [Option<&'a wgpu::Buffer>; 2],
+    index: Option<&'a wgpu::Buffer>,
+}
+
+impl<'a> BufferBinds<'a> {
+    /// Bind `buffer` whole to vertex `slot` (0 or 1) unless it is bound there.
+    pub(crate) fn vertex(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        slot: usize,
+        buffer: &'a wgpu::Buffer,
+    ) {
+        if newly_bound(&mut self.vertex[slot], buffer) {
+            pass.set_vertex_buffer(slot as u32, buffer.slice(..));
+        }
+    }
+
+    /// Bind a mesh's vertices (slot 0) and 32-bit indices, each unless it
+    /// is bound.
+    pub(crate) fn mesh(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        vertices: &'a wgpu::Buffer,
+        indices: &'a wgpu::Buffer,
+    ) {
+        self.vertex(pass, 0, vertices);
+        if newly_bound(&mut self.index, indices) {
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        }
+    }
+}
+
+/// Make `next` what `bound` holds; true when it held something else (the
+/// bind is needed).
+fn newly_bound<'a, T>(bound: &mut Option<&'a T>, next: &'a T) -> bool {
+    if bound.is_some_and(|b| std::ptr::eq(b, next)) {
+        return false;
+    }
+    *bound = Some(next);
+    true
 }
 
 /// The player stands in an outdoor land cell: the sky's effects and the
@@ -4044,9 +4214,11 @@ fn sky_group(
 /// What the renderer has loaded, as the reveal rule asks it.
 struct RevealState<'a> {
     residents: &'a HashMap<LandblockCoord, Resident>,
-    models: &'a HashMap<u32, Option<Vec<MeshRef>>>,
+    models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
     walk: &'a FrameWalk,
     server_models_ready: bool,
+    /// Landblocks that left the window are still being released.
+    retiring: bool,
     unavailable: bool,
     window: RevealWindow,
 }
@@ -4077,7 +4249,9 @@ impl RevealFacts for RevealState<'_> {
     }
 
     fn render_neighborhood_ready(&self, cell: u32, near: u32, far: u32) -> bool {
-        neighborhood_loaded(cell, far, |b| self.terrain_arrived(b))
+        // Nothing of the window left behind is shown with the new one.
+        !self.retiring
+            && neighborhood_loaded(cell, far, |b| self.terrain_arrived(b))
             && neighborhood_loaded(cell, near, |b| self.statics_arrived(b))
     }
 
@@ -4114,8 +4288,64 @@ impl RevealFacts for RevealState<'_> {
 }
 
 #[cfg(test)]
+mod atlas_upload_tests;
+#[cfg(test)]
+mod retirement_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighbouring_draws_of_one_blended_sub_mesh_on_consecutive_instances_are_one_draw() {
+        use crate::draws::AlphaDraw;
+        let mesh = |mesh: MeshKey, sub: u32, instance: u32| {
+            AlphaItem::Mesh(AlphaDraw {
+                mesh,
+                variant: 0,
+                shell: false,
+                sub,
+                instance,
+                faded: false,
+            })
+        };
+        let items = [
+            mesh(7, 0, 10),
+            mesh(7, 0, 11),
+            mesh(7, 0, 12),
+            // Another sub-mesh of the same mesh ends the run.
+            mesh(7, 1, 13),
+        ];
+        assert_eq!(alpha_mesh_run(&items), 3);
+        assert_eq!(alpha_mesh_run(&items[3..]), 1);
+        // A gap in the instances ends it too.
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), mesh(7, 0, 12)]), 1);
+        // So does another mesh.
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), mesh(8, 0, 11)]), 1);
+        let faded = AlphaItem::Mesh(AlphaDraw {
+            faded: true,
+            ..match mesh(7, 0, 11) {
+                AlphaItem::Mesh(d) => d,
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), faded]), 1);
+        assert_eq!(alpha_mesh_run(&[]), 0);
+    }
+
+    #[test]
+    fn a_buffer_is_bound_again_only_when_another_was_bound_in_between() {
+        let (a, b) = (1_u8, 1_u8);
+        let mut bound = None;
+        assert!(newly_bound(&mut bound, &a), "the first bind is made");
+        assert!(
+            !newly_bound(&mut bound, &a),
+            "the same buffer again is skipped"
+        );
+        // Equal contents are not the same buffer.
+        assert!(newly_bound(&mut bound, &b));
+        assert!(newly_bound(&mut bound, &a));
+    }
 
     #[test]
     fn a_translucent_instance_blends_its_solid_and_clip_map_sub_meshes() {

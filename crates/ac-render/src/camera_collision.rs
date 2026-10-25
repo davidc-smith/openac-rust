@@ -338,10 +338,17 @@ impl CameraCollision {
     /// changed takes the new state, one that changed otherwise is built
     /// again, and one that left leaves the lists. Returns the client ids of
     /// the objects whose collision could not be built or moved, with why.
+    ///
+    /// Building an object new is the costly part (its setup is read and its
+    /// collision made): the first is always built, and each further one
+    /// only while `may_build` says the frame has time for it; the rest are
+    /// built by later calls. A neighbourhood that arrives with a town's
+    /// worth of objects fills over a few frames instead of in one.
     pub fn sync_objects<'v, D: DatSource>(
         &mut self,
         dats: &D,
         views: impl IntoIterator<Item = &'v ObjectView>,
+        mut may_build: impl FnMut() -> bool,
     ) -> Vec<(u32, ContentError)> {
         let mut failed = Vec::new();
         let Some((center, engine)) = self.resident.as_mut() else {
@@ -350,6 +357,7 @@ impl CameraCollision {
         };
         let center_id = center.terrain_id();
         let mut seen = HashSet::new();
+        let mut built = 0usize;
         for view in views {
             let id = view.key.local_id;
             let wanted = match (view.parent, view.position, view_shape(view)) {
@@ -385,7 +393,13 @@ impl CameraCollision {
                         }
                     }
                 }
-                _ => {
+                existing => {
+                    // A new object waits for a later frame once this one
+                    // has built its share.
+                    if existing.is_none() && built > 0 && !may_build() {
+                        continue;
+                    }
+                    built += 1;
                     if self.objects.remove(&id).is_some_and(|m| m.registered) {
                         engine.shadows.deregister(id);
                     }
@@ -727,7 +741,7 @@ mod tests {
     /// How far the eye is pulled in from where the boom wanted it, with the
     /// views `views` mirrored into the neighbourhood first.
     fn pulled_in(c: &mut CameraCollision, dats: &FakeDats, views: &[ObjectView]) -> f32 {
-        assert!(c.sync_objects(dats, views).is_empty());
+        assert!(c.sync_objects(dats, views, || true).is_empty());
         let origin = {
             let mut o = LiveWorldOrigin::new();
             o.try_initialize(0xA9, 0xB4);
@@ -792,6 +806,44 @@ mod tests {
             .unwrap();
         assert!(!c.has_object(7));
         assert!(pulled_in(&mut c, &dats, std::slice::from_ref(&post)) >= 0.5);
+    }
+
+    // A neighbourhood arriving with many objects builds the first at once
+    // and the rest while the frame has time; what did not fit is built by
+    // the next call, and nothing already built waits.
+    #[test]
+    fn new_objects_are_built_while_the_frame_has_time() {
+        let dats = post_dats();
+        let mut c = CameraCollision::new();
+        let center = LandblockCoord { x: 0xA9, y: 0xB4 };
+        c.arrived(center, Ok(Box::new(engine_with_building(0))))
+            .unwrap();
+        let posts: Vec<ObjectView> = (0..3)
+            .map(|i| {
+                let mut v = post_view(10.0 * i as f32, 3.0, 94.0);
+                v.key.local_id = 7 + i;
+                v
+            })
+            .collect();
+        let built = |c: &CameraCollision| (7..10).filter(|&id| c.has_object(id)).count();
+
+        // Time for one more after the first: two are built.
+        let mut budget = 1;
+        let mut one_more = || {
+            budget -= 1;
+            budget >= 0
+        };
+        assert!(c.sync_objects(&dats, &posts, &mut one_more).is_empty());
+        assert_eq!(built(&c), 2);
+        // No time at all: the next call still builds one, and that finishes
+        // them; the two built before stay.
+        assert!(c.sync_objects(&dats, &posts, || false).is_empty());
+        assert_eq!(built(&c), 3);
+        // Moving a built one is not building: it follows at once.
+        let mut moved = posts.clone();
+        moved[0] = post_view(1.0, 3.0, 94.0);
+        assert!(c.sync_objects(&dats, &moved, || false).is_empty());
+        assert_eq!(built(&c), 3);
     }
 
     #[test]

@@ -28,8 +28,7 @@ fn terrain_atlas_has_every_layer_and_graded_alpha_maps() {
     assert_eq!(atlas.blending.side_alphas.len(), 1);
     assert_eq!(atlas.blending.road_alphas.len(), 3);
     assert_eq!(atlas.alpha_layers.len(), 8);
-    for (i, layer) in atlas.alpha_layers.iter().enumerate() {
-        let alphas: Vec<u8> = layer.iter().skip(3).step_by(4).copied().collect();
+    for (i, alphas) in atlas.alpha_layers.iter().enumerate() {
         let graded = alphas.iter().filter(|&&a| a != 0 && a != 255).count();
         assert!(
             graded > alphas.len() / 50,
@@ -351,26 +350,136 @@ fn fnv1a<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u64 {
 /// The terrain atlas is built on several threads; its pixels are the same
 /// bytes the one-thread build made. Golden: the hash of the atlas built by
 /// the one-thread `build_terrain_atlas` before the layers went parallel,
-/// full detail.
+/// full detail, when every layer was RGBA: the BGRA terrain layers are
+/// hashed with red and blue swapped back, the one-byte alpha layers with
+/// the weight in all four channels (what the terrain shader samples).
 #[test]
 #[ignore = "needs the retail dat files"]
 fn terrain_atlas_pixels_match_the_one_thread_build() {
     let d = dats();
     let region = d.dats.get::<Region>(REGION_ID).unwrap().unwrap();
     let atlas = assets::build_terrain_atlas(&d, &region, WorldTextureDetail::FULL);
-    let hash = fnv1a(
-        atlas
-            .layers
-            .iter()
-            .chain(atlas.details.iter().flatten().map(|d| &d.image))
-            .flat_map(|chain| chain.levels.iter().map(Vec::as_slice))
-            .chain(atlas.alpha_layers.iter().map(Vec::as_slice)),
-    );
+    let rgba = |bgra: &[u8]| -> Vec<u8> {
+        bgra.chunks_exact(4)
+            .flat_map(|t| [t[2], t[1], t[0], t[3]])
+            .collect()
+    };
+    let widened = |weights: &[u8]| -> Vec<u8> { weights.iter().flat_map(|&w| [w; 4]).collect() };
+    let layers: Vec<Vec<u8>> = atlas
+        .layers
+        .iter()
+        .flat_map(|chain| chain.levels.iter().map(|l| rgba(l)))
+        .chain(
+            atlas
+                .details
+                .iter()
+                .flatten()
+                .flat_map(|d| d.image.levels.iter().cloned()),
+        )
+        .chain(atlas.alpha_layers.iter().map(|l| widened(l)))
+        .collect();
+    let hash = fnv1a(layers.iter().map(Vec::as_slice));
     println!("terrain atlas hash {hash:#018x}");
     assert_eq!(hash, ATLAS_GOLDEN);
 }
 
 const ATLAS_GOLDEN: u64 = 0xb19b_bcd7_056c_880f;
+
+/// The terrain array takes each terrain image's texels in BGRA order (a
+/// 32-bit colour image as the dats store it), and the alpha array one byte
+/// per texel; both are exactly the four-channel decodes they replace: the
+/// layer with red and blue swapped, every channel of the "additive" alpha
+/// decode the weight.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn terrain_layers_are_bgra_and_alpha_maps_one_byte_of_the_decode() {
+    use ac_dat::objects::{Palette, RenderSurface, SurfaceTexture};
+    use ac_dat::texture::{DecodeOptions, DecodedTexture};
+
+    let d = dats();
+    let region = d.dats.get::<Region>(REGION_ID).unwrap().unwrap();
+    let atlas = assets::build_terrain_atlas(&d, &region, WorldTextureDetail::FULL);
+    let decode = |surface_texture: u32, additive: bool| -> DecodedTexture {
+        let st = d
+            .dats
+            .get::<SurfaceTexture>(surface_texture)
+            .unwrap()
+            .unwrap();
+        let rs = d
+            .dats
+            .get::<RenderSurface>(st.textures[0])
+            .unwrap()
+            .unwrap();
+        let palette = (rs.default_palette_id != 0).then(|| {
+            d.dats
+                .get::<Palette>(rs.default_palette_id)
+                .unwrap()
+                .unwrap()
+        });
+        let options = DecodeOptions {
+            clip_map: false,
+            additive,
+        };
+        ac_dat::texture::decode(&rs, palette.as_deref(), options).unwrap()
+    };
+    let tex_merge = &region.terrain_info.land_surfaces.tex_merge;
+    let mut seen = std::collections::HashSet::new();
+    let mut layer = 0;
+    for desc in &tex_merge.terrain_desc {
+        if !seen.insert(desc.terrain_type) {
+            continue;
+        }
+        let expected = decode(desc.terrain_tex.texture_id, false);
+        let chain = &atlas.layers[layer];
+        assert_eq!(
+            (chain.width, chain.height),
+            (expected.width, expected.height)
+        );
+        let bgra = &chain.levels[0];
+        assert_eq!(bgra.len(), expected.rgba.len());
+        for (i, (b, e)) in bgra
+            .chunks_exact(4)
+            .zip(expected.rgba.chunks_exact(4))
+            .enumerate()
+        {
+            assert_eq!(
+                b,
+                [e[2], e[1], e[0], e[3]],
+                "terrain layer {layer} texel {i}"
+            );
+        }
+        layer += 1;
+    }
+    assert!(layer > 20, "only {layer} terrain layers");
+
+    let alpha_ids: Vec<u32> = tex_merge
+        .corner_terrain_maps
+        .iter()
+        .chain(&tex_merge.side_terrain_maps)
+        .map(|m| m.texture_id)
+        .chain(tex_merge.road_maps.iter().map(|m| m.texture_id))
+        .collect();
+    assert_eq!(atlas.alpha_layers.len(), alpha_ids.len());
+    for (layer, (&id, weights)) in alpha_ids.iter().zip(&atlas.alpha_layers).enumerate() {
+        let expected = decode(id, true);
+        assert_eq!(
+            (atlas.alpha_width, atlas.alpha_height),
+            (expected.width, expected.height)
+        );
+        assert_eq!(
+            weights.len() * 4,
+            expected.rgba.len(),
+            "alpha layer {layer}"
+        );
+        for (i, (&w, e)) in weights
+            .iter()
+            .zip(expected.rgba.chunks_exact(4))
+            .enumerate()
+        {
+            assert_eq!([w; 4], e, "alpha layer {layer} texel {i}");
+        }
+    }
+}
 
 /// What the loader reads for an area: the atlas, terrain within `far`,
 /// near content within `near` and every model, mesh and surface it places.

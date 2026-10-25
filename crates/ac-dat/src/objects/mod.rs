@@ -124,6 +124,13 @@ pub trait DatObject: Sized {
     /// Decode the object from its file bytes.
     fn unpack(r: &mut Reader<'_>) -> Result<Self, DecodeError>;
 
+    /// Decode the object from its file bytes, taking them: an object that
+    /// keeps a long run of its bytes as they are (a texture's pixels) keeps
+    /// them in place instead of copying them. Decodes as [`Self::unpack`].
+    fn unpack_owned(bytes: Vec<u8>) -> Result<Self, DecodeError> {
+        Self::unpack(&mut Reader::new(&bytes))
+    }
+
     /// Record the file id the object was read from. Objects whose bytes
     /// carry an id have it replaced by the directory's id.
     fn set_id(&mut self, _id: u32) {}
