@@ -577,6 +577,9 @@ pub(crate) struct WorldRenderer {
     portal: crate::portal_space::PortalSpace,
     /// The portal tunnel, once its assets are looked for.
     tunnel: portal::TunnelAssets,
+    /// A teleport's placement puts the chase camera's eye back on the
+    /// player.
+    viewer_reseat: portal::ViewerReseat,
     /// The tunnel's Setup (its models are never released).
     tunnel_setup: Option<u32>,
     /// Portal space's sounds and wait lines, until the window takes them.
@@ -920,6 +923,7 @@ impl WorldRenderer {
             pending_server_effects: Vec::new(),
             portal: crate::portal_space::PortalSpace::new(),
             tunnel: portal::TunnelAssets::default(),
+            viewer_reseat: portal::ViewerReseat::default(),
             tunnel_setup: None,
             portal_cues: Vec::new(),
             held_roots: HashMap::new(),
@@ -1268,6 +1272,14 @@ impl WorldRenderer {
                 tracked_target,
                 ..ChaseSubject::standing(feet, yaw)
             };
+            // The session placed the body at a teleport's destination: the
+            // eye restarts on the player and the boom re-extends from there
+            // (OpenAC `LocalPlayerTeleportPlacement.Place`).
+            if !self.portal.is_active() {
+                self.viewer_reseat.clear();
+            } else if self.viewer_reseat.take(pos.cell_id) {
+                self.cameras.chase.reset_viewer_to_player(feet, yaw);
+            }
             self.cameras.chase.update(&subject, dt, collision);
         }
         if self.cameras.mode() == CameraMode::Fly {
