@@ -10,6 +10,7 @@
 //! cell, walks the frame from it (portal visibility) and draws what the
 //! walk reached.
 
+mod atlas_upload;
 pub(crate) mod atmosphere;
 mod detail;
 mod particles;
@@ -39,7 +40,7 @@ use detail::DetailGpu;
 use particles::ParticleGpu;
 use pipelines::{
     depth_view, msaa_color_view, sampler_entry, storage_buffer, storage_entry, texture_entry,
-    uniform_entry, vertex_buffer, write_layer, write_layer_texels,
+    uniform_entry, vertex_buffer,
 };
 use sink::{BuildingDraw, FrameSink, SinkInputs, SinkParticles, sphere_of};
 use world_pipelines::{PipelineLayouts, WorldPipelines, usable_sample_count};
@@ -52,7 +53,6 @@ use crate::animation::{AnimationPresenter, FiredHook, HookOwner, StaticKey};
 use crate::appearance::AppearanceKey;
 use crate::assets::{
     GfxObjData, LandblockData, NearData, StaticInstance, SubMeshRange, SurfaceData,
-    TerrainAtlasData,
 };
 use crate::camera::{
     CameraController, CameraMode, ChaseCollision, ChaseSubject, FlyInput, Lens, OrbitOverrides,
@@ -119,6 +119,11 @@ fn release_in_background<T: Send + 'static>(value: T) {
         .name("release".into())
         .spawn(move || drop(value));
 }
+
+/// How long a frame may spend building the camera's collision for server
+/// objects new to its neighbourhood (the first is always built): the
+/// neighbourhood that arrives at login holds the whole town's objects.
+const CAMERA_OBJECT_BUILD_BUDGET: Duration = Duration::from_millis(1);
 
 /// How often meshes, textures and models nothing uses any more are
 /// released.
@@ -422,6 +427,9 @@ pub(crate) struct WorldRenderer {
     /// The terrain atlas's views and tiling table, kept so its sampler can
     /// change.
     terrain_atlas: Option<(wgpu::TextureView, wgpu::TextureView, wgpu::Buffer)>,
+    /// A region's atlas being written a piece a frame; the one in use
+    /// stays until it is done.
+    atlas_upload: Option<atlas_upload::AtlasUpload>,
     /// The streaming work budget's profile, scaled by the preset's
     /// completions per frame.
     work_budget: crate::work_budget::StreamingWorkBudgetOptions,
@@ -808,6 +816,7 @@ impl WorldRenderer {
             alpha_to_coverage: quality.alpha_to_coverage,
             anisotropic_level: quality.anisotropic_level,
             terrain_atlas: None,
+            atlas_upload: None,
             work_budget,
             held_loaded: None,
             quality_overrides: settings.quality_overrides,
@@ -1237,9 +1246,10 @@ impl WorldRenderer {
             // The session's server objects collide with the eye as they do
             // in the session's engine (OpenAC sweeps that engine itself).
             if let (Some(scene), Some(content)) = (scene, self.content.get_if_open()) {
-                for (id, error) in self
-                    .camera_collision
-                    .sync_objects(&content.dats, scene.objects())
+                let deadline = Instant::now() + CAMERA_OBJECT_BUILD_BUDGET;
+                for (id, error) in
+                    self.camera_collision
+                        .sync_objects(&content.dats, scene.objects(), || Instant::now() < deadline)
                 {
                     self.notices
                         .push(format!("camera collision of object {id}: {error}"));
@@ -3179,6 +3189,21 @@ impl WorldRenderer {
             return;
         };
         loop {
+            // A region's atlas goes up a piece at a time, before anything
+            // the loader sent after it.
+            if let Some(cost) = self
+                .atlas_upload
+                .as_ref()
+                .and_then(atlas_upload::AtlasUpload::next_cost)
+            {
+                match meter.try_reserve(cost, "terrain atlas", false) {
+                    Ok(StreamingWorkAdmission::Yielded) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                self.advance_atlas(device, queue);
+                let _ = meter.complete();
+                continue;
+            }
             let Some(item) = self.held_loaded.take().or_else(|| self.loader.try_next()) else {
                 break;
             };
@@ -3204,7 +3229,7 @@ impl WorldRenderer {
         {
             match item {
                 Loaded::Failed(reason) => self.failure = Some(reason),
-                Loaded::Atlas(atlas) => self.upload_atlas(device, queue, &atlas),
+                Loaded::Atlas(atlas) => self.begin_atlas(device, atlas),
                 Loaded::Landblock(block) => self.upload_landblock(device, *block),
                 Loaded::NoLandblock(coord) => {
                     if let Some(r) = self.residents.get_mut(&coord) {
@@ -3271,85 +3296,6 @@ impl WorldRenderer {
                 }
             }
         }
-    }
-
-    fn upload_atlas(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        atlas: &TerrainAtlasData,
-    ) {
-        let Some(first) = atlas.layers.first() else {
-            self.failure = Some("the region lists no terrain textures".into());
-            return;
-        };
-        let levels = first.levels.len() as u32;
-        let terrain = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terrain atlas"),
-            size: wgpu::Extent3d {
-                width: first.width,
-                height: first.height,
-                depth_or_array_layers: atlas.layers.len() as u32,
-            },
-            mip_level_count: levels,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // The layers are BGRA, as the dats store 32-bit colour.
-            format: wgpu::TextureFormat::Bgra8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for (layer, chain) in atlas.layers.iter().enumerate() {
-            let (mut w, mut h) = (chain.width, chain.height);
-            for (level, pixels) in chain.levels.iter().enumerate() {
-                write_layer(queue, &terrain, level as u32, layer as u32, w, h, pixels);
-                (w, h) = ((w / 2).max(1), (h / 2).max(1));
-            }
-        }
-        let alpha = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("terrain alpha atlas"),
-            size: wgpu::Extent3d {
-                width: atlas.alpha_width,
-                height: atlas.alpha_height,
-                depth_or_array_layers: atlas.alpha_layers.len() as u32,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // One byte a texel, the blend weight; the terrain shader reads
-            // it from the red channel.
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for (layer, pixels) in atlas.alpha_layers.iter().enumerate() {
-            write_layer_texels(
-                queue,
-                &alpha,
-                0,
-                layer as u32,
-                (atlas.alpha_width, atlas.alpha_height, 1),
-                pixels,
-            );
-        }
-        let tiling = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("terrain tiling"),
-            size: size_of_val(&atlas.tiling) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&tiling, 0, bytemuck::cast_slice(&atlas.tiling));
-
-        let array_view = |t: &wgpu::Texture| {
-            t.create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            })
-        };
-        self.terrain_atlas = Some((array_view(&terrain), array_view(&alpha), tiling));
-        self.rebuild_terrain_group(device);
-        self.detail
-            .set_textures(device, queue, &self.detail_layout, &atlas.details);
     }
 
     /// The terrain's bind group: the atlas with the quality's anisotropic
@@ -4259,6 +4205,8 @@ impl RevealFacts for RevealState<'_> {
     }
 }
 
+#[cfg(test)]
+mod atlas_upload_tests;
 #[cfg(test)]
 mod retirement_tests;
 
