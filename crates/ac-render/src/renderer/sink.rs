@@ -256,7 +256,13 @@ impl FrameSink<'_> {
                 (0, Some((id, turned))) => (id, turned.unwrap_or(world * part.transform)),
                 _ => (part.gfx_obj_id, world * part.transform),
             };
-            if gfx_id == 0 || self.is_hidden_marker(gfx_id) {
+            if gfx_id == 0 {
+                continue;
+            }
+            let gpu = self.input.meshes.get(&u64::from(gfx_id));
+            // An editor-only marker is never drawn (a mesh not here yet is
+            // not known to be one).
+            if gpu.is_some_and(|g| g.hidden_marker) {
                 continue;
             }
             let mut lighting = whole.unwrap_or(NORMAL_LIGHT);
@@ -276,8 +282,9 @@ impl FrameSink<'_> {
                     world: part_world,
                 });
             }
-            self.draw_mesh(
+            self.draw_found_mesh(
                 u64::from(gfx_id),
+                gpu,
                 part.variant,
                 shell,
                 part_world,
@@ -287,15 +294,6 @@ impl FrameSink<'_> {
                 lighting,
             );
         }
-    }
-
-    /// Whether the model `gfx_id` is an editor-only placement marker (a
-    /// mesh not here yet is not known to be one).
-    fn is_hidden_marker(&self, gfx_id: u32) -> bool {
-        self.input
-            .meshes
-            .get(&u64::from(gfx_id))
-            .is_some_and(|gpu| gpu.hidden_marker)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -310,7 +308,28 @@ impl FrameSink<'_> {
         opacity: f32,
         lighting: SelectionLighting,
     ) {
-        let Some(gpu) = self.input.meshes.get(&mesh) else {
+        let gpu = self.input.meshes.get(&mesh);
+        self.draw_found_mesh(
+            mesh, gpu, variant, shell, world, lights, indoor, opacity, lighting,
+        );
+    }
+
+    /// [`Self::draw_mesh`] with `mesh`'s GPU mesh already looked up
+    /// (`None`: not here yet, and asked for).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_found_mesh(
+        &mut self,
+        mesh: MeshKey,
+        gpu: Option<&GfxGpu>,
+        variant: u32,
+        shell: bool,
+        world: Mat4,
+        lights: LightSet,
+        indoor: bool,
+        opacity: f32,
+        lighting: SelectionLighting,
+    ) {
+        let Some(gpu) = gpu else {
             if mesh >> 32 == 0 {
                 self.missing.insert(mesh as u32);
             }
@@ -693,7 +712,7 @@ pub(super) struct SinkParticles<'a> {
     /// The player stands outdoors: the weather's particles are drawn.
     pub weather: bool,
     /// Cells whose particles were drawn this frame (each once).
-    pub drawn_cells: HashSet<u32>,
+    pub drawn_cells: crate::IdSet<u32>,
     /// Outdoor land cells the frame drew (the next frame's view).
     pub visible_cells: Vec<u32>,
     /// Textures to ask the loader for.
@@ -723,7 +742,7 @@ impl<'a> SinkParticles<'a> {
             surfaces,
             ledger,
             weather,
-            drawn_cells: HashSet::new(),
+            drawn_cells: crate::IdSet::default(),
             visible_cells: Vec::new(),
             missing_surfaces: HashSet::new(),
             missing_gfx: HashSet::new(),

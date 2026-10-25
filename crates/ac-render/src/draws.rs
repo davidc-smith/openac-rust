@@ -13,7 +13,6 @@
 //! Draws reached through a portal view are drawn whole (the depth buffer
 //! sorts them); only the portal polygons are limited to their view.
 
-use std::collections::HashMap;
 use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
@@ -511,7 +510,7 @@ pub struct Segment {
     /// Land cells by landblock, in the order the landblocks were first
     /// reached: (landblock, its corner, its cells' mask).
     terrain: Vec<(LandblockCoord, Vec3, u64)>,
-    terrain_index: HashMap<LandblockCoord, usize>,
+    terrain_index: crate::IdMap<LandblockCoord, usize>,
 }
 
 /// What waits for the sort.

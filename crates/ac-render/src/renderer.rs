@@ -3686,26 +3686,30 @@ impl WorldRenderer {
 
     /// The draw stream in order, with `p`'s pipelines.
     fn draw_steps(&self, pass: &mut wgpu::RenderPass<'_>, p: &shadows::PassPipelines<'_>) {
+        // The vertex and index buffers bound so far in this pass, kept
+        // across the steps: a buffer already bound is not bound again.
+        let mut buffers = BufferBinds::default();
         for step in &self.frame.steps {
             match step {
-                Step::Sky { range, .. } => self.draw_sky(pass, p, range.clone()),
-                Step::Terrain(range) => self.draw_terrain(pass, p, range.clone()),
-                Step::Groups(range) => self.draw_groups(pass, p, range.clone()),
-                Step::Alpha(range) => self.draw_alpha(pass, p, range.clone()),
+                Step::Sky { range, .. } => self.draw_sky(pass, p, &mut buffers, range.clone()),
+                Step::Terrain(range) => self.draw_terrain(pass, p, &mut buffers, range.clone()),
+                Step::Groups(range) => self.draw_groups(pass, p, &mut buffers, range.clone()),
+                Step::Alpha(range) => self.draw_alpha(pass, p, &mut buffers, range.clone()),
                 Step::Portals(range) => {
                     pass.set_pipeline(p.portal);
                     pass.set_bind_group(0, &self.globals_group, &[]);
-                    pass.set_vertex_buffer(0, self.portal_vertices.slice(..));
+                    buffers.vertex(pass, 0, &self.portal_vertices);
                     pass.draw(range.clone(), 0..1);
                 }
             }
         }
     }
 
-    fn draw_sky(
-        &self,
+    fn draw_sky<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
         p: &shadows::PassPipelines<'_>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         for i in range {
@@ -3731,8 +3735,7 @@ impl WorldRenderer {
                 },
                 &[],
             );
-            pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-            pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+            buffers.mesh(pass, &gfx.vertices, &gfx.indices);
             pass.draw_indexed(
                 sub.first_index..sub.first_index + sub.index_count,
                 sub.base_vertex,
@@ -3741,10 +3744,11 @@ impl WorldRenderer {
         }
     }
 
-    fn draw_terrain(
-        &self,
+    fn draw_terrain<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
         p: &shadows::PassPipelines<'_>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         let Some(terrain) = &self.terrain_group else {
@@ -3756,7 +3760,7 @@ impl WorldRenderer {
         if let Some(atmosphere) = p.atmosphere {
             pass.set_bind_group(2, atmosphere, &[]);
         }
-        pass.set_vertex_buffer(1, self.terrain_instances.slice(..));
+        buffers.vertex(pass, 1, &self.terrain_instances);
         for i in range {
             let draw = &self.frame.terrain_draws[i];
             let Some(tile) = self
@@ -3766,7 +3770,7 @@ impl WorldRenderer {
             else {
                 continue;
             };
-            pass.set_vertex_buffer(0, tile.vertices.slice(..));
+            buffers.vertex(pass, 0, &tile.vertices);
             let i = i as u32;
             for run in draw.vertex_runs() {
                 pass.draw(run, i..i + 1);
@@ -3774,24 +3778,24 @@ impl WorldRenderer {
         }
     }
 
-    fn draw_groups(
-        &self,
+    fn draw_groups<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         pass.set_bind_group(0, &self.globals_group, &[]);
         if let Some(atmosphere) = p.atmosphere {
             pass.set_bind_group(3, atmosphere, &[]);
         }
-        pass.set_vertex_buffer(1, self.instances.slice(..));
+        buffers.vertex(pass, 1, &self.instances);
         let mut state = MeshPassState::default();
         for group in &self.frame.groups[range] {
             let Some(gfx) = self.meshes.get(&group.mesh) else {
                 continue;
             };
-            pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-            pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+            buffers.mesh(pass, &gfx.vertices, &gfx.indices);
             for (i, sub) in gfx.sub_meshes.iter().enumerate() {
                 if gfx.sub_blended.get(i).copied().unwrap_or(false) {
                     continue;
@@ -3811,12 +3815,15 @@ impl WorldRenderer {
     }
 
     /// Blended sub-meshes and particles, in list order. Neighbouring
-    /// particle quads with the same texture and blend are drawn as one
-    /// instanced draw (their instances are consecutive).
-    fn draw_alpha(
-        &self,
+    /// particle quads with the same texture and blend, and neighbouring
+    /// draws of the same blended sub-mesh, are drawn as one instanced draw
+    /// (their instances are consecutive, and a draw's instances are drawn
+    /// in order, so the picture is the same).
+    fn draw_alpha<'a>(
+        &'a self,
         pass: &mut wgpu::RenderPass<'_>,
-        p: &shadows::PassPipelines<'_>,
+        p: &shadows::PassPipelines<'a>,
+        buffers: &mut BufferBinds<'a>,
         range: std::ops::Range<usize>,
     ) {
         pass.set_bind_group(0, &self.globals_group, &[]);
@@ -3826,16 +3833,17 @@ impl WorldRenderer {
         while i < items.len() {
             match items[i] {
                 AlphaItem::Mesh(draw) => {
-                    i += 1;
+                    let end = i + alpha_mesh_run(&items[i..]);
+                    let count = (end - i) as u32;
+                    i = end;
                     let Some(gfx) = self.meshes.get(&draw.mesh) else {
                         continue;
                     };
                     let Some(sub) = gfx.sub_meshes.get(draw.sub as usize) else {
                         continue;
                     };
-                    pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.instances.slice(..));
-                    pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    buffers.mesh(pass, &gfx.vertices, &gfx.indices);
+                    buffers.vertex(pass, 1, &self.instances);
                     self.draw_sub(
                         pass,
                         p,
@@ -3843,7 +3851,7 @@ impl WorldRenderer {
                         sub,
                         draw.variant,
                         draw.shell,
-                        draw.instance..draw.instance + 1,
+                        draw.instance..draw.instance + count,
                         draw.faded,
                     );
                 }
@@ -3873,7 +3881,7 @@ impl WorldRenderer {
                     state = MeshPassState::default();
                     pass.set_pipeline(&p.billboard[usize::from(first.additive)]);
                     pass.set_bind_group(1, material, &[]);
-                    pass.set_vertex_buffer(0, self.particle_gpu.billboards.slice(..));
+                    buffers.vertex(pass, 0, &self.particle_gpu.billboards);
                     pass.draw(0..6, first.instance..first.instance + count);
                 }
                 AlphaItem::ParticleMesh(draw) => {
@@ -3902,9 +3910,8 @@ impl WorldRenderer {
                         },
                         &[],
                     );
-                    pass.set_vertex_buffer(0, gfx.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.particle_gpu.mesh_instances.slice(..));
-                    pass.set_index_buffer(gfx.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    buffers.mesh(pass, &gfx.vertices, &gfx.indices);
+                    buffers.vertex(pass, 1, &self.particle_gpu.mesh_instances);
                     pass.draw_indexed(
                         sub.first_index..sub.first_index + sub.index_count,
                         sub.base_vertex,
@@ -4013,6 +4020,81 @@ pub(crate) struct MeshPassState<'a> {
     material: Option<&'a wgpu::BindGroup>,
     detail_set: bool,
     atmosphere_set: bool,
+}
+
+/// How many blended mesh draws from the start of `items` are one instanced
+/// draw: the same sub-mesh drawn the same way, on consecutive instances.
+fn alpha_mesh_run(items: &[AlphaItem]) -> usize {
+    let Some(AlphaItem::Mesh(first)) = items.first() else {
+        return 0;
+    };
+    1 + items[1..]
+        .iter()
+        .enumerate()
+        .take_while(|(k, item)| match item {
+            AlphaItem::Mesh(next) => {
+                next.instance == first.instance + 1 + *k as u32
+                    && (next.mesh, next.sub, next.variant, next.shell, next.faded)
+                        == (
+                            first.mesh,
+                            first.sub,
+                            first.variant,
+                            first.shell,
+                            first.faded,
+                        )
+            }
+            _ => false,
+        })
+        .count()
+}
+
+/// The vertex buffers (slots 0 and 1, whole) and the index buffer (whole,
+/// 32-bit) a pass has bound, so that a buffer already bound is not bound
+/// again: every bind costs wgpu's validation and tracking when the frame's
+/// commands are encoded, and consecutive draws often share the instance
+/// buffer or a mesh.
+#[derive(Default)]
+pub(crate) struct BufferBinds<'a> {
+    vertex: [Option<&'a wgpu::Buffer>; 2],
+    index: Option<&'a wgpu::Buffer>,
+}
+
+impl<'a> BufferBinds<'a> {
+    /// Bind `buffer` whole to vertex `slot` (0 or 1) unless it is bound there.
+    pub(crate) fn vertex(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        slot: usize,
+        buffer: &'a wgpu::Buffer,
+    ) {
+        if newly_bound(&mut self.vertex[slot], buffer) {
+            pass.set_vertex_buffer(slot as u32, buffer.slice(..));
+        }
+    }
+
+    /// Bind a mesh's vertices (slot 0) and 32-bit indices, each unless it
+    /// is bound.
+    pub(crate) fn mesh(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        vertices: &'a wgpu::Buffer,
+        indices: &'a wgpu::Buffer,
+    ) {
+        self.vertex(pass, 0, vertices);
+        if newly_bound(&mut self.index, indices) {
+            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        }
+    }
+}
+
+/// Make `next` what `bound` holds; true when it held something else (the
+/// bind is needed).
+fn newly_bound<'a, T>(bound: &mut Option<&'a T>, next: &'a T) -> bool {
+    if bound.is_some_and(|b| std::ptr::eq(b, next)) {
+        return false;
+    }
+    *bound = Some(next);
+    true
 }
 
 /// The player stands in an outdoor land cell: the sky's effects and the
@@ -4265,6 +4347,57 @@ mod retirement_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighbouring_draws_of_one_blended_sub_mesh_on_consecutive_instances_are_one_draw() {
+        use crate::draws::AlphaDraw;
+        let mesh = |mesh: MeshKey, sub: u32, instance: u32| {
+            AlphaItem::Mesh(AlphaDraw {
+                mesh,
+                variant: 0,
+                shell: false,
+                sub,
+                instance,
+                faded: false,
+            })
+        };
+        let items = [
+            mesh(7, 0, 10),
+            mesh(7, 0, 11),
+            mesh(7, 0, 12),
+            // Another sub-mesh of the same mesh ends the run.
+            mesh(7, 1, 13),
+        ];
+        assert_eq!(alpha_mesh_run(&items), 3);
+        assert_eq!(alpha_mesh_run(&items[3..]), 1);
+        // A gap in the instances ends it too.
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), mesh(7, 0, 12)]), 1);
+        // So does another mesh.
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), mesh(8, 0, 11)]), 1);
+        let faded = AlphaItem::Mesh(AlphaDraw {
+            faded: true,
+            ..match mesh(7, 0, 11) {
+                AlphaItem::Mesh(d) => d,
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(alpha_mesh_run(&[mesh(7, 0, 10), faded]), 1);
+        assert_eq!(alpha_mesh_run(&[]), 0);
+    }
+
+    #[test]
+    fn a_buffer_is_bound_again_only_when_another_was_bound_in_between() {
+        let (a, b) = (1_u8, 1_u8);
+        let mut bound = None;
+        assert!(newly_bound(&mut bound, &a), "the first bind is made");
+        assert!(
+            !newly_bound(&mut bound, &a),
+            "the same buffer again is skipped"
+        );
+        // Equal contents are not the same buffer.
+        assert!(newly_bound(&mut bound, &b));
+        assert!(newly_bound(&mut bound, &a));
+    }
 
     #[test]
     fn a_translucent_instance_blends_its_solid_and_clip_map_sub_meshes() {
