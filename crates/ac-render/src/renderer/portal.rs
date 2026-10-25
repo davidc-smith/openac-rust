@@ -52,9 +52,50 @@ pub(crate) fn tunnel_lighting() -> SceneLightingUbo {
     ubo
 }
 
+/// A teleport puts the chase camera's eye back on the player: when the
+/// session places the body at the teleport's destination, the eye restarts
+/// there and the boom re-extends from it, instead of easing over from where
+/// the eye was before the trip (kilometres away, with a collision sweep
+/// across that whole distance every frame until it caught up).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ViewerReseat {
+    /// The destination cell of the teleport whose placement is awaited.
+    destination: Option<u32>,
+}
+
+impl ViewerReseat {
+    /// A portal-space event: the session's destination is where the body is
+    /// placed.
+    pub(crate) fn on_event(&mut self, event: &PortalSpaceEvent) {
+        if let PortalSpaceEvent::Destination {
+            destination_cell, ..
+        } = event
+        {
+            self.destination = Some(*destination_cell);
+        }
+    }
+
+    /// Whether the eye goes back on the player this frame: the player now
+    /// stands in the awaited destination cell (once per placement).
+    pub(crate) fn take(&mut self, player_cell: u32) -> bool {
+        if self.destination == Some(player_cell) {
+            self.destination = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Nothing is awaited any more (portal space ended or was reset).
+    pub(crate) fn clear(&mut self) {
+        self.destination = None;
+    }
+}
+
 impl WorldRenderer {
     /// The session's portal-space event.
     pub(crate) fn portal_space_event(&mut self, event: PortalSpaceEvent) {
+        self.viewer_reseat.on_event(&event);
         match event {
             PortalSpaceEvent::Entered { .. } => {
                 self.resolve_tunnel();
@@ -81,6 +122,7 @@ impl WorldRenderer {
             _ => None,
         };
         self.portal.reset(tunnel);
+        self.viewer_reseat.clear();
     }
 
     /// What portal space asked for since the last call (sounds, the wait
@@ -624,6 +666,53 @@ mod frame_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn destination(cell: u32) -> PortalSpaceEvent {
+        PortalSpaceEvent::Destination {
+            generation: 1,
+            teleport_sequence: 2,
+            destination_cell: cell,
+        }
+    }
+
+    // OpenAC `LocalPlayerTeleportPlacement.Place` calls
+    // `RetailChaseCamera.ResetViewerToPlayer` when the arrival is placed.
+    #[test]
+    fn a_teleport_reseats_the_viewer_once_the_player_stands_at_the_destination() {
+        const DEST: u32 = 0x7D64_0021;
+        let mut r = ViewerReseat::default();
+        assert!(!r.take(DEST), "nothing awaited before a teleport");
+        r.on_event(&PortalSpaceEvent::Entered {
+            teleport_sequence: 2,
+        });
+        r.on_event(&destination(DEST));
+        // The player is still where it was: not yet.
+        assert!(!r.take(0xA9B4_0009));
+        assert!(r.take(DEST), "placed at the destination");
+        assert!(!r.take(DEST), "once per placement");
+    }
+
+    #[test]
+    fn a_newer_destination_replaces_the_awaited_one_and_a_reset_drops_it() {
+        let mut r = ViewerReseat::default();
+        r.on_event(&destination(0x7D64_0021));
+        r.on_event(&destination(0xA9B4_0009));
+        assert!(!r.take(0x7D64_0021));
+        assert!(r.take(0xA9B4_0009));
+        r.on_event(&destination(0xA9B4_0009));
+        r.clear();
+        assert!(!r.take(0xA9B4_0009));
+        // The arrival and the login events await nothing.
+        r.on_event(&PortalSpaceEvent::Arrived {
+            teleport_sequence: 2,
+            destination_cell: 0xA9B4_0009,
+        });
+        r.on_event(&PortalSpaceEvent::LoginDestination {
+            generation: 1,
+            destination_cell: 0xA9B4_0009,
+        });
+        assert!(!r.take(0xA9B4_0009));
+    }
 
     #[test]
     fn the_tunnel_is_lit_by_one_distant_light_over_a_grey_ambient_without_fog() {

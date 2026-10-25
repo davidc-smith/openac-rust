@@ -221,6 +221,14 @@ struct SkyParamsGpu {
 /// Distance between sky parameter blocks: the uniform offset alignment.
 const SKY_PARAMS_STRIDE: usize = 256;
 
+/// The world's instance buffer is made this many instances big (about
+/// 7.6 MB) when the window opens. Growing it later costs a fresh GPU memory
+/// block now and then, 8 to 13 ms in one frame, and the first frame of a
+/// new area is where it grows: the first world frame after a teleport.
+/// Twice the densest frame measured (a teleport destination of 16 to 32
+/// thousand instances) is made up front; a denser frame still grows it.
+const INITIAL_INSTANCE_CAPACITY: usize = 65_536;
+
 /// Bytes of the scene-lighting block.
 const SCENE_BYTES: u64 = SceneLightingUbo::SIZE_IN_BYTES as u64;
 
@@ -577,6 +585,9 @@ pub(crate) struct WorldRenderer {
     portal: crate::portal_space::PortalSpace,
     /// The portal tunnel, once its assets are looked for.
     tunnel: portal::TunnelAssets,
+    /// A teleport's placement puts the chase camera's eye back on the
+    /// player.
+    viewer_reseat: portal::ViewerReseat,
     /// The tunnel's Setup (its models are never released).
     tunnel_setup: Option<u32>,
     /// Portal space's sounds and wait lines, until the window takes them.
@@ -767,7 +778,7 @@ impl WorldRenderer {
         );
         let terrain_instances_capacity = 256;
         let portal_vertices_capacity = 256;
-        let instances_capacity = 1024;
+        let instances_capacity = INITIAL_INSTANCE_CAPACITY;
         let (near_radius, far_radius) = quality.radii();
         let work_budget = crate::work_budget::StreamingWorkBudgetOptions::default()
             .scale_for_legacy_completion_count(
@@ -920,6 +931,7 @@ impl WorldRenderer {
             pending_server_effects: Vec::new(),
             portal: crate::portal_space::PortalSpace::new(),
             tunnel: portal::TunnelAssets::default(),
+            viewer_reseat: portal::ViewerReseat::default(),
             tunnel_setup: None,
             portal_cues: Vec::new(),
             held_roots: HashMap::new(),
@@ -1268,6 +1280,14 @@ impl WorldRenderer {
                 tracked_target,
                 ..ChaseSubject::standing(feet, yaw)
             };
+            // The session placed the body at a teleport's destination: the
+            // eye restarts on the player and the boom re-extends from there
+            // (OpenAC `LocalPlayerTeleportPlacement.Place`).
+            if !self.portal.is_active() {
+                self.viewer_reseat.clear();
+            } else if self.viewer_reseat.take(pos.cell_id) {
+                self.cameras.chase.reset_viewer_to_player(feet, yaw);
+            }
             self.cameras.chase.update(&subject, dt, collision);
         }
         if self.cameras.mode() == CameraMode::Fly {
