@@ -2,6 +2,8 @@
 //! placement, named layout profiles, and the version-1 position records
 //! they migrate from.
 
+use std::collections::HashMap;
+
 use crate::json::{Member, Node, Value};
 
 use super::{SettingsStore, float_text, member, object_member, set_member};
@@ -163,6 +165,78 @@ fn invalid(what: &str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, what.to_owned())
 }
 
+/// The placement of `window` for `toon` in `root` (see
+/// [`SettingsStore::load_window_placement`]).
+fn read_placement(
+    root: &[Member],
+    toon: &str,
+    width: i32,
+    height: i32,
+    window: &str,
+    fallback: &UiWindowLayout,
+) -> Option<UiWindowPlacement> {
+    if let Some(latest) = path(root, &["windowPlacements", toon, window]) {
+        let screen_width = node_int(latest, "screenWidth", 0);
+        let screen_height = node_int(latest, "screenHeight", 0);
+        if screen_width > 0
+            && screen_height > 0
+            && let Some(layout) = object(member(latest, "layout"))
+        {
+            return Some(UiWindowPlacement {
+                layout: read_layout(layout, fallback),
+                screen_width,
+                screen_height,
+            });
+        }
+    }
+    if let Some(resolutions) = path(root, &["windowLayouts", toon])
+        && let Some((node, w, h)) = nearest(resolutions, window, width, height)
+    {
+        return Some(UiWindowPlacement {
+            layout: read_layout(node, fallback),
+            screen_width: w,
+            screen_height: h,
+        });
+    }
+    let position = path(root, &["windowPositions", toon, window])?;
+    Some(UiWindowPlacement {
+        layout: UiWindowLayout {
+            x: node_float(position, "x", fallback.x),
+            y: node_float(position, "y", fallback.y),
+            ..*fallback
+        },
+        screen_width: width,
+        screen_height: height,
+    })
+}
+
+/// Put where `window` is for `toon` into `root`: the latest placement, and
+/// the same layout under its resolution.
+fn put_placement(root: &mut Vec<Member>, toon: &str, window: &str, placement: &UiWindowPlacement) {
+    let placements = object_member(root, "windowPlacements");
+    let toon_map = object_member(placements, toon);
+    set_member(
+        toon_map,
+        window,
+        Value::Object(vec![
+            Member::made(
+                "screenWidth",
+                Value::Number(placement.screen_width.to_string()),
+            ),
+            Member::made(
+                "screenHeight",
+                Value::Number(placement.screen_height.to_string()),
+            ),
+            Member::made("layout", layout_value(&placement.layout)),
+        ]),
+    );
+    let key = format!("{}x{}", placement.screen_width, placement.screen_height);
+    let layouts = object_member(root, "windowLayouts");
+    let resolutions = object_member(layouts, toon);
+    let windows = object_member(resolutions, &key);
+    set_member(windows, window, layout_value(&placement.layout));
+}
+
 impl SettingsStore {
     /// The version-1 position of `window` for character `toon`.
     #[must_use]
@@ -269,39 +343,35 @@ impl SettingsStore {
     ) -> Option<UiWindowPlacement> {
         let (width, height) = parse_resolution(resolution)?;
         let root = self.read_root().ok()??;
-        if let Some(latest) = path(&root, &["windowPlacements", toon, window]) {
-            let screen_width = node_int(latest, "screenWidth", 0);
-            let screen_height = node_int(latest, "screenHeight", 0);
-            if screen_width > 0
-                && screen_height > 0
-                && let Some(layout) = object(member(latest, "layout"))
-            {
-                return Some(UiWindowPlacement {
-                    layout: read_layout(layout, fallback),
-                    screen_width,
-                    screen_height,
-                });
+        read_placement(&root, toon, width, height, window, fallback)
+    }
+
+    /// [`Self::load_window_placement`] for several windows, each with its
+    /// fallback, from one read of the file: the windows with something
+    /// saved, by name.
+    #[must_use]
+    pub fn load_window_placements(
+        &self,
+        toon: &str,
+        resolution: &str,
+        windows: &[(&str, UiWindowLayout)],
+    ) -> HashMap<String, UiWindowPlacement> {
+        let mut found = HashMap::new();
+        let Some((width, height)) = parse_resolution(resolution) else {
+            return found;
+        };
+        if windows.is_empty() {
+            return found;
+        }
+        let Ok(Some(root)) = self.read_root() else {
+            return found;
+        };
+        for (window, fallback) in windows {
+            if let Some(placement) = read_placement(&root, toon, width, height, window, fallback) {
+                found.insert((*window).to_owned(), placement);
             }
         }
-        if let Some(resolutions) = path(&root, &["windowLayouts", toon])
-            && let Some((node, w, h)) = nearest(resolutions, window, width, height)
-        {
-            return Some(UiWindowPlacement {
-                layout: read_layout(node, fallback),
-                screen_width: w,
-                screen_height: h,
-            });
-        }
-        let position = path(&root, &["windowPositions", toon, window])?;
-        Some(UiWindowPlacement {
-            layout: UiWindowLayout {
-                x: node_float(position, "x", fallback.x),
-                y: node_float(position, "y", fallback.y),
-                ..*fallback
-            },
-            screen_width: width,
-            screen_height: height,
-        })
+        found
     }
 
     /// Save where `window` is now for `toon`: the latest placement, and the
@@ -313,35 +383,33 @@ impl SettingsStore {
         window: &str,
         placement: &UiWindowPlacement,
     ) -> std::io::Result<()> {
-        if toon.trim().is_empty() || window.trim().is_empty() {
+        self.save_window_placements(toon, &[(window, *placement)])
+    }
+
+    /// [`Self::save_window_placement`] for several windows with one read
+    /// and one write of the file. Every entry is checked before anything is
+    /// written; an empty list writes nothing.
+    pub fn save_window_placements(
+        &self,
+        toon: &str,
+        placements: &[(&str, UiWindowPlacement)],
+    ) -> std::io::Result<()> {
+        if toon.trim().is_empty() || placements.iter().any(|(w, _)| w.trim().is_empty()) {
             return Err(invalid("a window placement needs a character and a window"));
         }
-        if placement.screen_width <= 0 || placement.screen_height <= 0 {
+        if placements
+            .iter()
+            .any(|(_, p)| p.screen_width <= 0 || p.screen_height <= 0)
+        {
             return Err(invalid("a window placement needs a positive screen size"));
         }
+        if placements.is_empty() {
+            return Ok(());
+        }
         let mut root = self.load_mutable_root()?;
-        let placements = object_member(&mut root, "windowPlacements");
-        let toon_map = object_member(placements, toon);
-        set_member(
-            toon_map,
-            window,
-            Value::Object(vec![
-                Member::made(
-                    "screenWidth",
-                    Value::Number(placement.screen_width.to_string()),
-                ),
-                Member::made(
-                    "screenHeight",
-                    Value::Number(placement.screen_height.to_string()),
-                ),
-                Member::made("layout", layout_value(&placement.layout)),
-            ]),
-        );
-        let key = format!("{}x{}", placement.screen_width, placement.screen_height);
-        let layouts = object_member(&mut root, "windowLayouts");
-        let resolutions = object_member(layouts, toon);
-        let windows = object_member(resolutions, &key);
-        set_member(windows, window, layout_value(&placement.layout));
+        for (window, placement) in placements {
+            put_placement(&mut root, toon, window, placement);
+        }
         self.write_mutable_root(root)
     }
 

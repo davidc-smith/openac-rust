@@ -866,6 +866,92 @@ fn an_invalid_requested_size_reads_none_and_an_invalid_save_writes_nothing() {
     assert!(!t.0.exists());
 }
 
+fn placed(x: f32, width: i32, height: i32) -> UiWindowPlacement {
+    UiWindowPlacement {
+        layout: UiWindowLayout { x, ..FALLBACK },
+        screen_width: width,
+        screen_height: height,
+    }
+}
+
+#[test]
+fn a_batch_save_writes_the_same_file_as_one_save_per_window() {
+    let placements = [
+        ("chat", placed(1.0, 1920, 1080)),
+        ("radar", placed(2.0, 1280, 720)),
+        ("combat", placed(3.0, 1920, 1080)),
+    ];
+    let one = Temp::new("placement-batch-one");
+    one.write(r#"{"display":{"vsync":true},"version":4}"#);
+    for (name, placement) in &placements {
+        one.store()
+            .save_window_placement("alice", name, placement)
+            .unwrap();
+    }
+    let batch = Temp::new("placement-batch-all");
+    batch.write(r#"{"display":{"vsync":true},"version":4}"#);
+    batch
+        .store()
+        .save_window_placements("alice", &placements)
+        .unwrap();
+    assert_eq!(one.raw(), batch.raw());
+}
+
+#[test]
+fn a_batch_load_matches_one_load_per_window() {
+    let t = Temp::new("placement-batch-load");
+    let store = t.store();
+    store
+        .save_window_placement("alice", "chat", &placed(5.0, 2560, 1440))
+        .unwrap();
+    store
+        .save_window_layout(
+            "alice",
+            "1280x720",
+            "radar",
+            &UiWindowLayout {
+                x: 90.0,
+                ..FALLBACK
+            },
+        )
+        .unwrap();
+    store
+        .save_window_position("alice", "combat", UiWindowPosition { x: 75.0, y: 95.0 })
+        .unwrap();
+    let windows = [
+        ("chat", FALLBACK),
+        ("radar", FALLBACK),
+        ("combat", FALLBACK),
+        ("vitals", FALLBACK),
+    ];
+    let loaded = store.load_window_placements("alice", "1920x1080", &windows);
+    assert_eq!(loaded.len(), 3);
+    for (name, fallback) in &windows {
+        assert_eq!(
+            loaded.get(*name).copied(),
+            store.load_window_placement("alice", "1920x1080", name, fallback),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_invalid_batch_save_writes_nothing() {
+    let t = Temp::new("placement-batch-invalid");
+    assert!(
+        t.store()
+            .save_window_placements(
+                "alice",
+                &[
+                    ("chat", placed(1.0, 1920, 1080)),
+                    ("radar", placed(2.0, 1920, 0))
+                ]
+            )
+            .is_err()
+    );
+    assert!(!t.0.exists());
+}
+
 // -- chat opacity link --------------------------------------------------------
 
 #[test]
