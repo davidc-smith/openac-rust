@@ -221,6 +221,14 @@ struct SkyParamsGpu {
 /// Distance between sky parameter blocks: the uniform offset alignment.
 const SKY_PARAMS_STRIDE: usize = 256;
 
+/// The world's instance buffer is made this many instances big (about
+/// 7.6 MB) when the window opens. Growing it later costs a fresh GPU memory
+/// block now and then, 8 to 13 ms in one frame, and the first frame of a
+/// new area is where it grows: the first world frame after a teleport.
+/// Twice the densest frame measured (a teleport destination of 16 to 32
+/// thousand instances) is made up front; a denser frame still grows it.
+const INITIAL_INSTANCE_CAPACITY: usize = 65_536;
+
 /// Bytes of the scene-lighting block.
 const SCENE_BYTES: u64 = SceneLightingUbo::SIZE_IN_BYTES as u64;
 
@@ -770,7 +778,7 @@ impl WorldRenderer {
         );
         let terrain_instances_capacity = 256;
         let portal_vertices_capacity = 256;
-        let instances_capacity = 1024;
+        let instances_capacity = INITIAL_INSTANCE_CAPACITY;
         let (near_radius, far_radius) = quality.radii();
         let work_budget = crate::work_budget::StreamingWorkBudgetOptions::default()
             .scale_for_legacy_completion_count(
