@@ -49,6 +49,7 @@ pub mod portal_space;
 pub mod profiler;
 pub mod quality;
 mod renderer;
+pub mod retirement;
 pub mod reveal;
 pub mod scene;
 pub use ac_physics::scenery;

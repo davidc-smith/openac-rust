@@ -247,7 +247,9 @@ impl WorldRenderer {
                 ),
             }
         }
+        let retiring: Vec<String> = self.retiring.coords().map(name).collect();
         let parts: Vec<String> = [
+            list("the release of the last window's landblocks", &retiring),
             list("terrain of landblocks", &no_terrain),
             list("near content of landblocks", &no_near),
             list("models", &no_models),
