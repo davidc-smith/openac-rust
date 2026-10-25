@@ -120,6 +120,11 @@ fn release_in_background<T: Send + 'static>(value: T) {
         .spawn(move || drop(value));
 }
 
+/// How long a frame may spend building the camera's collision for server
+/// objects new to its neighbourhood (the first is always built): the
+/// neighbourhood that arrives at login holds the whole town's objects.
+const CAMERA_OBJECT_BUILD_BUDGET: Duration = Duration::from_millis(1);
+
 /// How often meshes, textures and models nothing uses any more are
 /// released.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(5);
@@ -1241,9 +1246,10 @@ impl WorldRenderer {
             // The session's server objects collide with the eye as they do
             // in the session's engine (OpenAC sweeps that engine itself).
             if let (Some(scene), Some(content)) = (scene, self.content.get_if_open()) {
-                for (id, error) in self
-                    .camera_collision
-                    .sync_objects(&content.dats, scene.objects())
+                let deadline = Instant::now() + CAMERA_OBJECT_BUILD_BUDGET;
+                for (id, error) in
+                    self.camera_collision
+                        .sync_objects(&content.dats, scene.objects(), || Instant::now() < deadline)
                 {
                     self.notices
                         .push(format!("camera collision of object {id}: {error}"));
