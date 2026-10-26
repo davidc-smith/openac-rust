@@ -51,11 +51,13 @@ fn find_sphere_time_of_collision(movement: Vec3, sphere_pos: Vec3, rad_sum: f32)
     if non_collide_b < 0.0 {
         return -1.0;
     }
+    // The fraction of the movement at which the spheres first touch: the
+    // nearer root, or the farther one when the nearer lies behind.
     let c_dist = non_collide_b.sqrt();
     if f64::from(similar) - c_dist < 0.0 {
-        return -(c_dist + f64::from(similar)) / f64::from(dist_sq);
+        return (c_dist + f64::from(similar)) / f64::from(dist_sq);
     }
-    -(f64::from(similar) - c_dist) / f64::from(dist_sq)
+    (f64::from(similar) - c_dist) / f64::from(dist_sq)
 }
 
 impl Transition {
@@ -343,15 +345,19 @@ impl Transition {
         }
 
         // Perfect clip: back off to the exact time of impact.
+        let radsum_eps = radsum + EPSILON;
         let check_offset = check_sphere.center - g_center;
-        let toi = find_sphere_time_of_collision(check_offset, global_offset, radsum + EPSILON);
+        let toi = find_sphere_time_of_collision(check_offset, global_offset, radsum_eps);
         if toi < f64::from(EPSILON) || toi > 1.0 {
             return TransitionState::Collided;
         }
+        // Pull the check sphere back along its own movement to the touching
+        // point; the contact direction is only the collision normal.
         let collision_offset = check_offset * toi as f32 - check_offset;
         let old_disp = collision_offset + check_sphere.center - obj.position;
-        self.collision_info.set_collision_normal(old_disp / radsum);
-        self.sphere_path.add_offset_to_check_pos(old_disp);
+        self.collision_info
+            .set_collision_normal(old_disp / radsum_eps);
+        self.sphere_path.add_offset_to_check_pos(collision_offset);
         TransitionState::Adjusted
     }
 

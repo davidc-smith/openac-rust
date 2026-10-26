@@ -865,4 +865,95 @@ mod tests {
         assert_eq!(c.wanted(a), None);
         assert_eq!(c.wanted(b), Some(b));
     }
+
+    // OpenAC `LifestoneCameraSettleTests`: a player with their back to a
+    // lifestone (one collision sphere, 1.504 m, centred 1.504 m up). The boom
+    // points into it, so the eye is pulled in to where its sphere touches the
+    // lifestone and stays there frame after frame, instead of re-extending
+    // and snapping back.
+    #[test]
+    fn with_its_back_to_a_lifestone_the_eye_settles_against_it() {
+        use crate::camera::{ChaseCamera, ChaseCollision, ChaseSubject};
+        use ac_physics::{EntityCollisionFlags, ShadowCollisionType, SingleShape, TerrainSurface};
+        const LIFESTONE_RADIUS: f32 = 1.504;
+        const CELL: u32 = 0xA9B4_0001;
+        let lifestone = Vec3::new(12.0, 12.0, 0.0);
+        let sphere_center = lifestone + Vec3::new(0.0, 0.0, LIFESTONE_RADIUS);
+
+        let mut engine = PhysicsEngine::new();
+        engine.attach_world(CollisionWorld::new());
+        engine.add_landblock(
+            0xA9B4_FFFF,
+            TerrainSurface::new(&[0u8; 81], &[0.0; 256], 0, 0, None),
+            Vec::new(),
+            Vec::new(),
+            0.0,
+            0.0,
+        );
+        let (shadows, world) = engine.shadows_and_world();
+        shadows
+            .register(
+                world,
+                0x7AA0_C34F,
+                &SingleShape {
+                    gfx_obj_id: 0,
+                    radius: LIFESTONE_RADIUS,
+                    collision_type: ShadowCollisionType::Sphere,
+                    cyl_height: 0.0,
+                    scale: 1.0,
+                },
+                RegistrationSite {
+                    world_pos: sphere_center,
+                    rotation: Quat::IDENTITY,
+                    world_offset_x: 0.0,
+                    world_offset_y: 0.0,
+                    landblock_id: 0xA9B4_0000,
+                    seed_cell_id: 0,
+                },
+                0x410,
+                EntityCollisionFlags(EntityCollisionFlags::HAS_WEENIE),
+                false,
+                None,
+            )
+            .expect("register");
+        let probe = PhysicsCameraProbe::new(&engine, Vec3::ZERO);
+
+        for distance in [2.3_f32, 2.8, 3.2, 3.7] {
+            // Facing +y, away from the lifestone south of the player.
+            let feet = lifestone + Vec3::new(0.0, distance, 0.0);
+            let mut cam = ChaseCamera::default();
+            cam.tuning.stiffness = 0.45;
+            cam.tuning.align_to_slope = true;
+            let pivot = feet + Vec3::new(0.0, 0.0, cam.pivot_height);
+            let subject = ChaseSubject::standing(feet, std::f32::consts::FRAC_PI_2);
+            let (mut min, mut max, mut gap) = (f32::MAX, f32::MIN, 0.0);
+            for frame in 0..600 {
+                cam.update(
+                    &subject,
+                    1.0 / 60.0,
+                    Some(ChaseCollision {
+                        probe: &probe,
+                        cell_id: CELL,
+                        self_id: 0x000F_4243,
+                    }),
+                );
+                if frame < 300 {
+                    continue;
+                }
+                let d = cam.eye().distance(pivot);
+                min = min.min(d);
+                max = max.max(d);
+                gap = cam.eye().distance(sphere_center) - (LIFESTONE_RADIUS + VIEWER_SPHERE_RADIUS);
+            }
+            assert!(min < cam.distance - 0.05, "{distance} m: not pulled in");
+            assert!(
+                max - min < 0.001,
+                "{distance} m: the eye moved between {min} and {max} m"
+            );
+            assert!(
+                (-0.001..0.005).contains(&gap),
+                "{distance} m: the eye rests {gap} m from the lifestone"
+            );
+        }
+    }
 }
