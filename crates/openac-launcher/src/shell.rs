@@ -8,14 +8,19 @@
 //! the event loop sleeps.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{
+    ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy, OwnedDisplayHandle,
+};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
+
+use crate::surface_watch::{NextAttempt, SurfaceState, SurfaceWatch, TextureMirror};
 
 /// Wakes the window from another thread so it draws again.
 pub type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -39,6 +44,12 @@ pub trait LauncherUi {
 
     /// Whether the next frame should be read back.
     fn wants_screenshot(&mut self) -> bool {
+        false
+    }
+
+    /// Whether the window should rebuild its GPU state now, as after a lost
+    /// device (the probe script's `rebuild-gpu`).
+    fn wants_gpu_rebuild(&mut self) -> bool {
         false
     }
 
@@ -121,15 +132,9 @@ pub fn run<U: LauncherUi>(
     });
     let ctx = egui::Context::default();
     let ui = make(ctx.clone(), waker);
-    let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(
-        event_loop.owned_display_handle(),
-    ));
-    // DX12 shaders compile with FXC, which ships with Windows (as ac-render does): the default
-    // would load a dxcompiler.dll found on PATH, which is neither OS nor driver.
-    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
     let mut app = ShellApp {
         options,
-        instance: wgpu::Instance::new(descriptor),
+        instance: new_instance(event_loop.owned_display_handle()),
         ctx,
         ui,
         window: None,
@@ -137,12 +142,22 @@ pub fn run<U: LauncherUi>(
         next_repaint: None,
         clipboard: arboard::Clipboard::new().ok(),
         modifiers: ModifiersState::empty(),
+        textures: TextureMirror::default(),
     };
     event_loop.run_app(&mut app)?;
     match app.error {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+/// A wgpu instance that can present to windows of this display.
+fn new_instance(display: OwnedDisplayHandle) -> wgpu::Instance {
+    let mut descriptor = wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display));
+    // DX12 shaders compile with FXC, which ships with Windows (as ac-render does): the default
+    // would load a dxcompiler.dll found on PATH, which is neither OS nor driver.
+    descriptor.backend_options.dx12.shader_compiler = wgpu::Dx12Compiler::Fxc;
+    wgpu::Instance::new(descriptor)
 }
 
 struct ShellApp<U: LauncherUi> {
@@ -155,17 +170,37 @@ struct ShellApp<U: LauncherUi> {
     next_repaint: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
     modifiers: ModifiersState,
+    /// Every texture egui has handed over, for a renderer rebuilt on a new device.
+    textures: TextureMirror,
 }
 
 struct OpenWindow {
     window: Arc<Window>,
+    /// The GPU side, rebuilt from the window when its surface or device is
+    /// lost; `None` while a rebuild has not succeeded.
+    gpu: Option<Gpu>,
+    state: egui_winit::State,
+    active: bool,
+    watch: SurfaceWatch,
+    /// No rebuild is tried before this.
+    rebuild_after: Option<Instant>,
+}
+
+/// What draws into the window: its surface and the device behind it.
+struct Gpu {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     renderer: egui_wgpu::Renderer,
-    state: egui_winit::State,
-    active: bool,
+    /// Set when the device is lost (not when it is dropped here).
+    device_lost: Arc<AtomicBool>,
+}
+
+/// What an attempt at the next image gave.
+enum Acquired {
+    Image(wgpu::SurfaceTexture),
+    Retry(NextAttempt),
 }
 
 impl OpenWindow {
@@ -188,7 +223,103 @@ impl OpenWindow {
                     .ok()
             }));
         let window = Arc::new(event_loop.create_window(attributes)?);
-        let surface = instance.create_surface(Arc::clone(&window))?;
+        let gpu = Gpu::new(instance, &window)?;
+        let state = egui_winit::State::new(
+            ctx.clone(),
+            egui::ViewportId::ROOT,
+            event_loop,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(gpu.device.limits().max_texture_dimension_2d as usize),
+        );
+        Ok(Self {
+            window,
+            gpu: Some(gpu),
+            state,
+            active: true,
+            watch: SurfaceWatch::default(),
+            rebuild_after: None,
+        })
+    }
+
+    /// The next frame's image, or what to do instead.
+    fn acquire(&mut self) -> Acquired {
+        let Some(gpu) = self.gpu.as_mut() else {
+            return Acquired::Retry(NextAttempt::Rebuild);
+        };
+        let state = if gpu.device_lost.load(Ordering::Acquire) {
+            SurfaceState::DeviceLost
+        } else {
+            match gpu.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(texture)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => {
+                    self.observe(SurfaceState::Ready);
+                    return Acquired::Image(texture);
+                }
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    let size = self.window.inner_size();
+                    gpu.resize(size.width, size.height);
+                    SurfaceState::Outdated
+                }
+                wgpu::CurrentSurfaceTexture::Lost => SurfaceState::Lost,
+                wgpu::CurrentSurfaceTexture::Timeout => SurfaceState::Timeout,
+                wgpu::CurrentSurfaceTexture::Occluded => SurfaceState::Occluded,
+                wgpu::CurrentSurfaceTexture::Validation => SurfaceState::Validation,
+            }
+        };
+        Acquired::Retry(self.observe(state))
+    }
+
+    /// Records what an attempt found and logs a change.
+    fn observe(&mut self, state: SurfaceState) -> NextAttempt {
+        let (next, line) = self.watch.observe(state);
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        next
+    }
+
+    /// Builds the GPU side again from the window, on a fresh instance, and
+    /// gives the new renderer every texture egui holds. Rebuilds that do not
+    /// end in a drawn frame are spaced further and further apart (up to
+    /// five seconds); until one succeeds the window waits.
+    fn rebuild(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        instance: &mut wgpu::Instance,
+        textures: &TextureMirror,
+    ) -> NextAttempt {
+        let now = Instant::now();
+        if let Some(after) = self.rebuild_after
+            && now < after
+        {
+            return NextAttempt::After(after - now);
+        }
+        self.rebuild_after = now.checked_add(self.watch.next_rebuild_wait());
+        // The old surface and device go first: nothing more may reach them.
+        self.gpu = None;
+        *instance = new_instance(event_loop.owned_display_handle());
+        match Gpu::new(instance, &self.window) {
+            Ok(mut gpu) => {
+                for (id, delta) in textures.full_images() {
+                    gpu.renderer
+                        .update_texture(&gpu.device, &gpu.queue, id, &delta);
+                }
+                self.gpu = Some(gpu);
+                eprintln!("launcher window: GPU rebuilt");
+                NextAttempt::Now
+            }
+            Err(error) => {
+                eprintln!("launcher window: rebuilding the GPU failed: {error}");
+                self.observe(SurfaceState::RebuildFailed)
+            }
+        }
+    }
+}
+
+impl Gpu {
+    fn new(instance: &wgpu::Instance, window: &Arc<Window>) -> Result<Self, ShellError> {
+        let surface = instance.create_surface(Arc::clone(window))?;
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::LowPower,
             compatible_surface: Some(&surface),
@@ -200,6 +331,16 @@ impl OpenWindow {
         }))?;
         // The default handler panics; a launcher drawing error is not worth a crash.
         device.on_uncaptured_error(Arc::new(|_error: wgpu::Error| {}));
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&device_lost);
+        device.set_device_lost_callback(move |reason, message| {
+            // Dropping the device here (a rebuild, the window closing) is
+            // not a loss.
+            if reason != wgpu::DeviceLostReason::Destroyed {
+                eprintln!("launcher window: GPU device lost: {message}");
+                flag.store(true, Ordering::Release);
+            }
+        });
         let size = window.inner_size();
         let mut config = surface
             .get_default_config(&adapter, size.width.max(1), size.height.max(1))
@@ -221,45 +362,14 @@ impl OpenWindow {
             config.format,
             egui_wgpu::RendererOptions::default(),
         );
-        let state = egui_winit::State::new(
-            ctx.clone(),
-            egui::ViewportId::ROOT,
-            event_loop,
-            Some(window.scale_factor() as f32),
-            None,
-            Some(device.limits().max_texture_dimension_2d as usize),
-        );
         Ok(Self {
-            window,
             surface,
             device,
             queue,
             config,
             renderer,
-            state,
-            active: true,
+            device_lost,
         })
-    }
-
-    /// The next frame's image, or `None` when there is none this time (the
-    /// surface is rebuilt or the window hidden; a redraw is asked for).
-    fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(texture)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                let size = self.window.inner_size();
-                self.resize(size.width, size.height);
-                self.window.request_redraw();
-                None
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => {
-                self.window.request_redraw();
-                None
-            }
-        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -311,27 +421,56 @@ impl<U: LauncherUi> ShellApp<U> {
         open.state
             .handle_platform_output(&open.window, platform_output);
         let jobs = self.ctx.tessellate(shapes, pixels_per_point);
-        let screen = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [open.config.width, open.config.height],
-            pixels_per_point,
-        };
-        // Every texture change is applied (or freed) whether or not this frame is presented.
+        // Every texture change is kept (and applied, or freed) whether or not this frame
+        // is presented.
         for (id, deltas) in textures_delta.set.drain() {
             for delta in &deltas {
-                open.renderer
-                    .update_texture(&open.device, &open.queue, id, delta);
+                self.textures.apply(id, delta);
+                if let Some(gpu) = open.gpu.as_mut() {
+                    gpu.renderer
+                        .update_texture(&gpu.device, &gpu.queue, id, delta);
+                }
             }
         }
         let freed: Vec<egui::TextureId> = textures_delta.free.drain().collect();
-        self.next_repaint = None;
-        if let Some(texture) = open.acquire() {
-            self.paint(texture, &jobs, &screen);
+        for id in &freed {
+            self.textures.free(*id);
         }
+        self.next_repaint = None;
+        if self.ui.wants_gpu_rebuild()
+            && let Some(gpu) = open.gpu.as_ref()
+        {
+            gpu.device_lost.store(true, Ordering::Release);
+        }
+        let mut next = match open.acquire() {
+            Acquired::Image(texture) => {
+                self.paint(texture, &jobs, pixels_per_point);
+                // A device lost while the frame went out (the loss is
+                // reported inside submit or present) is acted on at once,
+                // not when the idle window next has a reason to draw.
+                let lost = self
+                    .window
+                    .as_ref()
+                    .and_then(|open| open.gpu.as_ref())
+                    .is_some_and(|gpu| gpu.device_lost.load(Ordering::Acquire));
+                if lost {
+                    NextAttempt::Now
+                } else {
+                    NextAttempt::Draw
+                }
+            }
+            Acquired::Retry(NextAttempt::Rebuild) => {
+                open.rebuild(event_loop, &mut self.instance, &self.textures)
+            }
+            Acquired::Retry(next) => next,
+        };
         let Some(open) = self.window.as_mut() else {
             return;
         };
-        for id in &freed {
-            open.renderer.free_texture(id);
+        if let Some(gpu) = open.gpu.as_mut() {
+            for id in &freed {
+                gpu.renderer.free_texture(id);
+            }
         }
         let root = viewport_output.get(&egui::ViewportId::ROOT);
         // The probe script's window-size; the window's other commands are not used.
@@ -342,13 +481,22 @@ impl<U: LauncherUi> ShellApp<U> {
                     .request_inner_size(LogicalSize::new(f64::from(size.x), f64::from(size.y)));
             }
         }
-        let delay = root.map_or(Duration::MAX, |viewport| viewport.repaint_delay);
-        self.next_repaint = if delay == Duration::ZERO {
-            open.window.request_redraw();
-            None
-        } else {
-            Instant::now().checked_add(delay)
-        };
+        if next == NextAttempt::Draw {
+            let delay = root.map_or(Duration::MAX, |viewport| viewport.repaint_delay);
+            next = if delay == Duration::ZERO {
+                NextAttempt::Now
+            } else {
+                NextAttempt::After(delay)
+            };
+        }
+        // A frame that could not be shown is tried again after a wait, even
+        // when egui wants the next one at once: the window would otherwise
+        // build frames nobody sees as fast as it can.
+        match next {
+            NextAttempt::Now => open.window.request_redraw(),
+            NextAttempt::After(delay) => self.next_repaint = Instant::now().checked_add(delay),
+            NextAttempt::Draw | NextAttempt::Rebuild => {}
+        }
         if self.ui.wants_exit() {
             self.ui.on_exit();
             self.window = None;
@@ -360,22 +508,26 @@ impl<U: LauncherUi> ShellApp<U> {
         &mut self,
         texture: wgpu::SurfaceTexture,
         jobs: &[egui::ClippedPrimitive],
-        screen: &egui_wgpu::ScreenDescriptor,
+        pixels_per_point: f32,
     ) {
-        let Some(open) = self.window.as_mut() else {
+        let Some(gpu) = self.window.as_mut().and_then(|open| open.gpu.as_mut()) else {
             return;
+        };
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [gpu.config.width, gpu.config.height],
+            pixels_per_point,
         };
         let view = texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = open
+        let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("launcher frame"),
             });
         let mut commands =
-            open.renderer
-                .update_buffers(&open.device, &open.queue, &mut encoder, jobs, screen);
+            gpu.renderer
+                .update_buffers(&gpu.device, &gpu.queue, &mut encoder, jobs, &screen);
         {
             let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("launcher pass"),
@@ -399,27 +551,27 @@ impl<U: LauncherUi> ShellApp<U> {
                 multiview_mask: None,
             });
             let mut pass = pass.forget_lifetime();
-            open.renderer.render(&mut pass, jobs, screen);
+            gpu.renderer.render(&mut pass, jobs, &screen);
         }
         let capture =
-            self.ui.wants_screenshot() && open.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+            self.ui.wants_screenshot() && gpu.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
         let readback = capture.then(|| {
             Readback::record(
-                &open.device,
+                &gpu.device,
                 &mut encoder,
                 &texture.texture,
-                open.config.width,
-                open.config.height,
+                gpu.config.width,
+                gpu.config.height,
             )
         });
         commands.push(encoder.finish());
-        open.queue.submit(commands);
+        gpu.queue.submit(commands);
         if let Some(readback) = readback
-            && let Some(frame) = readback.read(&open.device, open.config.format)
+            && let Some(frame) = readback.read(&gpu.device, gpu.config.format)
         {
             self.ui.frame_captured(frame);
         }
-        open.queue.present(texture);
+        gpu.queue.present(texture);
     }
 }
 
@@ -456,7 +608,11 @@ impl<U: LauncherUi> ApplicationHandler for ShellApp<U> {
                 }
                 return;
             }
-            WindowEvent::Resized(size) => open.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                if let Some(gpu) = open.gpu.as_mut() {
+                    gpu.resize(size.width, size.height);
+                }
+            }
             WindowEvent::Focused(focused) => open.active = *focused,
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event: key, .. }

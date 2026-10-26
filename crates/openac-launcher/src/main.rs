@@ -17,6 +17,7 @@ mod mirror;
 mod png;
 mod script;
 mod shell;
+mod surface_watch;
 mod theme;
 mod ui;
 

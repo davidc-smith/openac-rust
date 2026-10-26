@@ -42,6 +42,8 @@ pub enum ScriptAction {
     /// Resize the window to this inner size, in logical pixels (the
     /// window's minimum still applies).
     WindowSize(f32, f32),
+    /// Rebuild the window's GPU state, as after a lost device.
+    RebuildGpu,
     /// Close the window.
     Quit,
 }
@@ -325,6 +327,7 @@ impl Script {
                     console.is_open = false;
                 }
             }
+            "rebuild-gpu" => return Ok(Some(ScriptAction::RebuildGpu)),
             "print" => println!("script: {}", words[1..].join(" ")),
             "tab" => match arg(1)?.as_str() {
                 "accounts" => window.selected_tab = LauncherMainTab::Accounts,

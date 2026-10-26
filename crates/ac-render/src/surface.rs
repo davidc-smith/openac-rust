@@ -12,7 +12,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton};
@@ -187,6 +187,55 @@ fn resolution_choices_of(window: &Window) -> Vec<String> {
     crate::ui::options::resolution_choices(&modes, desktop)
 }
 
+/// How long a window whose surface gave no image waits before asking
+/// again. Asking at once builds frames nobody sees as fast as the CPU
+/// allows, for as long as the surface refuses (a covered window, a locked
+/// session, a display being switched).
+pub(crate) const NO_IMAGE_RETRY: Duration = Duration::from_millis(100);
+
+const SURFACE_DRAWING: &str = "drawing";
+const SURFACE_OUTDATED: &str = "outdated (reconfigured)";
+const SURFACE_TIMED_OUT: &str = "timed out";
+const SURFACE_OCCLUDED: &str = "occluded";
+const SURFACE_LOST: &str = "lost";
+const SURFACE_INVALID: &str = "failed validation";
+
+/// When the window draws again after a frame: at once after one it drew,
+/// after [`NO_IMAGE_RETRY`] after one its surface gave no image for, and
+/// not until it is resized after one it skipped for having no area.
+fn redraw_after(outcome: &FrameOutcome) -> Option<Duration> {
+    if outcome.skipped_zero_area {
+        None
+    } else if outcome.skipped_no_image {
+        Some(NO_IMAGE_RETRY)
+    } else {
+        Some(Duration::ZERO)
+    }
+}
+
+/// What the window's surface last gave, so each change is reported once.
+#[derive(Debug, Default)]
+struct SurfaceNotes {
+    last: Option<&'static str>,
+}
+
+impl SurfaceNotes {
+    fn last(&self) -> Option<&'static str> {
+        self.last
+    }
+
+    /// Records `state`; the line to report when it changed (the first
+    /// image is not news).
+    fn observe(&mut self, state: &'static str) -> Option<String> {
+        match self.last.replace(state) {
+            Some(was) if was == state => None,
+            None if state == SURFACE_DRAWING => None,
+            Some(was) => Some(format!("surface {state} (was {was})")),
+            None => Some(format!("surface {state}")),
+        }
+    }
+}
+
 /// An open window drawing the world of the session it follows.
 pub(crate) struct AttachedWindow {
     // Drop order matters: the frame, the renderer and the surface go before the device and the
@@ -256,6 +305,10 @@ pub(crate) struct AttachedWindow {
     /// Messages for the owner (sound state, debug cycles), reported after
     /// the next frame or command.
     notices: Vec<String>,
+    /// What the surface last gave, for logging its changes.
+    surface_watch: SurfaceNotes,
+    /// When to ask again a surface that gave no image.
+    retry_at: Option<Instant>,
     /// The client settings in force in this window.
     settings: ac_host::settings::PlayerSettings,
     /// Sections the options window changed and the host should save.
@@ -526,6 +579,8 @@ impl AttachedWindow {
             cursor_art: crate::ui::cursor::CursorManager::new(),
             world_clicks: crate::world_click::WorldClicks::default(),
             notices,
+            surface_watch: SurfaceNotes::default(),
+            retry_at: None,
             settings: settings.clone(),
             settings_saves: Vec::new(),
             mixer_requests: Vec::new(),
@@ -808,8 +863,16 @@ impl AttachedWindow {
             self.reported_minimized = minimized;
             self.send_session(SessionCommand::WindowMinimized(minimized));
         }
+        if self.apply_size(size) {
+            self.window.request_redraw();
+        }
+    }
+
+    /// Rebuilds the swapchain and the world's targets at `size`; false
+    /// when the size has no area.
+    fn apply_size(&mut self, size: PhysicalSize<u32>) -> bool {
         let Some((width, height)) = framebuffer_resize(size.width, size.height) else {
-            return;
+            return false;
         };
         self.config.width = width;
         self.config.height = height;
@@ -817,7 +880,7 @@ impl AttachedWindow {
         if let Some(world) = self.world.as_mut() {
             world.resize(&self.device, width, height);
         }
-        self.window.request_redraw();
+        true
     }
 
     /// Draw a screenshot after the next frame (every request is answered,
@@ -909,10 +972,34 @@ impl AttachedWindow {
         // anything else reaches it.
         self.check_health(&mut report)?;
         let outcome = result?;
-        if !outcome.skipped_zero_area {
-            self.window.request_redraw();
+        self.retry_at = None;
+        match redraw_after(&outcome) {
+            Some(Duration::ZERO) => self.window.request_redraw(),
+            Some(wait) => self.retry_at = Instant::now().checked_add(wait),
+            None => {}
         }
         Ok((outcome, report))
+    }
+
+    /// When a surface that gave no image is to be asked again: `None`
+    /// when nothing waits, or when the wait is over (the window is then
+    /// asked to draw now).
+    pub(crate) fn pending_retry(&mut self, now: Instant) -> Option<Instant> {
+        match self.retry_at {
+            Some(at) if at <= now => {
+                self.retry_at = None;
+                self.window.request_redraw();
+                None
+            }
+            pending => pending,
+        }
+    }
+
+    /// Records what the surface gave and reports a change once.
+    fn note_surface(&mut self, state: &'static str) {
+        if let Some(line) = self.surface_watch.observe(state) {
+            self.notices.push(line);
+        }
     }
 
     /// After a presented frame: wait out the rest of the frame period when
@@ -1127,23 +1214,37 @@ impl FramePhases for AttachedWindow {
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
             // The swapchain no longer matches the window (a resize the event has not reported
             // yet): rebuild it at the window's current size and draw next frame.
+            // A swapchain that stays outdated (the window mid-change) waits
+            // like any surface without an image instead of asking at once.
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.resize(self.window.inner_size());
-                self.window.request_redraw();
+                let again = self.surface_watch.last() == Some(SURFACE_OUTDATED);
+                self.note_surface(SURFACE_OUTDATED);
+                if self.apply_size(self.window.inner_size()) && !again {
+                    self.window.request_redraw();
+                }
                 return Ok(false);
             }
-            // No image this time; try again next frame.
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                self.window.request_redraw();
+            // No image this time; the window asks again after a wait
+            // (`render`), never at once: a covered window or a display
+            // being switched can refuse for a long time.
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                self.note_surface(SURFACE_TIMED_OUT);
+                return Ok(false);
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.note_surface(SURFACE_OCCLUDED);
                 return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                self.note_surface(SURFACE_LOST);
                 return Err(RenderError::Gpu(GpuFault::SurfaceLost));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
+                self.note_surface(SURFACE_INVALID);
                 return Err(RenderError::SurfaceValidation);
             }
         };
+        self.note_surface(SURFACE_DRAWING);
         let view = texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -2990,8 +3091,49 @@ fn revealed_selection(selected: Option<u32>, shown: impl Fn(u32) -> bool) -> Opt
 #[cfg(test)]
 mod tests {
     use super::{
-        Screenshots, block_on, framebuffer_resize, retail_screenshot_path, revealed_selection,
+        NO_IMAGE_RETRY, SURFACE_DRAWING, SURFACE_OCCLUDED, SURFACE_TIMED_OUT, Screenshots,
+        SurfaceNotes, block_on, framebuffer_resize, redraw_after, retail_screenshot_path,
+        revealed_selection,
     };
+    use crate::frame::FrameOutcome;
+    use std::time::Duration;
+
+    #[test]
+    fn a_frame_without_an_image_is_tried_again_after_a_wait_never_at_once() {
+        let drawn = FrameOutcome::default();
+        let no_image = FrameOutcome {
+            skipped_no_image: true,
+            ..FrameOutcome::default()
+        };
+        let no_area = FrameOutcome {
+            skipped_zero_area: true,
+            ..FrameOutcome::default()
+        };
+        assert_eq!(redraw_after(&drawn), Some(Duration::ZERO));
+        assert_eq!(redraw_after(&no_image), Some(NO_IMAGE_RETRY));
+        assert!(NO_IMAGE_RETRY >= Duration::from_millis(100));
+        assert_eq!(redraw_after(&no_area), None);
+    }
+
+    #[test]
+    fn each_surface_change_is_reported_once() {
+        let mut notes = SurfaceNotes::default();
+        assert_eq!(notes.observe(SURFACE_DRAWING), None);
+        assert_eq!(
+            notes.observe(SURFACE_OCCLUDED).as_deref(),
+            Some("surface occluded (was drawing)")
+        );
+        assert_eq!(notes.observe(SURFACE_OCCLUDED), None);
+        assert_eq!(
+            notes.observe(SURFACE_DRAWING).as_deref(),
+            Some("surface drawing (was occluded)")
+        );
+        let mut fresh = SurfaceNotes::default();
+        assert_eq!(
+            fresh.observe(SURFACE_TIMED_OUT).as_deref(),
+            Some("surface timed out")
+        );
+    }
 
     #[test]
     fn the_device_takes_gpu_memory_in_small_blocks() {

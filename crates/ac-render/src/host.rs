@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, MouseScrollDelta, WindowEvent};
@@ -668,6 +669,16 @@ impl HostApp {
 }
 
 impl ApplicationHandler<HostCommand> for HostApp {
+    /// A window whose surface gave no image is asked again once its wait
+    /// is over; until then the loop sleeps.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let pending = self
+            .window
+            .as_mut()
+            .and_then(|window| window.pending_retry(Instant::now()));
+        event_loop.set_control_flow(pending.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
         // Windows open on command, not at startup.
     }

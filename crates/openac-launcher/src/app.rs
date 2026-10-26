@@ -25,6 +25,8 @@ pub struct LauncherApp {
     script: Option<Script>,
     screenshot: Option<PathBuf>,
     capture_next: bool,
+    /// The probe script asked for the GPU state to be rebuilt.
+    rebuild_gpu: bool,
     exit: bool,
     started: bool,
     /// Decoded plugin icons as textures, by id, version and side.
@@ -52,6 +54,7 @@ impl LauncherApp {
             script,
             screenshot: None,
             capture_next: false,
+            rebuild_gpu: false,
             exit: false,
             started: false,
             icons: HashMap::new(),
@@ -112,6 +115,7 @@ impl LauncherUi for LauncherApp {
                         width, height,
                     )));
                 }
+                Some(ScriptAction::RebuildGpu) => self.rebuild_gpu = true,
                 Some(ScriptAction::Quit) => self.exit = true,
                 None => {}
             }
@@ -126,6 +130,10 @@ impl LauncherUi for LauncherApp {
 
     fn wants_screenshot(&mut self) -> bool {
         std::mem::take(&mut self.capture_next)
+    }
+
+    fn wants_gpu_rebuild(&mut self) -> bool {
+        std::mem::take(&mut self.rebuild_gpu)
     }
 
     fn frame_captured(&mut self, frame: CapturedFrame) {
