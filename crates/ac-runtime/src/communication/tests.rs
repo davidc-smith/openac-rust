@@ -67,7 +67,7 @@ fn lines(communication: &mut Communication) -> Vec<String> {
         .filter_map(|e| match e {
             CommunicationEvent::Line(line) => Some(line.text),
             CommunicationEvent::InterfaceText(_)
-            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::StatusNotice { .. }
             | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()
@@ -79,7 +79,7 @@ fn interface_texts(communication: &mut Communication) -> Vec<String> {
         .filter_map(|e| match e {
             CommunicationEvent::InterfaceText(text) => Some(text),
             CommunicationEvent::Line(_)
-            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::StatusNotice { .. }
             | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()
@@ -1062,7 +1062,10 @@ fn a_suppressed_status_notice_is_never_shown_and_a_status_filter_leaves_lines_al
     // Only the plugins hear the dropped notice.
     assert_eq!(
         events[0],
-        CommunicationEvent::StatusNotice("You're too busy!".into())
+        CommunicationEvent::StatusNotice {
+            sequence: 1,
+            text: "You're too busy!".into()
+        }
     );
     assert!(matches!(&events[1], CommunicationEvent::Line(l) if l.text == "A regular line."));
     communication.tick(0.0);
@@ -1093,7 +1096,7 @@ fn heard(communication: &mut Communication) -> Vec<String> {
         .map(|e| match e {
             CommunicationEvent::Line(line) => format!("line: {}", line.text),
             CommunicationEvent::InterfaceText(text) => format!("shown: {text}"),
-            CommunicationEvent::StatusNotice(text) => format!("status: {text}"),
+            CommunicationEvent::StatusNotice { text, .. } => format!("status: {text}"),
             CommunicationEvent::Confirmation(_) => "confirmation".to_owned(),
         })
         .collect()
@@ -1174,7 +1177,7 @@ fn plugin_lines(communication: &mut Communication) -> Vec<ac_plugin::abi::ChatLi
         .filter_map(|e| match e {
             CommunicationEvent::Line(line) => Some(crate::plugins::plugin_chat_line(&line)),
             CommunicationEvent::InterfaceText(_)
-            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::StatusNotice { .. }
             | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()

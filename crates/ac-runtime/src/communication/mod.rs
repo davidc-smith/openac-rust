@@ -88,7 +88,13 @@ pub enum CommunicationEvent {
     /// A notice took the status path, in order with the transcript's
     /// lines: shown ([`Self::InterfaceText`] follows) or dropped by a
     /// plugin's chat filter. Plugins hear it either way.
-    StatusNotice(String),
+    StatusNotice {
+        /// The client's counter for status notices, from 1, never reset
+        /// (a line's sequence plays the same part for chat).
+        sequence: u64,
+        /// The text, trimmed.
+        text: String,
+    },
     /// The client asks the player a question (a yes/no dialog); the answer
     /// goes to [`Communication::answer_confirmation`].
     Confirmation(ClientConfirmation),
@@ -223,6 +229,8 @@ pub struct Communication {
     /// The session's plugins filter chat: text waits in `held`.
     plugin_filtering: bool,
     held: Vec<HeldText>,
+    /// How many status notices were raised: the last one's sequence.
+    status_notices: u64,
 }
 
 /// The version `/version` reports.
@@ -260,6 +268,7 @@ impl Communication {
             window_requests: Vec::new(),
             plugin_filtering: false,
             held: Vec::new(),
+            status_notices: 0,
         }
     }
 
@@ -934,8 +943,11 @@ impl Communication {
     /// `IEvents.StatusTextReceived`, raised whatever the filters decide),
     /// and it shows when `shown`.
     fn status_notice(&mut self, text: String, shown: bool) {
-        self.events
-            .push(CommunicationEvent::StatusNotice(text.clone()));
+        self.status_notices += 1;
+        self.events.push(CommunicationEvent::StatusNotice {
+            sequence: self.status_notices,
+            text: text.clone(),
+        });
         if shown {
             self.show_status(text);
         }

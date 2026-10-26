@@ -472,7 +472,12 @@ pub enum HostEvent {
     /// ([`Self::InterfaceText`] follows) or hidden by a plugin's chat
     /// filter: what the plugins hear as a status notice. A window has
     /// nothing to do with it.
-    StatusNotice(String),
+    StatusNotice {
+        /// The client's counter for status notices (never reset).
+        sequence: u64,
+        /// The text.
+        text: String,
+    },
     /// The quest tracker (the reply to [`SessionCommand::ListContracts`]).
     Contracts(Vec<ContractSummary>),
     /// The journal (the reply to [`SessionCommand::ShowJournal`]).

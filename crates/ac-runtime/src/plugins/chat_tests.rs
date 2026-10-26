@@ -365,3 +365,29 @@ fn a_status_notice_heard_right_after_a_call_is_not_handed_out_again() {
     let heard = super::chat::published_chat(&state.plugin_services.chat, &published);
     assert_eq!(chat_events(&heard), ["status: fourth".to_owned()]);
 }
+
+// A session ending by disconnect hears a notice right after the leaving's
+// call, then hands its last host events straight to the host, unpublished;
+// the plugins and the state live on into the next connection, whose
+// notices must all still reach them.
+#[test]
+fn a_notice_heard_early_then_drained_unpublished_hides_no_later_notice() {
+    use ac_plugin::SessionApi;
+    let mut state = quiet_in_world();
+    let wall = CLOCKS.wall_unix_ms;
+    state
+        .communication
+        .show_interface_text(wall, "while leaving");
+    let mut outbox = Outbox::new();
+    with_binding(&mut state, &mut outbox, |b| {
+        assert_eq!(
+            chat_events(&b.new_chat_events()),
+            ["status: while leaving".to_owned()]
+        );
+    });
+    let _unpublished = state.drain_host_events();
+    transient(&mut state, BUSY);
+    let published = state.drain_host_events();
+    let heard = super::chat::published_chat(&state.plugin_services.chat, &published);
+    assert_eq!(chat_events(&heard), [format!("status: {BUSY}")]);
+}

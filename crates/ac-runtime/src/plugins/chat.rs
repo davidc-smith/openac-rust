@@ -25,10 +25,9 @@ pub struct ChatWatch {
     /// the call that wrote them, still queued for the host: the next
     /// publication does not hand them out again.
     early: Vec<u64>,
-    /// How many of the status notices queued for the host (the first ones:
-    /// the queue only grows until it is published) the plugins already
-    /// heard that way.
-    early_notices: usize,
+    /// The sequences of the status notices the plugins already heard that
+    /// way, as for lines.
+    early_notices: Vec<u64>,
 }
 
 impl ChatWatch {
@@ -38,17 +37,17 @@ impl ChatWatch {
         self.early.contains(&sequence)
     }
 
-    /// Whether the plugins already heard the `nth` status notice queued for
-    /// the host (counting from 0) early.
+    /// Whether the plugins already heard the status notice `sequence`
+    /// early.
     #[must_use]
-    pub fn heard_notice_early(&self, nth: usize) -> bool {
-        nth < self.early_notices
+    pub fn heard_notice_early(&self, sequence: u64) -> bool {
+        self.early_notices.contains(&sequence)
     }
 
     /// The queued lines were published: nothing is pending early any more.
     pub fn published(&mut self) {
         self.early.clear();
-        self.early_notices = 0;
+        self.early_notices.clear();
     }
 
     /// A line arrived; the oldest goes past [`RETAINED_LINES`].
@@ -74,17 +73,14 @@ impl ChatWatch {
 /// already heard right after the call that wrote them.
 #[must_use]
 pub fn published_chat(watch: &ChatWatch, events: &[HostEvent]) -> Vec<Event> {
-    let mut notices = 0;
     events
         .iter()
         .filter_map(|event| match event {
             HostEvent::Chat(line) if !watch.heard_early(line.sequence) => {
                 Some(Event::ChatReceived(super::plugin_chat_line(line)))
             }
-            HostEvent::StatusNotice(text) => {
-                notices += 1;
-                (!watch.heard_notice_early(notices - 1))
-                    .then(|| Event::StatusTextReceived(text.clone()))
+            HostEvent::StatusNotice { sequence, text } if !watch.heard_notice_early(*sequence) => {
+                Some(Event::StatusTextReceived(text.clone()))
             }
             _ => None,
         })
@@ -100,13 +96,21 @@ impl PluginBinding<'_> {
         // The owners' notices become lines first, as at publication.
         self.state.collect_host_events();
         let queued = self.state.queued_host_events();
-        let fresh = published_chat(&self.state.plugin_services.chat, queued);
-        let notices = queued
+        let watch = &self.state.plugin_services.chat;
+        let fresh = published_chat(watch, queued);
+        let notices: Vec<u64> = queued
             .iter()
-            .filter(|event| matches!(event, HostEvent::StatusNotice(_)))
-            .count();
+            .filter_map(|event| match event {
+                HostEvent::StatusNotice { sequence, .. }
+                    if !watch.heard_notice_early(*sequence) =>
+                {
+                    Some(*sequence)
+                }
+                _ => None,
+            })
+            .collect();
         let watch = &mut self.state.plugin_services.chat;
-        watch.early_notices = notices;
+        watch.early_notices.extend(notices);
         for event in &fresh {
             if let Event::ChatReceived(line) = event {
                 watch.early.push(line.sequence);
