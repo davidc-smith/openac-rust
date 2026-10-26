@@ -742,6 +742,65 @@ fn camera_sweep_stops_at_non_creature_cylinder_prop() {
     assert!(r.position.y > 11.0, "stopped early at {}", r.position.y);
 }
 
+// OpenAC `ViewerSphereContactTests`: the viewer swept into a sphere prop (a
+// lifestone has one sphere, 1.504 m, centred 1.504 m up, and no physics BSP)
+// stops where the two spheres touch, on its own path, however far beyond the
+// contact the boom reaches.
+#[test]
+fn viewer_swept_into_a_sphere_prop_stops_touching_it() {
+    const PROP_RADIUS: f32 = 1.504;
+    let prop_center = Vec3::new(12.0, 12.0, PROP_RADIUS);
+    let mut engine = world_engine(LANDBLOCK, zero_terrain());
+    register_shadow(
+        &mut engine,
+        0x5001,
+        0,
+        prop_center,
+        Quat::IDENTITY,
+        PROP_RADIUS,
+        LANDBLOCK,
+        ShadowCollisionType::Sphere,
+        0.0,
+        1.0,
+        0x410,
+        EntityCollisionFlags(EntityCollisionFlags::HAS_WEENIE),
+        0,
+        false,
+    );
+    let pivot = Vec3::new(12.0, 15.7, 1.5);
+    let boom = Vec3::new(0.0, -2.5, 0.75).normalize();
+    let lift = Vec3::new(0.0, 0.0, VIEWER_RADIUS);
+    for reach in [2.1_f32, 2.2, 2.6, 3.5] {
+        let eye = pivot + boom * reach;
+        let r = resolve(
+            &engine,
+            pivot - lift,
+            eye - lift,
+            CELL,
+            VIEWER_RADIUS,
+            0.0,
+            0.0,
+            0.0,
+            false,
+            camera_flags(),
+            None,
+        );
+        let stop = r.position + lift;
+        let gap = stop.distance(prop_center) - (PROP_RADIUS + VIEWER_RADIUS);
+        let along = (stop - pivot).dot(boom);
+        let off = stop.distance(pivot + boom * along);
+        assert!(r.ok, "reach {reach}: no valid position");
+        assert!(
+            off < 0.001,
+            "reach {reach}: {off} m off the boom, stop {stop}"
+        );
+        assert!(
+            (-0.001..0.01).contains(&gap),
+            "reach {reach}: stopped {along} m along the boom, {gap} m from the prop"
+        );
+    }
+}
+
 #[test]
 fn camera_sweep_passes_creature_flagged_cylinder() {
     let engine = prop_engine(
