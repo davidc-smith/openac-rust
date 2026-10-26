@@ -19,6 +19,7 @@ use ac_ui::ElementId;
 use ac_ui::event::{DragAcceptance, DragPayload, ItemDragPayload, ItemDragSource, kind};
 use ac_ui::host::UiHost;
 use ac_ui::import::ImportedLayout;
+use ac_ui::panels::PanelOutput;
 use ac_ui::panels::items::{ItemsView, NameResolver};
 use ac_ui::panels::trade::{self, SecureTradeController, TradeSprites};
 use ac_ui::widgets::{Button, DatElement, ItemList, ItemSlot};
@@ -335,6 +336,39 @@ fn a_trade_that_opens_with_another_partner_drops_the_queued_item() {
     v.partner_guid = PARTNER + 1;
     t.update(&v);
     assert!(sessions(&panel_outputs(&mut t.host)).is_empty());
+}
+
+// SecureTradeUiControllerExamineTests.RightClickingOwnTradeItem_ExaminesIt
+// and RightClickingPartnerTradeItem_ExaminesIt.
+#[test]
+fn a_right_click_on_either_row_selects_and_examines_the_item() {
+    let mut t = trade_window();
+    t.objects.add(plain_item(PLAIN_ITEM));
+    t.objects.add(material_item(MATERIAL_ITEM));
+    let mut v = open_view(&[PLAIN_ITEM]);
+    v.partner_items = vec![MATERIAL_ITEM];
+    t.update(&v);
+    for (list, item) in [
+        (trade::SELF_LIST_ID, PLAIN_ITEM),
+        (trade::PARTNER_LIST_ID, MATERIAL_ITEM),
+    ] {
+        panel_outputs(&mut t.host);
+        let cell = t.cell(list, 0);
+        t.host.root.fire_event(kind::RIGHT_CLICK, cell, None);
+        t.host.pump();
+        let out = panel_outputs(&mut t.host);
+        assert!(
+            out.iter()
+                .any(|o| matches!(o, PanelOutput::SelectObject(id) if *id == item)),
+            "{list:#X}: {out:?}"
+        );
+        assert_dbg_eq!(
+            sessions(&out),
+            [SessionCommand::Item(ItemCommand::Appraise(
+                ObjectRef::Guid(item)
+            ))]
+        );
+    }
 }
 
 #[test]

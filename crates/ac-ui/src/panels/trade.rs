@@ -5,7 +5,8 @@
 //! The window shows the runtime's [`TradeView`] it is handed each update
 //! (rebuilt when its revision moves) and follows the trade opening and
 //! closing by showing and hiding itself. Items dropped from a pack on the
-//! player's own row are offered; the buttons send the trade commands.
+//! player's own row are offered; the buttons send the trade commands. A
+//! right-click on an item in either row selects and examines it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -402,7 +403,20 @@ impl PanelController for SecureTradeController {
             }
             return true;
         }
-        if ui.parent(element) == Some(self.self_list) {
+        let parent = ui.parent(element);
+        // Right-click examines an item on either side like any other item
+        // cell; the partner's items are examinable too.
+        if matches!(message, ElementMessage::RightClicked)
+            && (parent == Some(self.self_list) || parent == Some(self.partner_list))
+        {
+            let id = ui.widget::<ItemSlot>(element).map_or(0, |s| s.object_id);
+            if id != 0 {
+                emit(ui, PanelOutput::SelectObject(id));
+                item_command(ui, ItemCommand::Appraise(ObjectRef::Guid(id)));
+            }
+            return true;
+        }
+        if parent == Some(self.self_list) {
             match message {
                 ElementMessage::ItemDragEntered(p) => {
                     let a = if p.source_kind == ItemDragSource::Inventory {
