@@ -542,7 +542,10 @@ impl AppearancePage {
             states::GHOSTED
         };
         for &(arrow, p, _) in &self.arrows {
-            if p == part {
+            // Only a flip changes the arrow; otherwise it keeps the state it
+            // worked out itself (its rollover under the pointer).
+            let flips = ui.element(arrow).is_some_and(|e| e.enabled() != enabled);
+            if p == part && flips {
                 ui.set_retail_state(arrow, state);
             }
         }
@@ -616,16 +619,14 @@ impl AppearancePage {
     }
 
     /// Show the snapshot: gender, which parts the heritage offers, the
-    /// spins' captions, the swatches and the shade. A heritage without
-    /// clothes puts the page back on the face choice, which zooms in: the
-    /// preview request it makes.
+    /// spins' captions, the swatches and the shade.
     pub fn refresh(
         &mut self,
         ui: &mut UiRoot,
         ctx: &PageContext<'_>,
         sources: Option<&dyn SwatchSourcesDyn>,
         textures: Option<&mut dyn SwatchTextures>,
-    ) -> Option<PreviewRequest> {
+    ) {
         let s = ctx.snapshot;
         for (b, key) in [(self.female, 2), (self.male, 1)] {
             if let Some(b) = b {
@@ -642,14 +643,9 @@ impl AppearancePage {
             }
         }
         self.set_arrows_enabled(ui, Part::Eyes, !hidden);
-        let mut zoom = None;
         if hidden {
-            let was_clothes = self.choice == Choice::Clothes;
             self.choice = Choice::Face;
             self.part = Part::Hair;
-            if was_clothes {
-                zoom = self.zoom_in(ui);
-            }
         }
         self.apply_choice_visibility(ui);
         let (hair, eyes, skin) = match H(s.heritage_id) {
@@ -674,7 +670,20 @@ impl AppearancePage {
             }
         }
         self.refresh_colors(ui, ctx, sources, textures);
-        zoom
+    }
+
+    /// Runs where the original refreshes the whole page: the page shown, a
+    /// gender pick and a randomize, not every change of the character. A
+    /// heritage without clothes is put back on the face choice there, which
+    /// zooms the preview in: the request it makes.
+    pub fn on_page_update(&mut self, ui: &mut UiRoot, heritage_id: u32) -> Option<PreviewRequest> {
+        if !clothes_hidden(heritage_id) {
+            return None;
+        }
+        self.choice = Choice::Face;
+        self.part = Part::Hair;
+        self.apply_choice_visibility(ui);
+        self.zoom_in(ui)
     }
 
     /// The swatches, marks, disc and shade slider for the picked part.
@@ -802,11 +811,11 @@ impl AppearancePage {
         let ElementMessage::Clicked { .. } = message else {
             return None;
         };
-        if Some(element) == self.female {
-            return Some((vec![CreationCommand::SelectGender(2)], None));
-        }
-        if Some(element) == self.male {
-            return Some((vec![CreationCommand::SelectGender(1)], None));
+        for (button, gender) in [(self.female, 2), (self.male, 1)] {
+            if Some(element) == button {
+                let zoom = self.on_page_update(ui, ctx.snapshot.heritage_id);
+                return Some((vec![CreationCommand::SelectGender(gender)], zoom));
+            }
         }
         if Some(element) == self.face || Some(element) == self.clothes {
             self.choice = if Some(element) == self.face {

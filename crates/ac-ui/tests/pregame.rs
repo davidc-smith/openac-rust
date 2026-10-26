@@ -1562,6 +1562,122 @@ fn the_appearance_page_opens_zoomed_in_and_the_choices_zoom() {
 
 #[test]
 #[ignore = "needs the retail dat files"]
+fn an_eyes_arrow_keeps_its_rollover_when_its_click_refreshes_the_page() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearanceEyesArrow_KeepsItsRollover_WhenItsClickRefreshesThePage`.
+    use ac_runtime::session::creation::AppearanceSlot;
+    use ac_ui::pregame::chargen::appearance::{self, Part};
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let eyes = w.screen().appearance_page().spin(Part::Eyes).unwrap();
+    let up =
+        w.h.ui
+            .find_descendant(eyes, appearance::INCREMENT_ARROW_ID)
+            .unwrap();
+    let hover = ac_ui::event::UiEvent::new(0, up, kind::HOVER_ENTER);
+    w.h.ui.send_event(up, &hover);
+    let state = |w: &Wizard| {
+        w.h.ui
+            .widget::<Button>(up)
+            .unwrap()
+            .active_state()
+            .to_owned()
+    };
+    assert_eq!(state(&w), "Normal_rollover");
+    let ran = w.click(up);
+    assert!(
+        matches!(
+            ran.as_slice(),
+            [CreationCommand::SetAppearance(AppearanceSlot::EyesStrip, _)]
+        ),
+        "{ran:?}"
+    );
+    assert_eq!(state(&w), "Normal_rollover");
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn heritages_without_clothes_zoom_back_in_where_the_page_updates() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearancePage_OlthoiReZoomsIn_WhereThePageUpdates_GenderRandomAndShown`,
+    // `AppearancePage_AluvianGenderPick_LeavesTheZoomAlone`.
+    use ac_ui::pregame::chargen::appearance::{self, Part, PreviewRequest};
+    use ac_ui::states::{HIGHLIGHT, NORMAL};
+    let mut w = Wizard::new();
+    w.open();
+    let heritage = |w: &Wizard, id: u32| {
+        w.screen()
+            .heritage_page()
+            .buttons()
+            .iter()
+            .find(|b| b.2 == id)
+            .map(|b| b.0)
+            .unwrap()
+    };
+    let root = w.screen().page_root(Page::Appearance);
+    let find = |w: &Wizard, id| w.h.ui.find_descendant(root, id).unwrap();
+    let (zoom_in, zoom_out, female) = (
+        find(&w, appearance::ZOOM_IN_ID),
+        find(&w, appearance::ZOOM_OUT_ID),
+        find(&w, appearance::FEMALE_ID),
+    );
+    let lit = |w: &Wizard| (w.h.ui.retail_state(zoom_in), w.h.ui.retail_state(zoom_out));
+    let requests = |w: &mut Wizard| w.h.screens.creation_mut().unwrap().take_preview_requests();
+
+    // An Aluvian gender pick leaves the zoom alone.
+    w.click(heritage(&w, ALUVIAN));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(female);
+    assert!(requests(&mut w).is_empty());
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
+
+    // The page shown again for an Olthoi: back on the face, zoomed in.
+    w.click(w.shell(chargen::TAB_IDS[0]));
+    w.click(heritage(&w, OLTHOI));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+
+    // A gender pick.
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(female);
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+
+    // Random on this page.
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(w.shell(chargen::RANDOM_ID));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+
+    // A plain change of the character is not one of those.
+    w.click(zoom_out);
+    requests(&mut w);
+    let hair = w.screen().appearance_page().spin(Part::Hair).unwrap();
+    let up =
+        w.h.ui
+            .find_descendant(hair, appearance::INCREMENT_ARROW_ID)
+            .unwrap();
+    w.click(up);
+    assert!(requests(&mut w).is_empty());
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
 fn finish_asks_for_a_name_then_for_the_points_left() {
     // OpenAC `CharacterCreationUiControllerTests.
     // Finish_EmptyName_ShowsNoNameWarningDialog_AndDoesNotSend`,

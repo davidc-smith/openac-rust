@@ -600,10 +600,8 @@ impl CreationScreen {
             .swatch_textures
             .as_deref_mut()
             .map(|t| t as &mut dyn SwatchTextures);
-        let zoom = self
-            .appearance
+        self.appearance
             .refresh(ui, &ctx, self.swatch_sources.as_deref(), textures);
-        self.preview_requests.extend(zoom);
         self.summary.refresh(ui, &ctx, templates);
     }
 
@@ -849,7 +847,12 @@ impl CreationScreen {
             Page::Profession => ProfessionPage::randomize(&ctx, &mut draw)
                 .into_iter()
                 .collect(),
-            Page::Appearance => vec![self.appearance.randomize()],
+            Page::Appearance => {
+                let command = self.appearance.randomize();
+                let zoom = self.appearance.on_page_update(ui, snapshot.heritage_id);
+                self.preview_requests.extend(zoom);
+                vec![command]
+            }
             Page::Town => TownPage::randomize(&ctx, &mut draw).into_iter().collect(),
             Page::Summary => {
                 if self.randomize_dialog == 0 {
@@ -914,6 +917,10 @@ impl CreationScreen {
         );
         let i = self.current.index();
         ui.set_visible(self.pages[i], true);
+        if self.current == Page::Appearance {
+            let zoom = self.appearance.on_page_update(ui, heritage);
+            self.preview_requests.extend(zoom);
+        }
         let tab = self.tabs[i];
         ui.with::<Button, _>(tab, |b, ui| b.set_selected(ui, tab, true));
         if self.current == Page::Summary {
