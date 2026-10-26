@@ -169,18 +169,20 @@ fn a_line_a_call_wrote_is_heard_once_right_after_it() {
     let mut outbox = Outbox::new();
     let written = with_binding(&mut state, &mut outbox, |b| {
         b.post_chat("Mosswart Massacre has started!", 0);
-        let heard = b.new_chat_lines();
-        assert_eq!(heard.len(), 1);
-        assert_eq!(heard[0].text, "Mosswart Massacre has started!");
-        assert!(b.new_chat_lines().is_empty());
+        let heard = b.new_chat_events();
+        let [Event::ChatReceived(line)] = heard.as_slice() else {
+            panic!("one line, got {heard:?}");
+        };
+        assert_eq!(line.text, "Mosswart Massacre has started!");
+        assert!(b.new_chat_events().is_empty());
         // A line submitted is carried out now (the client's `/help`
         // answers locally); what it writes is heard next.
         let mut submits = vec!["/help".to_owned()];
         b.submit_now(&mut submits);
         assert!(submits.is_empty());
-        let written = b.new_chat_lines().len();
+        let written = b.new_chat_events().len();
         assert!(written > 0);
-        assert!(b.new_chat_lines().is_empty());
+        assert!(b.new_chat_events().is_empty());
         1 + written
     });
     let published = state.drain_host_events();
@@ -262,4 +264,104 @@ fn a_plugins_status_line_post_shows_the_caption_not_the_tag() {
         spew.visible().last().map(|e| e.text.as_str()),
         Some("Go to the bridge now.")
     );
+}
+
+// OpenAC `IEvents.StatusTextReceived`: the server's transient text (here a
+// corpse another player has open) reaches the plugins as a status notice,
+// in order with the chat lines around it, and never as a chat line.
+
+const BUSY: &str = "The Corpse of War Armoredillo is already in use by Unkle Leo!";
+
+/// The server's transient string `text`, applied to `state`.
+fn transient(state: &mut crate::session::SessionState, text: &str) {
+    let mut w = ac_bits::Writer::new();
+    w.u32(0xF7B0);
+    w.u32(super::tests::PLAYER);
+    w.u32(1);
+    w.u32(ac_proto::GameEventType::COMMUNICATION_TRANSIENT_STRING.0);
+    w.string16l(text).unwrap();
+    let body = w.into_vec();
+    let message = ac_proto::Inbound::parse(&body).expect("a game event");
+    state.apply(&message, &mut Outbox::new(), true, CLOCKS);
+}
+
+/// The chat events, each as `kind: text`.
+fn chat_events(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::ChatReceived(line) => Some(format!("chat: {}", line.text)),
+            Event::StatusTextReceived(text) => Some(format!("status: {text}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A state in the world with nothing queued for the host.
+fn quiet_in_world() -> crate::session::SessionState {
+    let mut state = in_world();
+    let _ = state.drain_host_events();
+    state.plugin_services.chat.published();
+    state
+}
+
+#[test]
+fn a_transient_string_reaches_the_plugins_as_a_status_notice_in_order() {
+    use ac_core::chat::LogTextType;
+    let mut state = quiet_in_world();
+    let wall = CLOCKS.wall_unix_ms;
+    state
+        .communication
+        .show_text(wall, "Before.", LogTextType::Default);
+    transient(&mut state, BUSY);
+    state
+        .communication
+        .show_text(wall, "After.", LogTextType::Default);
+    let published = state.drain_host_events();
+    let heard = super::chat::published_chat(&state.plugin_services.chat, &published);
+    assert_eq!(
+        chat_events(&heard),
+        [
+            "chat: Before.".to_owned(),
+            format!("status: {BUSY}"),
+            "chat: After.".to_owned(),
+        ]
+    );
+    // Not a transcript line, so not a line plugins can read back.
+    events::host_events(&mut state, &published);
+    let mut outbox = Outbox::new();
+    with_binding(&mut state, &mut outbox, |b| {
+        let kept = call::<calls::ChatCaptured>(b, &0);
+        assert!(kept.iter().all(|l| l.text != BUSY), "{kept:?}");
+    });
+}
+
+#[test]
+fn a_status_notice_heard_right_after_a_call_is_not_handed_out_again() {
+    use ac_plugin::SessionApi;
+    let mut state = quiet_in_world();
+    let wall = CLOCKS.wall_unix_ms;
+    state.communication.show_interface_text(wall, "first");
+    let mut outbox = Outbox::new();
+    with_binding(&mut state, &mut outbox, |b| {
+        assert_eq!(
+            chat_events(&b.new_chat_events()),
+            ["status: first".to_owned()]
+        );
+        assert!(b.new_chat_events().is_empty());
+        b.state.communication.show_interface_text(wall, "second");
+        assert_eq!(
+            chat_events(&b.new_chat_events()),
+            ["status: second".to_owned()]
+        );
+    });
+    state.communication.show_interface_text(wall, "third");
+    let published = state.drain_host_events();
+    let heard = super::chat::published_chat(&state.plugin_services.chat, &published);
+    assert_eq!(chat_events(&heard), ["status: third".to_owned()]);
+    state.plugin_services.chat.published();
+    state.communication.show_interface_text(wall, "fourth");
+    let published = state.drain_host_events();
+    let heard = super::chat::published_chat(&state.plugin_services.chat, &published);
+    assert_eq!(chat_events(&heard), ["status: fourth".to_owned()]);
 }

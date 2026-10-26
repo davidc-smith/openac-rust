@@ -66,7 +66,9 @@ fn lines(communication: &mut Communication) -> Vec<String> {
         .drain_events()
         .filter_map(|e| match e {
             CommunicationEvent::Line(line) => Some(line.text),
-            CommunicationEvent::InterfaceText(_) | CommunicationEvent::Confirmation(_) => None,
+            CommunicationEvent::InterfaceText(_)
+            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()
 }
@@ -76,7 +78,9 @@ fn interface_texts(communication: &mut Communication) -> Vec<String> {
         .drain_events()
         .filter_map(|e| match e {
             CommunicationEvent::InterfaceText(text) => Some(text),
-            CommunicationEvent::Line(_) | CommunicationEvent::Confirmation(_) => None,
+            CommunicationEvent::Line(_)
+            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()
 }
@@ -1054,11 +1058,86 @@ fn a_suppressed_status_notice_is_never_shown_and_a_status_filter_leaves_lines_al
         c.kind == ac_plugin::abi::types::STATUS_TEXT_KIND
     });
     let events: Vec<CommunicationEvent> = communication.drain_events().collect();
-    assert_eq!(events.len(), 1);
-    assert!(matches!(&events[0], CommunicationEvent::Line(l) if l.text == "A regular line."));
+    assert_eq!(events.len(), 2);
+    // Only the plugins hear the dropped notice.
+    assert_eq!(
+        events[0],
+        CommunicationEvent::StatusNotice("You're too busy!".into())
+    );
+    assert!(matches!(&events[1], CommunicationEvent::Line(l) if l.text == "A regular line."));
     communication.tick(0.0);
     assert_eq!(communication.spew_box().len(), 0);
     assert_eq!(communication.chat().len(), 1);
+}
+
+// -- Status notices the plugins hear ------------------------------------------
+// OpenAC `IEvents.StatusTextReceived`: every notice that takes the status
+// path is raised for the plugins, whatever the chat filters decide, in
+// order with the transcript's lines.
+
+const BUSY: &str = "The Corpse of War Armoredillo is already in use by Unkle Leo!";
+
+fn transient(communication: &mut Communication, text: &str) {
+    let mut w = Writer::new();
+    string16l(&mut w, text);
+    apply(
+        communication,
+        &game_event(GameEventType::COMMUNICATION_TRANSIENT_STRING, &w.into_vec()),
+    );
+}
+
+/// The owner's events, each as `kind: text`.
+fn heard(communication: &mut Communication) -> Vec<String> {
+    communication
+        .drain_events()
+        .map(|e| match e {
+            CommunicationEvent::Line(line) => format!("line: {}", line.text),
+            CommunicationEvent::InterfaceText(text) => format!("shown: {text}"),
+            CommunicationEvent::StatusNotice(text) => format!("status: {text}"),
+            CommunicationEvent::Confirmation(_) => "confirmation".to_owned(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_transient_string_is_a_status_notice_the_plugins_hear() {
+    let mut communication = owner();
+    communication.show_text(NOW, "Before.", LogTextType::Default);
+    transient(&mut communication, BUSY);
+    communication.show_text(NOW, "After.", LogTextType::Default);
+    assert_eq!(
+        heard(&mut communication),
+        [
+            "line: Before.".to_owned(),
+            format!("status: {BUSY}"),
+            format!("shown: {BUSY}"),
+            "line: After.".to_owned(),
+        ]
+    );
+    assert!(communication.chat().entries().all(|e| e.text != BUSY));
+}
+
+#[test]
+fn a_status_notice_a_filter_drops_is_still_heard_in_order_with_the_lines() {
+    let mut communication = owner();
+    communication.set_plugin_filtering(true);
+    communication.show_text(NOW, "Before.", LogTextType::Default);
+    transient(&mut communication, BUSY);
+    communication.show_text(NOW, "After.", LogTextType::Default);
+    assert!(heard(&mut communication).is_empty(), "held");
+    filter_held(&mut communication, |c| {
+        c.kind == ac_plugin::abi::types::STATUS_TEXT_KIND
+    });
+    assert_eq!(
+        heard(&mut communication),
+        [
+            "line: Before.".to_owned(),
+            format!("status: {BUSY}"),
+            "line: After.".to_owned(),
+        ]
+    );
+    communication.tick(0.0);
+    assert_eq!(communication.spew_box().len(), 0, "never shown");
 }
 
 /// A dropped tell never reached the transcript, so it never sets the reply
@@ -1094,7 +1173,9 @@ fn plugin_lines(communication: &mut Communication) -> Vec<ac_plugin::abi::ChatLi
         .drain_events()
         .filter_map(|e| match e {
             CommunicationEvent::Line(line) => Some(crate::plugins::plugin_chat_line(&line)),
-            CommunicationEvent::InterfaceText(_) | CommunicationEvent::Confirmation(_) => None,
+            CommunicationEvent::InterfaceText(_)
+            | CommunicationEvent::StatusNotice(_)
+            | CommunicationEvent::Confirmation(_) => None,
         })
         .collect()
 }

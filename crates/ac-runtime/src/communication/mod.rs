@@ -85,6 +85,10 @@ pub enum CommunicationEvent {
     /// Client-local status text (the overlay at the top of the view, never
     /// the transcript).
     InterfaceText(String),
+    /// A notice took the status path, in order with the transcript's
+    /// lines: shown ([`Self::InterfaceText`] follows) or dropped by a
+    /// plugin's chat filter. Plugins hear it either way.
+    StatusNotice(String),
     /// The client asks the player a question (a yes/no dialog); the answer
     /// goes to [`Communication::answer_confirmation`].
     Confirmation(ClientConfirmation),
@@ -913,17 +917,27 @@ impl Communication {
 
     /// The filters' verdict on held text: kept, a line is appended (then
     /// it teaches the reply targets and reaches the log and the host) and
-    /// a status notice shows; suppressed, it goes nowhere.
+    /// a status notice shows; suppressed, a line goes nowhere and a status
+    /// notice only to the plugins ([`CommunicationEvent::StatusNotice`]).
     pub fn release(&mut self, held: HeldText, suppressed: bool) {
-        if suppressed {
-            return;
-        }
         match held {
+            HeldText::Line(_) if suppressed => {}
             HeldText::Line(entry) => {
                 let entry = self.chat.admit(entry).clone();
                 self.committed(entry);
             }
-            HeldText::Status { text, .. } => self.show_status(text),
+            HeldText::Status { text, .. } => self.status_notice(text, !suppressed),
+        }
+    }
+
+    /// A notice took the status path: the plugins hear it (OpenAC
+    /// `IEvents.StatusTextReceived`, raised whatever the filters decide),
+    /// and it shows when `shown`.
+    fn status_notice(&mut self, text: String, shown: bool) {
+        self.events
+            .push(CommunicationEvent::StatusNotice(text.clone()));
+        if shown {
+            self.show_status(text);
         }
     }
 
@@ -999,13 +1013,15 @@ impl Communication {
             // A status notice never enters the transcript, so the plugins'
             // filters are offered it on its own (OpenAC
             // `RuntimeCommunicationState.AddText`).
+            // The plugins hear it when the filters have been asked, in
+            // order with the held lines, whatever they decide.
             if self.plugin_filtering {
                 self.held.push(HeldText::Status {
                     text: text.to_owned(),
                     received_unix_ms: now,
                 });
             } else {
-                self.show_status(text.to_owned());
+                self.status_notice(text.to_owned(), true);
             }
             return;
         }

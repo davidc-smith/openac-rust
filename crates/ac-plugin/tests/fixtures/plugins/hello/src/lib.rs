@@ -143,6 +143,11 @@ impl Plugin for Hello {
             Event::WindowAttached(attached) => {
                 host.info(&format!("hello: window attached: {attached}"));
             }
+            // A status notice (never a chat line): answered in chat, in
+            // order with the lines it hears.
+            Event::StatusTextReceived(text) => {
+                host.chat_post(&format!("hello status: {text}"));
+            }
             _ => {}
         }
     }

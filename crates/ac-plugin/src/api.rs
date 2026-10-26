@@ -5,7 +5,7 @@
 //! session's thread: every plugin call that reads or changes the game has
 //! that one implementation, with or without a window.
 
-use ac_plugin_abi::{CharacterInfo, ChatLine, Import, LogLevel};
+use ac_plugin_abi::{CharacterInfo, Event, Import, LogLevel};
 
 /// The plugin making a call, as the session sees it.
 #[derive(Debug, Clone, Copy)]
@@ -96,12 +96,14 @@ pub trait SessionApi {
         let _ = submits;
     }
 
-    /// The chat lines that appeared in the session since this was last
-    /// asked (a plugin's own posts, the local lines its submits wrote),
-    /// each once, oldest first: the plugins hear them right after the call
+    /// The chat lines ([`Event::ChatReceived`]) and status notices
+    /// ([`Event::StatusTextReceived`]) that appeared in the session since
+    /// this was last asked (a plugin's own posts, the local lines its
+    /// submits wrote, the lines the chat filters kept), each once, in the
+    /// order they appeared: the plugins hear them right after the call
     /// that caused them, before anything else, and the session does not
     /// hand them out again. The default has none.
-    fn new_chat_lines(&mut self) -> Vec<ChatLine> {
+    fn new_chat_events(&mut self) -> Vec<Event> {
         Vec::new()
     }
 }

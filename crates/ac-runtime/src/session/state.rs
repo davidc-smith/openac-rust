@@ -2059,6 +2059,7 @@ impl SessionState {
             self.host_events.push(match event {
                 CommunicationEvent::Line(line) => HostEvent::Chat(line),
                 CommunicationEvent::InterfaceText(text) => HostEvent::InterfaceText(text),
+                CommunicationEvent::StatusNotice(text) => HostEvent::StatusNotice(text),
                 CommunicationEvent::Confirmation(question) => HostEvent::Confirmation(question),
             });
         }

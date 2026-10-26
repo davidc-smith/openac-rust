@@ -561,12 +561,23 @@ macro_rules! wire_enum {
 }
 
 /// An enum whose variants carry nothing or one value, tagged with a `u32`.
+///
+/// A variant added by a later API minor version is marked
+/// `since (MAJOR, MINOR)` after its payload: a plugin built for an older
+/// version cannot read it, so the host sends it only to plugins built for
+/// that version or later (the union's generated `since`), and the union's
+/// shape as the older version knew it (its generated `shape_at`) leaves it
+/// out, so plugins built for the older version still load. An unmarked
+/// variant came with API 1.0.
 #[macro_export]
 macro_rules! wire_union {
     (
         $(#[$meta:meta])*
         pub enum $name:ident : $what:literal {
-            $( $(#[$vmeta:meta])* $tag:literal => $variant:ident $(($payload:ty))? ),+ $(,)?
+            $(
+                $(#[$vmeta:meta])* $tag:literal => $variant:ident $(($payload:ty))?
+                    $(since ($smaj:literal, $smin:literal))?
+            ),+ $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -575,14 +586,39 @@ macro_rules! wire_union {
             $( $(#[$vmeta])* $variant $(($payload))?, )+
         }
 
-        impl $crate::wire::Wire for $name {
-            const SHAPE: u64 = $crate::wire::Shape::new("union")
+        // A union only the ABI's own tests define may leave these unused.
+        #[allow(dead_code)]
+        impl $name {
+            /// The API version that added this variant (1.0 for the
+            /// first version's): a plugin built for an older version
+            /// cannot read it.
+            #[must_use]
+            pub const fn since(&self) -> $crate::ApiVersion {
+                match self {
+                    $( $name::$variant { .. } => $crate::__wire_since!($(($smaj, $smin))?), )+
+                }
+            }
+
+            /// The layout shape a plugin built for API `version` knows:
+            /// the variants that version had (every variant at the
+            /// newest).
+            #[must_use]
+            pub const fn shape_at(version: $crate::ApiVersion) -> u64 {
+                let mut shape = $crate::wire::Shape::new("union");
                 $(
-                    .tag($tag as u64)
-                    .name(stringify!($variant))
-                    $( .of(<$payload as $crate::wire::Wire>::SHAPE) )?
+                    if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
+                        shape = shape
+                            .tag($tag as u64)
+                            .name(stringify!($variant))
+                            $( .of(<$payload as $crate::wire::Wire>::SHAPE) )?;
+                    }
                 )+
-                .finish();
+                shape.finish()
+            }
+        }
+
+        impl $crate::wire::Wire for $name {
+            const SHAPE: u64 = Self::shape_at($crate::ApiVersion::new(u16::MAX, u16::MAX));
             fn encode(&self, w: &mut $crate::wire::Writer) {
                 $( $crate::__wire_union_encode!(self, w, $name, $variant, $tag $(, $payload)?); )+
             }
@@ -597,6 +633,17 @@ macro_rules! wire_union {
                 $crate::__wire_union_first!(r, $name, $( $tag => $variant $(($payload))? ),+)
             }
         }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __wire_since {
+    () => {
+        $crate::ApiVersion::new(1, 0)
+    };
+    (($major:literal, $minor:literal)) => {
+        $crate::ApiVersion::new($major, $minor)
     };
 }
 

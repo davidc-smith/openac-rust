@@ -26,6 +26,13 @@ impl ApiVersion {
         let (major, minor) = text.split_once('.')?;
         Some(Self::new(component(major)?, component(minor)?))
     }
+
+    /// Whether this version is `other` or older (`<=`, usable in a
+    /// constant).
+    #[must_use]
+    pub const fn is_at_most(self, other: Self) -> bool {
+        self.major < other.major || (self.major == other.major && self.minor <= other.minor)
+    }
 }
 
 fn component(text: &str) -> Option<u16> {
@@ -45,7 +52,7 @@ impl fmt::Display for ApiVersion {
 }
 
 /// The API version this build of the ABI provides.
-pub const API_CURRENT: ApiVersion = ApiVersion::new(1, 0);
+pub const API_CURRENT: ApiVersion = ApiVersion::new(1, 1);
 
 /// The oldest API version a client built on this ABI still loads.
 pub const API_MINIMUM: ApiVersion = ApiVersion::new(1, 0);
@@ -83,6 +90,20 @@ mod tests {
             API_CURRENT.minor + 1
         )));
         assert!(!is_supported(ApiVersion::new(0, 9)));
-        assert_eq!(API_CURRENT.to_string(), "1.0");
+        assert_eq!(API_CURRENT.to_string(), "1.1");
+        assert_eq!(API_MINIMUM.to_string(), "1.0");
+    }
+
+    #[test]
+    fn is_at_most_orders_major_then_minor() {
+        let v = ApiVersion::new;
+        assert!(v(1, 0).is_at_most(v(1, 0)));
+        assert!(v(1, 0).is_at_most(v(1, 1)));
+        assert!(!v(1, 1).is_at_most(v(1, 0)));
+        assert!(v(1, 9).is_at_most(v(2, 0)));
+        assert!(!v(2, 0).is_at_most(v(1, 9)));
+        for (a, b) in [(v(1, 0), v(1, 1)), (v(1, 1), v(1, 0)), (v(2, 3), v(2, 3))] {
+            assert_eq!(a.is_at_most(b), a <= b);
+        }
     }
 }

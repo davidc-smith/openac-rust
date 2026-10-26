@@ -13,9 +13,11 @@
 //! record, the events, the callbacks and their answers: [`CORE_SHAPE`]),
 //! and one per import of its table ([`Import::shape`]: the name, the
 //! request and the reply). The client and `plugincheck` refuse a module
-//! whose core shape differs from theirs, or that imports a function whose
-//! shape differs, or that has no section. A plugin is not refused for an
-//! import it does not use, so a new import alone needs no rebuild.
+//! whose core shape differs from theirs at the API version it was built for
+//! ([`core_shape`]), or that imports a function whose shape differs, or
+//! that has no section. A plugin is not refused for an import it does not
+//! use, so a new import alone needs no rebuild; nor for an event a later
+//! minor version added, which the client does not send it.
 //!
 //! Nothing here is written by hand: each type's [`Wire::SHAPE`] is computed
 //! by the compiler from the definition that also writes its encoding
@@ -25,6 +27,7 @@
 use crate::callback::{Callback, CallbackAnswer};
 use crate::imports::Import;
 use crate::types::{Event, StartInfo};
+use crate::version::{API_CURRENT, ApiVersion};
 use crate::wire::{Shape, Wire};
 
 /// The custom section the SDK writes into every plugin's `.wasm`:
@@ -34,13 +37,23 @@ use crate::wire::{Shape, Wire};
 pub const LAYOUT_SECTION: &str = "openac.layout";
 
 /// The shape of what every plugin decodes or answers whatever it imports:
-/// the start record, the events, the callbacks and their answers.
-pub const CORE_SHAPE: u64 = Shape::new("openac plugin api core")
-    .of(StartInfo::SHAPE)
-    .of(Event::SHAPE)
-    .of(Callback::SHAPE)
-    .of(CallbackAnswer::SHAPE)
-    .finish();
+/// the start record, the events, the callbacks and their answers, at this
+/// build's API version ([`core_shape`] of [`API_CURRENT`]).
+pub const CORE_SHAPE: u64 = core_shape(API_CURRENT);
+
+/// The core shape a plugin built for API `version` has: the events that
+/// version had ([`Event::shape_at`]), so an event a later minor version
+/// added does not change an older plugin's core shape and it still loads
+/// (the host never sends it an event it cannot read).
+#[must_use]
+pub const fn core_shape(version: ApiVersion) -> u64 {
+    Shape::new("openac plugin api core")
+        .of(StartInfo::SHAPE)
+        .of(Event::shape_at(version))
+        .of(Callback::SHAPE)
+        .of(CallbackAnswer::SHAPE)
+        .finish()
+}
 
 /// The whole layout in one number, for people (reports, the published
 /// value the ABI's tests pin): [`CORE_SHAPE`] and every import's shape, in
@@ -158,7 +171,7 @@ mod tests {
     /// 1.0 is unfrozen, but never silently. Update this value in the same
     /// commit; when an existing record changed shape (not only a new
     /// import), say in the commit message which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0x4d8a_a9ba_2539_9aaa;
+    const PUBLISHED: u64 = 0xcab0_c017_b645_600d;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -167,6 +180,18 @@ mod tests {
             "the plugin API layout changed (fingerprint {LAYOUT_FINGERPRINT:016x}, published \
              {PUBLISHED:016x}): update PUBLISHED and rebuild the plugins it affects"
         );
+    }
+
+    /// The core shape every plugin built for API 1.0 carries. An addition
+    /// in a later minor version must leave it as it was, or every 1.0
+    /// plugin stops loading.
+    const API_1_0_CORE: u64 = 0x7d62_9f69_c4d5_e3b3;
+
+    #[test]
+    fn api_1_0_plugins_keep_their_core_shape() {
+        assert_eq!(core_shape(ApiVersion::new(1, 0)), API_1_0_CORE);
+        assert_ne!(CORE_SHAPE, API_1_0_CORE);
+        assert_eq!(core_shape(API_CURRENT), CORE_SHAPE);
     }
 
     mod before {

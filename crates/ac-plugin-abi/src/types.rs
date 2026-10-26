@@ -199,7 +199,9 @@ wire_record! {
 wire_union! {
     /// Something the client tells a plugin, delivered on the session's
     /// thread between ticks, in the order it happened. New kinds come with
-    /// new API minor versions, so a plugin matches with a catch-all arm.
+    /// new API minor versions (marked `since`), so a plugin matches with a
+    /// catch-all arm; the client sends a plugin only the kinds of the API
+    /// version it was built for.
     #[non_exhaustive]
     pub enum Event: "event" {
         /// A window attached to (`true`) or left (`false`) the session.
@@ -264,6 +266,16 @@ wire_union! {
         /// A path preview the plugin asked for ended (only to that
         /// plugin).
         24 => NavigationPlan(crate::navigation::NavigationPlan),
+        /// A notice went to the status line (OpenAC
+        /// `IEvents.StatusTextReceived`): its text, such as the server's
+        /// "The Corpse of ... is already in use by ...!". Raised for every
+        /// status notice (the server's transient text, a failure worded as
+        /// client-local text, a plugin's post in that class), in order with
+        /// the chat lines, whether or not a chat filter hides it from the
+        /// screen. Never in the transcript, so never a
+        /// [`Self::ChatReceived`] (sent only to plugins with the `chat`
+        /// permission, built for API 1.1 or later).
+        25 => StatusTextReceived(String) since (1, 1),
         /// One of the plugin's panels or canvases was used ([`crate::ui`];
         /// the tag is `crate::ui::EVENT_TAG`).
         100 => Ui(crate::ui::UiEvent),
@@ -299,10 +311,17 @@ mod tests {
             Event::LoginComplete,
             Event::LocalPlayerDied("You died.".into()),
             Event::ContainerOpened(7),
+            Event::StatusTextReceived(
+                "The Corpse of War Armoredillo is already in use by Unkle Leo!".into(),
+            ),
         ];
         for event in events {
             assert_eq!(Event::from_bytes(&event.to_bytes()), Ok(event));
         }
+        assert_eq!(
+            Event::StatusTextReceived("x".into()).to_bytes()[..4],
+            25u32.to_le_bytes()
+        );
         assert_eq!(
             Event::from_bytes(&[0xEE, 0, 0, 0]),
             Err(DecodeError::UnknownTag {
@@ -317,5 +336,17 @@ mod tests {
                 tag: 4
             })
         );
+    }
+
+    #[test]
+    fn the_status_text_event_came_with_api_1_1() {
+        let v = crate::ApiVersion::new;
+        assert_eq!(Event::StatusTextReceived(String::new()).since(), v(1, 1));
+        assert_eq!(Event::LoginComplete.since(), v(1, 0));
+        assert_eq!(Event::ContainerOpened(1).since(), v(1, 0));
+        // API 1.0's events leave it out; 1.1's are all of them.
+        assert_ne!(Event::shape_at(v(1, 0)), Event::SHAPE);
+        assert_eq!(Event::shape_at(v(1, 1)), Event::SHAPE);
+        assert_eq!(Event::shape_at(crate::API_CURRENT), Event::SHAPE);
     }
 }

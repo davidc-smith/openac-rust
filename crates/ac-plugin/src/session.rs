@@ -13,7 +13,7 @@
 //! Plugins are never re-entered: everything a plugin call asks for that
 //! would run plugin code again (a chat-box submit, a chat line other
 //! plugins hear) is carried out right after the call returns, before the
-//! next call ([`SessionApi::submit_now`], [`SessionApi::new_chat_lines`]),
+//! next call ([`SessionApi::submit_now`], [`SessionApi::new_chat_events`]),
 //! or by the session after the pass when it cannot be done then
 //! ([`PluginSession::take_submits`]).
 
@@ -1041,13 +1041,12 @@ impl PluginSession {
     /// the character leaving the world before the session is torn down).
     pub fn deliver(&mut self, api: &mut dyn SessionApi) {
         while let Some(event) = self.events.pop_front() {
-            let chat = matches!(event, Event::ChatReceived(_));
             let spawned = match &event {
                 Event::EntitySpawned(entity) => Some(entity.id),
                 _ => None,
             };
             let (entry, bytes) = encode(&event);
-            for id in self.ids(chat) {
+            for id in self.listeners(&event) {
                 // A spawn the plugin already heard replayed at its enable.
                 if let Some(object) = spawned
                     && self
@@ -1066,7 +1065,9 @@ impl PluginSession {
             }
         }
         while let Some((owner, event)) = self.targeted.pop_front() {
-            if let Some(index) = self.index_of(&owner) {
+            if let Some(index) = self.index_of(&owner)
+                && hears(&self.plugins[index].manifest, &event)
+            {
                 let (entry, bytes) = encode(&event);
                 self.call(index, api, |instance, handler| {
                     instance.event(&bytes, entry, handler)
@@ -1089,6 +1090,15 @@ impl PluginSession {
             .collect()
     }
 
+    /// [`Self::ids`] of the plugins that hear `event` ([`hears`]).
+    fn listeners(&self, event: &Event) -> Vec<String> {
+        self.plugins
+            .iter()
+            .filter(|p| hears(&p.manifest, event))
+            .map(|p| p.manifest.id.clone())
+            .collect()
+    }
+
     fn index_of(&self, id: &str) -> Option<usize> {
         self.plugins
             .iter()
@@ -1096,26 +1106,27 @@ impl PluginSession {
     }
 
     /// Right after a plugin call returns: the lines the plugins submitted
-    /// are carried out, and the chat lines that appeared since (their own
-    /// posts, what the submits wrote locally) reach every plugin allowed to
-    /// hear chat before the next call. OpenAC hands such a line to the chat
-    /// subscribers inside the call that wrote it; a wasm instance cannot be
-    /// re-entered, so this is the nearest point. Lines written while
-    /// hearing these wait for the next settle (or the session's next
-    /// pass), so a plugin answering its own lines cannot loop within one.
+    /// are carried out, and the chat lines and status notices that appeared
+    /// since (their own posts, what the submits wrote locally) reach every
+    /// plugin allowed to hear chat before the next call. OpenAC hands such
+    /// a line to the chat subscribers inside the call that wrote it; a wasm
+    /// instance cannot be re-entered, so this is the nearest point. Lines
+    /// written while hearing these wait for the next settle (or the
+    /// session's next pass), so a plugin answering its own lines cannot
+    /// loop within one.
     fn settle(&mut self, api: &mut dyn SessionApi) {
         if self.settling {
             return;
         }
         api.submit_now(&mut self.services.submits);
-        let lines = api.new_chat_lines();
-        if lines.is_empty() {
+        let events = api.new_chat_events();
+        if events.is_empty() {
             return;
         }
         self.settling = true;
-        for line in lines {
-            let (entry, bytes) = encode(&Event::ChatReceived(line));
-            for id in self.ids(true) {
+        for event in events {
+            let (entry, bytes) = encode(&event);
+            for id in self.listeners(&event) {
                 if let Some(index) = self.index_of(&id) {
                     self.call(index, api, |instance, handler| {
                         instance.event(&bytes, entry, handler)
@@ -1384,6 +1395,17 @@ fn encode(event: &Event) -> (Entry, Vec<u8>) {
     (Entry::of_event(event), event.to_bytes())
 }
 
+/// Whether the plugin of `manifest` is sent `event`: it was built for the
+/// API version that added the event or a later one (an older SDK cannot
+/// read an event kind it does not know, and stops the plugin), and a chat
+/// line or status notice needs the `chat` permission.
+#[must_use]
+pub fn hears(manifest: &PluginManifest, event: &Event) -> bool {
+    event.since().is_at_most(manifest.api_version)
+        && (!matches!(event, Event::ChatReceived(_) | Event::StatusTextReceived(_))
+            || manifest.allows(Permission::Chat))
+}
+
 /// Writes to the player's chat and to the log: a reload is something the
 /// player asked for or caused, so what came of it is said where they look.
 fn say(api: &mut dyn SessionApi, text: &str) {
@@ -1393,4 +1415,36 @@ fn say(api: &mut dyn SessionApi, text: &str) {
 
 fn is_manager_line(raw: &str) -> bool {
     split_command_line(raw).is_some_and(|(_, verb, _)| verb.eq_ignore_ascii_case(MANAGER_VERB))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(api_version: &str, chat: bool) -> PluginManifest {
+        let permissions = if chat {
+            r#", "permissionsVersion": 1, "permissions": [{ "name": "chat", "note": "n" }]"#
+        } else {
+            ""
+        };
+        PluginManifest::parse(&format!(
+            r#"{{ "id": "x", "displayName": "X", "version": "0.1.0", "entry": "x.wasm", "apiVersion": "{api_version}"{permissions} }}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_event_goes_only_to_plugins_built_for_its_api_version_or_later() {
+        let status = Event::StatusTextReceived("busy".into());
+        let chat = Event::ChatReceived(ChatLine::default());
+        assert!(!hears(&manifest("1.0", true), &status));
+        assert!(hears(&manifest("1.1", true), &status));
+        // An API 1.0 event still reaches a 1.0 plugin.
+        assert!(hears(&manifest("1.0", true), &chat));
+        assert!(hears(&manifest("1.0", false), &Event::LoginComplete));
+        // Like a chat line, a status notice needs the chat permission.
+        assert!(!hears(&manifest("1.1", false), &status));
+        assert!(!hears(&manifest("1.1", false), &chat));
+        assert!(hears(&manifest("1.1", false), &Event::LoginComplete));
+    }
 }

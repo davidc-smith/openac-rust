@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-use ac_plugin_abi::layout::{CORE_SHAPE, PluginLayout};
+use ac_plugin_abi::layout::{PluginLayout, core_shape};
 use ac_plugin_abi::{
     API_CURRENT, API_MINIMUM, API_SECTION, ApiVersion, Import, LAYOUT_SECTION, MODULE, exports,
     is_supported,
@@ -451,20 +451,23 @@ pub fn check_api_version(manifest: &PluginManifest) -> Result<(), String> {
 /// The words every refusal of [`check_layout`] carries.
 pub const LAYOUT_REFUSAL: &str = "built against a different plugin API layout";
 
-/// Whether the module was built against this client's record layouts
-/// (`ac_plugin_abi::layout`): its `openac.layout` section must hold this
-/// client's core shape (the start record, events and callbacks) and, for
-/// every client function it imports, this client's shape of that function.
-/// A function it does not import is not compared, so a plugin built before
-/// an import was added still loads. A module without the section was built
-/// by an SDK from before the fingerprint and is refused the same way while
-/// API 1.0 is unfrozen (its records may differ from this client's).
-/// Imports this client does not have are left to [`check_module`].
+/// Whether the module, built for API `api_version`, was built against this
+/// client's record layouts (`ac_plugin_abi::layout`): its `openac.layout`
+/// section must hold this client's core shape at that version (the start
+/// record, the events that version had, the callbacks:
+/// `ac_plugin_abi::layout::core_shape`) and, for every client function it
+/// imports, this client's shape of that function. A function it does not
+/// import is not compared, so a plugin built before an import was added
+/// still loads; nor is an event a later version added, which the session
+/// never sends it. A module without the section was built by an SDK from
+/// before the fingerprint and is refused the same way (its records may
+/// differ from this client's). Imports this client does not have are left
+/// to [`check_module`].
 ///
 /// # Errors
 /// The section is missing or malformed, or a shape differs; the message
 /// carries [`LAYOUT_REFUSAL`] and tells the author to rebuild.
-pub fn check_layout(module: &PluginModule) -> Result<(), String> {
+pub fn check_layout(module: &PluginModule, api_version: ApiVersion) -> Result<(), String> {
     let refuse = |why: String| {
         Err(format!(
             "the .wasm was {LAYOUT_REFUSAL} ({why}); rebuild it against this client's SDK"
@@ -478,7 +481,7 @@ pub fn check_layout(module: &PluginModule) -> Result<(), String> {
     let Some(built) = PluginLayout::parse(section) else {
         return refuse(format!("its {LAYOUT_SECTION} section is malformed"));
     };
-    if built.core != CORE_SHAPE {
+    if built.core != core_shape(api_version) {
         return refuse("its start record, events or callbacks differ from this client's".into());
     }
     for import in module.imports() {
@@ -539,7 +542,7 @@ pub fn check_module(
             manifest.api_version
         ));
     }
-    check_layout(module)?;
+    check_layout(module, api_version)?;
 
     let mut imports = Vec::new();
     for import in module.imports() {

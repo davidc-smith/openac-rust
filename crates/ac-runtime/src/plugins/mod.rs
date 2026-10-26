@@ -28,7 +28,7 @@ use crate::communication::{ChatLine, HeldText};
 use crate::session::{Clocks, HostEvent, Outbox, SessionCommand, SessionState};
 
 mod character;
-mod chat;
+pub(crate) mod chat;
 mod client;
 mod combat;
 pub mod events;
@@ -428,8 +428,8 @@ impl SessionApi for PluginBinding<'_> {
         self.chat_submit_now(submits);
     }
 
-    fn new_chat_lines(&mut self) -> Vec<ac_plugin::abi::ChatLine> {
-        self.chat_new_lines()
+    fn new_chat_events(&mut self) -> Vec<ac_plugin::abi::Event> {
+        self.chat_new_events()
     }
 
     fn call(

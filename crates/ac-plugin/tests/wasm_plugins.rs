@@ -7,8 +7,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ac_plugin::abi::layout::{LAYOUT_SECTION_BYTES, import_key};
-use ac_plugin::abi::{CharacterInfo, ChatLine, Import, LAYOUT_SECTION, LogLevel};
+use ac_plugin::abi::layout::{LAYOUT_SECTION_BYTES, core_shape, import_key};
+use ac_plugin::abi::{
+    API_CURRENT, ApiVersion, CharacterInfo, ChatLine, Event, Import, LAYOUT_SECTION, LogLevel,
+};
 use ac_plugin::engine::check_layout;
 use ac_plugin::fixtures::{fresh_root, install, with_custom_section};
 use ac_plugin::{
@@ -130,8 +132,11 @@ impl SessionApi for FakeSession {
             });
         }
     }
-    fn new_chat_lines(&mut self) -> Vec<ChatLine> {
+    fn new_chat_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.unheard)
+            .into_iter()
+            .map(Event::ChatReceived)
+            .collect()
     }
     fn character(&self) -> Option<CharacterInfo> {
         self.character.clone()
@@ -411,7 +416,7 @@ fn hello_runs_its_verb_chat_tick_and_window_events() {
     assert_eq!(
         api.messages("openac.hello"),
         vec![
-            "hello openac.hello enabled on API 1.0 (client 0.1.0), window attached: false",
+            "hello openac.hello enabled on API 1.1 (client 0.1.0), window attached: false",
             "plugin loaded: openac.hello (Hello)",
         ]
     );
@@ -620,13 +625,77 @@ fn a_listed_plugin_that_is_missing_or_unreadable_is_reported() {
 fn an_api_version_this_client_does_not_support_is_refused() {
     let root = Root::new("api");
     let folder = install(&root.0, "probe");
-    edit_manifest(&folder, r#""apiVersion": "1.0""#, r#""apiVersion": "1.1""#);
+    edit_manifest(&folder, r#""apiVersion": "1.1""#, r#""apiVersion": "1.2""#);
     let mut api = FakeSession::default();
     let mut plugins = session(&[&root.0], None);
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.probe").unwrap(),
-        "plugin 'openac.probe' declares apiVersion 1.1, but this build supports 1.0..1.0"
+        "plugin 'openac.probe' declares apiVersion 1.2, but this build supports 1.0..1.1"
+    );
+}
+
+/// Hands `hello` a chat line, a status notice and another line, in that
+/// order; what it posted.
+fn hello_hears_status_between_lines(root: &Path) -> (Vec<String>, Vec<String>) {
+    let speech = |text: &str| ChatLine {
+        sender: "Horan".into(),
+        text: text.into(),
+        display_text: text.into(),
+        ..ChatLine::default()
+    };
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[root], Some(&["openac.hello"]));
+    plugins.start(&mut api);
+    plugins.queue_chat(speech("ping hello one"));
+    plugins.queue_event(Event::StatusTextReceived(
+        "The Corpse of War Armoredillo is already in use by Unkle Leo!".into(),
+    ));
+    plugins.queue_chat(speech("ping hello two"));
+    plugins.pump(0.0, None, &mut api);
+    let loaded = plugins.loaded_ids();
+    plugins.shutdown(&mut api);
+    (api.posts, loaded)
+}
+
+/// A status notice reaches a plugin built for API 1.1, in order with the
+/// chat lines around it; the same plugin as an API 1.0 SDK built it (its
+/// version section and core layout 1.0's) is never sent it, since that
+/// SDK would stop the plugin on an event kind it cannot read, and still
+/// hears the lines.
+#[test]
+fn a_status_notice_reaches_only_plugins_built_for_api_1_1() {
+    let root = Root::new("status-1-1");
+    install(&root.0, "hello");
+    let (posts, loaded) = hello_hears_status_between_lines(&root.0);
+    assert_eq!(loaded, ["openac.hello"]);
+    assert_eq!(
+        posts,
+        [
+            "hello heard #1: ping hello one",
+            "hello status: The Corpse of War Armoredillo is already in use by Unkle Leo!",
+            "hello heard #2: ping hello two",
+        ]
+    );
+
+    let root = Root::new("status-1-0");
+    let folder = install(&root.0, "hello");
+    edit_manifest(&folder, r#""apiVersion": "1.1""#, r#""apiVersion": "1.0""#);
+    let wasm = folder.join("hello.wasm");
+    let mut layout = LAYOUT_SECTION_BYTES.to_vec();
+    layout[..8].copy_from_slice(&core_shape(ApiVersion::new(1, 0)).to_le_bytes());
+    let built = std::fs::read(&wasm).unwrap();
+    let built = with_custom_section(&built, "openac.api", Some(b"1.0"));
+    let built = with_custom_section(&built, LAYOUT_SECTION, Some(&layout));
+    std::fs::write(&wasm, built).unwrap();
+    let (posts, loaded) = hello_hears_status_between_lines(&root.0);
+    assert_eq!(loaded, ["openac.hello"]);
+    assert_eq!(
+        posts,
+        [
+            "hello heard #1: ping hello one",
+            "hello heard #2: ping hello two",
+        ]
     );
 }
 
@@ -655,8 +724,9 @@ fn module_importing(name: &str) -> Vec<u8> {
     custom.extend_from_slice(b"1.0");
     wasm.extend(section(0, &custom));
     // A layout with no imports: the one import here is not the client's.
+    // The core shape is API 1.0's, the version it says it was built for.
     let mut layout = string(LAYOUT_SECTION);
-    layout.extend_from_slice(&LAYOUT_SECTION_BYTES[..8]);
+    layout.extend_from_slice(&core_shape(ApiVersion::new(1, 0)).to_le_bytes());
     wasm.extend(section(0, &layout));
     wasm
 }
@@ -714,7 +784,7 @@ fn every_test_plugin_is_built_with_this_clients_layout() {
     for name in ["hello", "probe", "misbehave", "uidemo", "fetcher"] {
         let path = ac_plugin::fixtures::wasm_directory().join(format!("{name}.wasm"));
         let module = engine.module(&path).unwrap();
-        assert_eq!(check_layout(&module), Ok(()), "{name}");
+        assert_eq!(check_layout(&module, API_CURRENT), Ok(()), "{name}");
     }
 }
 
@@ -812,7 +882,7 @@ fn an_import_this_client_does_not_have_is_named_at_load() {
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.future").unwrap(),
-        "imports openac.teleport_anywhere, which API 1.0 of this client does not have (the plugin was \
+        "imports openac.teleport_anywhere, which API 1.1 of this client does not have (the plugin was \
          built for API 1.0)"
     );
 }
@@ -1814,7 +1884,7 @@ fn a_new_copy_this_client_cannot_run_leaves_the_running_copy_alone() {
             "requires openAC 9.0.0 or newer (this is 0.1.20)",
         ),
         (
-            r#""apiVersion": "1.0""#,
+            r#""apiVersion": "1.1""#,
             r#""apiVersion": "99.0""#,
             "needs plugin API version 99.0",
         ),

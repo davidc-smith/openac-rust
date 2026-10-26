@@ -48,8 +48,9 @@ impl Host<'_> {
     /// [`crate::Callback::ChatFilter`]; answering `CallbackAnswer::Bool(true)`
     /// drops it. Filters are asked in the order they were installed, across
     /// every plugin, and the first that drops a line decides. Status notices
-    /// come as kind [`ac_plugin_abi::types::STATUS_TEXT_KIND`]. Needs the
-    /// `chat` permission.
+    /// come as kind [`ac_plugin_abi::types::STATUS_TEXT_KIND`]; a dropped
+    /// notice is still heard as [`crate::Event::StatusTextReceived`]. Needs
+    /// the `chat` permission.
     pub fn chat_add_filter(&mut self) -> u32 {
         self.call::<calls::ChatAddFilter>(&())
     }

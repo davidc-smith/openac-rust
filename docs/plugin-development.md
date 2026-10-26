@@ -75,7 +75,12 @@ openac_plugin::export_plugin!(Hello);
 The client constructs the plugin with `Default`, calls `enable` (register
 verbs and read settings there; an error refuses the load), then `tick` every
 15 ms of client time and `on_event` for everything that happens, until
-`disable`. It never calls a plugin re-entrantly. Everything the client offers
+`disable`. It never calls a plugin re-entrantly. Match events with a
+catch-all arm: a new API minor version adds event kinds, and the client sends
+a plugin only the kinds of the API version it was built for (API 1.1 added
+`Event::StatusTextReceived`, the text of each notice on the status line, such
+as the server's "already in use" refusal; a chat filter that hides a notice
+does not stop it being heard). Everything the client offers
 goes through `Host`: game state, items, chat, movement and navigation, trade
 and vendors, storage, network, peers, and UI. `cargo doc -p openac-plugin
 --open` shows the whole surface with its documentation.
@@ -115,7 +120,7 @@ Every plugin folder holds a `plugin.json` beside its module:
   "displayName": "Hello",
   "version": "0.1.0",
   "entry": "hello.wasm",
-  "apiVersion": "1.0",
+  "apiVersion": "1.1",
   "minHostVersion": "0.1.0",
   "permissionsVersion": 1,
   "permissions": [
@@ -131,7 +136,7 @@ Every plugin folder holds a `plugin.json` beside its module:
 | `displayName` | The name players see. |
 | `version` | A SemVer 2.0 version (`1.2.0`, `1.3.0-beta.1`). |
 | `entry` | The `.wasm` file, inside the plugin folder. |
-| `apiVersion` | The plugin API version it was built for, `"MAJOR.MINOR"` (currently `"1.0"`). |
+| `apiVersion` | The plugin API version it was built for, `"MAJOR.MINOR"`: the SDK's `API_CURRENT` (currently `"1.1"`), which must match the version the SDK writes into the module. |
 | `minHostVersion`, `maxHostVersion`, `skipHostVersions` | The client versions it supports or is known broken on. `minHostVersion` is required for a launcher install. |
 | `permissionsVersion` | The permission vocabulary version (`1`); required when `permissions` is present. |
 | `permissions` | What it may do beyond the basics, each with a one-sentence `note` (at most 120 characters) the player reads before installing. |

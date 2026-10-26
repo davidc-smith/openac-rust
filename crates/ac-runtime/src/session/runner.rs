@@ -52,7 +52,7 @@ use crate::communication::{
 };
 use crate::gameplay::{CorpseSummary, GameTables, GameplayCommand, GameplayEvent};
 use crate::inventory::{AppraisalView, InventoryView, ItemCommand, TradeView, VendorView};
-use crate::plugins::{LineOrigin, PluginBinding, PluginEvent, PluginLine, plugin_chat_line};
+use crate::plugins::{LineOrigin, PluginBinding, PluginEvent, PluginLine};
 use crate::world::transit::{LogoutStage, PortalSnapshot};
 use crate::world::{ObjectDelta, PlayerView, WorldSnapshot};
 
@@ -468,6 +468,11 @@ pub enum HostEvent {
     Chat(ChatLine),
     /// Client-local status text (a window shows it in its overlay).
     InterfaceText(String),
+    /// A notice took the status path, in order with the chat lines, shown
+    /// ([`Self::InterfaceText`] follows) or hidden by a plugin's chat
+    /// filter: what the plugins hear as a status notice. A window has
+    /// nothing to do with it.
+    StatusNotice(String),
     /// The quest tracker (the reply to [`SessionCommand::ListContracts`]).
     Contracts(Vec<ContractSummary>),
     /// The journal (the reply to [`SessionCommand::ShowJournal`]).
@@ -2080,19 +2085,16 @@ impl Drive<'_> {
                 }
             }
         }
-        // Plugins hear every chat line, and what else the host events
-        // carry (a death, the server's question, a portal), with their next
-        // events.
+        // Plugins hear every chat line and status notice, in order, and
+        // what else the host events carry (a death, the server's question,
+        // a portal), with their next events.
         // A line they heard right after the call that wrote it is not
         // handed out again.
         if let Some(plugins) = self.plugins.as_deref_mut() {
             if !self.plugin_feed_closed {
-                for event in &host_events {
-                    if let HostEvent::Chat(line) = event
-                        && !self.state.plugin_services.chat.heard_early(line.sequence)
-                    {
-                        plugins.queue_chat(plugin_chat_line(line));
-                    }
+                let watch = &self.state.plugin_services.chat;
+                for event in crate::plugins::chat::published_chat(watch, &host_events) {
+                    plugins.queue_event(event);
                 }
                 for event in crate::plugins::events::host_events(self.state, &host_events) {
                     plugins.queue_event(event);
