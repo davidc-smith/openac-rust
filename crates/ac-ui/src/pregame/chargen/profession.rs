@@ -41,6 +41,10 @@ pub const SLIDER_NAME_ID: u32 = 0x1000_02ED;
 pub const SLIDER_CONTROL_ID: u32 = 0x1000_02EE;
 /// In a slider block: the typed value.
 pub const SLIDER_VALUE_ID: u32 = 0x1000_02EF;
+/// The lock's and the slider's state while the attribute is free.
+pub const UNLOCKED_STATE: u32 = 0x1000_0018;
+/// Their state while it is locked.
+pub const LOCKED_STATE: u32 = 0x1000_0019;
 /// Points left.
 pub const AVAILABLE_ID: u32 = 0x1000_03E2;
 /// Health.
@@ -234,9 +238,15 @@ impl ProfessionPage {
             if let Some(v) = slider.value.and_then(|v| ui.widget_mut::<Field>(v)) {
                 v.set_text(&value.to_string());
             }
-            if let Some(lock) = slider.lock {
-                let locked = is_locked(s.attribute_lock_mask, slider.attribute);
-                ui.with::<Button, _>(lock, |w, ui| w.set_selected(ui, lock, locked));
+            // The lock and its slider show the authored Locked/Unlocked art;
+            // the lock is a toggle with no Normal/Highlight pair.
+            let state = if is_locked(s.attribute_lock_mask, slider.attribute) {
+                LOCKED_STATE
+            } else {
+                UNLOCKED_STATE
+            };
+            for e in [slider.lock, slider.slider].into_iter().flatten() {
+                ui.set_retail_state(e, state);
             }
         }
         let endurance = s.attributes.endurance;

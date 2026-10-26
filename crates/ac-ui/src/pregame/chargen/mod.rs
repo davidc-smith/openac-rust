@@ -320,6 +320,8 @@ impl CreationScreen {
         let profession = ProfessionPage::bind(ui, pages[1]);
         let skills = SkillsPage::bind(ui, pages[2]);
         let appearance = AppearancePage::bind(ui, pages[3]);
+        // The preview starts framed as the page opens.
+        let initial_zoom = appearance.zoom_request();
         let town = TownPage::bind(ui, pages[4]);
         let summary = SummaryPage::bind(ui, pages[5]);
         let screen = ui.root();
@@ -358,7 +360,7 @@ impl CreationScreen {
             finish_sent: None,
             roll_sent: None,
             random_source: Box::new(SeededRandom::from_clock()),
-            preview_requests: Vec::new(),
+            preview_requests: vec![initial_zoom],
             swatch_sources: None,
             swatch_textures: None,
         })
@@ -845,7 +847,12 @@ impl CreationScreen {
             Page::Profession => ProfessionPage::randomize(&ctx, &mut draw)
                 .into_iter()
                 .collect(),
-            Page::Appearance => vec![self.appearance.randomize()],
+            Page::Appearance => {
+                let command = self.appearance.randomize();
+                let zoom = self.appearance.on_page_update(ui, snapshot.heritage_id);
+                self.preview_requests.extend(zoom);
+                vec![command]
+            }
             Page::Town => TownPage::randomize(&ctx, &mut draw).into_iter().collect(),
             Page::Summary => {
                 if self.randomize_dialog == 0 {
@@ -910,6 +917,10 @@ impl CreationScreen {
         );
         let i = self.current.index();
         ui.set_visible(self.pages[i], true);
+        if self.current == Page::Appearance {
+            let zoom = self.appearance.on_page_update(ui, heritage);
+            self.preview_requests.extend(zoom);
+        }
         let tab = self.tabs[i];
         ui.with::<Button, _>(tab, |b, ui| b.set_selected(ui, tab, true));
         if self.current == Page::Summary {

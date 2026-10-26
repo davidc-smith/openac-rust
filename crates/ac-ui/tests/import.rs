@@ -16,6 +16,7 @@ use ac_dat::objects::{
     PropertyValue, StateDesc, StringInfo,
 };
 use ac_ui::element_info::{ElementInfo, ImageMedia, StateInfo};
+use ac_ui::event::{UiEvent, kind};
 use ac_ui::import::{
     BuildContext, ImportedLayout, LayoutSource, build, create, import, import_infos,
     import_infos_rooted, should_mount_base_children,
@@ -23,7 +24,7 @@ use ac_ui::import::{
 use ac_ui::root::UiRoot;
 use ac_ui::states;
 use ac_ui::text::HJustify;
-use ac_ui::widgets::{DatElement, Text};
+use ac_ui::widgets::{Button, DatElement, Text};
 use common::*;
 
 #[derive(Debug, Default)]
@@ -568,4 +569,80 @@ fn authored_text_and_font_colour_come_through_the_factory() {
     let text = ui.widget::<Text>(t.root).unwrap();
     assert_eq!(text.content_lines()[0].text, "Hello");
     assert_eq!(ui.element(t.root).unwrap().source_layout_did, 1);
+}
+
+/// A captioned spin whose arrows share its Normal state name: the arrows
+/// are buttons of their own, with their own rollover and hit area. Ported
+/// from OpenAC `LayoutImporterTests`
+/// `ButtonChildThatIsItselfAButton_IsBuiltAsItsOwnControl_NotFoldedIntoTheParentFace`.
+#[test]
+fn a_button_child_that_is_a_button_is_its_own_control_not_part_of_the_face() {
+    fn arrow(id: u32, x: f32) -> ElementInfo {
+        let mut a = info(id, 1, x, 0.0, 47.0, 44.0);
+        for (name, file) in [
+            ("Normal", 0x0600_4C92),
+            ("Normal_rollover", 0x0600_4C93),
+            ("Ghosted", 0x0600_5F13),
+        ] {
+            a.state_media
+                .insert(name.to_owned(), ImageMedia { file, draw_mode: 3 });
+        }
+        a.default_state_name = "Normal".to_owned();
+        let mut direct = StateInfo::named(DIRECT_STATE_ID, "");
+        direct.properties.set_value(0x13, PropertyValue::Bool(true));
+        a.set_state(DIRECT_STATE_ID, direct);
+        a
+    }
+    let mut spin = info(0x10, 1, 0.0, 0.0, 175.0, 44.0);
+    spin.default_state_name = "Normal".to_owned();
+    spin.set_state(states::NORMAL, StateInfo::named(states::NORMAL, "Normal"));
+    spin.set_state(
+        states::HIGHLIGHT,
+        StateInfo::named(states::HIGHLIGHT, "Highlight"),
+    );
+    let mut direct = StateInfo::named(DIRECT_STATE_ID, "");
+    direct.properties.set_value(0x0B, PropertyValue::Bool(true));
+    spin.set_state(DIRECT_STATE_ID, direct);
+    spin.tooltip_enabled = true;
+    spin.children = vec![arrow(0x11, 80.0), arrow(0x12, 127.0)];
+
+    let src = Source::default();
+    let (mut ui, t) = build_from(info(1, 3, 0.0, 0.0, 300.0, 100.0), vec![spin], &src);
+
+    let spin = t.find(0x10).unwrap();
+    assert_eq!(ui.widget::<Button>(spin).unwrap().face_segment_count(), 0);
+    let decrement = ui
+        .find_descendant(spin, 0x11)
+        .expect("decrement arrow built");
+    let increment = ui
+        .find_descendant(spin, 0x12)
+        .expect("increment arrow built");
+    assert!(ui.widget::<Button>(increment).is_some());
+    assert_eq!(ui.parent(increment), Some(spin));
+
+    // The spin's own state does not reach its arrows' art.
+    assert!(ui.set_retail_state(spin, states::HIGHLIGHT));
+    assert_eq!(
+        ui.widget::<Button>(increment).unwrap().active_state(),
+        "Normal"
+    );
+
+    // Each arrow rolls over on its own.
+    let hover = UiEvent::new(0, increment, kind::HOVER_ENTER);
+    ui.send_event(increment, &hover);
+    assert_eq!(
+        ui.widget::<Button>(increment).unwrap().active_state(),
+        "Normal_rollover"
+    );
+    assert_eq!(
+        ui.widget::<Button>(decrement).unwrap().active_state(),
+        "Normal"
+    );
+
+    // The pointer over an arrow is over the arrow, which authors no
+    // tooltip; the spin keeps its own for the rest of its area.
+    assert_eq!(ui.pick(150, 20), Some(increment));
+    assert_eq!(ui.pick(20, 20), Some(spin));
+    assert!(!ui.element(increment).unwrap().authored.tooltip_enabled);
+    assert!(ui.element(spin).unwrap().authored.tooltip_enabled);
 }

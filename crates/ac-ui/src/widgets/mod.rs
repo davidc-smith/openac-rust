@@ -62,6 +62,8 @@ pub enum ChildImport {
     NonContainers,
     /// Only children with images (decoration around text).
     MediaBearing,
+    /// Only children that are buttons (a button draws the rest itself).
+    Buttons,
 }
 
 /// The vitals window root: a press anywhere but its move strip or resize

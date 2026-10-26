@@ -1212,7 +1212,27 @@ fn the_heritage_profession_and_town_pages_drive_the_owner() {
             true
         )]
     );
-    assert!(w.selected(lock));
+    // OpenAC `ProfessionLock_Click_ShowsLockedArtOnTheLockAndTheSlider_AndClickAgainUnlocks`,
+    // `CharacterCreationLiveDatTests.ProfessionAttributeLock_AndItsSlider_ShowTheAuthoredLockedArt`:
+    // the lock and its slider show their authored Locked art.
+    const UNLOCKED: u32 = 0x1000_0018;
+    const LOCKED: u32 = 0x1000_0019;
+    let track = |w: &Wizard| {
+        w.h.ui
+            .widget::<ac_ui::widgets::Scrollbar>(slider)
+            .map(|s| s.track_sprite)
+    };
+    assert_eq!(w.h.ui.retail_state(lock), Some(LOCKED));
+    assert_eq!(track(&w), Some(0x0600_4D3A));
+    assert_eq!(
+        w.click(lock),
+        [CreationCommand::SetAttributeLock(
+            ChargenAttribute::Strength,
+            false
+        )]
+    );
+    assert_eq!(w.h.ui.retail_state(lock), Some(UNLOCKED));
+    assert_eq!(track(&w), Some(0x0600_4D39));
 
     w.click(w.shell(chargen::TAB_IDS[4]));
     let yaraq = w
@@ -1311,8 +1331,8 @@ fn the_skills_page_lists_groups_and_trains_through_the_arrows() {
 #[ignore = "needs the retail dat files"]
 fn the_appearance_page_spins_paints_and_shades() {
     // OpenAC `CharacterCreationUiControllerTests.AppearanceGenderButton_SelectsGender`,
-    // `AppearanceSpin_IncrementZoneClick_CyclesStyleForwardFromUnset`,
-    // `AppearanceSpin_SelectZoneClick_SelectsPartWithoutChangingIndex`,
+    // `AppearanceSpin_IncrementArrowClick_CyclesStyleForwardFromUnset`,
+    // `AppearanceSpin_BodyClick_SelectsPartWithoutChangingIndex`,
     // `AppearanceSkinSpin_Click_NeverCallsSetAppearanceIndex`,
     // `AppearanceSwatch_WithinColorCount_SetsColorForTheCurrentPart`,
     // `AppearanceSwatchOverlays_ExactlyOneVisible_TrackingTheCurrentPartsColorIndex`,
@@ -1342,7 +1362,11 @@ fn the_appearance_page_spins_paints_and_shades() {
     let hair = page.spin(Part::Hair).unwrap();
     assert_eq!(w.h.ui.element(hair).map(|e| e.width), Some(200.0));
     let current = w.owner.snapshot().appearance.hair_style;
-    let ran = w.message(hair, ElementMessage::Clicked { x: 130, y: 10 });
+    let up =
+        w.h.ui
+            .find_descendant(hair, appearance::INCREMENT_ARROW_ID)
+            .expect("the hair spin's step-forward arrow");
+    let ran = w.click(up);
     assert!(
         matches!(ran.as_slice(), [CreationCommand::SetAppearance(AppearanceSlot::HairStyle, n)] if *n != current),
         "{ran:?}"
@@ -1399,6 +1423,257 @@ fn the_appearance_page_spins_paints_and_shades() {
     assert_eq!(preview.heritage, ALUVIAN);
     assert_eq!(preview.viewport, page.viewport().unwrap());
     assert!(!preview.summary, "the appearance page's preview");
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_spin_arrows_are_buttons_of_their_own() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearanceSpinArrows_AreTheirOwnButtons_SkinsAlwaysGhosted`,
+    // `AppearanceEyesArrows_GhostedForOlthoi_EnabledAgainForAluvian`,
+    // `CharacterCreationLiveDatTests.
+    // AppearanceSpins_ArrowsAreTheirOwnButtons_ThatRollOverAndKeepTheirArtWhenTheSpinHighlights`.
+    use ac_runtime::session::creation::AppearanceSlot;
+    use ac_ui::pregame::chargen::appearance::{self, Part};
+    let mut w = Wizard::new();
+    w.open();
+    let heritage = |w: &Wizard, id: u32| {
+        w.screen()
+            .heritage_page()
+            .buttons()
+            .iter()
+            .find(|b| b.2 == id)
+            .map(|b| b.0)
+            .unwrap()
+    };
+    w.click(heritage(&w, ALUVIAN));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let page = w.screen().appearance_page().clone();
+    let arrows = |w: &Wizard, part: Part| {
+        let spin = page.spin(part).unwrap();
+        (
+            w.h.ui
+                .find_descendant(spin, appearance::DECREMENT_ARROW_ID)
+                .expect("a step-back arrow"),
+            w.h.ui
+                .find_descendant(spin, appearance::INCREMENT_ARROW_ID)
+                .expect("a step-forward arrow"),
+        )
+    };
+    let enabled = |w: &Wizard, e: ElementId| w.h.ui.element(e).unwrap().enabled();
+    let hair = page.spin(Part::Hair).unwrap();
+    assert_eq!(
+        w.h.ui.widget::<Button>(hair).unwrap().face_segment_count(),
+        0
+    );
+    let (down, up) = arrows(&w, Part::Hair);
+    assert!(w.h.ui.widget::<Button>(up).is_some());
+
+    // The current part's spin is highlighted; its arrows keep their art.
+    assert_eq!(w.h.ui.retail_state(hair), Some(ac_ui::states::HIGHLIGHT));
+    for arrow in [down, up] {
+        assert_eq!(
+            w.h.ui.widget::<Button>(arrow).unwrap().active_state(),
+            "Normal"
+        );
+    }
+
+    // An arrow rolls over on its own and carries no hint; the spin does.
+    let hover = ac_ui::event::UiEvent::new(0, up, kind::HOVER_ENTER);
+    w.h.ui.send_event(up, &hover);
+    assert_eq!(
+        w.h.ui.widget::<Button>(up).unwrap().active_state(),
+        "Normal_rollover"
+    );
+    assert!(w.h.ui.element(hair).unwrap().authored.tooltip_enabled);
+    assert!(!w.h.ui.element(up).unwrap().authored.tooltip_enabled);
+
+    // The arrows step the style.
+    let current = w.owner.snapshot().appearance.hair_style;
+    let ran = w.click(down);
+    assert!(
+        matches!(ran.as_slice(), [CreationCommand::SetAppearance(AppearanceSlot::HairStyle, n)] if *n != current),
+        "{ran:?}"
+    );
+
+    // Skin has no styles: its arrows stay ghosted.
+    let (skin_down, skin_up) = arrows(&w, Part::Skin);
+    assert!(!enabled(&w, skin_down) && !enabled(&w, skin_up));
+    let (eyes_down, eyes_up) = arrows(&w, Part::Eyes);
+    assert!(enabled(&w, eyes_down) && enabled(&w, eyes_up));
+
+    // The Olthoi have no eye styles: those arrows ghost, and come back.
+    w.click(w.shell(chargen::TAB_IDS[0]));
+    w.click(heritage(&w, OLTHOI));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert!(!enabled(&w, eyes_down) && !enabled(&w, eyes_up));
+    w.click(w.shell(chargen::TAB_IDS[0]));
+    w.click(heritage(&w, ALUVIAN));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert!(enabled(&w, eyes_down) && enabled(&w, eyes_up));
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_appearance_page_opens_zoomed_in_and_the_choices_zoom() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearancePage_OpensOnTheFaceChoiceZoomedIn_SoZoomOutWorksAtOnce`,
+    // `AppearanceChoice_ClothesZoomsOut_FaceZoomsBackIn`.
+    use ac_ui::pregame::chargen::appearance::{self, PreviewRequest};
+    use ac_ui::states::{HIGHLIGHT, NORMAL};
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let root = w.screen().page_root(Page::Appearance);
+    let find = |w: &Wizard, id| w.h.ui.find_descendant(root, id).unwrap();
+    let (zoom_in, zoom_out) = (
+        find(&w, appearance::ZOOM_IN_ID),
+        find(&w, appearance::ZOOM_OUT_ID),
+    );
+    let lit = |w: &Wizard| (w.h.ui.retail_state(zoom_in), w.h.ui.retail_state(zoom_out));
+    let requests = |w: &mut Wizard| w.h.screens.creation_mut().unwrap().take_preview_requests();
+
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+
+    w.click(zoom_out);
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomOut]);
+    // The button already lit only lights again.
+    w.click(zoom_out);
+    assert!(requests(&mut w).is_empty());
+
+    w.click(find(&w, appearance::FACE_ID));
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+    w.click(find(&w, appearance::CLOTHES_ID));
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomOut]);
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn an_eyes_arrow_keeps_its_rollover_when_its_click_refreshes_the_page() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearanceEyesArrow_KeepsItsRollover_WhenItsClickRefreshesThePage`.
+    use ac_runtime::session::creation::AppearanceSlot;
+    use ac_ui::pregame::chargen::appearance::{self, Part};
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let eyes = w.screen().appearance_page().spin(Part::Eyes).unwrap();
+    let up =
+        w.h.ui
+            .find_descendant(eyes, appearance::INCREMENT_ARROW_ID)
+            .unwrap();
+    let hover = ac_ui::event::UiEvent::new(0, up, kind::HOVER_ENTER);
+    w.h.ui.send_event(up, &hover);
+    let state = |w: &Wizard| {
+        w.h.ui
+            .widget::<Button>(up)
+            .unwrap()
+            .active_state()
+            .to_owned()
+    };
+    assert_eq!(state(&w), "Normal_rollover");
+    let ran = w.click(up);
+    assert!(
+        matches!(
+            ran.as_slice(),
+            [CreationCommand::SetAppearance(AppearanceSlot::EyesStrip, _)]
+        ),
+        "{ran:?}"
+    );
+    assert_eq!(state(&w), "Normal_rollover");
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn heritages_without_clothes_zoom_back_in_where_the_page_updates() {
+    // OpenAC `CharacterCreationUiControllerTests.
+    // AppearancePage_OlthoiReZoomsIn_WhereThePageUpdates_GenderRandomAndShown`,
+    // `AppearancePage_AluvianGenderPick_LeavesTheZoomAlone`.
+    use ac_ui::pregame::chargen::appearance::{self, Part, PreviewRequest};
+    use ac_ui::states::{HIGHLIGHT, NORMAL};
+    let mut w = Wizard::new();
+    w.open();
+    let heritage = |w: &Wizard, id: u32| {
+        w.screen()
+            .heritage_page()
+            .buttons()
+            .iter()
+            .find(|b| b.2 == id)
+            .map(|b| b.0)
+            .unwrap()
+    };
+    let root = w.screen().page_root(Page::Appearance);
+    let find = |w: &Wizard, id| w.h.ui.find_descendant(root, id).unwrap();
+    let (zoom_in, zoom_out, female) = (
+        find(&w, appearance::ZOOM_IN_ID),
+        find(&w, appearance::ZOOM_OUT_ID),
+        find(&w, appearance::FEMALE_ID),
+    );
+    let lit = |w: &Wizard| (w.h.ui.retail_state(zoom_in), w.h.ui.retail_state(zoom_out));
+    let requests = |w: &mut Wizard| w.h.screens.creation_mut().unwrap().take_preview_requests();
+
+    // An Aluvian gender pick leaves the zoom alone.
+    w.click(heritage(&w, ALUVIAN));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(female);
+    assert!(requests(&mut w).is_empty());
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
+
+    // The page shown again for an Olthoi: back on the face, zoomed in.
+    w.click(w.shell(chargen::TAB_IDS[0]));
+    w.click(heritage(&w, OLTHOI));
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+
+    // A gender pick.
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(female);
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+    assert_eq!(lit(&w), (Some(HIGHLIGHT), Some(NORMAL)));
+
+    // Random on this page.
+    w.click(zoom_out);
+    requests(&mut w);
+    w.click(w.shell(chargen::RANDOM_ID));
+    assert_eq!(requests(&mut w), [PreviewRequest::ZoomIn]);
+
+    // A plain change of the character is not one of those.
+    w.click(zoom_out);
+    requests(&mut w);
+    let hair = w.screen().appearance_page().spin(Part::Hair).unwrap();
+    let up =
+        w.h.ui
+            .find_descendant(hair, appearance::INCREMENT_ARROW_ID)
+            .unwrap();
+    w.click(up);
+    assert!(requests(&mut w).is_empty());
+    assert_eq!(lit(&w), (Some(NORMAL), Some(HIGHLIGHT)));
 }
 
 #[test]

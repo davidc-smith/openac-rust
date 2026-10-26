@@ -720,13 +720,15 @@ fn per_state_bools(info: &ElementInfo, id: u32) -> Option<Vec<(u32, bool)>> {
 }
 
 /// Children whose images belong to states the parent has: a button face
-/// drawn by its child.
+/// drawn by its child. A child that is itself a button is not one (see
+/// [`is_child_button`]).
 fn stateful_face_children(info: &ElementInfo) -> Vec<Arc<ElementInfo>> {
     let mut faces: Vec<&ElementInfo> = info
         .children
         .iter()
         .filter(|c| {
-            !c.state_media.is_empty()
+            !is_child_button(c)
+                && !c.state_media.is_empty()
                 && c.state_media
                     .keys()
                     .any(|k| info.states.iter().any(|(_, s)| s.name == *k))
@@ -734,6 +736,14 @@ fn stateful_face_children(info: &ElementInfo) -> Vec<Arc<ElementInfo>> {
         .collect();
     faces.sort_by_key(|c| c.read_order);
     faces.into_iter().map(|c| Arc::new(c.clone())).collect()
+}
+
+/// A button's child that is itself a button (a spin's arrows) is a control
+/// of its own, with its own states, rollover and hit area: it is built
+/// under the button and never drawn as part of the button's face.
+#[must_use]
+pub fn is_child_button(child: &ElementInfo) -> bool {
+    child.kind == class::BUTTON
 }
 
 fn reflow_value_child_rect(child: &ElementInfo, parent: &ElementInfo) -> (f32, f32, f32, f32) {
@@ -917,6 +927,17 @@ pub fn default_image(info: &ElementInfo) -> u32 {
         .and_then(|s| s.image)
         .or_else(|| info.state(DIRECT_STATE_ID).and_then(|s| s.image))
         .map_or(0, |m| m.file)
+}
+
+/// The image each named state authors; empty when fewer than two do.
+fn state_images(info: &ElementInfo) -> Vec<(u32, u32)> {
+    let images: Vec<(u32, u32)> = info
+        .states
+        .iter()
+        .filter(|(id, _)| *id != DIRECT_STATE_ID)
+        .filter_map(|(id, s)| s.image.map(|m| (*id, m.file)))
+        .collect();
+    if images.len() > 1 { images } else { Vec::new() }
 }
 
 /// The image of the state named `name` (Normal falls back to the default
@@ -1142,12 +1163,11 @@ fn build_scrollbar(info: &ElementInfo) -> Scrollbar {
         if let Some(t) = scalar_thumb {
             apply_thumb_slices(&mut bar, &slices_by(&t.children, true));
         }
-        if bar.track_sprite == 0 {
-            bar.track_sprite = info
-                .children
-                .iter()
-                .find(|c| c.id == 4)
-                .map_or(0, default_image);
+        if bar.track_sprite == 0
+            && let Some(track) = info.children.iter().find(|c| c.id == 4)
+        {
+            bar.track_sprite = default_image(track);
+            bar.track_sprites_by_state = state_images(track);
         }
         let meter = info.children.iter().find(|c| c.kind == class::METER);
         let fill = meter.and_then(|m| {
@@ -1399,6 +1419,7 @@ fn build_widget(
             ChildImport::None => false,
             ChildImport::NonContainers => child.kind != class::CONTAINER,
             ChildImport::MediaBearing => !child.state_media.is_empty(),
+            ChildImport::Buttons => is_child_button(child),
         };
         if wanted {
             let c = build_widget(ui, child, ctx, by_id);

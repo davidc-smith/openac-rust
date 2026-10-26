@@ -1,6 +1,6 @@
 //! The wizard's appearance page: gender, the face and clothes choices,
-//! one spin per part (its left zone steps back, its middle zone forward,
-//! the rest picks the part), the colour swatches and the shade slider of
+//! one spin per part (its two arrows step its style, the spin itself
+//! picks the part), the colour swatches and the shade slider of
 //! the picked part, the gradient disc, and the 3-D preview's rotate and
 //! zoom buttons.
 
@@ -75,12 +75,10 @@ pub const SWATCH_OVERLAY_IDS: [u32; 9] = [
     0x1000_031F,
     0x1000_0320,
 ];
-/// Where a spin's step-back zone starts, pixels from its left.
-pub const DECREMENT_ZONE_START: i32 = 80;
-/// Where its step-forward zone starts.
-pub const INCREMENT_ZONE_START: i32 = 127;
-/// Where that zone ends.
-pub const INCREMENT_ZONE_END: i32 = 174;
+/// A spin's step-back arrow, the same id under every spin.
+pub const DECREMENT_ARROW_ID: u32 = 0x1000_030A;
+/// A spin's step-forward arrow.
+pub const INCREMENT_ARROW_ID: u32 = 0x1000_030B;
 
 /// A part a spin picks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -413,6 +411,8 @@ pub struct AppearancePage {
     face_choices: Option<ElementId>,
     clothes_choices: Option<ElementId>,
     spins: Vec<(ElementId, Part)>,
+    /// Each spin's arrows: the part and the step each takes.
+    arrows: Vec<(ElementId, Part, i32)>,
     swatches: [Option<ElementId>; 9],
     overlays: [Option<ElementId>; 9],
     shade: Option<ElementId>,
@@ -424,7 +424,7 @@ pub struct AppearancePage {
     viewport: Option<ElementId>,
     choice: Choice,
     part: Part,
-    eyes_arrows_disabled: bool,
+    zoomed_in: bool,
 }
 
 impl AppearancePage {
@@ -440,9 +440,23 @@ impl AppearancePage {
             Some(b)
         };
         let mut spins = Vec::new();
+        let mut arrows = Vec::new();
         for (id, part) in SPINS {
-            if let Some(b) = button(ui, id) {
-                spins.push((b, part));
+            let Some(b) = button(ui, id) else {
+                continue;
+            };
+            spins.push((b, part));
+            // The arrows are buttons of their own inside the spin.
+            for (arrow_id, step) in [(DECREMENT_ARROW_ID, -1), (INCREMENT_ARROW_ID, 1)] {
+                let arrow = ui
+                    .find_descendant(b, arrow_id)
+                    .filter(|a| ui.widget::<Button>(*a).is_some());
+                if let Some(a) = arrow {
+                    if let Some(w) = ui.widget_mut::<Button>(a) {
+                        w.listeners.click = true;
+                    }
+                    arrows.push((a, part, step));
+                }
             }
         }
         let mut swatches = [None; 9];
@@ -466,7 +480,7 @@ impl AppearancePage {
                 s.model = ScrollSource::Element(h);
             }
         }
-        let page = Self {
+        let mut page = Self {
             female: button(ui, FEMALE_ID),
             male: button(ui, MALE_ID),
             face: button(ui, FACE_ID),
@@ -474,6 +488,7 @@ impl AppearancePage {
             face_choices: ui.find_descendant(root, FACE_CHOICES_ID),
             clothes_choices: ui.find_descendant(root, CLOTHES_CHOICES_ID),
             spins,
+            arrows,
             swatches,
             overlays,
             shade: ui
@@ -489,10 +504,82 @@ impl AppearancePage {
             viewport: ui.find_descendant(root, VIEWPORT_ID),
             choice: Choice::Face,
             part: Part::Hair,
-            eyes_arrows_disabled: false,
+            zoomed_in: false,
         };
+        // Skin has no styles to step through: its arrows stay ghosted.
+        page.set_arrows_enabled(ui, Part::Skin, false);
+        // The page opens on the face choice, which frames the figure close
+        // up; the screen hands the preview that zoom (`zoom_request`).
         page.apply_choice_visibility(ui);
+        page.zoom_in(ui);
         page
+    }
+
+    /// The zoom the preview should show: the page's own.
+    #[must_use]
+    pub fn zoom_request(&self) -> PreviewRequest {
+        if self.zoomed_in {
+            PreviewRequest::ZoomIn
+        } else {
+            PreviewRequest::ZoomOut
+        }
+    }
+
+    /// A spin's arrows: step back, step forward.
+    #[must_use]
+    pub fn arrows(&self, part: Part) -> Vec<(ElementId, i32)> {
+        self.arrows
+            .iter()
+            .filter(|(_, p, _)| *p == part)
+            .map(|(a, _, step)| (*a, *step))
+            .collect()
+    }
+
+    fn set_arrows_enabled(&self, ui: &mut UiRoot, part: Part, enabled: bool) {
+        let state = if enabled {
+            states::NORMAL
+        } else {
+            states::GHOSTED
+        };
+        for &(arrow, p, _) in &self.arrows {
+            // Only a flip changes the arrow; otherwise it keeps the state it
+            // worked out itself (its rollover under the pointer).
+            let flips = ui.element(arrow).is_some_and(|e| e.enabled() != enabled);
+            if p == part && flips {
+                ui.set_retail_state(arrow, state);
+            }
+        }
+    }
+
+    /// Zoom in: light Zoom In; the preview is asked only when the zoom
+    /// changes (a press of the button already lit only lights it again).
+    fn zoom_in(&mut self, ui: &mut UiRoot) -> Option<PreviewRequest> {
+        if let Some(b) = self.zoom_in {
+            ui.set_retail_state(b, states::HIGHLIGHT);
+        }
+        if self.zoomed_in {
+            return None;
+        }
+        self.zoomed_in = true;
+        if let Some(b) = self.zoom_out {
+            ui.set_retail_state(b, states::NORMAL);
+        }
+        Some(PreviewRequest::ZoomIn)
+    }
+
+    /// Zoom out, the mirror of [`Self::zoom_in`].
+    fn zoom_out(&mut self, ui: &mut UiRoot) -> Option<PreviewRequest> {
+        if let Some(b) = self.zoom_out {
+            ui.set_retail_state(b, states::HIGHLIGHT);
+        }
+        if !self.zoomed_in {
+            return None;
+        }
+        self.zoomed_in = false;
+        if let Some(b) = self.zoom_in {
+            ui.set_retail_state(b, states::NORMAL);
+        }
+        Some(PreviewRequest::ZoomOut)
     }
 
     /// The part picked.
@@ -555,7 +642,7 @@ impl AppearancePage {
                 ui.set_visible(spin, !hidden);
             }
         }
-        self.eyes_arrows_disabled = hidden;
+        self.set_arrows_enabled(ui, Part::Eyes, !hidden);
         if hidden {
             self.choice = Choice::Face;
             self.part = Part::Hair;
@@ -583,6 +670,20 @@ impl AppearancePage {
             }
         }
         self.refresh_colors(ui, ctx, sources, textures);
+    }
+
+    /// Runs where the original refreshes the whole page: the page shown, a
+    /// gender pick and a randomize, not every change of the character. A
+    /// heritage without clothes is put back on the face choice there, which
+    /// zooms the preview in: the request it makes.
+    pub fn on_page_update(&mut self, ui: &mut UiRoot, heritage_id: u32) -> Option<PreviewRequest> {
+        if !clothes_hidden(heritage_id) {
+            return None;
+        }
+        self.choice = Choice::Face;
+        self.part = Part::Hair;
+        self.apply_choice_visibility(ui);
+        self.zoom_in(ui)
     }
 
     /// The swatches, marks, disc and shade slider for the picked part.
@@ -707,15 +808,14 @@ impl AppearancePage {
                 .collect();
             return Some((commands, None));
         }
-        let ElementMessage::Clicked { x, .. } = message else {
+        let ElementMessage::Clicked { .. } = message else {
             return None;
         };
-        let x = *x;
-        if Some(element) == self.female {
-            return Some((vec![CreationCommand::SelectGender(2)], None));
-        }
-        if Some(element) == self.male {
-            return Some((vec![CreationCommand::SelectGender(1)], None));
+        for (button, gender) in [(self.female, 2), (self.male, 1)] {
+            if Some(element) == button {
+                let zoom = self.on_page_update(ui, ctx.snapshot.heritage_id);
+                return Some((vec![CreationCommand::SelectGender(gender)], zoom));
+            }
         }
         if Some(element) == self.face || Some(element) == self.clothes {
             self.choice = if Some(element) == self.face {
@@ -729,10 +829,20 @@ impl AppearancePage {
                 Part::Headgear
             };
             self.apply_choice_visibility(ui);
-            return Some((Vec::new(), None));
+            // The face choice frames the figure close up, the clothes
+            // choice pulls back to show it whole.
+            let zoom = if self.choice == Choice::Face {
+                self.zoom_in(ui)
+            } else {
+                self.zoom_out(ui)
+            };
+            return Some((Vec::new(), zoom));
+        }
+        if let Some(&(_, part, step)) = self.arrows.iter().find(|(a, _, _)| *a == element) {
+            return Some((self.step_style(part, step, ctx), None));
         }
         if let Some(&(_, part)) = self.spins.iter().find(|(b, _)| *b == element) {
-            return Some((self.spin_clicked(part, x, ctx), None));
+            return Some((self.select_part(part, ctx), None));
         }
         if let Some(i) = self.swatches.iter().position(|s| *s == Some(element)) {
             let command = color_slot(self.part).and_then(|slot| {
@@ -743,47 +853,21 @@ impl AppearancePage {
             return Some((command.into_iter().collect(), None));
         }
         let preview = if Some(element) == self.rotate_clockwise {
-            PreviewRequest::RotateClockwise
+            Some(PreviewRequest::RotateClockwise)
         } else if Some(element) == self.rotate_counter_clockwise {
-            PreviewRequest::RotateCounterClockwise
-        } else if Some(element) == self.zoom_in || Some(element) == self.zoom_out {
-            let zoom_in = Some(element) == self.zoom_in;
-            let (on, off) = if zoom_in {
-                (self.zoom_in, self.zoom_out)
-            } else {
-                (self.zoom_out, self.zoom_in)
-            };
-            if let Some(b) = on {
-                ui.set_retail_state(b, states::HIGHLIGHT);
-            }
-            if let Some(b) = off {
-                ui.set_retail_state(b, states::NORMAL);
-            }
-            if zoom_in {
-                PreviewRequest::ZoomIn
-            } else {
-                PreviewRequest::ZoomOut
-            }
+            Some(PreviewRequest::RotateCounterClockwise)
+        } else if Some(element) == self.zoom_in {
+            self.zoom_in(ui)
+        } else if Some(element) == self.zoom_out {
+            self.zoom_out(ui)
         } else {
             return None;
         };
-        Some((Vec::new(), Some(preview)))
+        Some((Vec::new(), preview))
     }
 
-    fn spin_clicked(&mut self, part: Part, x: i32, ctx: &PageContext<'_>) -> Vec<CreationCommand> {
-        if part == Part::Skin {
-            return self.select_part(part, ctx);
-        }
-        let zone = if (DECREMENT_ZONE_START..INCREMENT_ZONE_START).contains(&x) {
-            -1
-        } else if (INCREMENT_ZONE_START..INCREMENT_ZONE_END).contains(&x) {
-            1
-        } else {
-            0
-        };
-        if zone == 0 || (part == Part::Eyes && self.eyes_arrows_disabled) {
-            return self.select_part(part, ctx);
-        }
+    /// A spin's arrow: step `part`'s style by `step`, then pick the part.
+    fn step_style(&mut self, part: Part, step: i32, ctx: &PageContext<'_>) -> Vec<CreationCommand> {
         let Some(g) = gender(ctx) else {
             return Vec::new();
         };
@@ -791,7 +875,7 @@ impl AppearancePage {
             return self.select_part(part, ctx);
         };
         let current = ctx.snapshot.appearance.get(slot);
-        let next = cycle_index(current, zone, style_count(part, g), part == Part::Headgear);
+        let next = cycle_index(current, step, style_count(part, g), part == Part::Headgear);
         // The spin then picks its part (its index is set already).
         self.part = part;
         vec![CreationCommand::SetAppearance(slot, next)]

@@ -810,6 +810,10 @@ impl Widget for Button {
         true
     }
 
+    fn child_import(&self) -> crate::widgets::ChildImport {
+        crate::widgets::ChildImport::Buttons
+    }
+
     fn tooltip_text(&self, _element: &Element) -> Option<String> {
         self.tooltip_text
             .as_ref()

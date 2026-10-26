@@ -1553,3 +1553,47 @@ mod dormant_real_dats {
         assert_eq!(bar.thumb_extent, 16.0);
     }
 }
+
+/// A character-creation attribute slider draws another track while its
+/// attribute is locked: the bar's state picks the track art. OpenAC
+/// `DatWidgetFactoryScrollbarTests.
+/// HorizontalBar_TrackFollowsTheBarsStateWhenTheTrackAuthorsArtPerState`.
+#[test]
+fn a_scalar_bars_track_follows_the_bar_state_when_it_authors_art_per_state() {
+    const UNLOCKED: u32 = 0x1000_0018;
+    const LOCKED: u32 = 0x1000_0019;
+    let mut bar = el(11, 291.0, 39.0);
+    bar.default_state_id = UNLOCKED;
+    for (id, name) in [(UNLOCKED, "Unlocked"), (LOCKED, "Locked")] {
+        let mut s = StateInfo::named(id, name);
+        s.pass_to_children = true;
+        bar.set_state(id, s);
+    }
+    let mut thumb = el(1, 37.0, 39.0);
+    thumb.id = 1;
+    let mut thumb_state = StateInfo::named(DIRECT_STATE_ID, "");
+    thumb_state.image = Some(media(0x0600_4D34));
+    thumb.set_state(DIRECT_STATE_ID, thumb_state);
+    let mut track = el(3, 291.0, 39.0);
+    track.id = 4;
+    track.default_state_id = UNLOCKED;
+    for (id, name, file) in [
+        (UNLOCKED, "Unlocked", 0x0600_4D39),
+        (LOCKED, "Locked", 0x0600_4D3A),
+    ] {
+        let mut s = StateInfo::named(id, name);
+        s.image = Some(media(file));
+        track.set_state(id, s);
+    }
+    bar.children = vec![thumb, track];
+
+    let (mut ui, id) = create(&bar);
+    let sprite = |ui: &UiRoot| ui.widget::<Scrollbar>(id).unwrap().track_sprite;
+    assert_eq!(sprite(&ui), 0x0600_4D39);
+    assert!(ui.set_retail_state(id, LOCKED));
+    assert_eq!(sprite(&ui), 0x0600_4D3A);
+    assert!(ui.set_retail_state(id, UNLOCKED));
+    assert_eq!(sprite(&ui), 0x0600_4D39);
+    assert!(!ui.set_retail_state(id, 0x1000_0099));
+    assert_eq!(sprite(&ui), 0x0600_4D39);
+}
