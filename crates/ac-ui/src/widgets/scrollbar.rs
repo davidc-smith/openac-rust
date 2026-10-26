@@ -72,6 +72,9 @@ pub struct Scrollbar {
     pub tooltip_text: Option<String>,
     /// Track image.
     pub track_sprite: u32,
+    /// Track art per bar state, for a bar whose track authors an image for
+    /// each state (an attribute slider draws another track while locked).
+    pub track_sprites_by_state: Vec<(u32, u32)>,
     /// Thumb image (middle of a composited thumb).
     pub thumb_sprite: u32,
     /// Thumb top cap.
@@ -147,6 +150,7 @@ impl Default for Scrollbar {
             scalar_fill_from_right: false,
             tooltip_text: None,
             track_sprite: 0,
+            track_sprites_by_state: Vec::new(),
             thumb_sprite: 0,
             thumb_top_sprite: 0,
             thumb_bot_sprite: 0,
@@ -840,6 +844,20 @@ impl Widget for Scrollbar {
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Entering a state shows that state's track art; false when the
+    /// track authors none for it.
+    fn set_retail_state(&mut self, _ui: &mut UiRoot, _me: ElementId, state: u32) -> bool {
+        let Some(&(_, sprite)) = self
+            .track_sprites_by_state
+            .iter()
+            .find(|(s, _)| *s == state)
+        else {
+            return false;
+        };
+        self.track_sprite = sprite;
         true
     }
 

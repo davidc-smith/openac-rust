@@ -170,8 +170,12 @@ pub struct ChargenPreviewState {
     /// The camera's eye.
     pub eye: Vec3,
     rotation: Rotation,
-    /// Exists once a figure was built (zooming does nothing before).
+    /// Exists once a figure was built (nothing slides before).
     zoom: Option<ZoomTween>,
+    /// The zoom the page asked for. It outlives each built figure, and a
+    /// request made before the first one (the page opens zoomed in) is
+    /// kept for it.
+    zoomed_in: bool,
     figure: Option<ChargenFigure>,
     built: Option<Built>,
     backdrop: u32,
@@ -192,6 +196,7 @@ impl ChargenPreviewState {
             },
             rotation: Rotation::default(),
             zoom: None,
+            zoomed_in: false,
             figure: None,
             built: None,
             backdrop: 0,
@@ -227,11 +232,7 @@ impl ChargenPreviewState {
         mut figure: ChargenFigure,
         backdrop: u32,
     ) {
-        let was_zoomed_in = self
-            .figure
-            .as_ref()
-            .is_some_and(ChargenFigure::is_zoomed_in);
-        if was_zoomed_in {
+        if self.zoomed_in {
             figure.set_zoomed_in(true);
         }
         let body_changed = self
@@ -258,6 +259,7 @@ impl ChargenPreviewState {
 
     /// Zoom in: slide to the close eye and freeze the figure at rest.
     pub fn zoom_in(&mut self) {
+        self.zoomed_in = true;
         let heritage = self.built.map_or(0, |b| b.heritage);
         let (Some(zoom), Some(figure)) = (self.zoom.as_mut(), self.figure.as_mut()) else {
             return;
@@ -271,6 +273,7 @@ impl ChargenPreviewState {
 
     /// Zoom out: slide to the far eye and start the idle loop again.
     pub fn zoom_out(&mut self) {
+        self.zoomed_in = false;
         let heritage = self.built.map_or(0, |b| b.heritage);
         let (Some(zoom), Some(figure)) = (self.zoom.as_mut(), self.figure.as_mut()) else {
             return;
@@ -318,12 +321,10 @@ impl ChargenPreviewState {
         self.backdrop
     }
 
-    /// The figure is zoomed in.
+    /// The preview is zoomed in (its figure, once built, at rest).
     #[must_use]
     pub fn is_zoomed_in(&self) -> bool {
-        self.figure
-            .as_ref()
-            .is_some_and(ChargenFigure::is_zoomed_in)
+        self.zoomed_in
     }
 }
 
@@ -460,14 +461,30 @@ mod tests {
     }
 
     #[test]
-    fn zooming_does_nothing_before_a_figure_is_built() {
+    fn a_zoom_before_the_figure_is_built_is_kept_for_it() {
+        // OpenAC `ChargenPreviewControllerTests.
+        // ZoomIn_BeforeTheFirstCompose_IsKept_SoZoomOutWorksRightAfter`: the
+        // appearance page opens zoomed in before the figure exists.
         let mut p = ChargenPreviewState::new(false);
         let eye = p.eye;
         p.zoom_in();
         p.tick(1.0);
         p.tick(5.0);
-        assert_eq!(p.eye, eye);
+        assert_eq!(p.eye, eye, "nothing to slide yet");
+        p.rebuild(
+            ALUVIAN,
+            1,
+            ChargenAppearanceSelection::default(),
+            figure(),
+            0x0200_0BEE,
+        );
+        assert!(p.is_zoomed_in());
+        assert_eq!(p.figure().unwrap().parts()[0].transform.w_axis.x, 99.0);
+        p.zoom_out();
         assert!(!p.is_zoomed_in());
+        p.tick(100.0);
+        p.tick(200.0);
+        assert_eq!(p.eye, chargen_zoomed_out_eye(ALUVIAN));
     }
 
     #[test]

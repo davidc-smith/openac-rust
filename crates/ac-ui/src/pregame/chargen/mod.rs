@@ -320,6 +320,8 @@ impl CreationScreen {
         let profession = ProfessionPage::bind(ui, pages[1]);
         let skills = SkillsPage::bind(ui, pages[2]);
         let appearance = AppearancePage::bind(ui, pages[3]);
+        // The preview starts framed as the page opens.
+        let initial_zoom = appearance.zoom_request();
         let town = TownPage::bind(ui, pages[4]);
         let summary = SummaryPage::bind(ui, pages[5]);
         let screen = ui.root();
@@ -358,7 +360,7 @@ impl CreationScreen {
             finish_sent: None,
             roll_sent: None,
             random_source: Box::new(SeededRandom::from_clock()),
-            preview_requests: Vec::new(),
+            preview_requests: vec![initial_zoom],
             swatch_sources: None,
             swatch_textures: None,
         })
@@ -598,8 +600,10 @@ impl CreationScreen {
             .swatch_textures
             .as_deref_mut()
             .map(|t| t as &mut dyn SwatchTextures);
-        self.appearance
+        let zoom = self
+            .appearance
             .refresh(ui, &ctx, self.swatch_sources.as_deref(), textures);
+        self.preview_requests.extend(zoom);
         self.summary.refresh(ui, &ctx, templates);
     }
 
