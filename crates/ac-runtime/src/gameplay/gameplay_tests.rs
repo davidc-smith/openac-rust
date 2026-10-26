@@ -426,6 +426,44 @@ fn deleting_a_corpse_forgets_its_death_but_a_stale_delete_does_not() {
 }
 
 #[test]
+fn a_dead_targets_automatic_replacement_keeps_its_health_streaming() {
+    // RuntimeSelectedObjectHealthQueryTests
+    // .ADeadTargetsAutomaticReplacementKeepsItsHealthStreaming: the dead
+    // target's clearing and its replacement are followed in the order they
+    // happened, so the stream closed for the dead one is not closed again
+    // after the replacement's is opened, and the server keeps sending the
+    // replacement's health as it is damaged.
+    let mut f = Fixture::in_the_field();
+    f.run(GameplayCommand::SetCombatMode(CombatMode::MELEE));
+    f.world.apply(&Inbound::PrivateUpdatePropertyDataId(
+        ac_proto::PrivateUpdatePropertyDataId {
+            sequence: 1,
+            property: ac_core::properties::PropertyDataId::COMBAT_TABLE.0,
+            value: 0x3000_0000,
+        },
+    ));
+    f.options.set_bit(option_id::AUTO_TARGET, true);
+    f.run(GameplayCommand::Select(ObjectRef::Guid(MONSTER)));
+    let opened = f.sent();
+    assert_eq!(
+        opened.last(),
+        Some(&wire_combat::build_query_health(3, MONSTER))
+    );
+
+    f.apply(&death_of(MONSTER));
+
+    assert_eq!(f.gameplay.selection().selected(), Some(FAR_MONSTER));
+    assert_eq!(
+        f.sent(),
+        [
+            wire_combat::build_query_health(4, 0),
+            wire_combat::build_query_health(5, FAR_MONSTER),
+        ]
+    );
+    assert_eq!(f.gameplay.health_query().streaming_object_id(), FAR_MONSTER);
+}
+
+#[test]
 fn an_attack_goes_to_the_nearest_monster_when_auto_target_is_on() {
     // RuntimeAttackTargetResolver: with the auto-target option an empty
     // selection takes the nearest living monster, which becomes the
