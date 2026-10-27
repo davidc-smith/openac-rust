@@ -187,3 +187,77 @@ fn a_landblock_wanted_again_before_its_release_is_released_whole_first() {
     world.prepare(&device, &queue, None, FlyInput::default());
     assert_eq!(holds_holtburg(&world), (true, true));
 }
+
+/// A server object standing at the destination, its model not here yet.
+fn object_at_holtburg(local_id: u32) -> ac_runtime::world::ObjectView {
+    use ac_runtime::world::{EffectFacts, ObjectKey, ObjectView, RadarFacts};
+    ObjectView {
+        key: ObjectKey {
+            local_id,
+            incarnation: 1,
+        },
+        guid: 0x8000_0000 | local_id,
+        name: None,
+        setup_id: Some(0x0200_0001),
+        position: Some(ac_proto::Position {
+            cell_id: HOLTBURG.terrain_id() | 0x0019,
+            origin: ac_proto::Vector3 {
+                x: 10.0,
+                y: 20.0,
+                z: 30.0,
+            },
+            orientation: ac_proto::Quaternion::IDENTITY,
+        }),
+        parent: None,
+        placement: None,
+        rest_placement: 0,
+        scale: None,
+        translucency: None,
+        state: 0,
+        velocity: None,
+        model: ac_proto::ModelData::default(),
+        motion_table_id: None,
+        sound_table_id: None,
+        radar: RadarFacts::default(),
+        motion: None,
+        effects: EffectFacts::default(),
+    }
+}
+
+fn scene_of(objects: Vec<ac_runtime::world::ObjectView>) -> Scene {
+    let mut scene = Scene::default();
+    scene.apply(ac_runtime::session::PresentationEvent::Snapshot(
+        ac_runtime::world::WorldSnapshot {
+            player_guid: None,
+            objects,
+        },
+    ));
+    scene
+}
+
+/// OpenAC `WbDrawDispatcherCompositeWarmupTests.AnEntityThatLeavesTheWorldIsNoLongerWaitedFor`:
+/// the reveal waits for the models of the server objects in the world now,
+/// so one that leaves while its model is still loading holds it no longer.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_server_object_that_leaves_the_world_no_longer_holds_the_reveal() {
+    let Some((device, queue)) = crate::test_gpu::device() else {
+        eprintln!("no GPU adapter on this machine");
+        return;
+    };
+    let mut world = renderer(&device, &queue);
+
+    world.request_missing_models(Some(&scene_of(vec![object_at_holtburg(7)])));
+    assert!(
+        !world.server_models_ready,
+        "an object whose model has not arrived holds the reveal"
+    );
+
+    // It leaves the world (killed, decayed, logged out) before its model
+    // arrives.
+    world.request_missing_models(Some(&scene_of(Vec::new())));
+    assert!(
+        world.server_models_ready,
+        "an object that left holds the reveal no longer"
+    );
+}
