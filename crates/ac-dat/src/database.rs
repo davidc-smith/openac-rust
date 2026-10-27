@@ -6,26 +6,26 @@ use crate::btree::{DatEntry, Node, is_valid_offset};
 use crate::cache::{CacheStats, DEFAULT_NODE_CACHE_LIMIT, NodeCache};
 use crate::error::{DatError, Result};
 use crate::header::{DatFileType, DatHeader};
-use crate::io::read_exact_at;
 use crate::objects::{DatObject, Iteration};
 
 /// File id of the iteration record every dat carries.
 pub const ITERATION_ID: u32 = 0xFFFF_0001;
 
-/// The most bytes one read of a block run takes (a file larger than this
-/// is read in several runs).
-const MAX_RUN_BYTES: usize = 1024 * 1024;
-
-/// One open dat file: header, directory and positional reads.
+/// One open dat file: header, directory and reads.
 ///
-/// `DatFile` is `Send + Sync`. Every read goes by file position through
-/// `&self`; besides the header and the directory's root node it keeps a
-/// bounded, thread-safe cache of the directory nodes lookups have read, so
-/// any number of threads may read at once.
+/// The file is mapped into memory read-only: a read copies the bytes of a
+/// file's blocks straight from the mapping, with no system call. The
+/// mapped pages are the system's file cache, shared by every process that
+/// reads the dats, not this process's own memory.
+///
+/// `DatFile` is `Send + Sync`. Every read goes through `&self`; besides the
+/// header and the directory's root node it keeps a bounded, thread-safe
+/// cache of the directory nodes lookups have read, so any number of
+/// threads may read at once.
 #[derive(Debug)]
 pub struct DatFile {
     path: PathBuf,
-    file: File,
+    map: memmap2::Mmap,
     file_len: u64,
     header: DatHeader,
     root: Option<Arc<Node>>,
@@ -55,9 +55,17 @@ impl DatFile {
                 len: file_len,
             });
         }
-        let mut header_bytes = [0u8; DatHeader::SIZE];
-        read_exact_at(&file, &mut header_bytes, 0).map_err(io_error)?;
-        let header = DatHeader::unpack(&header_bytes)?;
+        let map = map_read_only(&file).map_err(io_error)?;
+        // The mapping is the file's length when mapped; a file that changed
+        // length since is read as mapped.
+        let file_len = file_len.min(map.len() as u64);
+        if file_len < DatHeader::SIZE as u64 {
+            return Err(DatError::TooShort {
+                path,
+                len: file_len,
+            });
+        }
+        let header = DatHeader::unpack(&map[..DatHeader::SIZE])?;
         if header.magic != DatHeader::RETAIL_MAGIC {
             return Err(DatError::BadMagic {
                 path,
@@ -74,7 +82,7 @@ impl DatFile {
 
         let mut dat = Self {
             path,
-            file,
+            map,
             file_len,
             header,
             root: None,
@@ -228,34 +236,14 @@ impl DatFile {
     ///
     /// Each block begins with the offset of the next block (0 ends the
     /// chain); the remaining `block_size - 4` bytes are data. Only the bytes
-    /// still needed are used from the last block.
-    ///
-    /// A file's blocks almost always follow one another on disk (in the
-    /// retail dats about one block in 200 jumps elsewhere), so the blocks
-    /// still needed are read as one run with one system call, and a block
-    /// is read again from the file only when the chain leaves the run.
-    ///
-    /// The run is read into the returned buffer itself, just past the bytes
-    /// gathered so far, and each block's data is moved down over the block
-    /// headers: one allocation, the size of the file plus its headers.
-    /// Everything at or past the gathered bytes is still the run as read, so
-    /// a later block is taken from the run only when it lies there.
+    /// still needed are used from the last block. The bytes are copied from
+    /// the mapping into one buffer of exactly `len` bytes.
     fn read_chain(&self, start: i32, len: usize) -> Result<Vec<u8>> {
-        let block_size = self.header.block_size as usize;
-        let data_per_block = block_size - 4;
-        // A run is at most the blocks still needed, whole; gathered bytes
-        // plus that never pass the file's length, its headers and one block.
-        let capacity = len
-            .saturating_add(4 * len.div_ceil(data_per_block))
-            .saturating_add(block_size);
-        let mut buf: Vec<u8> = Vec::with_capacity(capacity.min(len.saturating_add(MAX_RUN_BYTES)));
-        let mut filled = 0;
+        let data_per_block = self.header.block_size as usize - 4;
+        let mut out = Vec::with_capacity(len);
         let mut block = start;
-        // The current run: where it starts in the file and in `buf`.
-        let mut run_start = 0u64;
-        let mut run_at = 0usize;
-        while block != 0 && filled < len {
-            let take = data_per_block.min(len - filled);
+        while block != 0 && out.len() < len {
+            let take = data_per_block.min(len - out.len());
             let need = (4 + take) as u64;
             let Some(offset) = u64::try_from(block)
                 .ok()
@@ -266,42 +254,39 @@ impl DatFile {
                     file_len: self.file_len,
                 });
             };
-            let run_end = run_start + (buf.len() - run_at) as u64;
-            let in_run = offset >= run_start
-                && offset + need <= run_end
-                && run_at + (offset - run_start) as usize >= filled;
-            if !in_run {
-                let blocks_left = (len - filled).div_ceil(data_per_block);
-                let run_len = (blocks_left * block_size)
-                    .min(MAX_RUN_BYTES)
-                    .min(usize::try_from(self.file_len - offset).unwrap_or(usize::MAX))
-                    .max(4 + take);
-                buf.resize(filled + run_len, 0);
-                read_exact_at(&self.file, &mut buf[filled..], offset).map_err(|source| {
-                    DatError::Io {
-                        path: self.path.clone(),
-                        source,
-                    }
-                })?;
-                run_start = offset;
-                run_at = filled;
-            }
-            let at = run_at + (offset - run_start) as usize;
-            let next = i32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]);
-            buf.copy_within(at + 4..at + 4 + take, filled);
-            filled += take;
-            block = next;
+            // In range of the mapping: `file_len` is at most its length.
+            let at = offset as usize;
+            let span = &self.map[at..at + 4 + take];
+            out.extend_from_slice(&span[4..]);
+            block = i32::from_le_bytes([span[0], span[1], span[2], span[3]]);
         }
-        if filled < len {
+        if out.len() < len {
             return Err(DatError::ChainEnded {
                 start,
                 needed: len,
-                read: filled,
+                read: out.len(),
             });
         }
-        buf.truncate(len);
-        Ok(buf)
+        Ok(out)
     }
+}
+
+/// Map `file` into memory, read-only.
+///
+/// A mapped file is memory another process could change under a slice of
+/// it, which Rust's aliasing rules do not allow for; hence `unsafe`. Here:
+/// the mapping is only ever read, by copying bytes out of it, never by
+/// handing out references that outlive a read; every byte copied is then
+/// decoded by bounds-checked readers, so changed bytes can only make a
+/// decode fail or give other values, as a file changed between two
+/// `read` calls would. The dats are not written while the game reads them
+/// (the game's own patcher runs before it), and on Windows a mapped file
+/// cannot be shortened, so its pages stay valid for the mapping's life.
+#[allow(unsafe_code)]
+fn map_read_only(file: &File) -> std::io::Result<memmap2::Mmap> {
+    // SAFETY: see above: the mapping is read-only, read by copying, and
+    // the file is not written or shortened while the game runs.
+    unsafe { memmap2::Mmap::map(file) }
 }
 
 /// In-order walk of a dat's directory; see [`DatFile::entries`].

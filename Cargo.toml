@@ -53,6 +53,9 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"] }
 # Plain-data casts for GPU uploads (ac-render), pure Rust; already in the graph through wgpu.
 bytemuck = { version = "1.25", features = ["derive"] }
+# Read-only memory maps of the dat files (ac-dat), pure Rust; already in the lock file through
+# winit (Wayland).
+memmap2 = "0.9.11"
 # A fast hash for the per-frame draw maps keyed by model and mesh ids (ac-render), pure Rust;
 # already in the graph through wasmtime.
 rustc-hash = "2.1"
