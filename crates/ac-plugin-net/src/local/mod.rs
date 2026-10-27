@@ -228,6 +228,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&endpoint.directory);
     }
 
+    // A client that arrives while the server is between two waits for one
+    // is let in: the endpoint is there for as long as it listens, not only
+    // while `accept` waits. (The hub waits a second at a time; a client
+    // turned away backs off for longer each time.)
+    #[test]
+    fn a_client_arriving_between_two_accepts_is_let_in() {
+        let endpoint = endpoint("between");
+        endpoint.prepare().unwrap();
+        let mut listener = endpoint.listen().unwrap();
+        assert!(
+            listener
+                .accept(Duration::from_millis(20))
+                .unwrap()
+                .is_none()
+        );
+        let client = endpoint
+            .connect(Duration::from_millis(100))
+            .expect("the endpoint is there between two accepts");
+        let server = listener
+            .accept(Duration::from_secs(5))
+            .unwrap()
+            .expect("the client that arrived meanwhile");
+        server.write_all(b"x").unwrap();
+        let mut buffer = [0u8; 1];
+        client.read_exact(&mut buffer).unwrap();
+        assert_eq!(&buffer, b"x");
+        drop(server);
+        drop(client);
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&endpoint.directory);
+    }
+
     #[test]
     fn connecting_to_no_server_is_not_found() {
         let endpoint = endpoint("missing");
