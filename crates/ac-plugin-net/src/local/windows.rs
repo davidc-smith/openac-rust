@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_FILE_NOT_FOUND, ERROR_IO_PENDING, ERROR_PIPE_BUSY,
     ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
-    WAIT_OBJECT_0,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -318,6 +318,41 @@ pub(super) struct Listener {
     name: String,
     sddl: Vec<u16>,
     first: bool,
+    /// The instance waiting for the next client. It outlives an `accept`
+    /// that timed out: with no instance the name does not exist, and a
+    /// client arriving between two `accept` calls would be turned away.
+    waiting: Option<Waiting>,
+}
+
+/// An instance and its pending connect: the event it signals and the
+/// OVERLAPPED the system holds while the connect is under way.
+struct Waiting {
+    pipe: Option<Owned>,
+    done: Owned,
+    // Boxed so its address stays put while the system holds it.
+    overlapped: Box<OVERLAPPED>,
+    pending: bool,
+}
+
+// SAFETY: the OVERLAPPED holds only the event handle, which may be used from
+// any thread; the operation it describes belongs to the pipe, not a thread.
+unsafe impl Send for Waiting {}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        if !self.pending {
+            return;
+        }
+        if let Some(pipe) = &self.pipe {
+            let mut moved = 0u32;
+            // SAFETY: the connect was started with this OVERLAPPED, still
+            // alive; it is cancelled and waited for before it goes.
+            unsafe {
+                CancelIoEx(pipe.0, &raw const *self.overlapped);
+                GetOverlappedResult(pipe.0, &raw const *self.overlapped, &raw mut moved, 1);
+            }
+        }
+    }
 }
 
 impl Listener {
@@ -329,6 +364,7 @@ impl Listener {
             name: name.to_owned(),
             sddl,
             first: true,
+            waiting: None,
         })
     }
 
@@ -385,50 +421,71 @@ impl Listener {
         Ok(Owned(pipe))
     }
 
-    /// The next client, or none when `timeout` passes first.
-    pub(super) fn accept(&mut self, timeout: Duration) -> io::Result<Option<Stream>> {
+    /// A new instance with its connect started.
+    fn wait_for_client(&mut self) -> io::Result<Waiting> {
         let pipe = self.instance()?;
         let done = event()?;
-        let mut overlapped = OVERLAPPED {
+        let mut overlapped = Box::new(OVERLAPPED {
             hEvent: done.0,
             ..OVERLAPPED::default()
+        });
+        // SAFETY: the boxed OVERLAPPED and its event stay with the instance
+        // until the connect has finished, or been cancelled and finished
+        // (`Waiting`'s drop).
+        let started = unsafe { ConnectNamedPipe(pipe.0, &raw mut *overlapped) };
+        let pending = if started != 0 || last_error_is(ERROR_PIPE_CONNECTED) {
+            false
+        } else if last_error_is(ERROR_IO_PENDING) {
+            true
+        } else {
+            return Err(io::Error::last_os_error());
         };
-        // SAFETY: `overlapped` and its event outlive the operation: it is
-        // finished, or cancelled and finished, before this returns.
-        let started = unsafe { ConnectNamedPipe(pipe.0, &raw mut overlapped) };
-        if started == 0 {
-            if last_error_is(ERROR_PIPE_CONNECTED) {
-                return Ok(Some(Stream {
-                    pipe,
-                    closed: AtomicBool::new(false),
-                }));
-            }
-            if !last_error_is(ERROR_IO_PENDING) {
-                return Err(io::Error::last_os_error());
-            }
+        Ok(Waiting {
+            pipe: Some(pipe),
+            done,
+            overlapped,
+            pending,
+        })
+    }
+
+    /// The next client, or none when `timeout` passes first. The instance
+    /// keeps waiting after a timeout, for the next call to take.
+    pub(super) fn accept(&mut self, timeout: Duration) -> io::Result<Option<Stream>> {
+        if self.waiting.is_none() {
+            self.waiting = Some(self.wait_for_client()?);
+        }
+        let Some(waiting) = self.waiting.as_mut() else {
+            return Ok(None);
+        };
+        if waiting.pending {
             let milliseconds = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
             // SAFETY: a valid event handle.
-            let woke = unsafe { WaitForSingleObject(done.0, milliseconds) };
-            if woke != WAIT_OBJECT_0 {
-                // SAFETY: the operation was started with this OVERLAPPED,
-                // still alive; waiting lets it finish before it goes.
-                unsafe {
-                    CancelIoEx(pipe.0, &raw const overlapped);
-                }
+            let woke = unsafe { WaitForSingleObject(waiting.done.0, milliseconds) };
+            if woke == WAIT_TIMEOUT {
+                return Ok(None);
             }
+            if woke != WAIT_OBJECT_0 {
+                return Err(io::Error::last_os_error());
+            }
+            let Some(pipe) = waiting.pipe.as_ref() else {
+                return Ok(None);
+            };
             let mut moved = 0u32;
-            // SAFETY: as above; TRUE waits for the (possibly cancelled)
-            // operation to finish.
-            let ok =
-                unsafe { GetOverlappedResult(pipe.0, &raw const overlapped, &raw mut moved, 1) };
+            // SAFETY: the connect has finished (its event is set) and its
+            // OVERLAPPED is still alive.
+            let ok = unsafe {
+                GetOverlappedResult(pipe.0, &raw const *waiting.overlapped, &raw mut moved, 0)
+            };
+            waiting.pending = false;
             if ok == 0 {
-                return if woke == WAIT_OBJECT_0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(None)
-                };
+                let error = io::Error::last_os_error();
+                self.waiting = None;
+                return Err(error);
             }
         }
+        let Some(pipe) = self.waiting.take().and_then(|mut w| w.pipe.take()) else {
+            return Ok(None);
+        };
         Ok(Some(Stream {
             pipe,
             closed: AtomicBool::new(false),
