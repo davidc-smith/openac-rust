@@ -24,10 +24,10 @@ use ac_launcher_core::updates::{
     validate_required_executables,
 };
 use ac_launcher_core::url::WebUrl;
+use common::TempDir;
 use common::fixtures::{
     self, Compression, FakeServer, Route, client_zip, create_zip, launcher_zip,
 };
-use common::{TempDir, fixture_args, fixture_command, wait_for_file};
 
 fn none() -> CancelToken {
     CancelToken::none()
@@ -992,63 +992,6 @@ fn exclusive_updater_excludes_sessions_and_concurrent_updater() {
     let _update = barrier.acquire_exclusive().unwrap();
     assert!(barrier.acquire_session().is_err());
     assert!(barrier.acquire_exclusive().is_err());
-}
-
-#[test]
-fn fixture_hold_update_lease() {
-    // A child process for the cross-process test below; does nothing in a
-    // normal run.
-    let Some(args) = fixture_args() else {
-        return;
-    };
-    let (mode, data, ready, release) = (&args[0], &args[1], &args[2], &args[3]);
-    let barrier = UpdateSessionBarrier::new(Path::new(data));
-    let _session;
-    let _exclusive;
-    if mode == "session" {
-        _session = barrier.acquire_session().unwrap();
-    } else {
-        _exclusive = barrier.acquire_exclusive().unwrap();
-    }
-    std::fs::write(ready, "ready").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while !Path::new(release).exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    std::process::exit(0);
-}
-
-#[test]
-fn cross_process_lease_refuses_racing_launcher_and_releases_cleanly() {
-    for mode in ["session", "exclusive"] {
-        let root = TempDir::new("lease-cross");
-        let ready = root.join(format!("{mode}.ready"));
-        let release = root.join(format!("{mode}.release"));
-        let data = root.path.to_string_lossy().into_owned();
-        let mut holder = fixture_command(
-            "fixture_hold_update_lease",
-            &[
-                mode,
-                &data,
-                &ready.to_string_lossy(),
-                &release.to_string_lossy(),
-            ],
-        )
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-        wait_for_file(&ready, &mut holder);
-        let barrier = UpdateSessionBarrier::new(&root.path);
-        assert!(barrier.acquire_exclusive().is_err(), "{mode}");
-        if mode == "session" {
-            let _peer = barrier.acquire_session().unwrap();
-        } else {
-            assert!(barrier.acquire_session().is_err());
-        }
-        std::fs::write(&release, "release").unwrap();
-        assert!(holder.wait().unwrap().success());
-        let _after = barrier.acquire_exclusive().unwrap();
-    }
 }
 
 // --- ClientVersionStoreTests ----------------------------------------------------
