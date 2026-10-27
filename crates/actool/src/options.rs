@@ -151,6 +151,9 @@ commands:
                            a block of pixels as RGB hex
   frames summarize <history.csv> <checkpoints.jsonl> <markers.log> <out.json>
                            summarise a frame history (OPENAC_FRAME_HISTORY)
+  migrate-classic [--vtank <dir>] [--ub <dir>] [--root <openac-root>] [--overwrite] [--dry-run]
+                           copy a classic VirindiTank and UtilityBelt setup to
+                           where MossTank reads it (<root>/vtank/mosstank)
 
 options:
   --dat-dir <path>   dat directory; else $OPENAC_DAT_DIR; else

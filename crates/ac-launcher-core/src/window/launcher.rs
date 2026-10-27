@@ -14,6 +14,7 @@ use super::accounts::{
     AccountGroup, AccountServerRow, CHARACTER_SELECT, ProfileFilterChip, RowLaunchMode,
 };
 use super::add_server::AddServerDialog;
+use super::classic_migration::ClassicMigrationDialog;
 use super::console::SessionConsole;
 use super::first_run::FirstRunSetup;
 use super::icon::{PluginIcon, decode_icon};
@@ -145,6 +146,8 @@ pub struct LauncherWindowParts {
     pub relaunch_clock: Option<MonotonicClock>,
     /// The public server list Add server offers; `None`: only your own.
     pub known_servers: Option<Arc<KnownServerCatalog>>,
+    /// The VirindiTank and UtilityBelt import; `None` hides it.
+    pub classic_migration: Option<ClassicMigrationDialog>,
 }
 
 /// Starts the staged launcher update now; true when the launcher should
@@ -226,6 +229,10 @@ enum Message {
     },
     InstallMoveProgress(String),
     InstallMoved(crate::installation::InstallRootMoveResult),
+    ClassicMigrationFinished {
+        apply: bool,
+        result: Result<Vec<crate::classic_migration::ClassicMigrationItem>, String>,
+    },
 }
 
 /// The window's state.
@@ -335,6 +342,9 @@ pub struct LauncherWindow {
     character_select_availability: AccountCapabilities,
     /// Add a server.
     pub add_server: AddServerDialog,
+    /// The VirindiTank and UtilityBelt import dialog; `None` when the
+    /// launcher was built without it.
+    pub classic_migration: Option<ClassicMigrationDialog>,
     known_servers: Option<Arc<KnownServerCatalog>>,
     time_zone: LocalZone,
     /// A check has verified the installed client.
@@ -588,6 +598,7 @@ impl LauncherWindow {
             headless_availability: AccountCapabilities::new(),
             character_select_availability: AccountCapabilities::new(),
             add_server: AddServerDialog::default(),
+            classic_migration: parts.classic_migration,
             known_servers: parts.known_servers,
             time_zone: LocalZone::system(),
             client_verified: false,
@@ -986,7 +997,50 @@ impl LauncherWindow {
                     }
                 }
             }
+            Message::ClassicMigrationFinished { apply, result } => {
+                if let Some(dialog) = self.classic_migration.as_mut() {
+                    dialog.finish(apply, result);
+                }
+            }
         }
+    }
+
+    /// Whether the VirindiTank and UtilityBelt import is offered: only
+    /// MossTank reads what it imports, so it waits until MossTank is
+    /// installed, and follows the installed list as it changes.
+    pub fn show_classic_migration(&self) -> bool {
+        self.classic_migration.is_some()
+            && self.plugins.installed.iter().any(|row| {
+                row.info
+                    .id
+                    .eq_ignore_ascii_case(crate::classic_migration::MOSSTANK_PLUGIN_ID)
+            })
+    }
+
+    /// Opens the import dialog.
+    pub fn open_classic_migration(&mut self) {
+        if let Some(dialog) = self.classic_migration.as_mut() {
+            dialog.open();
+        }
+    }
+
+    /// Preview (`apply` false) or Import, off the window's thread.
+    pub fn run_classic_migration(&mut self, apply: bool) {
+        let Some(run) = self
+            .classic_migration
+            .as_mut()
+            .and_then(|dialog| dialog.begin_run(apply))
+        else {
+            return;
+        };
+        self.run(move |sender, wake| {
+            let result = run.run();
+            let _ = sender.send(Message::ClassicMigrationFinished {
+                apply: run.apply,
+                result,
+            });
+            wake();
+        });
     }
 
     /// Whether Move... can run now: not while a session runs or the
@@ -1508,6 +1562,10 @@ impl LauncherWindow {
     pub fn is_modal_open(&self) -> bool {
         self.text_editor.is_open
             || self.add_server.is_open
+            || self
+                .classic_migration
+                .as_ref()
+                .is_some_and(|dialog| dialog.is_open)
             || self.first_run.is_open
             || self.update_prompt.is_open
             || self.is_row_options_open
@@ -2671,6 +2729,8 @@ impl LauncherWindow {
             self.text_editor.close();
         } else if self.add_server.is_open {
             self.add_server.close();
+        } else if let Some(dialog) = self.classic_migration.as_mut().filter(|d| d.is_open) {
+            dialog.close();
         } else if self.first_run.is_open {
             self.first_run.close();
         } else if self.update_prompt.is_open {

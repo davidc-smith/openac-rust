@@ -16,6 +16,7 @@
 //!   client update prompt, a windowless session's console.
 //! - [`icon`]: decoding plugin icons.
 //! - [`install_folder`]: the install folder section of the settings.
+//! - [`classic_migration`]: the classic VirindiTank and UtilityBelt import.
 //!
 //! Every slow step (a launch, a stop, an HTTP request, hashing) runs on a
 //! worker through a [`Spawner`] and reports back as a message the window
@@ -24,6 +25,7 @@
 
 pub mod accounts;
 pub mod add_server;
+pub mod classic_migration;
 pub mod console;
 pub mod first_run;
 pub mod icon;

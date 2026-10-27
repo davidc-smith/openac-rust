@@ -29,6 +29,7 @@ use ac_launcher_core::status::ServerHealthSnapshot;
 use ac_launcher_core::updates::{ClientVersionResolution, ClientVersionState, LauncherVersion};
 use ac_launcher_core::url::WebUrl;
 use ac_launcher_core::window::accounts::{CHARACTER_SELECT, RowLaunchMode};
+use ac_launcher_core::window::classic_migration::ClassicMigrationDialog;
 use ac_launcher_core::window::install_dialog::{
     InstallDialogRequest, PluginCharacterOption, PluginEnableChoice, PluginInstallDialog,
 };
@@ -479,6 +480,7 @@ fn parts(fake: Arc<dyn Orchestration>, spawner: Arc<dyn Spawner>) -> LauncherWin
         checked_accounts: None,
         relaunch_clock: None,
         known_servers: None,
+        classic_migration: None,
     }
 }
 
@@ -2555,6 +2557,98 @@ fn offline_with_no_cache_shows_an_error() {
     assert_eq!(
         window.plugins.error.as_deref(),
         Some("Could not reach the plugin list.")
+    );
+}
+
+fn classic_migration_dialog(profiles: PathBuf) -> ClassicMigrationDialog {
+    ClassicMigrationDialog::with_finders(profiles, Arc::new(|| None), Arc::new(|| None))
+}
+
+// OpenAC LauncherWindowViewModelTests.TheClassicImportDialogIsAModalOfTheWindow.
+#[test]
+fn the_classic_import_dialog_is_a_modal_of_the_window() {
+    let mut window = LauncherWindow::new(LauncherWindowParts {
+        classic_migration: Some(classic_migration_dialog(
+            std::env::temp_dir().join("openac-window-import-unused"),
+        )),
+        ..parts(Arc::new(Fake::default()), Arc::new(InlineSpawner))
+    });
+    window.initialize();
+
+    window.open_classic_migration();
+    assert!(window.is_modal_open());
+
+    window.close_active_modal();
+    assert!(!window.classic_migration.as_ref().unwrap().is_open);
+    assert!(!window.is_modal_open());
+}
+
+// OpenAC LauncherWindowViewModelTests.TheClassicImportIsOfferedOnlyWhenMossTankIsInstalled:
+// the import is only offered once MossTank is installed, and follows the
+// installed list as it changes.
+#[test]
+fn the_classic_import_is_offered_only_when_mosstank_is_installed() {
+    let fixture = PanelFixture::new();
+    fixture.write_manifest("someone.other", "1.0.0");
+    fixture.list(&[], "");
+    let mut window = fixture.window();
+    assert!(!window.show_classic_migration(), "no dialog, no button");
+    window.classic_migration = Some(classic_migration_dialog(
+        fixture.paths().vtank_profiles_directory(),
+    ));
+
+    check(&mut window);
+    assert!(!window.show_classic_migration());
+
+    fixture.write_manifest("acdream.mosstank", "1.0.0");
+    check(&mut window);
+    assert!(window.show_classic_migration());
+
+    std::fs::remove_dir_all(fixture.paths().plugins_directory().join("acdream.mosstank")).unwrap();
+    check(&mut window);
+    assert!(!window.show_classic_migration());
+}
+
+// OpenAC ClassicMigrationViewModelTests.PreviewListsTheFilesAndImportCopiesThem, through the
+// window's worker.
+#[test]
+fn the_window_runs_the_classic_import_on_its_worker() {
+    let fixture = PanelFixture::new();
+    let vtank = fixture.paths().root_directory().join("classic-vtank");
+    std::fs::create_dir_all(&vtank).unwrap();
+    std::fs::write(vtank.join("Hunt.met"), "meta").unwrap();
+    let profiles = fixture.paths().vtank_profiles_directory();
+    let spawner = Arc::new(QueueSpawner::default());
+    let mut window = LauncherWindow::new(LauncherWindowParts {
+        classic_migration: Some(classic_migration_dialog(profiles.clone())),
+        ..parts(Arc::new(Fake::default()), spawner.clone())
+    });
+    window.initialize();
+    window.open_classic_migration();
+    window.classic_migration.as_mut().unwrap().virindi_tank_path = vtank.display().to_string();
+
+    window.run_classic_migration(true);
+    assert!(window.classic_migration.as_ref().unwrap().is_busy());
+    window.close_active_modal();
+    assert!(
+        window.classic_migration.as_ref().unwrap().is_open,
+        "a running import keeps the dialog open"
+    );
+    spawner.run_all();
+    window.poll();
+
+    let dialog = window.classic_migration.as_ref().unwrap();
+    assert!(!dialog.is_busy());
+    assert!(
+        dialog
+            .status
+            .as_deref()
+            .unwrap()
+            .starts_with("Copied 1 file(s)")
+    );
+    assert_eq!(
+        std::fs::read_to_string(profiles.join("mosstank").join("metas").join("Hunt.met")).unwrap(),
+        "meta"
     );
 }
 

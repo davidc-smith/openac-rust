@@ -1370,6 +1370,16 @@ fn bottom_bar(app: &mut LauncherApp, root: &mut Ui) {
                     if button(ui, "Log", interact) {
                         window.open_session_log();
                     }
+                    if window.show_classic_migration()
+                        && ui
+                            .button("Import VTank & UB…")
+                            .on_hover_text(
+                                "Copy profiles from a classic VirindiTank and UtilityBelt install",
+                            )
+                            .clicked()
+                    {
+                        window.open_classic_migration();
+                    }
                     let response = ui.button("Installation & updates");
                     egui::Popup::from_toggle_button_response(&response).show(|ui| {
                         ui.set_width(280.0);
@@ -1433,6 +1443,15 @@ fn dialogs(app: &mut LauncherApp, ctx: &egui::Context) {
     }
     if window.add_server.is_open {
         modal(ctx, "add-server", 900.0, |ui| add_server(window, ui));
+    }
+    if window
+        .classic_migration
+        .as_ref()
+        .is_some_and(|dialog| dialog.is_open)
+    {
+        modal(ctx, "classic-migration", 900.0, |ui| {
+            classic_migration(window, ui);
+        });
     }
     if window.is_row_options_open {
         modal(ctx, "row-options", 640.0, |ui| row_options(window, ui));
@@ -1637,6 +1656,84 @@ fn add_server(window: &mut Window, ui: &mut Ui) {
             window.add_server.close();
         }
     });
+}
+
+/// OpenAC's Import VirindiTank & UtilityBelt dialog: the two classic
+/// folders (typed; there is no folder picker), Replace files that differ,
+/// the target, the outcome, one line per file, then Close, Preview and
+/// Import.
+fn classic_migration(window: &mut Window, ui: &mut Ui) {
+    let mut run = None;
+    if let Some(dialog) = window.classic_migration.as_mut() {
+        dialog_title(ui, "Import VirindiTank & UtilityBelt");
+        ui.add(
+            egui::Label::new(muted(
+                "Copies your classic profiles, metas, navs, loot and UtilityBelt profiles to \
+                 where MossTank reads them. The original folders are only read.",
+            ))
+            .wrap(),
+        );
+        ui.add_space(6.0);
+        for (label, value, hint) in [
+            (
+                "VirindiTank",
+                &mut dialog.virindi_tank_path,
+                r"C:\Games\VirindiPlugins\VirindiTank",
+            ),
+            (
+                "UtilityBelt",
+                &mut dialog.utility_belt_path,
+                r"Documents\Decal Plugins\UtilityBelt",
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.add_sized([100.0, 18.0], egui::Label::new(label));
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .hint_text(hint)
+                        .desired_width(ui.available_width()),
+                );
+            });
+        }
+        ui.checkbox(&mut dialog.overwrite, "Replace files that differ");
+        ui.add(egui::Label::new(muted(format!("Into {}", dialog.target_path().display()))).wrap());
+        if dialog.has_error() {
+            ui.label(error_text(dialog.error.clone().unwrap_or_default()));
+        } else if let Some(status) = &dialog.status {
+            ui.add(egui::Label::new(RichText::new(status).color(hex("#8FD18F"))).wrap());
+        }
+        let height = (ui.ctx().content_rect().height() - 420.0).clamp(160.0, 640.0);
+        well(ui, |ui| {
+            egui::ScrollArea::both()
+                .id_salt("classic-migration-lines")
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for line in &dialog.lines {
+                        ui.add(
+                            egui::Label::new(RichText::new(line).monospace().size(12.0))
+                                .selectable(true)
+                                .extend(),
+                        );
+                    }
+                });
+        });
+        let can_run = dialog.can_run();
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if primary(ui, "Import", true, can_run) {
+                run = Some(true);
+            }
+            if button(ui, "Preview", can_run) {
+                run = Some(false);
+            }
+            if button(ui, "Close", dialog.can_close()) {
+                dialog.close();
+            }
+        });
+    }
+    if let Some(apply) = run {
+        window.run_classic_migration(apply);
+    }
 }
 
 /// OpenAC's profile editor dialog: the heading with Copy all and Paste all,

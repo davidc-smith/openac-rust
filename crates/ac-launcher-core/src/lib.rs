@@ -15,12 +15,15 @@
 //!   inventory and the plugin installer.
 //! - [`control`]: the optional same-user local endpoint test runs drive the
 //!   launcher through (`--control-pipe`).
+//! - [`classic_migration`]: copying a classic VirindiTank and UtilityBelt
+//!   setup to where MossTank reads it.
 //!
 //! Nothing here opens a network connection. Every HTTP request goes through
 //! [`net::HttpTransport`], which the host implements (the TLS choice is the
 //! host's).
 
 pub mod cancel;
+pub mod classic_migration;
 pub mod control;
 pub mod fsutil;
 pub mod ids;

@@ -2,6 +2,7 @@
 
 mod dat;
 mod gfx;
+mod migrate;
 mod options;
 mod perf;
 mod ui;
@@ -67,7 +68,15 @@ fn frames_summarize(
 }
 
 fn main() -> ExitCode {
-    let options = match Options::parse(std::env::args_os().skip(1), |name| std::env::var_os(name)) {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|first| first == "migrate-classic") {
+        return ExitCode::from(migrate::run(
+            &args[1..],
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        ));
+    }
+    let options = match Options::parse(args, |name| std::env::var_os(name)) {
         Ok(options) => options,
         Err(message) => {
             eprintln!("actool: {message}\n\n{USAGE}");

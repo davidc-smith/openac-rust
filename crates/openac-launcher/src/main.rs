@@ -41,6 +41,7 @@ use ac_launcher_core::updates::{
     LauncherSelfUpdateManager, LauncherUpdater, LauncherVersion, ReleaseManifestClient, detect_rid,
     self_update_bootstrap, suffix_for_current_os,
 };
+use ac_launcher_core::window::classic_migration::ClassicMigrationDialog;
 use ac_launcher_core::window::install_folder::InstallFolderParts;
 use ac_launcher_core::window::plugins::PluginComposition;
 use ac_launcher_core::window::startup::{LauncherStartupMode, LauncherStartupOptions};
@@ -284,6 +285,9 @@ fn run(arguments: &[String]) -> Result<ExitCode, String> {
                 ),
                 relaunch_clock: None,
                 known_servers: Some(known_servers),
+                classic_migration: Some(ClassicMigrationDialog::new(
+                    paths.vtank_profiles_directory(),
+                )),
             });
             window.initialize();
             app::LauncherApp::new(window, shared, script)
