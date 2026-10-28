@@ -1996,17 +1996,22 @@ impl AttachedWindow {
                 GameplayOutput::DumpNearby => self.dump_nearby(),
                 GameplayOutput::WorldClick(click) => self.world_click(click),
                 GameplayOutput::Interface(action) => {
-                    let outputs = match self.ui.as_mut() {
+                    let (taken, outputs) = match self.ui.as_mut() {
                         Some(ui) => {
-                            ui.handle_input_action(action);
-                            ui.host_mut().take_outputs()
+                            let taken = ui.handle_input_action(action);
+                            (taken, ui.host_mut().take_outputs())
                         }
-                        None => continue,
+                        None => (false, Vec::new()),
                     };
                     let _ = self.after_ui(Routed::<()> {
                         world: None,
                         outputs,
                     });
+                    // What the interface did not take goes on to the
+                    // session (the examine key with no examination shown).
+                    if !taken && let Some(next) = crate::gameplay_input::session_output(action) {
+                        self.carry_out(vec![next]);
+                    }
                 }
             }
         }

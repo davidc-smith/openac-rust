@@ -18,12 +18,14 @@ use ac_core::items::{ClientObject, ClientObjectTable};
 use ac_core::spells::SpellMetadata;
 use ac_proto::PropertyTables;
 use ac_proto::appraise::IdentifyObjectResponse;
-use ac_runtime::inventory::AppraisalView;
+use ac_runtime::inventory::{AppraisalView, ItemCommand, ObjectRef};
+use ac_runtime::session::SessionCommand;
 
 use crate::draw::{Color, TextureRef};
 use crate::geometry::AnchorEdges;
 use crate::host::PanelController;
 use crate::import::ImportedLayout;
+use crate::input::InputAction;
 use crate::panels::items::{bind_click, emit};
 use crate::panels::{PanelOutput, RowTemplates};
 use crate::root::{ElementMessage, UiRoot};
@@ -1325,6 +1327,9 @@ pub struct AppraisalController {
     creature_extra: Option<CreatureRowList>,
     creature_texts: [Option<ElementId>; 6],
     shown: bool,
+    /// The selection last seen (`None` before the first), so a change is
+    /// told from the selection the window found when it was attached.
+    seen_selection: Option<Option<u32>>,
     in_combat: bool,
     refresh_elapsed: f64,
     spell_panel: ElementId,
@@ -1473,6 +1478,7 @@ impl AppraisalController {
             creature_extra,
             creature_texts,
             shown: false,
+            seen_selection: None,
             in_combat: false,
             refresh_elapsed: 0.0,
             spell_panel,
@@ -1747,6 +1753,33 @@ impl AppraisalController {
             return false;
         }
         self.refresh_elapsed %= CREATURE_REFRESH_SECONDS;
+        true
+    }
+
+    /// The selection now. While the window shows, a change examines the
+    /// newly selected object, or (nothing selected) closes the window; a
+    /// change while it is hidden does nothing.
+    pub fn follow_selection(&mut self, ui: &mut UiRoot, selected: Option<u32>) {
+        let previous = self.seen_selection.replace(selected);
+        if previous.is_none_or(|p| p == selected) || !self.shown {
+            return;
+        }
+        let output = match selected {
+            Some(id) if id != 0 => PanelOutput::Session(SessionCommand::Item(
+                ItemCommand::Appraise(ObjectRef::Guid(id)),
+            )),
+            _ => PanelOutput::CloseExamination,
+        };
+        emit(ui, output);
+    }
+
+    /// The examine key closes the window while it shows (true: the key is
+    /// taken); otherwise it is not the window's.
+    pub fn handle_input_action(&mut self, ui: &mut UiRoot, action: InputAction) -> bool {
+        if !self.shown || action != InputAction::SelectionExamine {
+            return false;
+        }
+        emit(ui, PanelOutput::CloseExamination);
         true
     }
 

@@ -15,7 +15,8 @@ use std::sync::Arc;
 use ac_core::items::{ClientObject, ItemType};
 use ac_core::spells::{MagicSchool, SpellMetadata};
 use ac_proto::appraise::{CreatureProfile, HookProfile, IdentifyObjectResponse};
-use ac_runtime::inventory::AppraisalView;
+use ac_runtime::inventory::{AppraisalView, ItemCommand, ObjectRef};
+use ac_runtime::session::SessionCommand;
 use ac_ui::ElementId;
 use ac_ui::draw::{Color, TextureRef};
 use ac_ui::event::kind;
@@ -626,6 +627,59 @@ fn the_item_report_wraps_again_when_the_window_is_widened() {
     w.host.root.element_mut(item_text).unwrap().width = 760.0;
     w.host.tick(0.016, 16, None);
     assert!(longest(&w) > 47, "{:?}", w.lines(appraisal::ITEM_TEXT_ID));
+}
+
+fn show_examination(w: &mut Window, shown: bool) {
+    if shown {
+        w.host.root.show_window("examine");
+    } else {
+        w.host.root.hide_window("examine");
+    }
+    w.host.pump();
+    let _ = panel_outputs(&mut w.host);
+}
+
+fn follow(w: &mut Window, selected: Option<u32>) -> Vec<PanelOutput> {
+    w.with(|c, ui| c.follow_selection(ui, selected));
+    panel_outputs(&mut w.host)
+}
+
+// OpenAC `AppraisalUiController.HandleSelectionChanged`: while the window
+// shows, a new selection is examined and an empty one closes the window;
+// while it is hidden a change does nothing.
+#[test]
+fn the_examination_follows_the_selection_while_it_shows() {
+    let mut w = window();
+    show_examination(&mut w, false);
+    assert!(follow(&mut w, Some(0x5000_0010)).is_empty());
+    assert!(follow(&mut w, Some(0x5000_0011)).is_empty(), "hidden");
+    show_examination(&mut w, true);
+    assert!(follow(&mut w, Some(0x5000_0011)).is_empty(), "no change");
+    assert_dbg_eq!(
+        follow(&mut w, Some(0x5000_0012)),
+        [PanelOutput::Session(SessionCommand::Item(
+            ItemCommand::Appraise(ObjectRef::Guid(0x5000_0012))
+        ))]
+    );
+    assert_dbg_eq!(follow(&mut w, None), [PanelOutput::CloseExamination]);
+    show_examination(&mut w, false);
+    assert!(follow(&mut w, Some(0x5000_0013)).is_empty(), "hidden");
+}
+
+// OpenAC `AppraisalUiController.HandleInputAction`: the examine key closes
+// the window while it shows and is taken; hidden, it is not the window's.
+#[test]
+fn the_examine_key_closes_the_examination_while_it_shows() {
+    use ac_ui::input::InputAction;
+    let mut w = window();
+    show_examination(&mut w, false);
+    assert!(!w.with(|c, ui| c.handle_input_action(ui, InputAction::SelectionExamine)));
+    assert!(panel_outputs(&mut w.host).is_empty());
+    show_examination(&mut w, true);
+    assert!(!w.with(|c, ui| c.handle_input_action(ui, InputAction::UseSelected)));
+    assert!(panel_outputs(&mut w.host).is_empty());
+    assert!(w.with(|c, ui| c.handle_input_action(ui, InputAction::SelectionExamine)));
+    assert_dbg_eq!(panel_outputs(&mut w.host), [PanelOutput::CloseExamination]);
 }
 
 // ItemResponse_TitleUsesRetailMaterialDecoratedAppropriateName.
