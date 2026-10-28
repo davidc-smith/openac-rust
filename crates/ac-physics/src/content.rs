@@ -31,7 +31,7 @@ use crate::portal::PortalPlane;
 use crate::scenery::{self, ObjectShape, SceneryDats};
 use crate::shadow::ShadowShape;
 use crate::shadow_builder::{self, PartRef};
-use crate::shadow_registry::RegistrationSite;
+use crate::shadow_registry::{RegistrationSite, ShadowObjectRegistry};
 use crate::terrain::TerrainSurface;
 use crate::world::{BldPortalInfo, BuildingPhysics, CollisionWorld, Placement};
 
@@ -166,15 +166,39 @@ impl<D: DatSource> SceneryDats for SceneryReads<'_, D> {
 }
 
 /// One static object as the collision registers it.
-struct StaticEntity {
-    id: u32,
-    source_id: u32,
-    position: Vec3,
-    rotation: Quat,
-    parts: Vec<PartRef>,
-    scale: f32,
-    parent_cell_id: u32,
-    is_building_shell: bool,
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticEntity {
+    /// The client's id for it.
+    pub id: u32,
+    /// Its model: a GfxObj (`0x01`) or Setup (`0x02`) id.
+    pub source_id: u32,
+    /// Its position in the engine's frame, metres.
+    pub position: Vec3,
+    /// Its orientation.
+    pub rotation: Quat,
+    /// Its parts, object-local.
+    pub parts: Vec<PartRef>,
+    /// Its scale.
+    pub scale: f32,
+    /// The interior cell it stands in (0 outdoors: derived from the
+    /// position).
+    pub parent_cell_id: u32,
+    /// A building's shell (collides through its building record).
+    pub is_building_shell: bool,
+}
+
+/// How a static object was registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaticCollisionKind {
+    /// A building's shell: not registered here.
+    BuildingShell,
+    /// With its parts' collision trees.
+    Bsp,
+    /// With its setup's cylinders or spheres.
+    Setup,
+    /// Without collision: for drawing only when it has drawn parts, else
+    /// not at all.
+    NoCollision,
 }
 
 /// The landblock's corner in the engine's frame when `center` is the
@@ -604,56 +628,83 @@ fn publish_statics(
     publication: &mut StaticCollisionPublication,
 ) -> Result<(), ContentError> {
     for entity in statics {
-        if entity.is_building_shell {
-            continue;
-        }
         let (shadows, world) = engine.shadows_and_world();
-        let get_gfx = |id: u32| world.gfx_obj(id);
-        let bsp_shapes = shadow_builder::from_landblock_bsp_parts(&entity.parts, false, &get_gfx);
-        let (part_array, _) =
-            shadow_builder::from_static_render_parts(&entity.parts, &get_gfx, &|id| {
-                world.visual_bounds(id).copied()
-            });
-        let site = RegistrationSite {
-            world_pos: entity.position,
-            rotation: entity.rotation,
-            world_offset_x: origin.x,
-            world_offset_y: origin.y,
-            landblock_id,
-            seed_cell_id: entity.parent_cell_id,
-        };
-        let shapes: Vec<ShadowShape> = if bsp_shapes.is_empty() {
-            setup_shapes(world, entity)
-        } else {
-            bsp_shapes
-        };
-        if shapes.is_empty() {
-            publication.no_collision += 1;
-        } else if shapes[0].collision_type == crate::shadow::ShadowCollisionType::Bsp {
-            publication.bsp_owners += 1;
-        } else {
-            publication.setup_owners += 1;
+        match register_static(shadows, world, landblock_id, origin, entity)? {
+            StaticCollisionKind::BuildingShell => {}
+            StaticCollisionKind::Bsp => publication.bsp_owners += 1,
+            StaticCollisionKind::Setup => publication.setup_owners += 1,
+            StaticCollisionKind::NoCollision => publication.no_collision += 1,
         }
-        if shapes.is_empty() && part_array.is_empty() {
-            continue;
-        }
-        shadows
-            .register_multi_part(
-                world,
-                entity.id,
-                &shapes,
-                site,
-                0,
-                EntityCollisionFlags::default(),
-                true,
-                Some(&part_array),
-            )
-            .map_err(|error| ContentError::Flood {
-                owner: entity.id,
-                error,
-            })?;
     }
     Ok(())
+}
+
+/// Register one static object in `shadows` as a landblock publication
+/// does: its collision (its parts' collision trees, else its setup's
+/// cylinders, else its spheres) with its drawn part array, or the part
+/// array alone (for drawing only) when it has no collision. A building's
+/// shell is not registered. `world` holds the object's models (collision
+/// trees, drawn bounds, setup) and the cells its flood reaches;
+/// `landblock_id` and its corner `origin` place the landblock in the
+/// engine's frame.
+///
+/// # Errors
+/// The shadow flood failed (a building portal names a missing partner).
+pub fn register_static(
+    shadows: &mut ShadowObjectRegistry,
+    world: &CollisionWorld,
+    landblock_id: u32,
+    origin: Vec3,
+    entity: &StaticEntity,
+) -> Result<StaticCollisionKind, ContentError> {
+    if entity.is_building_shell {
+        return Ok(StaticCollisionKind::BuildingShell);
+    }
+    let get_gfx = |id: u32| world.gfx_obj(id);
+    let bsp_shapes = shadow_builder::from_landblock_bsp_parts(&entity.parts, false, &get_gfx);
+    let (part_array, _) =
+        shadow_builder::from_static_render_parts(&entity.parts, &get_gfx, &|id| {
+            world.visual_bounds(id).copied()
+        });
+    let site = RegistrationSite {
+        world_pos: entity.position,
+        rotation: entity.rotation,
+        world_offset_x: origin.x,
+        world_offset_y: origin.y,
+        landblock_id,
+        seed_cell_id: entity.parent_cell_id,
+    };
+    let shapes: Vec<ShadowShape> = if bsp_shapes.is_empty() {
+        setup_shapes(world, entity)
+    } else {
+        bsp_shapes
+    };
+    let kind = if shapes.is_empty() {
+        StaticCollisionKind::NoCollision
+    } else if shapes[0].collision_type == crate::shadow::ShadowCollisionType::Bsp {
+        StaticCollisionKind::Bsp
+    } else {
+        StaticCollisionKind::Setup
+    };
+    if shapes.is_empty() && part_array.is_empty() {
+        return Ok(kind);
+    }
+    shadows
+        .register_multi_part(
+            world,
+            entity.id,
+            &shapes,
+            site,
+            0,
+            EntityCollisionFlags::default(),
+            true,
+            Some(&part_array),
+        )
+        .map_err(|error| ContentError::Flood {
+            owner: entity.id,
+            error,
+        })?;
+    Ok(kind)
 }
 
 /// A static setup without collision-tree parts collides with its cylinders,

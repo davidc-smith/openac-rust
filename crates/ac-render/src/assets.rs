@@ -568,6 +568,9 @@ pub struct NearData {
     pub buildings: Vec<crate::cells::BuildingData>,
     /// Interior cells.
     pub cells: Vec<crate::cells::CellData>,
+    /// Interior statics whose cells could not be worked out (drawn in no
+    /// cell), one line each.
+    pub membership_failures: Vec<String>,
 }
 
 impl NearData {
@@ -629,11 +632,16 @@ pub fn build_near(content: &Content, coord: LandblockCoord, region: &Region) -> 
             ..NearData::default()
         };
     };
+    let buildings = crate::cells::build_buildings(content, coord, &info);
+    let mut cells = crate::cells::build_cells(content, coord, &info);
+    let membership_failures =
+        crate::membership::assign_interior_membership(content, coord, &mut cells, &buildings);
     NearData {
         statics: place_statics(coord, &info),
         scenery,
-        buildings: crate::cells::build_buildings(content, coord, &info),
-        cells: crate::cells::build_cells(content, coord, &info),
+        buildings,
+        cells,
+        membership_failures,
     }
 }
 
@@ -828,6 +836,9 @@ pub struct GfxObjData {
     pub degrades: Vec<crate::degrade::DegradeLevel>,
     /// The point its distance from the viewer is measured to, model-local.
     pub sort_center: Vec3,
+    /// The sphere a view tests the part by (`(centre, radius)`,
+    /// model-local): [`drawing_sphere`]; `None` when there is none.
+    pub drawing_sphere: Option<(Vec3, f32)>,
 }
 
 /// Mesh a GfxObj. `None` when it is missing or unreadable.
@@ -836,7 +847,27 @@ pub fn build_gfx_obj(content: &Content, id: u32) -> Option<GfxObjData> {
     let mut data = pack_sub_meshes(id, &meshing::build_gfx_obj_mesh(&gfx));
     data.degrades = crate::cells::degrade_levels(content, &gfx);
     data.sort_center = vec3(gfx.sort_center);
+    data.drawing_sphere = drawing_sphere(&gfx);
     Some(data)
+}
+
+/// The sphere a view tests a GfxObj by: the root sphere of its drawing
+/// tree as authored, else the sphere around the box of its vertices (its
+/// centre and half its diagonal). `None` without either.
+#[must_use]
+pub fn drawing_sphere(gfx: &GfxObj) -> Option<(Vec3, f32)> {
+    if let Some(root) = gfx.drawing_bsp.as_ref().and_then(|tree| tree.root()) {
+        let sphere = match root {
+            ac_dat::objects::BspNode::Split(s) => s.sphere,
+            ac_dat::objects::BspNode::Portal(p) => p.sphere,
+            ac_dat::objects::BspNode::Leaf(l) => l.sphere,
+        };
+        return Some((vec3(sphere.origin), sphere.radius));
+    }
+    let mut points = gfx.vertices.vertices.iter().map(|(_, v)| vec3(v.origin));
+    let first = points.next()?;
+    let (lo, hi) = points.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+    Some(((lo + hi) * 0.5, (hi - lo).length() * 0.5))
 }
 
 fn pack_sub_meshes(id: u32, subs: &[SubMesh]) -> GfxObjData {
@@ -847,6 +878,7 @@ fn pack_sub_meshes(id: u32, subs: &[SubMesh]) -> GfxObjData {
         sub_meshes: Vec::new(),
         degrades: Vec::new(),
         sort_center: Vec3::ZERO,
+        drawing_sphere: None,
     };
     for sub in subs {
         if sub.indices.is_empty() {
@@ -1452,5 +1484,103 @@ mod tests {
         assert_eq!(parallel_map(&items, slow_first), expected);
         assert_eq!(parallel_map(&[] as &[u32], slow_first), Vec::<u32>::new());
         assert_eq!(parallel_map(&[7], slow_first), vec![21]);
+    }
+
+    /// A quad of side 4 m with the drawing tree `drawing_bsp`.
+    fn quad_gfx(drawing_bsp: Option<ac_dat::objects::BspTree>) -> GfxObj {
+        use ac_dat::objects::{GfxObjFlags, Vertex, VertexArray};
+        use ac_dat::types::Vector3;
+        let corner = |i: u16, x: f32, y: f32| {
+            (
+                i,
+                Vertex {
+                    origin: Vector3 { x, y, z: 0.0 },
+                    normal: Vector3::default(),
+                    uvs: Vec::new(),
+                },
+            )
+        };
+        GfxObj {
+            id: 0x0100_0001,
+            flags: GfxObjFlags(GfxObjFlags::HAS_DRAWING),
+            surfaces: Vec::new(),
+            vertices: VertexArray {
+                vertex_type: VertexArray::SW_VERTEX,
+                vertices: vec![
+                    corner(0, -2.0, -2.0),
+                    corner(1, 2.0, -2.0),
+                    corner(2, 2.0, 2.0),
+                    corner(3, -2.0, 2.0),
+                ],
+            },
+            physics_polygons: Vec::new(),
+            physics_bsp: None,
+            sort_center: Vector3::default(),
+            polygons: Vec::new(),
+            drawing_bsp,
+            did_degrade: 0,
+        }
+    }
+
+    /// OpenAC `MeshExtractorSolidFaceExtractionTests.PrepareMeshData_CarriesAuthoredDrawingBspSphereInsteadOfVertexAabbSphere`:
+    /// the drawing tree's root sphere, as authored, is the part's sphere.
+    #[test]
+    fn the_drawing_sphere_is_the_drawing_trees_authored_root_sphere() {
+        use ac_dat::objects::{BspLeaf, BspNode, BspTree, BspTreeKind};
+        use ac_dat::types::{Sphere, Vector3};
+        let authored = Sphere {
+            origin: Vector3 {
+                x: -0.25,
+                y: 0.125,
+                z: 0.5,
+            },
+            radius: 3.125,
+        };
+        let gfx = quad_gfx(Some(BspTree {
+            kind: BspTreeKind::Drawing,
+            nodes: vec![BspNode::Leaf(BspLeaf {
+                index: 0,
+                solid: 0,
+                sphere: authored,
+                polygons: Vec::new(),
+            })],
+        }));
+        assert_eq!(
+            drawing_sphere(&gfx),
+            Some((Vec3::new(-0.25, 0.125, 0.5), 3.125))
+        );
+    }
+
+    /// OpenAC `MeshExtractor.PrepareGfxObjMeshData`: without a drawing tree
+    /// the sphere is the vertices' box: its centre, half its diagonal.
+    #[test]
+    fn without_a_drawing_tree_the_sphere_is_the_vertex_boxs() {
+        let (centre, radius) = drawing_sphere(&quad_gfx(None)).unwrap();
+        assert_eq!(centre, Vec3::ZERO);
+        assert!((radius - 8f32.sqrt()).abs() < 1e-6, "{radius}");
+    }
+
+    /// OpenAC `InstalledPreparedCollisionCatalogTests.InstalledPackage_FacilityHubStepsCarryRetailDrawingSphere`:
+    /// the Facility Hub's step model (GfxObj 0x010000DE) is admitted by its
+    /// drawing tree's root sphere as the dat authors it.
+    #[test]
+    #[ignore = "needs the retail dat files"]
+    fn the_facility_hub_steps_carry_their_authored_drawing_sphere() {
+        use ac_dat::objects::BspNode;
+        const STAIR: u32 = 0x0100_00DE;
+        let dir = std::env::var_os("OPENAC_DAT_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(ac_dat::default_dat_dir)
+            .expect("no dat directory: set OPENAC_DAT_DIR");
+        let d = Content::open(&dir).expect("open the retail dats");
+        let gfx = d.dats.get::<GfxObj>(STAIR).unwrap().unwrap();
+        let root = match gfx.drawing_bsp.as_ref().and_then(|t| t.root()).unwrap() {
+            BspNode::Split(s) => s.sphere,
+            BspNode::Portal(p) => p.sphere,
+            BspNode::Leaf(l) => l.sphere,
+        };
+        let data = build_gfx_obj(&d, STAIR).unwrap();
+        assert_eq!(data.drawing_sphere, Some((vec3(root.origin), root.radius)));
+        assert!(root.radius > 0.0);
     }
 }

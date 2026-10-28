@@ -444,6 +444,21 @@ impl CameraCollision {
         self.objects.get(&local_id).is_some_and(|m| m.registered)
     }
 
+    /// The cells the server object with client id `local_id` is drawn in:
+    /// every cell its drawn parts reach, as its registration flooded them
+    /// (`None` when it has no rows in the resident neighbourhood).
+    #[must_use]
+    pub fn render_cells(&self, local_id: u32) -> Option<&[u32]> {
+        if !self.has_object(local_id) {
+            return None;
+        }
+        let (_, engine) = self.resident.as_ref()?;
+        engine
+            .shadows
+            .retail_cell_array(local_id)
+            .filter(|cells| !cells.is_empty())
+    }
+
     /// Every collision object of the resident neighbourhood and the offset
     /// from its frame to the drawing frame (a diagnostic).
     #[must_use]
@@ -760,6 +775,77 @@ mod tests {
     // engine, server objects included; `CollisionExemption.ShouldSkip`
     // exempts a viewer from creatures and from an ethereal object that
     // ignores collisions. The window mirrors its views into its own.
+    /// A setup (the post's id) of one 1 m drawn box part, centred on its
+    /// origin, without collision.
+    fn crate_dats() -> FakeDats {
+        use ac_dat::objects::{GfxObj, GfxObjFlags, Vertex, VertexArray};
+        use ac_dat::types::Vector3;
+        const PART: u32 = 0x0100_0098;
+        let mut setup = crate::animation::test_support::setup(1);
+        setup.id = POST_SETUP;
+        setup.parts = vec![PART];
+        let corner = |i: u16| {
+            let s = |bit: u16| if i & bit == 0 { -0.5 } else { 0.5 };
+            (
+                i,
+                Vertex {
+                    origin: Vector3 {
+                        x: s(1),
+                        y: s(2),
+                        z: s(4),
+                    },
+                    normal: Vector3::default(),
+                    uvs: Vec::new(),
+                },
+            )
+        };
+        let gfx = GfxObj {
+            id: PART,
+            flags: GfxObjFlags(GfxObjFlags::HAS_DRAWING),
+            surfaces: Vec::new(),
+            vertices: VertexArray {
+                vertex_type: VertexArray::SW_VERTEX,
+                vertices: (0..8).map(corner).collect(),
+            },
+            physics_polygons: Vec::new(),
+            physics_bsp: None,
+            sort_center: Vector3::default(),
+            polygons: Vec::new(),
+            drawing_bsp: None,
+            did_degrade: 0,
+        };
+        let mut dats = FakeDats::default();
+        dats.0.insert(POST_SETUP, std::sync::Arc::new(setup));
+        dats.0.insert(PART, std::sync::Arc::new(gfx));
+        dats
+    }
+
+    // OpenAC `LiveEntityCollisionBuilder` registers a live object with its
+    // drawn parts and the walk draws it in every cell their flood reaches.
+    #[test]
+    fn a_server_object_is_drawn_in_every_cell_its_drawn_parts_reach() {
+        let dats = crate_dats();
+        let mut c = CameraCollision::new();
+        let center = LandblockCoord { x: 0xA9, y: 0xB4 };
+        c.arrived(center, Ok(Box::new(engine_with_building(0))))
+            .unwrap();
+        // Unknown: drawn where it stands.
+        assert_eq!(c.render_cells(7), None);
+        // Inside land cell 1 (x 0 to 24 m): that cell alone.
+        let inside = post_view(12.0, 12.0, 94.0);
+        assert!(c.sync_objects(&dats, [&inside], || true).is_empty());
+        assert_eq!(c.render_cells(7), Some(&[0xA9B4_0001][..]));
+        // Moved onto the line at x = 24 m: its box reaches cell 9 too.
+        let straddling = post_view(23.8, 12.0, 94.0);
+        assert!(c.sync_objects(&dats, [&straddling], || true).is_empty());
+        let cells = c.render_cells(7).expect("registered");
+        assert!(cells.contains(&0xA9B4_0001), "{cells:X?}");
+        assert!(cells.contains(&0xA9B4_0009), "{cells:X?}");
+        // Gone: drawn nowhere by the mirror.
+        assert!(c.sync_objects(&dats, [], || true).is_empty());
+        assert_eq!(c.render_cells(7), None);
+    }
+
     #[test]
     fn the_eye_stops_at_a_server_object_the_session_shows() {
         let dats = post_dats();

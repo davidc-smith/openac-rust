@@ -276,6 +276,8 @@ pub(crate) struct GfxGpu {
     pub(crate) sort_center: Vec3,
     /// Its box, model-local.
     pub(crate) bounds: Option<(Vec3, Vec3)>,
+    /// The sphere a view admits it by, model-local.
+    pub(crate) drawing_sphere: Option<(Vec3, f32)>,
 }
 
 impl GfxGpu {
@@ -309,6 +311,7 @@ impl GfxGpu {
             degrades: gfx.degrades.clone(),
             sort_center: gfx.sort_center,
             bounds: crate::assets::gfx_bounds(gfx),
+            drawing_sphere: gfx.drawing_sphere,
         }
     }
 }
@@ -370,7 +373,6 @@ pub(crate) struct CellRef<'a> {
 pub(crate) struct ObjectDraw<'a> {
     parts: std::borrow::Cow<'a, [MeshRef]>,
     world: Mat4,
-    sphere: (Vec3, f32),
     lights: LightSet,
     indoor: bool,
     is_player: bool,
@@ -388,6 +390,36 @@ pub(crate) struct ObjectDraw<'a> {
     /// Whether the world draws it: neither it nor what holds it is hidden
     /// or flagged not to draw ([`draws_by_state`]).
     visible: bool,
+    /// The top-level object (by local id) whose cells it is drawn in: its
+    /// own, or for a held object the one at the top of what holds it.
+    render_owner: u32,
+}
+
+/// Where each server object is drawn: for every cell, the objects drawn in
+/// it as (the cell `objects` files it under, its index there), in the
+/// order `objects` lists them. An object is drawn in every cell its drawn
+/// parts reach, as its owner's registration flooded them
+/// (`render_cells`); one without rows is drawn in the cell it stands in.
+pub(crate) fn file_object_draws<'c>(
+    objects: &HashMap<u32, Vec<ObjectDraw<'_>>>,
+    render_cells: impl Fn(u32) -> Option<&'c [u32]>,
+) -> HashMap<u32, Vec<(u32, usize)>> {
+    let mut homes: Vec<u32> = objects.keys().copied().collect();
+    homes.sort_unstable();
+    let mut out: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
+    for home in homes {
+        for (index, draw) in objects[&home].iter().enumerate() {
+            let own = [home];
+            let cells: &[u32] = match render_cells(draw.render_owner) {
+                Some(cells) => cells,
+                None => &own,
+            };
+            for &cell in cells {
+                out.entry(cell).or_default().push((home, index));
+            }
+        }
+    }
+    out
 }
 
 /// Whether an object's own physics state lets the world draw it: neither
@@ -2115,6 +2147,10 @@ impl WorldRenderer {
         for draws in objects.values_mut() {
             draws.retain(|draw| draw.visible);
         }
+        // Each object in every cell its drawn parts reach (OpenAC files a
+        // live object by its registration's cell array).
+        let object_cells =
+            file_object_draws(&objects, |owner| self.camera_collision.render_cells(owner));
         let held: HashSet<u32> = scene
             .into_iter()
             .flat_map(Scene::objects)
@@ -2246,6 +2282,7 @@ impl WorldRenderer {
                 buildings: &buildings,
                 cells: &cells,
                 objects: &objects,
+                object_cells: &object_cells,
                 models: &self.models,
                 model_info: &self.model_info,
                 meshes: &self.meshes,
@@ -2486,6 +2523,8 @@ impl WorldRenderer {
             indoor: bool,
             /// Whether the parent is drawn.
             visible: bool,
+            /// The top-level object whose cells it is drawn in.
+            owner: u32,
         }
 
         let player_guid = scene.and_then(Scene::player).map(|p| p.guid);
@@ -2562,7 +2601,6 @@ impl WorldRenderer {
             out.entry(pos.cell_id).or_default().push(ObjectDraw {
                 parts,
                 world,
-                sphere,
                 lights,
                 indoor,
                 is_player: Some(object.guid) == player_guid,
@@ -2572,6 +2610,7 @@ impl WorldRenderer {
                 root,
                 held: false,
                 visible,
+                render_owner: object.key.local_id,
             });
             poses.push(OwnerPose {
                 local: object.key.local_id,
@@ -2591,6 +2630,7 @@ impl WorldRenderer {
                     lights,
                     indoor,
                     visible,
+                    owner: object.key.local_id,
                 },
             );
         }
@@ -2638,7 +2678,7 @@ impl WorldRenderer {
                 ) else {
                     return false;
                 };
-                let Some((parts, bounds)) = self.object_parts(child_setup_id, &child.model) else {
+                let Some((parts, _)) = self.object_parts(child_setup_id, &child.model) else {
                     return false;
                 };
                 let world = parent.world;
@@ -2652,8 +2692,8 @@ impl WorldRenderer {
                         variant: part.variant,
                     })
                     .collect();
-                let sphere = sphere_of(bounds, child_root * Mat4::from_scale(Vec3::splat(scale)));
-                let (cell, lights, indoor) = (parent.cell, parent.lights, parent.indoor);
+                let (cell, lights, indoor, owner) =
+                    (parent.cell, parent.lights, parent.indoor, parent.owner);
                 // A held object keeps its own translucency.
                 let opacity = translucency::opacity(translucency::object_translucency(
                     child.guid,
@@ -2666,7 +2706,6 @@ impl WorldRenderer {
                 out.entry(cell).or_default().push(ObjectDraw {
                     parts: Cow::Owned(posed),
                     world,
-                    sphere,
                     lights,
                     indoor,
                     is_player: false,
@@ -2676,6 +2715,7 @@ impl WorldRenderer {
                     root: child_root,
                     held: true,
                     visible,
+                    render_owner: owner,
                 });
                 poses.push(OwnerPose {
                     local: child.key.local_id,
@@ -2695,6 +2735,7 @@ impl WorldRenderer {
                         lights,
                         indoor,
                         visible,
+                        owner,
                     },
                 );
                 true
@@ -3383,7 +3424,14 @@ impl WorldRenderer {
             scenery,
             buildings,
             mut cells,
+            membership_failures,
         } = data;
+        for failure in membership_failures {
+            self.notices.push(format!(
+                "cells of landblock {:08X}: {failure}",
+                coord.terrain_id()
+            ));
+        }
         for cell in &mut cells {
             if let Some(mesh) = cell.mesh.take() {
                 self.upload_mesh(device, cell_mesh_key(cell.id), &mesh);
@@ -4493,5 +4541,85 @@ mod tests {
                 (key(crate::effects::SHELL_CELL, 0), 0x0200_0003),
             ]
         );
+    }
+
+    /// A server object as the frame files it: drawn on `owner`'s cells.
+    fn object_draw(local_id: u32, owner: u32, held: bool) -> ObjectDraw<'static> {
+        ObjectDraw {
+            parts: Cow::Owned(Vec::new()),
+            world: Mat4::IDENTITY,
+            lights: NO_LIGHTS,
+            indoor: true,
+            is_player: false,
+            opacities: None,
+            guid: 0x5000_0000 | local_id,
+            local_id,
+            root: Mat4::IDENTITY,
+            held,
+            visible: true,
+            render_owner: owner,
+        }
+    }
+
+    /// An object whose drawn parts reach three rooms of the Facility Hub is
+    /// drawn in each of them, once each. OpenAC draws a live object in every
+    /// cell its registry rows are in (`WalkProductionWorldData.GetCellDynamics`);
+    /// the cells are those of a test OpenAC had before its cell views read
+    /// the registry (`BucketDynamicRecord_InstallsMultipartPlayerInEveryCrossedInteriorCell`).
+    #[test]
+    fn an_object_is_drawn_in_every_cell_its_parts_reach() {
+        const HOME: u32 = 0x8A02_015E;
+        let cells = [0x8A02_015E, 0x8A02_015F, 0x8A02_01C1];
+        let objects = HashMap::from([(HOME, vec![object_draw(0x000F_4243, 0x000F_4243, false)])]);
+        let filed = file_object_draws(&objects, |owner| {
+            (owner == 0x000F_4243).then_some(&cells[..])
+        });
+        let mut keys: Vec<u32> = filed.keys().copied().collect();
+        keys.sort_unstable();
+        assert_eq!(keys, cells);
+        for list in filed.values() {
+            assert_eq!(list, &[(HOME, 0)]);
+        }
+    }
+
+    /// An object without rows is drawn in the cell it stands in. This is
+    /// this client's choice, not OpenAC's (OpenAC draws only what its
+    /// registry lists): the rows come from the window's collision mirror,
+    /// which holds only the player's landblock and its eight neighbours and
+    /// builds objects over a few frames, so an object outside it, not yet
+    /// built, or whose build failed has none.
+    #[test]
+    fn an_object_without_rows_is_drawn_where_it_stands() {
+        const HOME: u32 = 0x8A02_015F;
+        let objects = HashMap::from([(HOME, vec![object_draw(0x1234, 0x1234, false)])]);
+        let filed = file_object_draws(&objects, |_| None);
+        assert_eq!(filed.len(), 1);
+        assert_eq!(filed[&HOME], vec![(HOME, 0)]);
+    }
+
+    /// A held object (a wand held by an item held by a character) is drawn
+    /// in its top-level holder's cells, as OpenAC's registry gives an
+    /// attached child its root's cell array
+    /// (`ShadowObjectRegistryRetailCellArrayTests.AttachChild_NestedChildOfAChild_ResolvesToTheRoot`);
+    /// the cells are those of a test OpenAC had before its cell views read
+    /// the registry (`ResolveDynamicRenderCells_EquippedDescendantInheritsRootCellArray`).
+    #[test]
+    fn a_held_object_is_drawn_in_its_holders_cells() {
+        const ROOT: u32 = 0x5000_000A;
+        const HOME: u32 = 0xF418_0104;
+        let cells = [0xF418_0106, 0xF418_0104];
+        let objects = HashMap::from([(
+            HOME,
+            vec![
+                object_draw(ROOT, ROOT, false),
+                object_draw(0x8000_0461, ROOT, true),
+                object_draw(0x8000_45EE, ROOT, true),
+            ],
+        )]);
+        let filed = file_object_draws(&objects, |owner| (owner == ROOT).then_some(&cells[..]));
+        assert_eq!(filed.len(), 2);
+        for cell in cells {
+            assert_eq!(filed[&cell], vec![(HOME, 0), (HOME, 1), (HOME, 2)]);
+        }
     }
 }
