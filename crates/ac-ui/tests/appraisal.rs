@@ -598,6 +598,36 @@ fn an_item_answer_shows_the_item_page_title_and_report() {
     assert_dbg_eq!(panel_outputs(&mut w.host), [PanelOutput::CloseExamination]);
 }
 
+// The item text wraps again at its new width when the window is resized,
+// as OpenAC's item-text layout cache does when its width changes.
+#[test]
+fn the_item_report_wraps_again_when_the_window_is_widened() {
+    let mut w = window();
+    w.objects
+        .add(object(ITEM, "Atlan Weapon", ItemType::MELEE_WEAPON));
+    let words = "a finely balanced weapon with a long description ".repeat(4);
+    assert!(w.apply(
+        parsed(|a| {
+            a.guid = ITEM;
+            a.properties.strings.insert(16, words.trim_end().into());
+        }),
+        &NoNames,
+    ));
+    let longest = |w: &Window| {
+        w.lines(appraisal::ITEM_TEXT_ID)
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap()
+    };
+    // Eight pixels a character without a font: 380 pixels hold 47.
+    assert!(longest(&w) <= 47);
+    let item_text = w.ids[&appraisal::ITEM_TEXT_ID];
+    w.host.root.element_mut(item_text).unwrap().width = 760.0;
+    w.host.tick(0.016, 16, None);
+    assert!(longest(&w) > 47, "{:?}", w.lines(appraisal::ITEM_TEXT_ID));
+}
+
 // ItemResponse_TitleUsesRetailMaterialDecoratedAppropriateName.
 #[test]
 fn the_title_puts_the_material_in_front_of_the_name() {

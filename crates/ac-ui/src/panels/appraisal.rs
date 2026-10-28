@@ -1894,9 +1894,11 @@ impl PanelController for AppraisalController {
         self.shown = false;
     }
 
-    // Both creature row layers scroll together: the front one takes the
-    // wheel, the chrome behind follows it.
+    // The item report wraps again when its width changed (a resize; nothing
+    // otherwise). Both creature row layers scroll together: the front one
+    // takes the wheel, the chrome behind follows it.
     fn tick(&mut self, ui: &mut UiRoot, _dt: f64) {
+        self.update(ui);
         for list in [self.creature_stats, self.creature_extra]
             .into_iter()
             .flatten()
