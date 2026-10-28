@@ -1699,6 +1699,86 @@ fn a_drop_when_every_pack_is_full_says_the_backpack_is_full_and_sends_nothing() 
     );
 }
 
+/// A chest item about to be dropped on a pack's icon: the player, 0xA in
+/// the main pack (room for `main_capacity`), and the side pack 0xC (room
+/// for `bag_capacity`, holding 0xE when `bag_holds_one`).
+fn pack_icon_drop(
+    main_capacity: i32,
+    bag_capacity: i32,
+    bag_holds_one: bool,
+) -> (Objects, Inv, ItemDragPayload) {
+    let mut o = Objects::new();
+    o.player(main_capacity, 7);
+    o.contained(0xA, PLAYER, 0, ItemType::MISC);
+    o.bag(0xC, 1, bag_capacity);
+    if bag_holds_one {
+        o.contained(0xE, 0xC, 0, ItemType::MISC);
+    }
+    const CHEST: u32 = 0x7000_0001;
+    let mut chest = ClientObject::new(CHEST);
+    chest.item_type = ItemType::CONTAINER;
+    chest.items_capacity = 10;
+    o.add(chest);
+    o.contained(0xB, CHEST, 0, ItemType::MISC);
+    let inv = inventory_window(None, InventorySprites::default());
+    (o, inv, ItemDragPayload::new(0xB, ItemDragSource::Ground, 0))
+}
+
+#[test]
+fn a_drop_on_the_full_main_pack_icon_goes_into_the_first_side_pack_with_room() {
+    // GitHub #24: looting onto the main pack's icon with the main pack
+    // full and a side pack empty sent nothing and said nothing.
+    let (o, mut inv, ground) = pack_icon_drop(1, 5, false);
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let top = inv.top;
+    assert_eq!(inv.slot(top, 0).object_id, PLAYER);
+    let out = drop_on(&mut inv, top, 0, ground, &view);
+    assert_dbg_eq!(
+        sessions(&out),
+        vec![SessionCommand::Item(ItemCommand::DropInto {
+            item: ObjectRef::Guid(0xB),
+            container: ObjectRef::Guid(0xC),
+            slot: 0,
+            amount: 0,
+            pickup: true,
+            join_stack: false,
+        })]
+    );
+    assert!(notices(&out).is_empty());
+}
+
+#[test]
+fn a_drop_on_a_full_side_pack_icon_says_that_pack_is_full_and_sends_nothing() {
+    // The main pack has room, but a drop on a pack's icon looks only in
+    // that pack (and the packs inside it).
+    let (o, mut inv, ground) = pack_icon_drop(5, 1, true);
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let packs = inv.containers;
+    assert_eq!(inv.slot(packs, 0).object_id, 0xC);
+    let out = drop_on(&mut inv, packs, 0, ground, &view);
+    assert!(sessions(&out).is_empty());
+    assert_eq!(
+        notices(&out),
+        vec!["The Pack C is completely full!".to_owned()]
+    );
+}
+
+#[test]
+fn a_drop_on_the_main_pack_icon_when_every_pack_is_full_says_the_backpack_is_full() {
+    let (o, mut inv, ground) = pack_icon_drop(1, 1, true);
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let top = inv.top;
+    let out = drop_on(&mut inv, top, 0, ground, &view);
+    assert!(sessions(&out).is_empty());
+    assert_eq!(
+        notices(&out),
+        vec!["Backpack is completely full!".to_owned()]
+    );
+}
+
 #[test]
 fn a_ground_item_dropped_on_the_grid_is_picked_up() {
     let mut o = Objects::new();

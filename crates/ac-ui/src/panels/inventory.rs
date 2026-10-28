@@ -688,11 +688,18 @@ impl InventoryController {
         }
         let mut fallthrough = 0;
         if is_capacity_rejection(legality) {
-            match choose_container(view.objects, item, view.player, destination, view.player) {
+            // A drop on a pack's icon looks for room in that pack and the
+            // packs inside it; a drop on the grid in the whole inventory.
+            let root = if Some(list) == self.contents_grid {
+                view.player
+            } else {
+                destination
+            };
+            match choose_container(view.objects, item, root, destination, view.player) {
                 Ok(c) => fallthrough = c,
                 Err(no_room) => {
-                    // Nothing has room: the notice names the inventory.
-                    Self::notice(ui, view, no_room, item, view.player);
+                    // Nothing has room: the notice names where it looked.
+                    Self::notice(ui, view, no_room, item, root);
                     return;
                 }
             }
@@ -777,7 +784,7 @@ impl InventoryController {
                     return;
                 }
                 container = target_item;
-                if is_container_full(view, container) {
+                if fallthrough == 0 && is_container_full(view, container) {
                     // The refusal already showed over the pack.
                     return;
                 }
