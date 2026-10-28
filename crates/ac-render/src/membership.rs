@@ -303,12 +303,7 @@ mod tests {
         const LOWER: u32 = 0x8A02_015E;
         const STAIR: u32 = 0x0200_0623;
         let d = content();
-        let region = d
-            .dats
-            .get::<ac_dat::objects::Region>(crate::assets::REGION_ID)
-            .unwrap()
-            .unwrap();
-        let near = crate::assets::build_near(&d, LandblockCoord { x: 0x8A, y: 0x02 }, &region);
+        let near = near_of(&d, LandblockCoord { x: 0x8A, y: 0x02 });
         assert!(
             near.membership_failures.is_empty(),
             "{:?}",
@@ -325,13 +320,78 @@ mod tests {
         assert!(upper.members.contains(&stair), "{:X?}", upper.members);
         assert!(lower.members.contains(&stair), "{:X?}", lower.members);
         assert!(!lower.statics.iter().any(|s| s.model_id == STAIR));
-        // Every cell draws its own statics that have drawn parts, and each
-        // member names a real static of its landblock.
-        for cell in &near.cells {
-            for m in &cell.members {
-                let owner = near.cells.iter().find(|c| c.id == m.cell).unwrap();
-                assert!((m.index as usize) < owner.statics.len());
+    }
+
+    /// A landblock's near content as the loader builds it.
+    fn near_of(d: &Content, coord: LandblockCoord) -> crate::assets::NearData {
+        let region = d
+            .dats
+            .get::<ac_dat::objects::Region>(crate::assets::REGION_ID)
+            .unwrap()
+            .unwrap();
+        crate::assets::build_near(d, coord, &region)
+    }
+
+    /// Whether a static's model has a part that draws: a model that exists,
+    /// has vertices and is not an editor-only marker.
+    fn has_drawn_part(d: &Content, model_id: u32) -> bool {
+        let parts = match model_id >> 24 {
+            0x01 => vec![model_id],
+            0x02 => d
+                .dats
+                .get::<Setup>(model_id)
+                .unwrap()
+                .map_or_else(Vec::new, |s| s.parts.clone()),
+            _ => Vec::new(),
+        };
+        parts.into_iter().any(|id| {
+            d.dats.get::<GfxObj>(id).unwrap().is_some_and(|gfx| {
+                !gfx.vertices.vertices.is_empty()
+                    && !is_runtime_hidden_marker(&degrade_levels(d, &gfx))
+            })
+        })
+    }
+
+    /// Every interior static with a part that draws is drawn in at least
+    /// the cell it stands in, in the Facility Hub (0x8A02), the Town
+    /// Network (0x0007) and two more dungeons (0x01D9, 0x0019); every
+    /// member names a real static. A static whose registration failed
+    /// would be drawn nowhere: this is the guard against that.
+    #[test]
+    #[ignore = "needs the retail dat files"]
+    fn every_drawn_interior_static_is_in_its_own_cell() {
+        let d = content();
+        for (x, y) in [(0x8A, 0x02), (0x00, 0x07), (0x01, 0xD9), (0x00, 0x19)] {
+            let near = near_of(&d, LandblockCoord { x, y });
+            assert!(
+                near.membership_failures.is_empty(),
+                "{:?}",
+                near.membership_failures
+            );
+            let mut checked = 0;
+            for cell in &near.cells {
+                for m in &cell.members {
+                    let owner = near.cells.iter().find(|c| c.id == m.cell).unwrap();
+                    assert!((m.index as usize) < owner.statics.len());
+                }
+                for (index, s) in cell.statics.iter().enumerate() {
+                    if !has_drawn_part(&d, s.model_id) {
+                        continue;
+                    }
+                    checked += 1;
+                    let own = CellStatic {
+                        cell: cell.id,
+                        index: index as u32,
+                    };
+                    assert!(
+                        cell.members.contains(&own),
+                        "static {:#010x} (#{index}) of cell {:#010x} is drawn in no cell of its own",
+                        s.model_id,
+                        cell.id
+                    );
+                }
             }
+            assert!(checked > 0, "landblock {x:02X}{y:02X} has no drawn statics");
         }
     }
 
