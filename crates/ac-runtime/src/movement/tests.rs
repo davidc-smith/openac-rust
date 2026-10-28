@@ -434,8 +434,8 @@ fn an_emote_key_plays_its_motion_and_the_server_hears_it() {
 /// The body moves in fixed steps (30 a second) while a window redraws 60
 /// times a second or more: the window draws the character, and its camera
 /// follows it, between the last two steps by the time carried past the
-/// last one, so it moves a little every frame instead of holding still one
-/// frame and jumping the next. The cell and the facing are the body's. The
+/// last one, so it moves between steps instead of holding still one frame
+/// and jumping the next. The cell and the facing are the body's. The
 /// world keeps the body on its step for gameplay, plugins and the server.
 #[test]
 #[ignore = "needs the retail dat files"]

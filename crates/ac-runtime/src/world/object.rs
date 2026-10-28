@@ -91,7 +91,8 @@ impl WorldObject {
 
     /// Where a window draws the object: for a body the session's physics
     /// moves in fixed steps and places between them (the local player),
-    /// that place, so it moves on every frame the screen redraws; otherwise
+    /// that place, updated on every pass of the session rather than only on
+    /// each step; otherwise
     /// [`position`](Self::position).
     #[must_use]
     pub fn drawn_position(&self) -> Option<&Position> {
