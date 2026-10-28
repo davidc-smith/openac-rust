@@ -202,6 +202,9 @@ pub struct ClientObjectTable {
     pending_unresolved: HashMap<u32, (ClientObjectPlacement, Option<u32>)>,
     next_identity: u64,
     mutation_revision: u64,
+    /// How many times the table was cleared (a session ended, or a copy
+    /// was replaced by a snapshot).
+    clears: u64,
 }
 
 fn emit(revision: &mut u64, events: &mut Vec<TableEvent>, event: TableEvent) {
@@ -434,6 +437,14 @@ impl ClientObjectTable {
     #[must_use]
     pub fn mutation_revision(&self) -> u64 {
         self.mutation_revision
+    }
+
+    /// How many times the table was cleared: a holder of state about its
+    /// objects (an open pack, say) knows from a change that the objects it
+    /// named are gone.
+    #[must_use]
+    pub fn clear_count(&self) -> u64 {
+        self.clears
     }
 
     /// How many objects the table holds.
@@ -1797,6 +1808,7 @@ impl ClientObjectTable {
         self.equipment_index.clear();
         self.pending_moves.clear();
         self.pending_unresolved.clear();
+        self.clears = self.clears.wrapping_add(1);
         emit(&mut self.mutation_revision, events, TableEvent::Cleared);
     }
 }

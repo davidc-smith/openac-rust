@@ -17,7 +17,7 @@ use ac_core::items::placement::{
 use ac_core::items::{
     ClientObject, EquipMask, ItemType, PlacementRejection, StackMergeItem, StackMergePlan, burden,
 };
-use ac_runtime::inventory::{ItemCommand, ObjectRef, placement_conflict_text};
+use ac_runtime::inventory::{ItemCommand, ObjectRef, placement_conflict_text, plan_join_stack};
 use ac_runtime::session::SessionCommand;
 
 use crate::event::{DragAcceptance, ItemDragPayload, ItemDragSource};
@@ -141,6 +141,9 @@ pub struct InventoryController {
     burden_text: Option<ElementId>,
     close_button: Option<ElementId>,
     open_container: u32,
+    /// The character and the clear count of the items last shown: a change
+    /// is another session or character.
+    shown_session: Option<(u32, u64)>,
     selection: SelectionEcho,
     target_source: Option<u32>,
     target_mode: bool,
@@ -317,6 +320,7 @@ impl InventoryController {
             burden_text,
             close_button,
             open_container: 0,
+            shown_session: None,
             selection: SelectionEcho::default(),
             target_source: None,
             target_mode: false,
@@ -386,6 +390,7 @@ impl InventoryController {
 
     /// Resolve what was queued against `view`, then show it.
     pub fn update(&mut self, ui: &mut UiRoot, view: &ItemsView<'_>, icons: &mut dyn IconSource) {
+        self.follow_session(ui, view);
         self.player = view.player;
         self.target_source = view.target_source;
         self.target_mode = view.target_mode;
@@ -396,6 +401,29 @@ impl InventoryController {
             self.handle(ui, element, &message, view);
         }
         self.populate(ui, view, icons);
+    }
+
+    /// The session's items were replaced (the window's copy cleared: the
+    /// session ended, or the window moved to another) or another character
+    /// is shown: the pack that was open belonged to the one before, so the
+    /// window goes back to the main pack, and the session hears that no
+    /// side pack is open.
+    fn follow_session(&mut self, ui: &mut UiRoot, view: &ItemsView<'_>) {
+        let session = (view.player, view.objects.clear_count());
+        let before = self.shown_session.replace(session);
+        if before.is_none_or(|b| b == session) || self.open_container == 0 {
+            return;
+        }
+        self.open_container = 0;
+        if let Some(g) = self.contents_grid
+            && let Some(l) = ui.widget_mut::<ItemList>(g)
+        {
+            l.scroll.set_scroll_y(0);
+        }
+        emit(
+            ui,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::SetOpenPack(0))),
+        );
     }
 
     fn list_of(&self, ui: &UiRoot, cell: ElementId) -> Option<ElementId> {
@@ -482,6 +510,7 @@ impl InventoryController {
         guid: u32,
         view: &ItemsView<'_>,
     ) -> bool {
+        self.follow_session(ui, view);
         let player = view.player;
         let Some(item) = view.get(guid).filter(|_| guid != 0) else {
             return false;
@@ -652,6 +681,11 @@ impl InventoryController {
         let (target_item, target_index) =
             slot(ui, cell).map_or((0, -1), |s| (s.object_id, s.slot_index));
         let (mut legality, _, mut destination) = self.evaluate_drop(list, target_item, item, view);
+        if (legality.is_none() || is_capacity_rejection(legality))
+            && self.try_join_stack_in_pack(ui, list, target_item, p, view)
+        {
+            return;
+        }
         let mut fallthrough = 0;
         if is_capacity_rejection(legality) {
             match choose_container(view.objects, item, view.player, destination, view.player) {
@@ -776,8 +810,58 @@ impl InventoryController {
                 slot: placement,
                 amount,
                 pickup: p.source_kind == ItemDragSource::Ground,
+                join_stack: false,
             })),
         );
+    }
+
+    /// A drop on a pack's icon (a side pack or the main pack) first joins
+    /// the moving amount to the first stack in that pack, or in a pack
+    /// inside it, with room for all of it, and selects that stack. Joining
+    /// takes no slot, so this comes before any room check. A drop on a cell
+    /// of the contents grid never searches like this.
+    fn try_join_stack_in_pack(
+        &mut self,
+        ui: &mut UiRoot,
+        list: ElementId,
+        pack: u32,
+        p: &ItemDragPayload,
+        view: &ItemsView<'_>,
+    ) -> bool {
+        if Some(list) != self.container_list && Some(list) != self.top_container {
+            return false;
+        }
+        let item = p.obj_id;
+        if pack == 0 || pack == item || view.get(pack).is_none_or(|c| c.items_capacity <= 0) {
+            return false;
+        }
+        let Some(dragged) = view.get(item).filter(|d| !is_bag(d)) else {
+            return false;
+        };
+        let full = dragged.stack_size.max(1).unsigned_abs();
+        let split = view.split_size(item, full, self.selection.get());
+        let Some(join) = plan_join_stack(view.objects, item, pack, split, view.can_make_request)
+        else {
+            return false;
+        };
+        let container = if pack == view.player {
+            ObjectRef::Player
+        } else {
+            ObjectRef::Guid(pack)
+        };
+        emit(
+            ui,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::DropInto {
+                item: ObjectRef::Guid(item),
+                container,
+                slot: 0,
+                amount: if split >= full { 0 } else { split },
+                pickup: p.source_kind == ItemDragSource::Ground,
+                join_stack: true,
+            })),
+        );
+        self.select(ui, join.target_object_id);
+        true
     }
 
     fn try_merge(
@@ -883,22 +967,27 @@ impl InventoryController {
         let bag_target = self.container_slot_target(view, bags.len());
         self.resize_pack_column(ui, bag_target);
         let contents_target = self.contents_slot_target(view, open);
-        let same = matches_cells(ui, self.container_list, &bags, bag_target)
-            && matches_cells(ui, self.contents_grid, &contents, contents_target);
-        if !same {
-            for list in [self.container_list, self.contents_grid]
-                .into_iter()
-                .flatten()
-            {
-                ui.with::<ItemList, _>(list, |l, ui| {
-                    l.defer_layout();
-                    l.flush(ui);
-                });
+        // Flushing a list's cells cancels a press on one of them, so each
+        // list is rebuilt only when what it shows changed: opening a pack
+        // changes the contents grid alone, and the pack cell pressed to open
+        // it stays to become a drag.
+        let rebuild = [
+            (self.container_list, &bags, bag_target, true),
+            (self.contents_grid, &contents, contents_target, false),
+        ]
+        .into_iter()
+        .filter(|(list, guids, target, _)| !matches_cells(ui, *list, guids, *target))
+        .collect::<Vec<_>>();
+        if !rebuild.is_empty() {
+            for (list, ..) in &rebuild {
+                if let Some(list) = *list {
+                    ui.with::<ItemList, _>(list, |l, ui| {
+                        l.defer_layout();
+                        l.flush(ui);
+                    });
+                }
             }
-            for (list, guids, target, pack_column) in [
-                (self.container_list, &bags, bag_target, true),
-                (self.contents_grid, &contents, contents_target, false),
-            ] {
+            for (list, guids, target, pack_column) in rebuild {
                 let Some(list) = list else {
                     continue;
                 };
@@ -1153,9 +1242,9 @@ fn is_container_full(view: &ItemsView<'_>, container: u32) -> bool {
     cap > 0 && count_loose_contents(view, container) >= cap as usize
 }
 
-/// A pack cell's fullness meter: shown for a pack with a positive item
-/// capacity holding at least one loose item (an empty pack hides it, rail
-/// included).
+/// An item cell's container fullness meter (every item cell, the toolbar's
+/// too): shown for a container with a positive item capacity holding at
+/// least one loose item (an empty one hides it, rail included).
 pub(crate) fn capacity_fill(view: &ItemsView<'_>, container: u32) -> f32 {
     let cap = view.get(container).map_or(0, |o| o.items_capacity);
     if cap <= 0 {

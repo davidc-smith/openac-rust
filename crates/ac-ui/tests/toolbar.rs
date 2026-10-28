@@ -1079,3 +1079,50 @@ mod real_dats {
         assert!(c.take_errors().is_empty());
     }
 }
+
+// OpenAC `Populate_packShortcut_showsItsCapacityBar_andAnEmptyPackNone` and
+// `ItemMovedIntoOrOutOfAPackShortcut_refreshesItsCapacityBar`: every item
+// cell shows a container's fullness meter, the toolbar's too (its cell
+// prototype carries the meter): loose items over item capacity for a pack
+// holding something, none for an empty pack or a plain item.
+#[test]
+fn a_pack_shortcut_shows_how_full_the_pack_is_and_follows_its_contents() {
+    let mut o = Objects::new();
+    o.player(102, 7);
+    o.bag(0xC0, 0, 24);
+    for i in 0..6 {
+        o.contained(0xB0 + i, 0xC0, i as i32, ItemType::MISC);
+    }
+    o.bag(0xC1, 1, 24);
+    item(&mut o, 0x5001);
+    let mut b = bar(
+        &[
+            entry(0, 0xC0),
+            entry(1, 0xC1),
+            entry(2, 0x5001),
+            entry(3, PLAYER),
+        ],
+        None,
+    );
+    b.update(&ItemsView::new(&o.t, PLAYER));
+    assert!((b.slot(0).capacity_fill - 0.25).abs() < 1e-6);
+    assert!(b.slot(1).capacity_fill < 0.0, "an empty pack shows none");
+    assert!(b.slot(2).capacity_fill < 0.0, "a plain item shows none");
+    assert!(
+        b.slot(3).capacity_fill < 0.0,
+        "the empty main pack shows none"
+    );
+    // Something goes in and out.
+    o.contained(0xD0, 0xC1, 0, ItemType::MISC);
+    o.contained(0xD1, PLAYER, 0, ItemType::MISC);
+    b.update(&ItemsView::new(&o.t, PLAYER));
+    assert!((b.slot(1).capacity_fill - 1.0 / 24.0).abs() < 1e-6);
+    assert!((b.slot(3).capacity_fill - 1.0 / 102.0).abs() < 1e-6);
+    o.mv(0xD0, PLAYER, 1);
+    b.update(&ItemsView::new(&o.t, PLAYER));
+    assert!(b.slot(1).capacity_fill < 0.0);
+    // A cleared slot shows none.
+    b.with(|c, _| c.toolbar.load_shortcuts([entry(1, 0xC1)]));
+    b.update(&ItemsView::new(&o.t, PLAYER));
+    assert!(b.slot(0).capacity_fill < 0.0);
+}

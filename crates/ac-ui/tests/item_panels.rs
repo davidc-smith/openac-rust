@@ -1728,6 +1728,7 @@ fn a_ground_item_dropped_on_the_grid_is_picked_up() {
             slot: 0,
             amount: 0,
             pickup: true,
+            join_stack: false,
         })]
     );
 }
@@ -1772,6 +1773,7 @@ fn a_selected_ground_stack_dropped_on_the_grid_splits_by_the_chosen_quantity() {
             slot: 0,
             amount: 1,
             pickup: true,
+            join_stack: false,
         })]
     );
 }
@@ -3071,4 +3073,190 @@ mod real_dats {
         host.mouse_up(MouseButton::Left, sx, sy + 20, 0);
         assert!(c.take_errors().is_empty());
     }
+}
+
+// ── Pack presses, pack-icon joins, a new character ──────────────────────
+
+// OpenAC `PressingAnUnopenedPack_opensIt_andTheSamePressDragsIt`: opening
+// a pack changes only the contents grid, so the pressed pack cell stays
+// and the same press can become a drag of it.
+#[test]
+fn pressing_an_unopened_pack_opens_it_and_the_same_press_drags_it() {
+    let mut o = Objects::new();
+    o.contained(0xA, PLAYER, 0, ItemType::NONE);
+    o.bag(0xC0, 1, 24);
+    o.contained(0xD0, 0xC0, 0, ItemType::NONE);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let pack = inv.cell(inv.containers, 0);
+    let main = inv.cell(inv.top, 0);
+    // The pack column is at (10, 100); its first cell is under (28, 118).
+    inv.host.mouse_down(MouseButton::Left, 28, 118, 0);
+    inv.update(&view);
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xD0, "the pack opened");
+    assert_eq!(inv.cell(inv.containers, 0), pack);
+    assert_eq!(inv.cell(inv.top, 0), main);
+    inv.host.mouse_move(48, 118);
+    assert_eq!(inv.host.root.drag_source(), Some(pack));
+    assert!(
+        inv.host
+            .root
+            .drag_payload()
+            .and_then(|p| p.get::<ItemDragPayload>())
+            .is_some_and(|p| p.obj_id == 0xC0)
+    );
+}
+
+fn stack(o: &mut Objects, id: u32, container: u32, slot: i32, size: i32, kind: u32) {
+    o.contained(id, container, slot, ItemType::NONE);
+    let s = o.get_mut(id);
+    s.weenie_class_id = kind;
+    s.stack_size = size;
+    s.stack_size_max = 100;
+}
+
+fn join_drop(item: u32, container: ObjectRef, amount: u32) -> PanelOutput {
+    PanelOutput::Session(SessionCommand::Item(ItemCommand::DropInto {
+        item: ObjectRef::Guid(item),
+        container,
+        slot: 0,
+        amount,
+        pickup: false,
+        join_stack: true,
+    }))
+}
+
+// OpenAC `StackDroppedOnAPackIcon_joinsTheFirstStackThereWithRoomForAllOfIt`:
+// a stack dropped on a pack's icon joins the first stack there with room
+// for all of it (one with room for part is passed over) and selects it.
+#[test]
+fn a_stack_dropped_on_a_pack_icon_joins_the_first_stack_there_with_room_for_all_of_it() {
+    let mut o = Objects::new();
+    stack(&mut o, 0xA, PLAYER, 0, 10, 273);
+    o.bag(0xC0, 1, 24);
+    stack(&mut o, 0xC1, 0xC0, 0, 95, 273);
+    stack(&mut o, 0xC2, 0xC0, 1, 50, 273);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let c = inv.containers;
+    let out = drop_on(&mut inv, c, 0, payload(0xA), &view);
+    assert_dbg_eq!(
+        out,
+        vec![
+            join_drop(0xA, ObjectRef::Guid(0xC0), 0),
+            PanelOutput::SelectObject(0xC2),
+        ]
+    );
+}
+
+// OpenAC `StackDroppedOnAFullPackIcon_stillJoinsAStackInIt`: joining takes
+// no slot.
+#[test]
+fn a_stack_dropped_on_a_full_pack_icon_still_joins_a_stack_in_it() {
+    let mut o = Objects::new();
+    stack(&mut o, 0xA, PLAYER, 0, 10, 273);
+    o.bag(0xC0, 1, 2);
+    stack(&mut o, 0xC1, 0xC0, 0, 5, 999);
+    stack(&mut o, 0xC2, 0xC0, 1, 50, 273);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let c = inv.containers;
+    let out = drop_on(&mut inv, c, 0, payload(0xA), &view);
+    assert_dbg_eq!(
+        out,
+        vec![
+            join_drop(0xA, ObjectRef::Guid(0xC0), 0),
+            PanelOutput::SelectObject(0xC2),
+        ]
+    );
+}
+
+// OpenAC `StackDroppedOnTheMainPackIcon_joinsAStackInASidePack`.
+#[test]
+fn a_stack_dropped_on_the_main_pack_icon_joins_a_stack_in_a_side_pack() {
+    let mut o = Objects::new();
+    o.player(102, 7);
+    o.bag(0xC0, 0, 24);
+    stack(&mut o, 0xC2, 0xC0, 0, 50, 273);
+    o.bag(0xC3, 1, 24);
+    stack(&mut o, 0xA, 0xC3, 0, 10, 273);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let t = inv.top;
+    let out = drop_on(&mut inv, t, 0, payload(0xA), &view);
+    assert_dbg_eq!(
+        out,
+        vec![
+            join_drop(0xA, ObjectRef::Player, 0),
+            PanelOutput::SelectObject(0xC2),
+        ]
+    );
+}
+
+// OpenAC `StackDroppedOnAPackIcon_withNoStackWithRoomForAllOfIt_movesIntoThePack`.
+#[test]
+fn a_stack_dropped_on_a_pack_icon_with_no_stack_to_join_moves_into_the_pack() {
+    let mut o = Objects::new();
+    stack(&mut o, 0xA, PLAYER, 0, 10, 273);
+    o.bag(0xC0, 1, 24);
+    stack(&mut o, 0xC1, 0xC0, 0, 95, 273);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let c = inv.containers;
+    let out = drop_on(&mut inv, c, 0, payload(0xA), &view);
+    assert_dbg_eq!(
+        moves(&out),
+        vec![(0xAu32, ObjectRef::Guid(0xC0), 0i32, 0u32)]
+    );
+}
+
+// OpenAC `SessionTableClear_returnsTheWindowToTheMainPack`: the session
+// ending (the window's copy of the items cleared) or another character
+// sends the window back to the main pack.
+#[test]
+fn a_new_session_or_character_opens_the_window_on_the_main_pack() {
+    let open_of = |inv: &mut Inv, player: u32| {
+        inv.host
+            .with_controller::<InventoryController, _>("inventory", |c, _| c.open_container(player))
+            .unwrap()
+    };
+    let mut o = Objects::new();
+    o.bag(0xC0, 0, 24);
+    o.contained(0xD0, 0xC0, 0, ItemType::NONE);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    let c = inv.containers;
+    inv.click(c, 0);
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    assert_eq!(open_of(&mut inv, PLAYER), 0xC0);
+    inv.outputs();
+    // The same character again, after the session's items were cleared.
+    let mut events = Vec::new();
+    o.t.clear(&mut events);
+    o.contained(0xA, PLAYER, 0, ItemType::NONE);
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    assert_eq!(open_of(&mut inv, PLAYER), PLAYER);
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xA);
+    // The runtime hears that no side pack is open any more.
+    assert_dbg_eq!(
+        sessions(&inv.outputs()),
+        vec![SessionCommand::Item(ItemCommand::SetOpenPack(0))]
+    );
+    // Another character.
+    o.bag(0xC0, 1, 24);
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    inv.click(c, 0);
+    inv.update(&ItemsView::new(&o.t, PLAYER));
+    assert_eq!(open_of(&mut inv, PLAYER), 0xC0);
+    const OTHER: u32 = 0x5000_0002;
+    let mut other = Objects::new();
+    other.contained(0xE0, OTHER, 0, ItemType::NONE);
+    inv.update(&ItemsView::new(&other.t, OTHER));
+    assert_eq!(open_of(&mut inv, OTHER), OTHER);
+    assert_eq!(inv.slot(inv.grid, 0).object_id, 0xE0);
 }

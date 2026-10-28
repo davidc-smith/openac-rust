@@ -29,7 +29,7 @@ use crate::host::PanelController;
 use crate::icons::IconSource;
 use crate::import::ImportedLayout;
 use crate::panels::PanelOutput;
-use crate::panels::inventory::{PLAYER_PACK_BASE_ICON, SelectionEcho};
+use crate::panels::inventory::{PLAYER_PACK_BASE_ICON, SelectionEcho, capacity_fill};
 use crate::panels::items::{ItemsView, emit, offer_target};
 use crate::root::{ElementMessage, UiRoot};
 use crate::states;
@@ -543,6 +543,14 @@ impl ToolbarController {
                 }
                 s.tooltip = tooltip;
                 s.set_structure(structure.0, structure.1);
+                // Every item cell shows a container's fullness, a pack on
+                // the bar too; the bar is shown anew each update, so it
+                // follows what goes in and out.
+                s.capacity_fill = if s.object_id != 0 {
+                    capacity_fill(view, s.object_id)
+                } else {
+                    -1.0
+                };
                 s.selected = s.object_id != 0 && Some(s.object_id) == selected;
                 s.digits = digits;
                 if i < NUMBERED_SLOTS {

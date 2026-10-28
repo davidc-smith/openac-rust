@@ -185,6 +185,7 @@ pub fn moves(outputs: &[PanelOutput]) -> Vec<(u32, ObjectRef, i32, u32)> {
                     slot,
                     amount,
                     pickup: false,
+                    join_stack: false,
                 },
             ) => Some((i, container, slot, amount)),
             _ => None,

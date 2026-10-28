@@ -46,6 +46,7 @@ impl Fixture {
             slot,
             amount,
             pickup,
+            join_stack: false,
         })
     }
 }
@@ -263,4 +264,52 @@ fn a_closing_shop_names_each_listing_it_takes_off_the_buy_list() {
         )]
     );
     assert!(f.inventory.vendor_lists().buy().is_empty());
+}
+
+// A drop on a pack's icon (OpenAC `InventoryController.TryJoinStackInPack`):
+// the moving amount joins the first stack in that pack, or in a pack inside
+// it, with room for all of it, before any room check; a loose stack too.
+fn join_drop(item: u32, container: u32, amount: u32, pickup: bool) -> ItemCommand {
+    ItemCommand::DropInto {
+        item: guid(item),
+        container: guid(container),
+        slot: 0,
+        amount,
+        pickup,
+        join_stack: true,
+    }
+}
+
+#[test]
+fn a_stack_dropped_on_a_pack_icon_joins_the_first_stack_there_with_room_for_all_of_it() {
+    let mut f = Fixture::new();
+    let (nearly_full, roomy) = (0x6100_0050, 0x6100_0051);
+    add_stack(&mut f, nearly_full, JOIN_KIND, 98, PACK);
+    add_stack(&mut f, roomy, JOIN_KIND, 50, PACK);
+    let source = 0x6100_0052;
+    add_stack(&mut f, source, JOIN_KIND, 5, PLAYER);
+    assert!(f.run(join_drop(source, PACK, 0, false)));
+    assert_eq!(f.sent(), [build_stackable_merge(1, source, roomy, 5)]);
+    assert_eq!(f.placement(), None);
+    // The main pack's icon searches each side pack too.
+    let mut f = Fixture::new();
+    add_stack(&mut f, roomy, JOIN_KIND, 50, PACK);
+    add_stack(&mut f, source, JOIN_KIND, 5, PLAYER);
+    assert!(f.run(join_drop(source, PLAYER, 0, false)));
+    assert_eq!(f.sent(), [build_stackable_merge(1, source, roomy, 5)]);
+    // A loose stack (a pickup) joins the same way.
+    let mut f = Fixture::new();
+    assert!(f.run(join_drop(LOOSE, PLAYER, 0, true)));
+    assert_eq!(f.sent(), [build_stackable_merge(1, LOOSE, GEM, 2)]);
+}
+
+#[test]
+fn a_pack_icon_drop_with_no_stack_to_join_is_the_plain_drop() {
+    let mut f = Fixture::new();
+    let (nearly_full, source) = (0x6100_0053, 0x6100_0054);
+    add_stack(&mut f, nearly_full, JOIN_KIND, 98, PACK);
+    add_stack(&mut f, source, JOIN_KIND, 5, PLAYER);
+    assert!(f.run(join_drop(source, PACK, 0, false)));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, source, PACK, 0)]);
+    assert_eq!(f.placement(), Some((source, PACK, 0)));
 }

@@ -729,6 +729,37 @@ mod tests {
         same(&table, &copy);
     }
 
+    // OpenAC clears its object table when a session ends and the
+    // inventory, toolbar and the other item panels rebuild from the
+    // cleared table: a window's copy of the items follows the same way,
+    // or it shows the last character's items under the next one.
+    #[test]
+    fn a_session_ending_empties_the_windows_copy_of_the_items() {
+        use crate::communication::CommunicationPaths;
+        let mut state = SessionState::new(CommunicationPaths::default());
+        state.world.set_player(0x5000_000B);
+        state.world.ingest_item(&data(0x8000_0001, 0x5000_000B));
+        let mut feed = InterfaceFeed::default();
+        let mut copy = ClientObjectTable::new();
+        for event in feed.snapshot(&state, true) {
+            if let InterfaceEvent::Items(update) = event {
+                apply_items_update(&mut copy, &update);
+            }
+        }
+        assert!(copy.get(0x8000_0001).is_some());
+        let _ = state.world.drain_changes().count();
+
+        state.end_generation(0);
+        let changes: Vec<WorldChange> = state.world.drain_changes().collect();
+        let Some(InterfaceEvent::Items(update)) = feed.world_changed(&state, &changes) else {
+            panic!("the window hears nothing of the items leaving");
+        };
+        assert!(update.reset);
+        apply_items_update(&mut copy, &update);
+        assert!(copy.get(0x8000_0001).is_none());
+        assert_eq!(copy.object_count(), 0);
+    }
+
     #[test]
     fn a_window_hears_the_facts_once_and_then_only_their_changes() {
         use crate::communication::CommunicationPaths;
