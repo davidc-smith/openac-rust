@@ -340,9 +340,58 @@ fn sample() -> CharacterInfoSource {
     CharacterInfoSource {
         ints,
         attributes: [200, 150, 10, 60, 100, 100],
+        base: [200, 150, 10, 60, 100, 100],
         innate: [200, 50, 10, 60, 100, 100],
         birth_text: Some("1/1/2020 12:00:00 PM".into()),
     }
+}
+
+/// The grades read Strength and Endurance without spells (innate plus
+/// raised); the burden reads Strength with them.
+#[test]
+fn the_grades_read_strength_and_endurance_without_spells() {
+    let mut s = CharacterInfoSource {
+        // With spells 300 + 300 would be Indomitable for all three.
+        attributes: [300, 300, 10, 10, 10, 10],
+        base: [200, 50, 10, 10, 10, 10],
+        ..CharacterInfoSource::default()
+    };
+    s.ints.insert(5, 40_000); // burden
+    let r = report(&s);
+    // 200 + 50 = 250 and 200 + 2 * 50 = 300: both Poor.
+    assert!(r.contains("Natural Resistances: Poor"), "{r}");
+    assert!(r.contains("Drain Resistances: Poor"), "{r}");
+    assert!(r.contains("Regeneration Bonus: Poor"), "{r}");
+    // Capacity at 300 Strength is 45,000: not burdened (at 200 it would
+    // be 30,000).
+    assert!(r.contains("You are not overburdened at this time."), "{r}");
+}
+
+/// Every integer in the report is grouped by thousands, and a character
+/// without a chess rank is ranked 1400.
+#[test]
+fn integers_are_grouped_and_an_unranked_chess_player_is_1400() {
+    let r = report(&CharacterInfoSource::default());
+    assert!(r.contains("Chess Rank: 1,400"), "{r}");
+    let mut s = CharacterInfoSource::default();
+    s.ints.insert(0xB5, 1_850);
+    s.ints.insert(0x2B, 1_234); // deaths
+    s.ints.insert(0xC0, 2_000); // fishing
+    let r = report(&s);
+    assert!(r.contains("Chess Rank: 1,850"), "{r}");
+    assert!(r.contains("died 1,234 times"), "{r}");
+    assert!(r.contains("Fishing Skill: 2,000"), "{r}");
+    assert!(!r.contains("Chess Rank: 1400"), "{r}");
+    let mut s = CharacterInfoSource {
+        attributes: [100, 10, 10, 10, 10, 10],
+        ..CharacterInfoSource::default()
+    };
+    s.ints.insert(5, 20_000); // burden: 5,000 over a capacity of 15,000
+    assert!(
+        report(&s).contains("overburdened by 5,000 burden units"),
+        "{}",
+        report(&s)
+    );
 }
 
 fn report(source: &CharacterInfoSource) -> String {
