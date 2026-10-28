@@ -1303,6 +1303,46 @@ fn the_face_choice_takes_the_headgear_off_and_the_clothes_choice_puts_it_back() 
     assert_eq!(request.request.appearance.headgear_style, UNSET);
 }
 
+/// The page outlives the wizard: opened again after leaving it on the
+/// clothes with the shirt picked, it starts on the face with the hair
+/// picked, so the swatches and the shade edit the hair, not the shirt.
+/// OpenAC's `SelectChoice` sets the part with the choice.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn reopening_the_wizard_starts_on_the_face_with_the_hair_picked() {
+    use ac_ui::pregame::chargen::appearance::{self, Choice, Part};
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let root = w.screen().page_root(Page::Appearance);
+    let clothes =
+        w.h.ui
+            .find_descendant(root, appearance::CLOTHES_ID)
+            .unwrap();
+    w.click(clothes);
+    let shirt = w.screen().appearance_page().spin(Part::Shirt).unwrap();
+    w.message(shirt, ElementMessage::Clicked { x: 10, y: 10 });
+    let page = w.screen().appearance_page();
+    assert_eq!((page.choice(), page.part()), (Choice::Clothes, Part::Shirt));
+
+    w.click(w.shell(chargen::EXIT_ID));
+    w.h.answer(true);
+    w.settle();
+    assert!(!w.screen().is_open());
+    w.open();
+    let page = w.screen().appearance_page();
+    assert_eq!((page.choice(), page.part()), (Choice::Face, Part::Hair));
+}
+
 #[test]
 #[ignore = "needs the retail dat files"]
 fn the_heritage_profession_and_town_pages_drive_the_owner() {

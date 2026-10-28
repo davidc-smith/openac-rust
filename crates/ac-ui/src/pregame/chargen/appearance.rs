@@ -6,12 +6,12 @@
 
 use ac_core::chargen::{
     CLOTHING_SAMPLE_INDEX, ChargenClothingTableSource, ChargenGearOption, ChargenGenderOptions,
-    ChargenHeritageGroup as H, ChargenPalSetSource, ChargenPaletteColorSource, ChargenSwatchRgb,
-    EYE_SAMPLE_INDEX, HAIR_SAMPLE_INDEX, SKIN_FAMILY_SAMPLE_INDEX, clothing_swatch_pal_set_id,
-    direct_color, pal_set_average_color,
+    ChargenHeritageGroup as H, ChargenOptions, ChargenPalSetSource, ChargenPaletteColorSource,
+    ChargenSwatchRgb, EYE_SAMPLE_INDEX, HAIR_SAMPLE_INDEX, SKIN_FAMILY_SAMPLE_INDEX,
+    clothing_swatch_pal_set_id, direct_color, pal_set_average_color,
 };
 use ac_runtime::session::creation::{
-    AppearanceSlot, CreationAppearance, CreationCommand, ShadeSlot, UNSET,
+    AppearanceSlot, CreationAppearance, CreationCommand, CreationSnapshot, ShadeSlot, UNSET,
 };
 
 use super::PageContext;
@@ -256,11 +256,18 @@ pub fn clothes_hidden(heritage: u32) -> bool {
 /// The snapshot's gender options.
 #[must_use]
 pub fn gender<'a>(ctx: &'a PageContext<'_>) -> Option<&'a ChargenGenderOptions> {
-    let s = ctx.snapshot;
+    gender_of(ctx.snapshot, ctx.options)
+}
+
+/// `s`'s gender options among `options`.
+fn gender_of<'a>(
+    s: &CreationSnapshot,
+    options: &'a ChargenOptions,
+) -> Option<&'a ChargenGenderOptions> {
     if s.heritage_id == 0 || s.gender_key == 0 {
         return None;
     }
-    ctx.options
+    options
         .try_get_heritage(s.heritage_id)?
         .genders_by_key
         .get(&i32::try_from(s.gender_key).ok()?)
@@ -694,34 +701,42 @@ impl AppearancePage {
         if !clothes_hidden(ctx.snapshot.heritage_id) {
             return (Vec::new(), None);
         }
-        let made = self.set_choice(ui, Choice::Face, ctx);
-        self.part = Part::Hair;
-        made
+        self.set_choice(ui, Choice::Face, ctx.snapshot, Some(ctx.options))
     }
 
     /// Show the face or the clothes choices. The face choice takes the
     /// headgear off, so the hair shows, and keeps it; the clothes choice
     /// puts the kept headgear back when it is none or one the gender still
-    /// has. The face frames the figure close up, the clothes pull back to
-    /// show it whole. Returns the requests this makes.
+    /// has. The face picks the hair, the clothes the headgear. The face
+    /// frames the figure close up, the clothes pull back to show it whole.
+    /// `options` (the creation choices) give the clothes choice the
+    /// gender's headgear; the face choice needs none. Returns the requests
+    /// this makes.
     pub fn set_choice(
         &mut self,
         ui: &mut UiRoot,
         choice: Choice,
-        ctx: &PageContext<'_>,
+        snapshot: &CreationSnapshot,
+        options: Option<&ChargenOptions>,
     ) -> (Vec<CreationCommand>, Option<PreviewRequest>) {
         self.choice = choice;
+        self.part = match choice {
+            Choice::Face => Part::Hair,
+            Choice::Clothes => Part::Headgear,
+        };
         self.apply_choice_visibility(ui);
         let headgear = AppearanceSlot::HeadgearStyle;
         match choice {
             Choice::Face => {
-                self.held_headgear = ctx.snapshot.appearance.headgear_style;
+                self.held_headgear = snapshot.appearance.headgear_style;
                 let zoom = self.zoom_in(ui);
                 (vec![CreationCommand::SetAppearance(headgear, UNSET)], zoom)
             }
             Choice::Clothes => {
                 let held = self.held_headgear;
-                let count = gender(ctx).map_or(0, |g| style_count(Part::Headgear, g));
+                let count = options
+                    .and_then(|o| gender_of(snapshot, o))
+                    .map_or(0, |g| style_count(Part::Headgear, g));
                 let kept = held == UNSET || i32::try_from(held).is_ok_and(|h| h < count);
                 let commands = if kept {
                     vec![CreationCommand::SetAppearance(headgear, held)]
@@ -867,14 +882,12 @@ impl AppearancePage {
             }
         }
         if Some(element) == self.face || Some(element) == self.clothes {
-            let (choice, part) = if Some(element) == self.face {
-                (Choice::Face, Part::Hair)
+            let choice = if Some(element) == self.face {
+                Choice::Face
             } else {
-                (Choice::Clothes, Part::Headgear)
+                Choice::Clothes
             };
-            let made = self.set_choice(ui, choice, ctx);
-            self.part = part;
-            return Some(made);
+            return Some(self.set_choice(ui, choice, ctx.snapshot, Some(ctx.options)));
         }
         if let Some(&(_, part, step)) = self.arrows.iter().find(|(a, _, _)| *a == element) {
             return Some((self.step_style(part, step, ctx), None));

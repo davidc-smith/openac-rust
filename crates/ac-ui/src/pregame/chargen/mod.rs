@@ -564,17 +564,11 @@ impl CreationScreen {
             // the clothes choice), then the gender turns over.
             if self.roll_sent.is_some_and(|sent| sent != current) {
                 self.roll_sent = None;
-                if let Some(options) = self.options.clone() {
-                    let text: &dyn Fn(&str) -> Option<String> = &self.strings.text;
-                    let ctx = PageContext {
-                        snapshot,
-                        options: &options,
-                        text,
-                    };
-                    let (more, zoom) = self.appearance.set_choice(ui, Choice::Face, &ctx);
-                    commands.extend(more);
-                    self.preview_requests.extend(zoom);
-                }
+                let (more, zoom) =
+                    self.appearance
+                        .set_choice(ui, Choice::Face, snapshot, self.options.as_deref());
+                commands.extend(more);
+                self.preview_requests.extend(zoom);
                 match snapshot.gender_key {
                     1 => commands.push(CreationCommand::SelectGender(2)),
                     2 => commands.push(CreationCommand::SelectGender(1)),
