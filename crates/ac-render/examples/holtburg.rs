@@ -497,6 +497,7 @@ fn example_motion() -> Option<ac_runtime::world::MotionView> {
         },
         serial: 0,
         grounded: true,
+        standing_long_jump: false,
         // A body the session's physics moves, standing on flat ground: the
         // chase camera takes over only once the controller is in charge.
         body: Some(ac_runtime::world::BodyFacts {

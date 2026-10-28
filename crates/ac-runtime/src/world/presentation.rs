@@ -87,6 +87,10 @@ pub struct MotionView {
     pub serial: u32,
     /// On walkable ground.
     pub grounded: bool,
+    /// A standing long jump is charging: the jump began standing still, so
+    /// walk, run and sidestep only change the state while the body keeps
+    /// its ready pose until it jumps.
+    pub standing_long_jump: bool,
     /// The body's motion, for a body the session's physics moves (`None`
     /// for one only the server moves).
     pub body: Option<BodyFacts>,

@@ -390,6 +390,7 @@ fn live_motion<W: ac_physics::movement::WeenieObject>(
             actions: None,
         },
         grounded: obj.body.in_contact() && obj.body.on_walkable(),
+        standing_long_jump: obj.interp.standing_long_jump,
         body: Some(crate::world::BodyFacts {
             velocity: obj.body.cached_velocity.to_array(),
             in_contact: obj.body.in_contact(),
