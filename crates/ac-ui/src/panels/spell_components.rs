@@ -216,7 +216,11 @@ impl ComponentsPageController {
         } else {
             let (w, h) = ui.element(host).map_or((0.0, 0.0), |e| (e.width, e.height));
             let e = Element::at(0.0, 0.0, w, h).with_anchors(AnchorEdges::ALL);
-            ItemList::create(ui, host, e)
+            let list = ItemList::create(ui, host, e);
+            // Margins now: the first layout pass skips a hidden spellbook,
+            // which may have grown before it is first shown.
+            ui.capture_current_anchor_baseline(list);
+            list
         };
         let width = ui.element(list).map_or(96.0, |e| e.width.max(1.0));
         ui.with::<ItemList, _>(list, |l, ui| {

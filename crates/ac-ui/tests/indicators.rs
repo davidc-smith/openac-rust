@@ -386,6 +386,31 @@ fn a_harmful_panel_lists_only_harmful_spells() {
     assert_eq!(texts(&s.host.root, label), ["Bane"]);
 }
 
+/// The list made in a plain host takes its margins when it is made, so a
+/// panel that grew while hidden (a saved size, a resize before it was
+/// first shown) shows the list at the panel's full height. OpenAC
+/// `EffectsUiController.Create` captures the baseline right after adding
+/// the list.
+#[test]
+fn a_list_made_in_its_host_follows_a_panel_that_grew_while_hidden() {
+    let mut host = UiHost::new();
+    host.root.set_size(800.0, 600.0);
+    let ui = &mut host.root;
+    let r = ui.root();
+    let window = ui.add(r, Element::at(0.0, 0.0, 300.0, 100.0), Panel::default());
+    let list_host = ui.add(window, Element::at(0.0, 0.0, 300.0, 64.0), Panel::default());
+    let layout =
+        ImportedLayout::from_parts(window, [(ind::LIST_ID, list_host)].into_iter().collect());
+    ui.element_mut(window).unwrap().visible = false;
+    let c = EffectsController::bind(ui, &layout, true, TEMPLATE, "SELECT A SPELL".into()).unwrap();
+    let list = c.list();
+    assert_ne!(list, list_host, "the list is made in the host");
+    ui.element_mut(list_host).unwrap().height = 300.0;
+    ui.element_mut(window).unwrap().visible = true;
+    host.draw((800.0, 600.0), &ac_ui::draw::NoSprites);
+    assert_eq!(host.root.element(list).unwrap().height, 300.0);
+}
+
 mod real_dats {
     use super::*;
     use ac_ui::content::DatContent;
