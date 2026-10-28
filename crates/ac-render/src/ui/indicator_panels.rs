@@ -298,7 +298,7 @@ impl WindowUi {
             ..
         } = self;
         let book = facts.numbers().and_then(|n| n.spellbook());
-        let strength = facts.items_view(None, &[], None).strength;
+        let strength = facts.strength();
         let player = facts.state.player;
         let view = IndicatorsView {
             spellbook: book,

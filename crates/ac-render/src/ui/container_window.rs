@@ -15,6 +15,11 @@ use ac_ui::panels::toolbar::ToolbarWindowController;
 use ac_ui::widgets::NineSliceFrame;
 use ac_ui::widgets::chrome::BORDER;
 
+use ac_ui::UiHost;
+use ac_ui::icons::IconSource;
+use ac_ui::panels::appraisal::NameTables;
+
+use super::facts::{InterfaceFacts, composed_names};
 use super::mount::{Chrome, MountOptions, mount_window};
 use super::window::{TOOLBAR_WINDOW, WindowUi};
 
@@ -103,39 +108,54 @@ impl WindowUi {
     pub(super) fn update_external_container(&mut self) {
         let selected = self.player_view.and_then(|v| v.selected);
         let Self {
-            host, facts, icons, ..
+            host,
+            facts,
+            icons,
+            status,
+            ..
         } = self;
-        let external = ExternalContainerFacts {
-            container: facts.state.external_container,
-            in_range: facts.state.external_container_in_range,
-        };
-        let shown = host
-            .with_controller::<ExternalContainerController, _>(EXTERNAL_CONTAINER_WINDOW, |c, _| {
-                c.open_container() != 0
-            })
-            .unwrap_or(false);
-        if external.container == 0 && !shown {
-            return;
-        }
-        let split = host.with_controller::<ToolbarWindowController, _>(TOOLBAR_WINDOW, |c, _| {
-            c.split.quantity().clone()
-        });
-        let pending: Vec<u32> = facts.state.pending_item.into_iter().collect();
-        let view = facts.items_view(selected, &pending, split.as_ref());
-        host.with_controller::<ExternalContainerController, _>(
-            EXTERNAL_CONTAINER_WINDOW,
-            |c, ui| {
-                c.update(ui, &view, external, icons);
-            },
-        );
+        feed_external_container(host, facts, icons, &status.names, selected);
     }
+}
+
+/// Feed the outside-container window from `facts`: its cells caption each
+/// item by its composed name (`names` puts the material in front), as
+/// every item surface does.
+pub(super) fn feed_external_container(
+    host: &mut UiHost,
+    facts: &InterfaceFacts,
+    icons: &mut dyn IconSource,
+    names: &NameTables,
+    selected: Option<u32>,
+) {
+    let external = ExternalContainerFacts {
+        container: facts.state.external_container,
+        in_range: facts.state.external_container_in_range,
+    };
+    let shown = host
+        .with_controller::<ExternalContainerController, _>(EXTERNAL_CONTAINER_WINDOW, |c, _| {
+            c.open_container() != 0
+        })
+        .unwrap_or(false);
+    if external.container == 0 && !shown {
+        return;
+    }
+    let split = host.with_controller::<ToolbarWindowController, _>(TOOLBAR_WINDOW, |c, _| {
+        c.split.quantity().clone()
+    });
+    let pending: Vec<u32> = facts.state.pending_item.into_iter().collect();
+    let resolve = composed_names(names);
+    let view = facts.items_view(selected, &pending, split.as_ref(), &resolve);
+    host.with_controller::<ExternalContainerController, _>(EXTERNAL_CONTAINER_WINDOW, |c, ui| {
+        c.update(ui, &view, external, icons);
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ac_ui::root::UiRoot;
-    use ac_ui::tree::Element;
+    use ac_ui::tree::{Element, ElementId};
     use ac_ui::widgets::Panel;
 
     /// OpenAC `ExternalContainerControllerTests.WindowPolicy_AddsOuterFrameAndAllowsHorizontalResize`.
@@ -160,5 +180,98 @@ mod tests {
         assert!(f.constrain_resize_to_parent);
         assert_eq!(ui.element(root).unwrap().width, 700.0);
         assert!(!ui.is_window_visible(EXTERNAL_CONTAINER_WINDOW));
+    }
+
+    /// The outside-container window mounted on a synthetic layout shaped
+    /// like the retail one: its three lists and its close button.
+    fn external_container_host() -> (UiHost, ElementId) {
+        use ac_ui::element_info::ElementInfo;
+        use ac_ui::widgets::{DatElement, ItemList};
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        let mut host = UiHost::new();
+        host.root.set_size(800.0, 600.0);
+        let ui = &mut host.root;
+        let r = ui.root();
+        let root = ui.add(r, Element::at(0.0, 0.0, 800.0, 110.0), Panel::default());
+        let mut ids = HashMap::new();
+        for (id, x, y, w, h) in [
+            (external_container::TOP_CONTAINER_ID, 0.0, 0.0, 36.0, 36.0),
+            (
+                external_container::CONTAINER_LIST_ID,
+                40.0,
+                0.0,
+                680.0,
+                36.0,
+            ),
+            (external_container::CONTENTS_LIST_ID, 0.0, 40.0, 784.0, 32.0),
+        ] {
+            ids.insert(id, ItemList::create(ui, root, Element::at(x, y, w, h)));
+        }
+        let close = ui.add(
+            root,
+            Element::at(0.0, 80.0, 16.0, 16.0),
+            DatElement::new(Arc::new(ElementInfo::default())),
+        );
+        ids.insert(external_container::CLOSE_BUTTON_ID, close);
+        let contents = ids[&external_container::CONTENTS_LIST_ID];
+        let layout = ac_ui::import::ImportedLayout::from_parts(root, ids);
+        ui.register_window(EXTERNAL_CONTAINER_WINDOW, root, None, 0)
+            .unwrap();
+        let c = ExternalContainerController::bind(
+            ui,
+            &layout,
+            EXTERNAL_CONTAINER_WINDOW,
+            ExternalContainerSprites::default(),
+        )
+        .unwrap();
+        host.attach_controller(EXTERNAL_CONTAINER_WINDOW, Box::new(c))
+            .unwrap();
+        (host, contents)
+    }
+
+    /// GitHub issue #3: an item in a corpse hovers with its composed name,
+    /// the material in front, as it does in the player's own inventory.
+    #[test]
+    fn a_corpse_item_hovers_with_its_material_in_front() {
+        use ac_core::items::{ClientObject, EquipMask, ItemType, ItemUseable};
+        use ac_ui::widgets::{ItemList, ItemSlot};
+        const PLAYER: u32 = 0x5000_0001;
+        const CORPSE: u32 = 0x7000_0001;
+        const BATON: u32 = 0x6000_0001;
+        const RUBY: u32 = 0x26;
+        let (mut host, contents) = external_container_host();
+        let mut facts = InterfaceFacts::default();
+        let mut events = Vec::new();
+        let mut corpse = ClientObject::new(CORPSE);
+        corpse.name = "Corpse of Drudge".into();
+        corpse.item_type = ItemType::CONTAINER;
+        corpse.items_capacity = 120;
+        corpse.useability = Some(ItemUseable::REMOTE);
+        facts.objects.add_or_update(corpse, &mut events);
+        let mut baton = ClientObject::new(BATON);
+        baton.name = "Slashing Baton".into();
+        baton.item_type = ItemType::MELEE_WEAPON;
+        baton.material_type = Some(RUBY);
+        facts.objects.add_or_update(baton, &mut events);
+        facts
+            .objects
+            .move_item(BATON, CORPSE, 0, EquipMask::NONE, None, &mut events);
+        facts.state.player = PLAYER;
+        facts.state.external_container = CORPSE;
+        facts.state.external_container_in_range = true;
+        let names = NameTables {
+            materials: std::collections::HashMap::from([(RUBY, "Ruby".to_owned())]),
+            ..NameTables::default()
+        };
+        feed_external_container(&mut host, &facts, &mut ac_ui::icons::NoIcons, &names, None);
+        let cell = host
+            .root
+            .widget::<ItemList>(contents)
+            .and_then(|l| l.item(0))
+            .unwrap();
+        let slot = host.root.widget::<ItemSlot>(cell).unwrap();
+        assert_eq!(slot.object_id, BATON);
+        assert_eq!(slot.tooltip.as_deref(), Some("Ruby Slashing Baton"));
     }
 }

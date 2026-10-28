@@ -5,7 +5,7 @@
 //! on the next attach.
 
 use ac_core::items::vendor::is_split_exempt;
-use ac_core::items::{ClientObjectTable, ItemManaChange, StackSplitQuantity};
+use ac_core::items::{ClientObject, ClientObjectTable, ItemManaChange, StackSplitQuantity};
 use ac_core::player::{AttributeKind, LocalPlayerState};
 use ac_runtime::communication::JournalView;
 use ac_runtime::gameplay::{BookView, HouseView};
@@ -16,7 +16,8 @@ use ac_runtime::session::interface::{ChatEntryView, TitleFacts};
 use ac_runtime::session::interface::{
     ContractFacts, InterfaceEvent, InterfaceState, PlayerFacts, SocialFacts, apply_items_update,
 };
-use ac_ui::panels::items::ItemsView;
+use ac_ui::panels::appraisal::{AppraisalNames, NameTables};
+use ac_ui::panels::items::{ItemsView, NameResolver};
 
 /// What changed since the panels were last fed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -205,15 +206,26 @@ impl InterfaceFacts {
             .is_some_and(|o| o.container_id == vendor && is_split_exempt(o.item_type))
     }
 
+    /// The player's current strength (burden capacity), once known.
+    #[must_use]
+    pub fn strength(&self) -> Option<i32> {
+        self.numbers()
+            .and_then(|n| n.get_effective_attribute(AttributeKind::Strength))
+    }
+
     /// What the item panels read: the table, the player, `selected`, the
     /// interaction facts, the items with a request in flight (`pending`),
-    /// the selected stack's split quantity, the player's strength and name.
+    /// the selected stack's split quantity, the player's strength and name,
+    /// and how an item's name is composed (`names`, see [`composed_names`]).
+    /// The composer is required: an item surface without it would caption
+    /// the plain name and disagree with the selection caption.
     #[must_use]
     pub fn items_view<'a>(
         &'a self,
         selected: Option<u32>,
         pending: &'a [u32],
         split: Option<&'a StackSplitQuantity>,
+        names: NameResolver<'a>,
     ) -> ItemsView<'a> {
         let state = &self.state;
         let player = state.player;
@@ -228,13 +240,18 @@ impl InterfaceFacts {
             combat_mode: state.combat_mode,
             split,
             vendor_split_exempt: self.vendor_split_exempt(selected),
-            strength: self
-                .numbers()
-                .and_then(|n| n.get_effective_attribute(AttributeKind::Strength)),
+            strength: self.strength(),
             owner_name: self.objects.get(player).map(|o| o.name.as_str()),
+            names: Some(names),
             ..ItemsView::new(&self.objects, player)
         }
     }
+}
+
+/// An item's displayed name from the name tables: its appropriate name
+/// with its material in front.
+pub fn composed_names(tables: &NameTables) -> impl Fn(&ClientObject) -> String + Copy + '_ {
+    move |o| AppraisalNames::appropriate_name(tables, o)
 }
 
 #[cfg(test)]

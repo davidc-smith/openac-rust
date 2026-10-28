@@ -71,6 +71,22 @@ fn slot_object(ui: &UiRoot, cell: ElementId) -> u32 {
     ui.widget::<ItemSlot>(cell).map_or(0, |s| s.object_id)
 }
 
+fn cells(ui: &UiRoot, list: ElementId) -> Vec<ElementId> {
+    ui.widget::<ItemList>(list)
+        .map(|l| l.cells().to_vec())
+        .unwrap_or_default()
+}
+
+/// The row's cells show `items` in order, empty cells after them.
+fn shows(ui: &UiRoot, list: ElementId, items: &[u32]) -> bool {
+    let cells = cells(ui, list);
+    cells.len() >= items.len()
+        && cells
+            .iter()
+            .enumerate()
+            .all(|(i, c)| slot_object(ui, *c) == items.get(i).copied().unwrap_or(0))
+}
+
 fn is_owned(view: &ItemsView<'_>, id: u32) -> bool {
     view.objects.is_owned_by_object(id, view.player)
 }
@@ -114,6 +130,10 @@ impl SalvageController {
                     },
                 )
             }));
+            // The empty row is laid out once at bind (its empty cells take
+            // drops before anything is staged); later updates make cells
+            // only when the staged items change.
+            l.layout_cells(ui, list);
         });
         if let Some(bar) = layout.find(SCROLLBAR_ID)
             && let Some(s) = ui.widget_mut::<Scrollbar>(bar)
@@ -430,27 +450,37 @@ impl SalvageController {
     }
 
     /// Show the staged items (each with the trade overlay) and enable the
-    /// button when there are some.
+    /// button when there are some. The row's cells are made again only
+    /// when the staged items changed; otherwise each cell is refreshed in
+    /// place, so the cell under the pointer lives from a press to its
+    /// release (a right click examines it, a double click or a drag takes
+    /// it out) although the window is fed every frame.
     pub fn populate(&mut self, ui: &mut UiRoot, view: &ItemsView<'_>, icons: &mut dyn IconSource) {
         let list = self.list;
-        ui.with::<ItemList, _>(list, |l, ui| {
-            l.defer_layout();
-            l.flush(ui);
-        });
-        for (i, id) in self.items.iter().enumerate() {
-            let mut s = ItemSlot {
-                slot_index: i32::try_from(i).unwrap_or(i32::MAX),
-                source_kind: ItemDragSource::Inventory,
-                drag_accept_sprite: DEFAULT_DRAG_ACCEPT_SPRITE,
-                drag_reject_sprite: DEFAULT_DRAG_REJECT_SPRITE,
-                ..ItemSlot::default()
-            };
-            fill_slot(&mut s, view.get(*id), view, icons);
-            s.show_trade_overlay = true;
-            let cell = ui.insert(slot_element(), s);
-            ui.with::<ItemList, _>(list, |l, ui| l.add_item(ui, list, cell));
+        if !shows(ui, list, &self.items) {
+            ui.with::<ItemList, _>(list, |l, ui| {
+                l.defer_layout();
+                l.flush(ui);
+            });
+            for i in 0..self.items.len() {
+                let s = ItemSlot {
+                    slot_index: i32::try_from(i).unwrap_or(i32::MAX),
+                    source_kind: ItemDragSource::Inventory,
+                    drag_accept_sprite: DEFAULT_DRAG_ACCEPT_SPRITE,
+                    drag_reject_sprite: DEFAULT_DRAG_REJECT_SPRITE,
+                    ..ItemSlot::default()
+                };
+                let cell = ui.insert(slot_element(), s);
+                ui.with::<ItemList, _>(list, |l, ui| l.add_item(ui, list, cell));
+            }
+            ui.with::<ItemList, _>(list, |l, ui| l.end_defer_layout(ui, list));
         }
-        ui.with::<ItemList, _>(list, |l, ui| l.end_defer_layout(ui, list));
+        for (cell, id) in cells(ui, list).into_iter().zip(&self.items) {
+            if let Some(s) = ui.widget_mut::<ItemSlot>(cell) {
+                fill_slot(s, view.get(*id), view, icons);
+                s.show_trade_overlay = true;
+            }
+        }
         ui.set_enabled(self.button, !self.items.is_empty());
     }
 }
