@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use ac_core::items::{ClientObject, ItemType};
 use ac_runtime::inventory::{ItemCommand, ObjectRef};
 use ac_runtime::session::SessionCommand;
-use ac_ui::ElementId;
 use ac_ui::event::{DragAcceptance, DragPayload, ItemDragPayload, ItemDragSource, kind};
 use ac_ui::host::UiHost;
 use ac_ui::import::ImportedLayout;
@@ -22,6 +21,7 @@ use ac_ui::panels::PanelOutput;
 use ac_ui::panels::items::{ItemsView, NameResolver};
 use ac_ui::panels::salvage::{self, SalvageController};
 use ac_ui::widgets::{ItemList, ItemSlot, Scrollbar};
+use ac_ui::{ElementId, MouseButton};
 use common::items::*;
 use common::panels::*;
 use common::*;
@@ -527,4 +527,103 @@ fn an_updated_item_stays_staged_until_it_is_no_longer_suitable() {
     h.item(1, 60, 100, PLAYER);
     h.update();
     assert_eq!(h.count(), 0);
+}
+
+impl Harness {
+    /// The centre of cell `i` in window pixels.
+    fn cell_centre(&self, i: usize) -> (i32, i32) {
+        let c = self.cell(i);
+        let (x, y) = self.host.root.screen_position(c);
+        let e = self.host.root.element(c).unwrap();
+        ((x + e.width / 2.0) as i32, (y + e.height / 2.0) as i32)
+    }
+
+    /// A press and release of `button` on cell `i` through the root, with a
+    /// frame's update between them (the window is fed every frame it is
+    /// open), then a frame after.
+    fn press_release_across_update(&mut self, button: MouseButton, i: usize) {
+        let (x, y) = self.cell_centre(i);
+        self.host.mouse_move(x, y);
+        self.host.mouse_down(button, x, y, 0);
+        self.update();
+        self.host.mouse_up(button, x, y, 0);
+        self.update();
+    }
+}
+
+/// A right click is a press and a release on the same cell; the window is
+/// fed every frame between them, so the cell must outlive the frame for
+/// the release to examine the item.
+#[test]
+fn a_right_click_through_the_root_examines_across_a_frame() {
+    let mut h = harness();
+    h.item(1, 60, 0, PLAYER);
+    h.add(1);
+    h.outputs();
+    h.press_release_across_update(MouseButton::Right, 0);
+    let out = h.outputs();
+    assert!(
+        out.iter()
+            .any(|o| matches!(o, PanelOutput::SelectObject(1))),
+        "{out:?}"
+    );
+    assert!(
+        sessions(&out).iter().any(|c| matches!(
+            c,
+            SessionCommand::Item(ItemCommand::Appraise(ObjectRef::Guid(1)))
+        )),
+        "{out:?}"
+    );
+    assert_eq!(h.count(), 1);
+}
+
+/// A double click through the root, with frames between its clicks,
+/// unstages the item.
+#[test]
+fn a_double_click_through_the_root_unstages_across_frames() {
+    let mut h = harness();
+    h.item(1, 60, 0, PLAYER);
+    h.add(1);
+    h.press_release_across_update(MouseButton::Left, 0);
+    assert_eq!(h.count(), 1);
+    h.press_release_across_update(MouseButton::Left, 0);
+    assert_eq!(h.count(), 0);
+    assert!(!h.button_enabled());
+}
+
+/// Dragging a staged item out through the root, with a frame between the
+/// press and the move, unstages it.
+#[test]
+fn a_drag_out_through_the_root_unstages_across_a_frame() {
+    let mut h = harness();
+    h.item(1, 60, 0, PLAYER);
+    h.add(1);
+    let (x, y) = h.cell_centre(0);
+    h.host.mouse_move(x, y);
+    h.host.mouse_down(MouseButton::Left, x, y, 0);
+    h.update();
+    h.host.mouse_move(x + 200, y + 300);
+    h.update();
+    h.host.mouse_up(MouseButton::Left, x + 200, y + 300, 0);
+    h.update();
+    assert_eq!(h.count(), 0);
+}
+
+/// A frame with nothing changed keeps the row's cells (the same elements),
+/// and still draws what changed on a staged item.
+#[test]
+fn a_frame_keeps_the_cells_and_refreshes_what_they_draw() {
+    let mut h = harness();
+    h.item(1, 60, 0, PLAYER);
+    h.add(1);
+    let before = h.cell(0);
+    h.update();
+    assert_eq!(h.cell(0), before);
+    if let Some(o) = h.objects.t.get_mut(1) {
+        o.icon_id = 456;
+    }
+    let icon_before = h.slot(0).icon;
+    h.update();
+    assert_eq!(h.cell(0), before);
+    assert_ne!(h.slot(0).icon, icon_before);
 }
