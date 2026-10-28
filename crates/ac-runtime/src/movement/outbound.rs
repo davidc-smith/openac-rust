@@ -255,8 +255,12 @@ impl LocalPlayerOutbound {
         let wire = wire_position(&position);
         let raw = wire_raw_motion_state(&build_raw_motion_state(movement));
         let contact = movement.is_on_ground;
-        let sequence = outbox
-            .send_action(|seq| build_move_to_state(seq, &raw, &wire, timestamps, contact, false));
+        // A charge begun standing still keeps the character in place while
+        // movement keys are pressed; the server is told so.
+        let standing_long_jump = controller.object().interp.standing_long_jump;
+        let sequence = outbox.send_action(|seq| {
+            build_move_to_state(seq, &raw, &wire, timestamps, contact, standing_long_jump)
+        });
         self.record(OutboundRecord {
             kind: OutboundKind::MoveToState,
             sequence,
