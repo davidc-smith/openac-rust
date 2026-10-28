@@ -125,6 +125,16 @@ pub(super) struct StageDrawn {
     parts: crate::IdSet<(DrawnObject, u32)>,
 }
 
+/// The point lights a model is drawn with.
+#[derive(Debug, Clone, Copy)]
+enum ModelLights {
+    /// These.
+    Set(LightSet),
+    /// Those reaching an object standing in `cell` whose bounds are
+    /// `sphere` (`(centre, radius)`), picked only once a part is drawn.
+    Object { cell: u32, sphere: (Vec3, f32) },
+}
+
 /// Which of a model's parts are in view.
 #[derive(Debug, Clone, Copy)]
 enum Admission<'v> {
@@ -244,7 +254,7 @@ impl FrameSink<'_> {
         parts: &[MeshRef],
         world: Mat4,
         shell: bool,
-        lights: LightSet,
+        lights: ModelLights,
         indoor: bool,
         part0: Option<(u32, Option<Mat4>)>,
         opacities: Option<&[f32]>,
@@ -252,6 +262,8 @@ impl FrameSink<'_> {
         admission: Admission<'_>,
     ) -> bool {
         let mut drawn = false;
+        let window_lights = self.input.lights;
+        let mut picked: Option<LightSet> = None;
         let whole = owner.and_then(|(guid, local)| self.input.selection.lighting(guid, local));
         let by_part =
             owner.is_some_and(|(guid, local)| self.input.selection.has_part_lighting(guid, local));
@@ -319,13 +331,20 @@ impl FrameSink<'_> {
                     world: part_world,
                 });
             }
+            // An object's lights are picked once one of its parts is drawn.
+            let part_lights = match lights {
+                ModelLights::Set(set) => set,
+                ModelLights::Object { cell, sphere } => *picked.get_or_insert_with(|| {
+                    window_lights.object_lights(Some(cell), sphere.0, sphere.1)
+                }),
+            };
             self.draw_found_mesh(
                 u64::from(gfx_id),
                 gpu,
                 part.variant,
                 shell,
                 part_world,
-                lights,
+                part_lights,
                 indoor,
                 opacity,
                 lighting,
@@ -479,7 +498,7 @@ impl FrameSink<'_> {
                 &object.parts,
                 object.world,
                 false,
-                object.lights,
+                ModelLights::Set(object.lights),
                 object.indoor,
                 None,
                 object.opacities.as_deref(),
@@ -595,7 +614,7 @@ impl WalkSink for FrameSink<'_> {
                     parts,
                     world,
                     false,
-                    NO_LIGHTS,
+                    ModelLights::Set(NO_LIGHTS),
                     false,
                     None,
                     opacities,
@@ -682,14 +701,12 @@ impl WalkSink for FrameSink<'_> {
                     None => (parts.as_slice(), s.transform, None),
                 };
                 let world = offset * transform;
-                // The object's sphere picks its lights; each part is
-                // admitted by its own.
-                let sphere = self.model_sphere(s.model_id, world);
-                // Lit as the cell it stands in.
-                let lights = self
-                    .input
-                    .lights
-                    .object_lights(Some(member.cell), sphere.0, sphere.1);
+                // Lit by the lights its whole sphere reaches, as the cell it
+                // stands in; each part is admitted by its own sphere.
+                let lights = ModelLights::Object {
+                    cell: member.cell,
+                    sphere: self.model_sphere(s.model_id, world),
+                };
                 if self.draw_model(
                     parts,
                     world,
@@ -729,7 +746,7 @@ impl WalkSink for FrameSink<'_> {
             parts,
             world,
             true,
-            NO_LIGHTS,
+            ModelLights::Set(NO_LIGHTS),
             false,
             Some(part0),
             None,
