@@ -431,6 +431,59 @@ fn an_emote_key_plays_its_motion_and_the_server_hears_it() {
     );
 }
 
+/// The body moves in fixed steps (30 a second) while a window redraws 60
+/// times a second or more: the window draws the character, and its camera
+/// follows it, between the last two steps by the time carried past the
+/// last one, so it moves a little every frame instead of holding still one
+/// frame and jumping the next. The cell and the facing are the body's. The
+/// world keeps the body on its step for gameplay, plugins and the server.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_window_draws_the_running_character_between_its_steps() {
+    let mut rig = Rig::entered();
+    rig.command(run(2.0));
+    rig.frames(30);
+    let origin = |p: &Position| Vec3::new(p.origin.x, p.origin.y, p.origin.z);
+    let mut between = 0;
+    for _ in 0..10 {
+        rig.frames(1);
+        let c = rig.movement.controller().unwrap();
+        let (body, smoothed) = (c.position(), c.render_position());
+        let outbound = super::outbound::wire_position(&c.try_get_outbound_position().unwrap());
+        let live = rig
+            .world
+            .object(PLAYER)
+            .unwrap()
+            .position()
+            .copied()
+            .unwrap();
+        assert_eq!(live, outbound, "the world keeps the body on its step");
+        let drawn = rig
+            .world
+            .snapshot()
+            .objects
+            .into_iter()
+            .find(|o| o.guid == PLAYER)
+            .and_then(|o| o.position)
+            .unwrap();
+        assert_eq!(drawn.cell_id, live.cell_id, "drawn in the body's cell");
+        assert_eq!(
+            drawn.orientation, live.orientation,
+            "the facing is the body's"
+        );
+        let offset = origin(&drawn) - origin(&live);
+        assert!(
+            (offset - (smoothed - body)).length() < 1e-4,
+            "drawn {offset} from the body, smoothed {}",
+            smoothed - body
+        );
+        if (smoothed - body).length() > 0.01 {
+            between += 1;
+        }
+    }
+    assert!(between > 0, "running, the drawn place trails the step");
+}
+
 #[test]
 #[ignore = "needs the retail dat files"]
 fn held_keys_walk_and_letting_go_stops() {

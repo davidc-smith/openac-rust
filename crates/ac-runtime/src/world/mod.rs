@@ -371,6 +371,34 @@ impl World {
         }
     }
 
+    /// Where a window draws the object now, when the session's physics
+    /// places it between its fixed steps (the local player: its body moves
+    /// 30 steps a second while the screen redraws more often, so a window
+    /// drawing the step itself shows the character and the camera holding
+    /// still one frame and jumping the next). Gameplay, plugins and the
+    /// server keep [`set_live_position`](Self::set_live_position)'s place;
+    /// the change stream reports a move when the drawn pose changed by the
+    /// same measure. Ignored for an object the physics does not place.
+    pub fn set_drawn_position(&mut self, guid: u32, position: ac_proto::Position) {
+        let Some(object) = self.objects.get_mut(&guid) else {
+            return;
+        };
+        if object.physics.position.is_none() || object.live.is_none() {
+            return;
+        }
+        let moved = object
+            .drawn
+            .is_none_or(|old| live_pose_changed(&old, &position));
+        object.drawn = Some(position);
+        if moved {
+            self.changes.push(WorldChange::Moved {
+                key: object.key,
+                teleported: false,
+                forced: false,
+            });
+        }
+    }
+
     /// The session's physics has the object doing `motion` now (its
     /// interpreter's axes and ground contact): the change stream reports a
     /// motion change when it differs. Ignored for an object not in the
@@ -401,6 +429,7 @@ impl World {
         }
         object.entry_refused = true;
         object.live = None;
+        object.drawn = None;
         object.live_motion = None;
         self.changes.push(WorldChange::Moved {
             key: object.key,
@@ -414,6 +443,7 @@ impl World {
     pub fn clear_live_position(&mut self, guid: u32) {
         if let Some(object) = self.objects.get_mut(&guid) {
             object.live_motion = None;
+            object.drawn = None;
         }
         if let Some(object) = self.objects.get_mut(&guid)
             && object.live.take().is_some()
