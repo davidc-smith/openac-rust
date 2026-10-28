@@ -788,17 +788,21 @@ impl Movement {
             }
             MovementCommand::ToggleRunLock => self.auto_run = !self.auto_run,
             MovementCommand::Stop => {
-                // Autorun and a plugin's held keys end; the keys the player
-                // holds stay held (a jump being charged keeps charging
-                // until its key is released).
+                // Autorun and a plugin's held keys end, and the forward
+                // axis goes back to ready as the Ready posture puts it. The
+                // keys the player holds stay held: a forward key still down
+                // moves again only once pressed again (the controller acts
+                // on key changes), and a jump being charged keeps charging.
                 self.auto_run = false;
                 self.intent = None;
                 self.input.scripted_mut().stop();
+                self.with_controller(world, |c, env| c.request_posture(env, READY));
             }
             MovementCommand::Posture(posture) => {
+                // As the stop key: the held keys stay held (a jump being
+                // charged keeps charging).
                 self.auto_run = false;
                 self.intent = None;
-                self.keys = MovementKeys::default();
                 let motion = match posture {
                     Posture::Ready => READY,
                     Posture::Sit => SITTING,
