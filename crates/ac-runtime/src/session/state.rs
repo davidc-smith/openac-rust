@@ -1543,17 +1543,24 @@ impl SessionState {
         player
     }
 
-    /// Type one line into the chat box (a login command): the runtime's own
-    /// verbs first, then the chat box's routing. How it was routed.
+    /// Type one line into the chat box (the chat entry's, or a login
+    /// command): the runtime's own verbs first, then the chat box's
+    /// routing. A line the plugins' interceptors hold is sent on later with
+    /// `origin`'s talk focus. How it was routed.
     fn submit_chat_line(
         &mut self,
         line: &str,
         defaults: Defaults<'_>,
+        origin: crate::plugins::LineOrigin,
         outbox: &mut Outbox,
         active: bool,
         clocks: Clocks,
     ) -> crate::communication::SubmitOutcome {
-        if self.runtime_verb(line, outbox, active, clocks) {
+        self.plugin_lines.set_origin(origin);
+        let taken = self.runtime_verb(line, outbox, active, clocks);
+        self.plugin_lines
+            .set_origin(crate::plugins::LineOrigin::Chat);
+        if taken {
             self.forward();
             return crate::communication::SubmitOutcome::ClientHandled;
         }
@@ -1585,7 +1592,14 @@ impl SessionState {
         match command {
             C::Submit(text) => {
                 entry.submit(text.as_deref(), |line, defaults| {
-                    self.submit_chat_line(line, defaults, outbox, active, clocks)
+                    // The line keeps the entry's talk focus through the
+                    // plugins' interceptors (a tell stays a tell).
+                    let origin = crate::plugins::LineOrigin::Entry {
+                        channel: defaults.channel,
+                        tell_target: defaults.tell_target.map(str::to_owned),
+                        tell_target_guid: defaults.tell_target_guid,
+                    };
+                    self.submit_chat_line(line, defaults, origin, outbox, active, clocks)
                 });
             }
             C::SetDraft(text) => entry.type_draft(&text),
@@ -1648,7 +1662,14 @@ impl SessionState {
         {
             let now = clocks.session;
             let mut submit = |line: &str| {
-                self.submit_chat_line(line, Defaults::default(), outbox, in_world, clocks)
+                self.submit_chat_line(
+                    line,
+                    Defaults::default(),
+                    crate::plugins::LineOrigin::Chat,
+                    outbox,
+                    in_world,
+                    clocks,
+                )
             };
             if start {
                 sequence.entered_world(

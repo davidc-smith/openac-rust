@@ -10,7 +10,7 @@ use super::chat::RETAINED_LINES;
 use super::tests::{CLOCKS, call, in_world, with_binding};
 use super::{LineOrigin, PluginLine, PluginLines, events};
 use crate::communication::ChatLine;
-use crate::session::{HostEvent, Outbox, SessionCommand};
+use crate::session::{HostEvent, Outbox, SessionCommand, SessionState};
 
 fn system_line(sequence: u64, text: &str) -> ChatLine {
     ChatLine {
@@ -133,6 +133,78 @@ fn an_entry_line_is_held_with_its_talk_focus() {
         }]
     );
     assert!(outbox.is_empty());
+}
+
+// A line typed into the chat window's entry aimed at a tell keeps that
+// focus through the interceptors (OpenAC `ChatCommandRouter.SubmitEntered`
+// routes it with the entry's channel): passed, it goes out as the same tell
+// it would have been with no interceptor, never as speech.
+#[test]
+fn a_tell_typed_into_the_chat_entry_stays_a_tell_through_the_interceptors() {
+    use crate::communication::{ChatChannelKind, ChatEntryCommand as E};
+    let aim = |state: &mut SessionState, outbox: &mut Outbox| {
+        for command in [
+            E::SetChannel(ChatChannelKind::Tell),
+            E::SetTellTarget {
+                name: "Bob".into(),
+                guid: 0x5000_0002,
+            },
+        ] {
+            state.command(SessionCommand::ChatEntry(command), outbox, true, CLOCKS);
+        }
+    };
+    let submit = |state: &mut SessionState, outbox: &mut Outbox| {
+        let line = E::Submit(Some("meet me".into()));
+        state.command(SessionCommand::ChatEntry(line), outbox, true, CLOCKS);
+    };
+    let bodies = |outbox: &mut Outbox| outbox.drain().map(|o| o.body).collect::<Vec<_>>();
+
+    // No interceptor: the tell goes out at once.
+    let mut direct = in_world();
+    let mut outbox = Outbox::new();
+    aim(&mut direct, &mut outbox);
+    submit(&mut direct, &mut outbox);
+    let tell = bodies(&mut outbox);
+    assert_eq!(tell.len(), 1);
+
+    // An interceptor: the line is held with the entry's talk focus.
+    let mut state = in_world();
+    state.plugin_lines.set_intercepting(true);
+    let mut outbox = Outbox::new();
+    aim(&mut state, &mut outbox);
+    submit(&mut state, &mut outbox);
+    assert!(outbox.is_empty());
+    let origin = LineOrigin::Entry {
+        channel: ChatChannelKind::Tell,
+        tell_target: Some("Bob".into()),
+        tell_target_guid: 0x5000_0002,
+    };
+    assert_eq!(
+        state.plugin_lines.take(),
+        [PluginLine::Intercept {
+            line: "meet me".into(),
+            rewrites: 0,
+            origin: origin.clone(),
+        }]
+    );
+    // Passed, it is sent on with that focus, as the session's runner does.
+    state.plugin_lines.resubmit("meet me", 0, true);
+    let LineOrigin::Entry {
+        channel,
+        tell_target,
+        tell_target_guid,
+    } = origin
+    else {
+        unreachable!()
+    };
+    let passed = SessionCommand::ChatInput {
+        text: "meet me".into(),
+        channel,
+        tell_target,
+        tell_target_guid,
+    };
+    state.command(passed, &mut outbox, true, CLOCKS);
+    assert_eq!(bodies(&mut outbox), tell);
 }
 
 // A map link clicked in the transcript reaches plugins (OpenAC main
