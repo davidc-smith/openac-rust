@@ -82,6 +82,33 @@ fn the_carried_components_group_by_category_then_name() {
     );
 }
 
+/// The list made in a plain host takes its margins when it is made, so a
+/// spellbook that grew while hidden shows the components at its full
+/// height. OpenAC `SpellbookWindowController.Create` captures the
+/// baseline right after adding the components list.
+#[test]
+fn a_list_made_in_its_host_follows_a_page_that_grew_while_hidden() {
+    use ac_ui::import::ImportedLayout;
+    use ac_ui::tree::Element;
+    use ac_ui::widgets::Panel;
+    let mut host = UiHost::new();
+    host.root.set_size(800.0, 600.0);
+    let ui = &mut host.root;
+    let r = ui.root();
+    let window = ui.add(r, Element::at(0.0, 0.0, 300.0, 100.0), Panel::default());
+    let list_host = ui.add(window, Element::at(0.0, 0.0, 200.0, 64.0), Panel::default());
+    let layout =
+        ImportedLayout::from_parts(window, [(comps::LIST_ID, list_host)].into_iter().collect());
+    ui.element_mut(window).unwrap().visible = false;
+    let page = comps::ComponentsPageController::bind(ui, &layout, Vec::new()).unwrap();
+    let list = page.list();
+    assert_ne!(list, list_host, "the list is made in the host");
+    ui.element_mut(list_host).unwrap().height = 300.0;
+    ui.element_mut(window).unwrap().visible = true;
+    host.draw((800.0, 600.0), &ac_ui::draw::NoSprites);
+    assert_eq!(host.root.element(list).unwrap().height, 300.0);
+}
+
 mod real_dats {
     use super::*;
     use ac_ui::content::DatContent;

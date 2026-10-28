@@ -623,7 +623,8 @@ fn selection_combat_and_log_out_actions_go_to_the_session() {
 #[test]
 fn the_retail_selection_keys_reach_the_session() {
     // The retail key map: ' closest monster, P previous selection, R use,
-    // E examine, Shift+Escape log out.
+    // E examine (the interface's first: an examination that shows closes
+    // on it; else it goes on to the session), Shift+Escape log out.
     use ac_runtime::gameplay::GameplayCommand as G;
     use ac_runtime::inventory::ItemCommand as I;
     let mut r = Rig::new();
@@ -644,7 +645,7 @@ fn the_retail_selection_keys_reach_the_session() {
             GameplayOutput::Gameplay(G::SelectNearestMonster),
             GameplayOutput::Gameplay(G::SelectPrevious),
             GameplayOutput::Item(I::UseSelected),
-            GameplayOutput::Item(I::ExamineSelected),
+            GameplayOutput::Interface(InputAction::SelectionExamine),
             GameplayOutput::LogOut,
         ]
     );

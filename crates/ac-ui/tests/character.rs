@@ -202,6 +202,11 @@ struct Win {
 /// header, the meter, the list and the two footers; a hidden skills page
 /// repeating the header ids; the titles page; the tabs.
 fn window() -> Win {
+    window_with(true)
+}
+
+/// [`window`], its stat list a list box or (`false`) a plain element.
+fn window_with(list_box: bool) -> Win {
     let mut host = UiHost::new();
     host.root.set_size(800.0, 700.0);
     let ui = &mut host.root;
@@ -257,11 +262,16 @@ fn window() -> Win {
     ] {
         ids.insert(id, text(ui, meter, id, x, 0.0, 120.0));
     }
-    let list = ui.add(
-        page,
-        el(character::LIST_BOX_ID, 5.0, 200.0, 282.0, 200.0),
-        ListBox::new(Arc::new(ElementInfo::default())),
-    );
+    let list_el = el(character::LIST_BOX_ID, 5.0, 200.0, 282.0, 200.0);
+    let list = if list_box {
+        ui.add(
+            page,
+            list_el,
+            ListBox::new(Arc::new(ElementInfo::default())),
+        )
+    } else {
+        ui.add(page, list_el, ac_ui::widgets::Panel::default())
+    };
     ids.insert(character::LIST_BOX_ID, list);
     let bar = ui.add(
         page,
@@ -725,6 +735,29 @@ fn raising_a_vital_names_its_maximum() {
         panel_outputs(&mut w.host),
         vec![PanelOutput::RaiseVital { vital: 3, xp: 88 }]
     );
+}
+
+/// The viewport made in a plain stat list takes its margins when it is
+/// made, so a list that grew while the window was hidden shows its rows
+/// at the full height. OpenAC `CharacterStatController` captures the
+/// viewport's baseline right after adding it.
+#[test]
+fn a_viewport_made_in_a_plain_list_follows_a_list_that_grew_while_hidden() {
+    let mut w = window_with(false);
+    let list = w.ids[&character::LIST_BOX_ID];
+    let bar = w.ids[&character::LIST_SCROLLBAR_ID];
+    let ScrollSource::Element(viewport) = w.host.root.widget::<Scrollbar>(bar).unwrap().model
+    else {
+        panic!("the scrollbar follows the viewport");
+    };
+    assert_eq!(w.host.root.parent(viewport), Some(list));
+    let page = w.ids[&character::ATTRIBUTES_PAGE_ID];
+    let window = w.host.root.parent(page).unwrap();
+    w.host.root.element_mut(window).unwrap().visible = false;
+    w.host.root.element_mut(list).unwrap().height = 350.0;
+    w.host.root.element_mut(window).unwrap().visible = true;
+    w.host.draw((800.0, 700.0), &ac_ui::draw::NoSprites);
+    assert_eq!(w.host.root.element(viewport).unwrap().height, 350.0);
 }
 
 // ── Tabs and skills ─────────────────────────────────────────────────────

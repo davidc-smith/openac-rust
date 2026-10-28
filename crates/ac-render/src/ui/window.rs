@@ -889,6 +889,12 @@ impl WindowUi {
             }
         }
         self.follow_side_by_side_vitals();
+        // The examination window follows the selection while it shows.
+        let selection = self.player_view.and_then(|v| v.selected);
+        self.host
+            .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
+                c.follow_selection(ui, selection);
+            });
         let selected = self.player_view.and_then(|v| v.selected).map(|guid| {
             let name = scene
                 .object_by_guid(guid)

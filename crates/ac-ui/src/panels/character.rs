@@ -1679,11 +1679,15 @@ impl CharacterStatController {
             let (w, h) = ui.element(list).map_or((0.0, 0.0), |e| (e.width, e.height));
             let mut p = ScrollablePanel::new();
             p.line_height = ROW_HEIGHT as i32;
-            ui.add(
+            let v = ui.add(
                 list,
                 Element::at(0.0, 0.0, w, h).with_anchors(AnchorEdges::ALL),
                 p,
-            )
+            );
+            // Margins now: the first layout pass skips a hidden window,
+            // whose list may have grown before it is first shown.
+            ui.capture_current_anchor_baseline(v);
+            v
         };
         if let Some(p) = ui.widget_mut::<ScrollablePanel>(v) {
             p.line_height = ROW_HEIGHT as i32;

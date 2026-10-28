@@ -712,6 +712,18 @@ impl WindowUi {
     /// `RetailUiRuntime.HandleInputAction`): the panel toggles, the compass;
     /// false when it is not the interface's (the world gets it).
     pub fn handle_input_action(&mut self, action: InputAction) -> bool {
+        // The examination window takes the examine key first: it closes
+        // while it shows (else the key examines the selection).
+        if self
+            .host
+            .with_controller::<ac_ui::panels::appraisal::AppraisalController, _>(
+                super::window::EXAMINATION_WINDOW,
+                |c, ui| c.handle_input_action(ui, action),
+            )
+            .unwrap_or(false)
+        {
+            return true;
+        }
         if let Some(hotkey) = hotkey_for_action(action) {
             return self.run_hotkey(hotkey);
         }
@@ -852,13 +864,16 @@ fn is_chat_action(action: InputAction) -> bool {
     )
 }
 
-/// The key map's action is the interface's to answer.
+/// The key map's action is the interface's to answer first. The examine key
+/// is offered to the examination window, which closes on it while it shows;
+/// what the interface does not take goes on to the session.
 #[must_use]
 pub fn is_interface_action(action: InputAction) -> bool {
     hotkey_for_action(action).is_some()
         || panel_for_action(action).is_some()
         || action == InputAction::ToggleCompass
         || action == InputAction::SelectionSplitStack
+        || action == InputAction::SelectionExamine
         || super::panel_keys::page_key_for_action(action).is_some()
         || super::chat_windows::floating_chat_for_action(action).is_some()
         || is_chat_action(action)

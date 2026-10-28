@@ -560,6 +560,9 @@ impl EffectsController {
             let (w, h) = ui.element(host).map(|e| (e.width, e.height))?;
             let list = ItemList::create(ui, host, Element::at(0.0, 0.0, w, h));
             ui.set_anchors(list, AnchorEdges::ALL);
+            // Margins now: the first layout pass skips a hidden panel,
+            // which may have grown before it is first shown.
+            ui.capture_current_anchor_baseline(list);
             list
         };
         if let Some(l) = ui.widget_mut::<ItemList>(list) {
