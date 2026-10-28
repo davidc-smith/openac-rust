@@ -148,6 +148,9 @@ impl World {
         // The environment is the runtime's for its whole life, as the clock
         // is (OpenAC's runtime environment state is one per runtime).
         self.environ_override = environ_override;
+        // Whoever follows the changes (a window's copy of the items) hears
+        // that every item is gone, as from a cleared table.
+        self.changes.push(WorldChange::Item(ItemChange::Cleared));
     }
 
     /// The server's last fog override as sent (`None` until one arrives);

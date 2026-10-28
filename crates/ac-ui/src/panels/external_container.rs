@@ -502,6 +502,7 @@ impl ExternalContainerController {
                 slot: placement,
                 amount: if amount < full { amount } else { 0 },
                 pickup: false,
+                join_stack: false,
             })),
         );
     }

@@ -45,7 +45,7 @@ use crate::session::Outbox;
 use crate::world::World;
 use crate::world::liveness::QueueNote;
 
-pub use actions::{REQUEST_NOT_SENT, target_compatible};
+pub use actions::{REQUEST_NOT_SENT, plan_join_stack, target_compatible};
 pub use approach::{
     APPROACH_NEVER_COMPLETED, ApproachCompletion, ApproachPlan, ApproachSource, ApproachToken,
     CHARGE_DISTANCE, DEFAULT_USE_RADIUS, STALLED_APPROACH_GIVE_UP_TICKS,
@@ -237,6 +237,11 @@ pub enum ItemCommand {
         /// The item is not the player's (it lies in the world or in an
         /// outside container).
         pickup: bool,
+        /// A drop on a pack's icon: join the first stack in the pack (its
+        /// own items, then each pack inside it) with room for all that
+        /// moves, with a merge, before any room check; the plain drop when
+        /// none has room.
+        join_stack: bool,
     },
     /// An item dropped on the toolbar's backpack button: one of the
     /// player's goes into the preferred pack (the open pack, or the main

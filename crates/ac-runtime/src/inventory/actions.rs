@@ -220,8 +220,14 @@ impl Inventory {
                 slot,
                 amount,
                 pickup,
+                join_stack,
             } => {
                 let (item, container) = (resolve!(item), resolve!(container));
+                if *join_stack
+                    && let Some(sent) = self.join_dropped_stack(item, container, *amount, ctx)
+                {
+                    return sent;
+                }
                 self.drop_into(item, container, *slot, *amount, *pickup, ctx)
             }
             C::DropOnBackpack(item) => {
@@ -935,6 +941,37 @@ impl Inventory {
         })
     }
 
+    /// A drop on a pack's icon joins the moving amount (`amount`, 0 for the
+    /// whole stack) to the first stack in the pack with room for all of it,
+    /// with a merge: settled before any room check, as joining takes no
+    /// slot. `None` when no stack takes it (the drop goes on as a plain
+    /// one); else whether the merge was sent.
+    fn join_dropped_stack(
+        &mut self,
+        item_id: u32,
+        container_id: u32,
+        amount: u32,
+        ctx: &mut ItemContext<'_>,
+    ) -> Option<bool> {
+        let full = ctx.world.item(item_id)?.stack_size.max(1).unsigned_abs();
+        let requested = if amount == 0 { full } else { amount.min(full) };
+        let join = self.plan_auto_merge_into(item_id, container_id, requested, ctx)?;
+        let sent = self.dispatch_request(InventoryRequestKind::Merge, item_id, ctx, |ctx| {
+            ctx.send(|seq| {
+                build_stackable_merge(
+                    seq,
+                    join.source_object_id,
+                    join.target_object_id,
+                    join.amount,
+                )
+            })
+        });
+        if sent {
+            self.replace_fully_merged_shortcut(join.source_object_id, join.target_object_id, ctx);
+        }
+        Some(sent)
+    }
+
     /// An item dropped on the toolbar's backpack button: the player's goes
     /// into the preferred pack's top, shown waiting there; anything else is
     /// picked up into the main pack at once.
@@ -1484,21 +1521,13 @@ impl Inventory {
         requested: u32,
         ctx: &ItemContext<'_>,
     ) -> Option<StackMergePlan> {
-        let items = ctx.world.items();
-        let source = items.get(source_id)?;
-        if container_id == 0 || source.stack_size_max <= 1 {
-            return None;
-        }
-        let ready = self.can_make_request(ctx);
-        let requested_amount = i32::try_from(requested).unwrap_or(i32::MAX);
-        let source = merge_item(source);
-        exhaustive_contained_items(items, container_id)
-            .into_iter()
-            .find_map(|target_id| {
-                let target = items.get(target_id)?;
-                StackMergePlan::plan(&source, &merge_item(target), ready, requested_amount)
-                    .filter(|plan| plan.amount == requested)
-            })
+        plan_join_stack(
+            ctx.world.items(),
+            source_id,
+            container_id,
+            requested,
+            self.can_make_request(ctx),
+        )
     }
 
     /// Put an owned item into an owned container (or the main pack); a
@@ -1991,6 +2020,35 @@ fn merge_item(item: &ClientObject) -> StackMergeItem {
         max_stack_size: item.stack_size_max,
         trade_state: item.trade_state,
     }
+}
+
+/// The stack a moving stack joins when it is put into `container_id` with
+/// joining asked for (a drop on a pack's icon, a pickup into the backpack,
+/// a move with the join flag): the first stack of the same thing, among the
+/// container's own items and then each pack inside it, with room for all
+/// `requested` of `source_id`, as the merge that joins it. A stack with room
+/// for only part of it is passed over, so the move stays whole.
+#[must_use]
+pub fn plan_join_stack(
+    objects: &ClientObjectTable,
+    source_id: u32,
+    container_id: u32,
+    requested: u32,
+    ready: bool,
+) -> Option<StackMergePlan> {
+    let source = objects.get(source_id)?;
+    if container_id == 0 || source.stack_size_max <= 1 {
+        return None;
+    }
+    let requested_amount = i32::try_from(requested).unwrap_or(i32::MAX);
+    let source = merge_item(source);
+    exhaustive_contained_items(objects, container_id)
+        .into_iter()
+        .find_map(|target_id| {
+            let target = objects.get(target_id)?;
+            StackMergePlan::plan(&source, &merge_item(target), ready, requested_amount)
+                .filter(|plan| plan.amount == requested)
+        })
 }
 
 /// Everything a container holds, for finding a stack to join: its own items
