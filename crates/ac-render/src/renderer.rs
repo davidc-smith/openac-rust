@@ -4561,9 +4561,11 @@ mod tests {
         }
     }
 
-    /// OpenAC `WalkProductionWorldDataTests.BucketDynamicRecord_InstallsMultipartPlayerInEveryCrossedInteriorCell`:
-    /// an object whose drawn parts reach three rooms of the Facility Hub is
-    /// drawn in each of them, once.
+    /// An object whose drawn parts reach three rooms of the Facility Hub is
+    /// drawn in each of them, once each. OpenAC draws a live object in every
+    /// cell its registry rows are in (`WalkProductionWorldData.GetCellDynamics`);
+    /// the cells are those of a test OpenAC had before its cell views read
+    /// the registry (`BucketDynamicRecord_InstallsMultipartPlayerInEveryCrossedInteriorCell`).
     #[test]
     fn an_object_is_drawn_in_every_cell_its_parts_reach() {
         const HOME: u32 = 0x8A02_015E;
@@ -4580,8 +4582,12 @@ mod tests {
         }
     }
 
-    /// OpenAC `WalkProductionWorldDataTests.BucketDynamicRecord_UnregisteredInteriorEffectFallsBackToParentCell`:
-    /// an object without rows is drawn in the cell it stands in.
+    /// An object without rows is drawn in the cell it stands in. This is
+    /// this client's choice, not OpenAC's (OpenAC draws only what its
+    /// registry lists): the rows come from the window's collision mirror,
+    /// which holds only the player's landblock and its eight neighbours and
+    /// builds objects over a few frames, so an object outside it, not yet
+    /// built, or whose build failed has none.
     #[test]
     fn an_object_without_rows_is_drawn_where_it_stands() {
         const HOME: u32 = 0x8A02_015F;
@@ -4591,9 +4597,12 @@ mod tests {
         assert_eq!(filed[&HOME], vec![(HOME, 0)]);
     }
 
-    /// OpenAC `WalkProductionWorldDataTests.ResolveDynamicRenderCells_EquippedDescendantInheritsRootCellArray`:
-    /// a held object (a wand held by an item held by a character) is drawn
-    /// in its top-level holder's cells.
+    /// A held object (a wand held by an item held by a character) is drawn
+    /// in its top-level holder's cells, as OpenAC's registry gives an
+    /// attached child its root's cell array
+    /// (`ShadowObjectRegistryRetailCellArrayTests.AttachChild_NestedChildOfAChild_ResolvesToTheRoot`);
+    /// the cells are those of a test OpenAC had before its cell views read
+    /// the registry (`ResolveDynamicRenderCells_EquippedDescendantInheritsRootCellArray`).
     #[test]
     fn a_held_object_is_drawn_in_its_holders_cells() {
         const ROOT: u32 = 0x5000_000A;
