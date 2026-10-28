@@ -71,6 +71,9 @@ pub(super) struct SinkInputs<'a> {
     pub buildings: &'a [BuildingDraw<'a>],
     pub cells: &'a HashMap<u32, CellRef<'a>>,
     pub objects: &'a HashMap<u32, Vec<ObjectDraw<'a>>>,
+    /// The server objects each cell draws: (the cell `objects` files it
+    /// under, its index there).
+    pub object_cells: &'a HashMap<u32, Vec<(u32, usize)>>,
     pub models: &'a crate::IdMap<u32, Option<Vec<MeshRef>>>,
     pub model_info: &'a crate::IdMap<u32, ModelInfo>,
     pub meshes: &'a crate::IdMap<MeshKey, GfxGpu>,
@@ -420,11 +423,19 @@ pub(super) fn static_pose(
 
 impl FrameSink<'_> {
     fn draw_objects_in(&mut self, key: u32, views: &[ActiveView]) {
-        let Some(list) = self.input.objects.get(&key) else {
+        let Some(list) = self.input.object_cells.get(&key) else {
             return;
         };
         let mut drawn = 0;
-        for object in list {
+        for &(home, index) in list {
+            let Some(object) = self
+                .input
+                .objects
+                .get(&home)
+                .and_then(|draws| draws.get(index))
+            else {
+                continue;
+            };
             let stamp = DrawnObject::Server(object.guid, object.local_id);
             if !self.first_admission(stamp, object.is_player, object.sphere, views) {
                 continue;

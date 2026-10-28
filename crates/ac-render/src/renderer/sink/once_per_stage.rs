@@ -230,6 +230,7 @@ impl Area {
         let animations = AnimationPresenter::default();
         let selection = SelectionScene::default();
         let terrain_present: HashSet<LandblockCoord> = [self.coord].into();
+        let object_cells = crate::renderer::file_object_draws(objects, |_| None);
         let mut sink = FrameSink {
             input: SinkInputs {
                 width: camera.width,
@@ -241,6 +242,7 @@ impl Area {
                 buildings: &buildings,
                 cells: &cells,
                 objects,
+                object_cells: &object_cells,
                 models: &self.models,
                 model_info: &self.model_info,
                 meshes: &self.meshes,
@@ -455,6 +457,7 @@ fn a_room_seen_through_two_doorways_is_drawn_once() {
         root: world,
         held: false,
         visible: true,
+        render_owner: 1,
     };
     let objects = HashMap::from([(ROOM, vec![object])]);
     let frame = area.frame(ROOT, &camera, &objects);

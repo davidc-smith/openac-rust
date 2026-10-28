@@ -388,6 +388,36 @@ pub(crate) struct ObjectDraw<'a> {
     /// Whether the world draws it: neither it nor what holds it is hidden
     /// or flagged not to draw ([`draws_by_state`]).
     visible: bool,
+    /// The top-level object (by local id) whose cells it is drawn in: its
+    /// own, or for a held object the one at the top of what holds it.
+    render_owner: u32,
+}
+
+/// Where each server object is drawn: for every cell, the objects drawn in
+/// it as (the cell `objects` files it under, its index there), in the
+/// order `objects` lists them. An object is drawn in every cell its drawn
+/// parts reach, as its owner's registration flooded them
+/// (`render_cells`); one without rows is drawn in the cell it stands in.
+pub(crate) fn file_object_draws<'c>(
+    objects: &HashMap<u32, Vec<ObjectDraw<'_>>>,
+    render_cells: impl Fn(u32) -> Option<&'c [u32]>,
+) -> HashMap<u32, Vec<(u32, usize)>> {
+    let mut homes: Vec<u32> = objects.keys().copied().collect();
+    homes.sort_unstable();
+    let mut out: HashMap<u32, Vec<(u32, usize)>> = HashMap::new();
+    for home in homes {
+        for (index, draw) in objects[&home].iter().enumerate() {
+            let own = [home];
+            let cells: &[u32] = match render_cells(draw.render_owner) {
+                Some(cells) => cells,
+                None => &own,
+            };
+            for &cell in cells {
+                out.entry(cell).or_default().push((home, index));
+            }
+        }
+    }
+    out
 }
 
 /// Whether an object's own physics state lets the world draw it: neither
@@ -2115,6 +2145,10 @@ impl WorldRenderer {
         for draws in objects.values_mut() {
             draws.retain(|draw| draw.visible);
         }
+        // Each object in every cell its drawn parts reach (OpenAC files a
+        // live object by its registration's cell array).
+        let object_cells =
+            file_object_draws(&objects, |owner| self.camera_collision.render_cells(owner));
         let held: HashSet<u32> = scene
             .into_iter()
             .flat_map(Scene::objects)
@@ -2246,6 +2280,7 @@ impl WorldRenderer {
                 buildings: &buildings,
                 cells: &cells,
                 objects: &objects,
+                object_cells: &object_cells,
                 models: &self.models,
                 model_info: &self.model_info,
                 meshes: &self.meshes,
@@ -2486,6 +2521,8 @@ impl WorldRenderer {
             indoor: bool,
             /// Whether the parent is drawn.
             visible: bool,
+            /// The top-level object whose cells it is drawn in.
+            owner: u32,
         }
 
         let player_guid = scene.and_then(Scene::player).map(|p| p.guid);
@@ -2572,6 +2609,7 @@ impl WorldRenderer {
                 root,
                 held: false,
                 visible,
+                render_owner: object.key.local_id,
             });
             poses.push(OwnerPose {
                 local: object.key.local_id,
@@ -2591,6 +2629,7 @@ impl WorldRenderer {
                     lights,
                     indoor,
                     visible,
+                    owner: object.key.local_id,
                 },
             );
         }
@@ -2653,7 +2692,8 @@ impl WorldRenderer {
                     })
                     .collect();
                 let sphere = sphere_of(bounds, child_root * Mat4::from_scale(Vec3::splat(scale)));
-                let (cell, lights, indoor) = (parent.cell, parent.lights, parent.indoor);
+                let (cell, lights, indoor, owner) =
+                    (parent.cell, parent.lights, parent.indoor, parent.owner);
                 // A held object keeps its own translucency.
                 let opacity = translucency::opacity(translucency::object_translucency(
                     child.guid,
@@ -2676,6 +2716,7 @@ impl WorldRenderer {
                     root: child_root,
                     held: true,
                     visible,
+                    render_owner: owner,
                 });
                 poses.push(OwnerPose {
                     local: child.key.local_id,
@@ -2695,6 +2736,7 @@ impl WorldRenderer {
                         lights,
                         indoor,
                         visible,
+                        owner,
                     },
                 );
                 true
@@ -4500,5 +4542,77 @@ mod tests {
                 (key(crate::effects::SHELL_CELL, 0), 0x0200_0003),
             ]
         );
+    }
+
+    /// A server object as the frame files it: drawn on `owner`'s cells.
+    fn object_draw(local_id: u32, owner: u32, held: bool) -> ObjectDraw<'static> {
+        ObjectDraw {
+            parts: Cow::Owned(Vec::new()),
+            world: Mat4::IDENTITY,
+            sphere: (Vec3::ZERO, 1.0),
+            lights: NO_LIGHTS,
+            indoor: true,
+            is_player: false,
+            opacities: None,
+            guid: 0x5000_0000 | local_id,
+            local_id,
+            root: Mat4::IDENTITY,
+            held,
+            visible: true,
+            render_owner: owner,
+        }
+    }
+
+    /// OpenAC `WalkProductionWorldDataTests.BucketDynamicRecord_InstallsMultipartPlayerInEveryCrossedInteriorCell`:
+    /// an object whose drawn parts reach three rooms of the Facility Hub is
+    /// drawn in each of them, once.
+    #[test]
+    fn an_object_is_drawn_in_every_cell_its_parts_reach() {
+        const HOME: u32 = 0x8A02_015E;
+        let cells = [0x8A02_015E, 0x8A02_015F, 0x8A02_01C1];
+        let objects = HashMap::from([(HOME, vec![object_draw(0x000F_4243, 0x000F_4243, false)])]);
+        let filed = file_object_draws(&objects, |owner| {
+            (owner == 0x000F_4243).then_some(&cells[..])
+        });
+        let mut keys: Vec<u32> = filed.keys().copied().collect();
+        keys.sort_unstable();
+        assert_eq!(keys, cells);
+        for list in filed.values() {
+            assert_eq!(list, &[(HOME, 0)]);
+        }
+    }
+
+    /// OpenAC `WalkProductionWorldDataTests.BucketDynamicRecord_UnregisteredInteriorEffectFallsBackToParentCell`:
+    /// an object without rows is drawn in the cell it stands in.
+    #[test]
+    fn an_object_without_rows_is_drawn_where_it_stands() {
+        const HOME: u32 = 0x8A02_015F;
+        let objects = HashMap::from([(HOME, vec![object_draw(0x1234, 0x1234, false)])]);
+        let filed = file_object_draws(&objects, |_| None);
+        assert_eq!(filed.len(), 1);
+        assert_eq!(filed[&HOME], vec![(HOME, 0)]);
+    }
+
+    /// OpenAC `WalkProductionWorldDataTests.ResolveDynamicRenderCells_EquippedDescendantInheritsRootCellArray`:
+    /// a held object (a wand held by an item held by a character) is drawn
+    /// in its top-level holder's cells.
+    #[test]
+    fn a_held_object_is_drawn_in_its_holders_cells() {
+        const ROOT: u32 = 0x5000_000A;
+        const HOME: u32 = 0xF418_0104;
+        let cells = [0xF418_0106, 0xF418_0104];
+        let objects = HashMap::from([(
+            HOME,
+            vec![
+                object_draw(ROOT, ROOT, false),
+                object_draw(0x8000_0461, ROOT, true),
+                object_draw(0x8000_45EE, ROOT, true),
+            ],
+        )]);
+        let filed = file_object_draws(&objects, |owner| (owner == ROOT).then_some(&cells[..]));
+        assert_eq!(filed.len(), 2);
+        for cell in cells {
+            assert_eq!(filed[&cell], vec![(HOME, 0), (HOME, 1), (HOME, 2)]);
+        }
     }
 }
