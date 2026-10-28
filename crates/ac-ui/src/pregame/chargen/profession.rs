@@ -168,8 +168,10 @@ impl ProfessionPage {
             let slider = ui
                 .find_descendant(container, SLIDER_CONTROL_ID)
                 .filter(|s| ui.widget::<Scrollbar>(*s).is_some());
+            // A value slider: dragging it reports the new value.
             if let Some(s) = slider.and_then(|s| ui.widget_mut::<Scrollbar>(s)) {
                 s.horizontal = true;
+                s.scalar = true;
             }
             let value = ui
                 .find_descendant(container, SLIDER_VALUE_ID)

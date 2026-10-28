@@ -152,10 +152,11 @@ impl WindowUi {
             return;
         };
         let ints = object.properties.ints.clone();
-        let (attributes, innate) = self
+        let (attributes, base, innate) = self
             .host
             .with_controller::<CharacterStatController, _>(CHARACTER_WINDOW, |c, _| {
-                (c.sheet().attributes, c.sheet().attribute_innate)
+                let s = c.sheet();
+                (s.attributes, s.attribute_base, s.attribute_innate)
             })
             .unwrap_or_default();
         let birth_text = ints.get(&CREATION_TIMESTAMP).map(|&born| {
@@ -168,6 +169,7 @@ impl WindowUi {
         let source = CharacterInfoSource {
             ints,
             attributes,
+            base,
             innate,
             birth_text,
         };

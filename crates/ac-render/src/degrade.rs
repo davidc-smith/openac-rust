@@ -43,6 +43,10 @@ pub struct DegradeSettings {
     /// A building whose chosen level is empty or a camera-facing sprite
     /// keeps the nearest solid level instead (an OpenAC display option).
     pub keep_distant_buildings: bool,
+    /// Building shells skip the ladder and draw level 0 at any distance:
+    /// the overhead map view, whose eye is hundreds of metres away, keeps
+    /// every building at full detail.
+    pub degrades_disabled: bool,
 }
 
 impl Default for DegradeSettings {
@@ -52,6 +56,7 @@ impl Default for DegradeSettings {
             degrade_distance: 50.0,
             multiplier: 0.0,
             keep_distant_buildings: true,
+            degrades_disabled: false,
         }
     }
 }
@@ -97,17 +102,23 @@ fn is_camera_facing(mode: u32) -> bool {
     (2..=5).contains(&mode)
 }
 
-/// The level a building shell draws at `distance`: as [`select_level`],
-/// but with [`DegradeSettings::keep_distant_buildings`] an empty or
-/// camera-facing level falls back to the nearest solid one before it (or
-/// the nearest non-empty one when every earlier level faces the camera).
+/// The level a building shell draws at `distance`: as [`select_level`]
+/// (level 0 whatever the distance with
+/// [`DegradeSettings::degrades_disabled`]), but with
+/// [`DegradeSettings::keep_distant_buildings`] an empty or camera-facing
+/// level falls back to the nearest solid one before it (or the nearest
+/// non-empty one when every earlier level faces the camera).
 #[must_use]
 pub fn select_building_level(
     levels: &[DegradeLevel],
     distance: f32,
     settings: &DegradeSettings,
 ) -> usize {
-    let index = select_level(levels, distance, settings);
+    let index = if settings.degrades_disabled {
+        0
+    } else {
+        select_level(levels, distance, settings)
+    };
     if !settings.keep_distant_buildings || levels.is_empty() {
         return index;
     }
@@ -436,6 +447,7 @@ mod tests {
             degrade_distance: 0.0,
             multiplier: 1.0,
             keep_distant_buildings: false,
+            degrades_disabled: false,
         };
         // Multiplier 1: the threshold is max_dist.
         assert_eq!(select_level(&ladder(), 39.0, &s), 0);
@@ -485,7 +497,46 @@ mod tests {
             degrade_distance: distance,
             multiplier,
             keep_distant_buildings: keep,
+            degrades_disabled: false,
         }
+    }
+
+    // OpenAC RetailFrameWalkTests:
+    // KeepDistantBuildingsReachesSelectionThroughTheWalkContext and
+    // OverheadBuildingSelectionSurvivesTheFinalEmptyLevelAndRestoresDistanceSelection.
+    #[test]
+    fn the_overhead_view_draws_every_building_at_level_zero() {
+        let overhead = |keep| DegradeSettings {
+            degrades_disabled: true,
+            ..settings(50.0, 0.0, keep)
+        };
+        let ladder = [
+            level(0x0100_0051, 3, 1.0, 2.0, 3.0),
+            level(0, 7, 5.0, 6.0, 7.0),
+        ];
+        assert_eq!(
+            select_building_level(&ladder, 450.0, &settings(50.0, 0.0, false)),
+            1
+        );
+        assert_eq!(select_building_level(&ladder, 450.0, &overhead(false)), 0);
+        assert_eq!(select_building_level(&ladder, 450.0, &overhead(true)), 0);
+        let blank_end = [
+            level(0x0100_0001, 1, 24.0, 48.0, 96.0),
+            level(0x0100_0002, 1, 192.0, 392.0, 392.0),
+            level(0, 1, f32::MAX, f32::MAX, f32::MAX),
+        ];
+        assert_eq!(
+            select_building_level(&blank_end, 450.0, &settings(50.0, 0.0, false)),
+            2
+        );
+        assert_eq!(
+            select_building_level(&blank_end, 450.0, &overhead(false)),
+            0
+        );
+        assert_eq!(
+            select_building_level(&blank_end, f32::INFINITY, &overhead(false)),
+            0
+        );
     }
 
     #[test]

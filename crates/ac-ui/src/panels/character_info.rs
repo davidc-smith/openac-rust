@@ -396,14 +396,17 @@ impl CharacterInfoStrings {
     }
 }
 
-/// What the report reads: the player's int properties, his current
-/// attributes and the ones he started with (Strength .. Self).
+/// What the report reads: the player's int properties and his attributes
+/// (Strength .. Self) with spells, without them, and as he started.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CharacterInfoSource {
     /// The player's int properties.
     pub ints: BTreeMap<u32, i32>,
-    /// Current attributes, Strength .. Self.
+    /// Current attributes with spells, Strength .. Self (the burden).
     pub attributes: [i32; 6],
+    /// Attributes without spells (as created plus raised), Strength ..
+    /// Self (the resistance and regeneration grades).
+    pub base: [i32; 6],
     /// Innate (starting) attributes, Strength .. Self.
     pub innate: [i32; 6],
     /// Formats a birth timestamp (Unix seconds) as a local date.
@@ -414,6 +417,15 @@ impl CharacterInfoSource {
     fn int(&self, id: u32) -> i32 {
         self.ints.get(&id).copied().unwrap_or(0)
     }
+}
+
+/// The chess rank shown when the character has none.
+pub const UNRANKED_CHESS_RANK: i32 = 1400;
+
+/// An integer as the report writes every one: with thousands separators
+/// ("1,400").
+fn number(value: i32) -> String {
+    crate::panels::appraisal::group_thousands(i64::from(value))
 }
 
 /// The grade of a resistance value against the game's inclusive bounds.
@@ -525,7 +537,7 @@ fn append_luminance_auras(
     }
     let line = |body: &mut String, key: &str, value: i32| {
         if let Some(tokens) = strings.augmentations.get(key) {
-            append_tokens(body, tokens, &[value.to_string()], &[i64::from(value)]);
+            append_tokens(body, tokens, &[number(value)], &[i64::from(value)]);
         }
     };
     for a in &LUMINANCE_AURAS {
@@ -627,13 +639,14 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
         _ => append_tokens(
             &mut body,
             &strings.deaths_many,
-            &one(deaths.to_string()),
+            &one(number(deaths)),
             &[i64::from(deaths)],
         ),
     }
     section_break(&mut body);
 
-    let [strength, endurance, ..] = source.attributes;
+    // The grades read Strength and Endurance without spells.
+    let [strength, endurance, ..] = source.base;
     let resist = resistance_grade(strength + endurance, 200, 260, 320, 380, 440);
     let regeneration = resistance_grade(strength + 2 * endurance, 200, 346, 470, 580, 690);
     let r = &strings.resists;
@@ -647,23 +660,28 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
     body.push_str(part(3));
     section_break(&mut body);
 
-    let innate: Vec<String> = source.innate.iter().map(ToString::to_string).collect();
+    let innate: Vec<String> = source.innate.iter().copied().map(number).collect();
     let counts: Vec<i64> = source.innate.iter().map(|v| i64::from(*v)).collect();
     append_tokens(&mut body, &strings.innates, &innate, &counts);
     section_break(&mut body);
 
-    let chess = source.int(0xB5);
+    // A character who never played chess is ranked 1400.
+    let chess = source
+        .ints
+        .get(&0xB5)
+        .copied()
+        .unwrap_or(UNRANKED_CHESS_RANK);
     append_tokens(
         &mut body,
         &strings.chess,
-        &one(chess.to_string()),
+        &one(number(chess)),
         &[i64::from(chess)],
     );
     let fishing = source.int(0xC0);
     append_tokens(
         &mut body,
         &strings.fishing,
-        &one(fishing.to_string()),
+        &one(number(fishing)),
         &[i64::from(fishing)],
     );
     section_break(&mut body);
@@ -689,7 +707,7 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
             continue;
         };
         if a.include_value {
-            append_tokens(&mut body, tokens, &one(v.to_string()), &[i64::from(v)]);
+            append_tokens(&mut body, tokens, &one(number(v)), &[i64::from(v)]);
         } else if let Some(first) = tokens.first() {
             body.push_str(&resolve_plural(first, i64::from(v)));
         }
@@ -697,7 +715,8 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
     section_break(&mut body);
 
     let augmentations = source.int(0xE6);
-    let capacity = burden::encumbrance_capacity(strength, augmentations);
+    // The burden reads Strength with spells.
+    let capacity = burden::encumbrance_capacity(source.attributes[0], augmentations);
     let current = source.int(5);
     let load = burden::load_ratio(capacity, current);
     if load < 1.0 {
@@ -708,7 +727,7 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
         append_tokens(
             &mut body,
             &strings.load_burdened,
-            &[over.to_string(), penalty.to_string()],
+            &[number(over), number(penalty)],
             &[i64::from(over), i64::from(penalty)],
         );
     }
@@ -718,7 +737,7 @@ pub fn build_report(source: &CharacterInfoSource, strings: &CharacterInfoStrings
         append_tokens(
             &mut body,
             &strings.load_augmentations,
-            &[augmentations.to_string(), percent.to_string()],
+            &[number(augmentations), percent.to_string()],
             &[i64::from(augmentations), percent as i64],
         );
     }

@@ -897,6 +897,7 @@ impl WorldRenderer {
                 degrade_distance: display.degrade_distance,
                 multiplier: 0.0,
                 keep_distant_buildings: display.keep_distant_buildings,
+                degrades_disabled: false,
             },
             degrade_controller: Default::default(),
             automatic_degrades: display.automatic_degrades,
@@ -1352,12 +1353,19 @@ impl WorldRenderer {
         self.camera = Some((eye, look));
         self.view_matrices = Some((view, projection));
 
+        // The overhead map view keeps every building at full detail and is
+        // drawn without distance fog, its eye being hundreds of metres away
+        // (OpenAC `WorldCameraViewPolicy`).
+        let overhead_view = self.cameras.is_overhead_view();
+        self.degrade.degrades_disabled = overhead_view;
         // The sky and its light at the session's time of day, unfogged when
         // the player turned distance fog off (OpenAC `GameWindow` binds
-        // `Weather.DisableDistanceFogSource` to the character option).
-        let disable_distance_fog = scene
-            .and_then(Scene::player_view)
-            .is_some_and(ac_runtime::world::PlayerView::disable_distance_fog);
+        // `Weather.DisableDistanceFogSource` to the character option) or
+        // in the overhead view.
+        let disable_distance_fog = overhead_view
+            || scene
+                .and_then(Scene::player_view)
+                .is_some_and(ac_runtime::world::PlayerView::disable_distance_fog);
         let env = match self.environment.as_mut() {
             Some(env) => env.frame(
                 scene.and_then(Scene::synced_ticks),
@@ -4467,6 +4475,7 @@ mod tests {
             degrade_distance: 0.0,
             multiplier: 0.0,
             keep_distant_buildings: false,
+            degrades_disabled: false,
         };
         let world = Mat4::from_translation(Vec3::new(0.0, 500.0, 0.0));
         // Near: the solid level, standing as placed.
