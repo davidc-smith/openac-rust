@@ -119,8 +119,8 @@ impl WindowEnvironment {
     /// Advance to `now`. `synced` is the session's tick count at its last
     /// sync (a new value re-checks the day group and ends the debug time
     /// override) and `session_ticks` its clock now. `disable_distance_fog`
-    /// is the player's "disable distance fog" character option, which turns
-    /// the fog off.
+    /// turns the fog off: the player's "disable distance fog" character
+    /// option, or the overhead map view.
     pub fn frame(
         &mut self,
         synced: Option<f64>,

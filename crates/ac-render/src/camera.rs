@@ -1308,6 +1308,14 @@ impl CameraController {
         self.mode
     }
 
+    /// The overhead map view is what the window shows: the chase camera is
+    /// in charge with its map view on. Its eye is hundreds of metres up, so
+    /// the frame turns distance fog off and keeps buildings at full detail.
+    #[must_use]
+    pub fn is_overhead_view(&self) -> bool {
+        self.mode == CameraMode::Chase && self.chase.is_map_mode()
+    }
+
     /// The player-mode trigger.
     #[must_use]
     pub fn auto_entry(&self) -> PlayerModeAutoEntry {
@@ -2178,6 +2186,25 @@ mod tests {
         assert_eq!(c.mode(), CameraMode::Orbit);
         c.toggle_player_mode();
         assert_eq!(c.mode(), CameraMode::Chase);
+    }
+
+    /// OpenAC `WorldRenderFrameBuilderTests` (the overhead view): only the
+    /// chase camera's map view is the overhead view.
+    #[test]
+    fn only_the_chase_cameras_map_view_is_the_overhead_view() {
+        let mut c = CameraController::new(OrbitCamera::default());
+        c.chase.toggle_map_mode_view();
+        assert!(c.chase.is_map_mode());
+        assert!(!c.is_overhead_view(), "orbiting");
+        c.follow_player(READY);
+        assert_eq!(c.mode(), CameraMode::Chase);
+        assert!(c.is_overhead_view());
+        c.toggle_fly();
+        assert!(!c.is_overhead_view(), "flying");
+        c.toggle_fly();
+        c.chase.toggle_map_mode_view();
+        assert!(!c.chase.is_map_mode());
+        assert!(!c.is_overhead_view());
     }
 
     #[test]
