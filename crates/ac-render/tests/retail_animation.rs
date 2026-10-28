@@ -75,6 +75,7 @@ fn moving(forward: u32, forward_speed: f32, side: (u32, f32), turn: (u32, f32)) 
         },
         serial: 0,
         grounded: true,
+        standing_long_jump: false,
         body: None,
     }
 }
@@ -664,4 +665,51 @@ fn every_spin_hook_is_pure_yaw_on_a_mesh_off_its_axis() {
             "setup {id:#010X} spins {radius:.3} m from its mesh"
         );
     }
+}
+
+/// The player charging a jump from standing still, as the session's motion
+/// interpreter publishes it: its forward axis says run once the run key
+/// goes down, and its standing long jump is set.
+fn charging_standing_jump(forward: u32, forward_speed: f32) -> MotionView {
+    let mut motion = moving(forward, forward_speed, (0, 1.0), (0, 1.0));
+    motion.standing_long_jump = true;
+    motion.body = Some(ac_runtime::world::BodyFacts {
+        velocity: [0.0; 3],
+        in_contact: true,
+        contact_normal: [0.0, 0.0, 1.0],
+    });
+    motion
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_standing_jump_charge_stays_ready_while_the_run_key_is_held() {
+    let mut source = ContentAnimationSource::new(content());
+    let mut presenter = AnimationPresenter::new();
+    play(
+        &mut presenter,
+        &mut source,
+        charging_standing_jump(READY, 1.0),
+        1.0,
+    );
+    // The run key goes down during the charge: the axis says run, the body
+    // keeps its ready pose until the jump.
+    play(
+        &mut presenter,
+        &mut source,
+        charging_standing_jump(RUN_FORWARD, 2.5),
+        1.0,
+    );
+    let live = presenter.object(1).unwrap();
+    assert_eq!(live.sequencer().unwrap().current_motion(), READY);
+    // The charge ends without a jump (the flag drops): nothing re-applies
+    // the motion, as in the session's interpreter; the next change does.
+    let mut released = charging_standing_jump(RUN_FORWARD, 2.5);
+    released.standing_long_jump = false;
+    play(&mut presenter, &mut source, released, 0.5);
+    let mut walking = charging_standing_jump(WALK_FORWARD, 1.0);
+    walking.standing_long_jump = false;
+    play(&mut presenter, &mut source, walking, 0.5);
+    let live = presenter.object(1).unwrap();
+    assert_eq!(live.sequencer().unwrap().current_motion(), WALK_FORWARD);
 }

@@ -177,6 +177,13 @@ impl LiveAnimation {
         if !self.interpreted {
             return false;
         }
+        // A body the session moves had its standing long jump when its axes
+        // changed (keys pressed while a jump charges from standing still
+        // keep it in its ready pose); a server state sets it once taken up.
+        let live = motion.body.is_some();
+        if live {
+            self.obj.interp.standing_long_jump = motion.standing_long_jump;
+        }
         self.follow_ground(motion.grounded);
         // The game takes up every interpreted state the server sends, a
         // repeated one too: a swing sent again as the same forward action
@@ -193,6 +200,9 @@ impl LiveAnimation {
             let mut cx = self.obj.cx(&NoTargets);
             cx.move_to_interpreted_state(&motion.state, SinkArg::Default);
             self.applied = Some(motion.state.clone());
+        }
+        if !live {
+            self.obj.interp.standing_long_jump = motion.standing_long_jump;
         }
         self.applied_serial = Some(source);
         adopt
@@ -214,6 +224,9 @@ impl LiveAnimation {
         self.follow_ground(motion.grounded);
         let mut cx = self.obj.cx(&NoTargets);
         cx.move_to_interpreted_state(&motion.state, SinkArg::Default);
+        // As the session did: the standing long jump is set once the state
+        // is taken up.
+        self.obj.interp.standing_long_jump = motion.standing_long_jump;
         self.applied = Some(motion.state.clone());
         self.applied_serial = Some(source);
         true

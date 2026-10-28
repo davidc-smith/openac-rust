@@ -147,6 +147,9 @@ impl WorldObject {
                 state,
                 serial: self.motions_accepted,
                 grounded: true,
+                standing_long_jump: self
+                    .movement()
+                    .is_some_and(MovementData::standing_long_jump),
                 body: None,
             }),
             (None, None) => None,

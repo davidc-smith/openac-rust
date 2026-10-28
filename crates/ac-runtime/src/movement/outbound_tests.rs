@@ -172,3 +172,92 @@ fn a_hidden_player_sends_nothing() {
     sender.send_post_network_position(&mut outbox, &mut player, &STAMPS, true);
     assert!(outbox.is_empty());
 }
+
+/// Step the player one frame with `input`.
+fn step(
+    engine: &mut PhysicsEngine,
+    player: &mut PlayerMovementController,
+    input: MovementInput,
+) -> ac_physics::movement::MovementResult {
+    let mut env = MovementEnv::new(engine, &NoTargets);
+    player.update(&mut env, 0.1, input)
+}
+
+/// Send one movement event and return its flags byte (contact bit 0,
+/// standing long jump bit 1), which ends the event before its padding.
+fn movement_flags(
+    player: &mut PlayerMovementController,
+    movement: &ac_physics::movement::MovementResult,
+) -> u8 {
+    let mut outbox = Outbox::new();
+    let mut sender = LocalPlayerOutbound::new(false);
+    assert!(sender.try_send_movement(&mut outbox, player, movement, &STAMPS));
+    let bodies: Vec<Vec<u8>> = outbox.drain().map(|o| o.body).collect();
+    assert_eq!(bodies.len(), 1);
+    let body = &bodies[0];
+    // Every field before the flags byte is whole four-byte words.
+    assert_eq!(body.len() % 4, 0);
+    assert_eq!(body[body.len() - 3..], [0, 0, 0]);
+    body[body.len() - 4]
+}
+
+fn run_forward() -> MovementInput {
+    MovementInput {
+        forward: true,
+        run: true,
+        ..MovementInput::default()
+    }
+}
+
+#[test]
+fn a_standing_jump_charge_sends_the_standing_long_jump_bit() {
+    // Ported from OpenAC `LocalPlayerMoveToStateLongJumpTests`.
+    let mut engine = flat_engine();
+    let mut player = grounded_player(&mut engine);
+    let jump = MovementInput {
+        jump: true,
+        ..MovementInput::default()
+    };
+    step(&mut engine, &mut player, jump);
+    assert!(player.jump_charge().is_charging);
+    assert!(player.object().interp.standing_long_jump);
+
+    let movement = step(
+        &mut engine,
+        &mut player,
+        MovementInput {
+            jump: true,
+            ..run_forward()
+        },
+    );
+
+    assert_eq!(movement_flags(&mut player, &movement), 0x03);
+}
+
+#[test]
+fn without_a_charge_only_contact_is_sent() {
+    let mut engine = flat_engine();
+    let mut player = grounded_player(&mut engine);
+
+    let movement = step(&mut engine, &mut player, run_forward());
+
+    assert_eq!(movement_flags(&mut player, &movement), 0x01);
+}
+
+#[test]
+fn a_charge_begun_while_moving_is_not_a_standing_long_jump() {
+    let mut engine = flat_engine();
+    let mut player = grounded_player(&mut engine);
+    step(&mut engine, &mut player, run_forward());
+    let movement = step(
+        &mut engine,
+        &mut player,
+        MovementInput {
+            jump: true,
+            ..run_forward()
+        },
+    );
+    assert!(player.jump_charge().is_charging);
+
+    assert_eq!(movement_flags(&mut player, &movement), 0x01);
+}

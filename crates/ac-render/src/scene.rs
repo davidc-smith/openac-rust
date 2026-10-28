@@ -433,6 +433,7 @@ mod clock_tests {
                 state: ac_physics::movement::InboundInterpretedState::default(),
                 serial,
                 grounded: true,
+                standing_long_jump: false,
                 body: None,
             },
             taken_up: true,
