@@ -524,6 +524,37 @@ fn escape_ends_a_charged_jump_and_stops_a_moving_body() {
     assert!((end - mid).truncate().length() < 0.05, "stopped");
 }
 
+/// The stop key during a jump's charge (OpenAC
+/// `RuntimeLocalPlayerMovementState.Execute(Stop)`: autorun and a plugin's
+/// held keys end, the keys the player holds come in on their own): the
+/// charge goes on until the jump key is released, then the jump goes.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_stop_key_leaves_a_charging_jump_charging() {
+    let mut rig = Rig::entered();
+    rig.command(MovementCommand::Keys(MovementKeys {
+        jump: true,
+        ..MovementKeys::default()
+    }));
+    rig.frames(10);
+    assert!(rig.movement.jump_charging());
+    // The window sends keys only when they change: the stop key alone.
+    rig.command(MovementCommand::Stop);
+    rig.frames(10);
+    assert!(rig.movement.jump_charging(), "the charge goes on");
+    assert!(
+        !rig.movement.controller().unwrap().is_airborne(),
+        "still on the ground"
+    );
+    rig.command(MovementCommand::Keys(MovementKeys::default()));
+    rig.frames(5);
+    assert!(!rig.movement.jump_charging());
+    assert!(
+        rig.movement.controller().unwrap().is_airborne(),
+        "jumped once the key was released"
+    );
+}
+
 #[test]
 #[ignore = "needs the retail dat files"]
 fn a_forced_position_moves_the_body_and_answers_at_once() {

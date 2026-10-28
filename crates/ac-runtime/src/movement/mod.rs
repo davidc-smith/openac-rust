@@ -788,9 +788,11 @@ impl Movement {
             }
             MovementCommand::ToggleRunLock => self.auto_run = !self.auto_run,
             MovementCommand::Stop => {
+                // Autorun and a plugin's held keys end; the keys the player
+                // holds stay held (a jump being charged keeps charging
+                // until its key is released).
                 self.auto_run = false;
                 self.intent = None;
-                self.keys = MovementKeys::default();
                 self.input.scripted_mut().stop();
             }
             MovementCommand::Posture(posture) => {
