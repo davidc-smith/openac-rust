@@ -426,6 +426,14 @@ fn text_element(
 }
 
 fn window() -> Window {
+    window_with(|_, _, _| {})
+}
+
+/// The synthetic window, with `extra` adding elements to the creature page
+/// before the controller binds.
+fn window_with(
+    extra: impl FnOnce(&mut ac_ui::root::UiRoot, ElementId, &mut HashMap<u32, ElementId>),
+) -> Window {
     let mut host = UiHost::new();
     host.root.set_size(800.0, 600.0);
     let ui = &mut host.root;
@@ -504,6 +512,7 @@ fn window() -> Window {
         Color::rgba(0.0, 1.0, 0.0, 1.0),
         Color::rgba(1.0, 0.0, 0.0, 1.0),
     ];
+    extra(ui, creature, &mut ids);
     let layout = ImportedLayout::from_parts(root, ids.clone());
     ui.register_window("examine", root, None, 0).unwrap();
     let c = AppraisalController::bind(ui, &layout).expect("binds");
@@ -778,6 +787,233 @@ fn the_creature_page_asks_again_every_three_quarter_seconds_in_combat_while_show
     assert!(!w.with(|c, _| c.refresh_due(0.5)));
     w.with(|c, ui| c.on_hidden(ui));
     assert!(!w.with(|c, _| c.refresh_due(0.75)));
+}
+
+/// The creature page's two row lists, shaped like the installed layout's:
+/// lists that stretch with the page, and a row template that stretches in
+/// width only, its label and value stretching with it. The stats list is
+/// short enough here to scroll.
+fn creature_rows_window() -> Window {
+    use ac_ui::element_info::ElementInfo;
+    use ac_ui::geometry::AnchorEdges;
+    use ac_ui::widgets::ListBox;
+    window_with(|ui, creature, ids| {
+        ui.set_anchors(creature, AnchorEdges::ALL);
+        let viewport = ui.add(
+            creature,
+            at(5.0, 30.0, 300.0, 365.0)
+                .with_anchors(AnchorEdges::ALL)
+                .with_z_order(10),
+            ac_ui::widgets::Panel::default(),
+        );
+        ids.insert(appraisal::CREATURE_VIEWPORT_ID, viewport);
+        for (id, (x, y, w, h)) in [
+            (appraisal::CREATURE_STATS_LIST_ID, (0.0, 68.0, 300.0, 100.0)),
+            (appraisal::CREATURE_EXTRA_LIST_ID, (0.0, 278.0, 292.0, 87.0)),
+        ] {
+            let info = Arc::new(ElementInfo {
+                id,
+                width: w,
+                height: h,
+                ..ElementInfo::default()
+            });
+            let list = ui.add(
+                creature,
+                at(x, y, w, h).with_anchors(AnchorEdges::ALL),
+                ListBox::new(info),
+            );
+            ids.insert(id, list);
+        }
+    })
+}
+
+/// A creature row as the template builds it (detached): 292 by 20,
+/// following its parent's width; the label and value follow the row.
+fn creature_row(ui: &mut ac_ui::root::UiRoot, _layout: u32, element: u32) -> Option<ElementId> {
+    use ac_ui::geometry::{AnchorEdges, PixelRect};
+    use ac_ui::layout_policy::LayoutPolicy;
+    assert_eq!(element, appraisal::CREATURE_ROW_TEMPLATE_ID);
+    let (rw, rh) = appraisal::CREATURE_ROW_SIZE;
+    let row = ui.insert(
+        at(0.0, 0.0, rw, rh)
+            .with_anchors(AnchorEdges::LEFT | AnchorEdges::RIGHT | AnchorEdges::TOP),
+        ac_ui::widgets::Panel::default(),
+    );
+    for (id, x, w) in [
+        (appraisal::CREATURE_ROW_LABEL_ID, 0.0, 128.0),
+        (appraisal::CREATURE_ROW_VALUE_ID, 27.0, 256.0),
+    ] {
+        let mut e = at(x, 0.0, w, rh);
+        e.dat_element_id = id;
+        e.layout_policy = LayoutPolicy::new(
+            1,
+            1,
+            1,
+            1,
+            PixelRect::from_position_and_size(x as i32, 0, w as i32, rh as i32),
+            PixelRect::from_position_and_size(0, 0, rw as i32, rh as i32),
+        )
+        .ok();
+        let mut t = Text::default();
+        t.right_aligned = id == appraisal::CREATURE_ROW_VALUE_ID;
+        ui.add(row, e, t);
+    }
+    Some(row)
+}
+
+fn creature_rows_answer() -> IdentifyObjectResponse {
+    parsed(|a| {
+        a.guid = 0x5000_0010;
+        a.creature_profile = Some(CreatureProfile {
+            flags: 0x08,
+            health: 295,
+            health_max: 295,
+            attributes: Some(ac_proto::appraise::CreatureAttributes {
+                strength: 120,
+                endurance: 190,
+                quickness: 190,
+                coordination: 190,
+                focus: 330,
+                self_: 350,
+                stamina: 190,
+                mana: 550,
+                stamina_max: 190,
+                mana_max: 550,
+            }),
+            attribute_highlights: None,
+        });
+        a.properties.ints.insert(0x133, 35);
+        a.properties.ints.insert(0x13A, 4);
+    })
+}
+
+// When the window is widened the attribute and vital rows widen with their
+// list, in both layers, so each value stays right-aligned at the row's
+// right edge; the extra rows keep their size. Rows built while the window
+// is wide come out wide; scrolling still places the rows a row height
+// apart from the scroll offset.
+#[test]
+fn the_creature_rows_widen_with_the_window_in_both_layers() {
+    use ac_ui::widgets::{ListBox, ScrollablePanel};
+    let mut w = creature_rows_window();
+    w.objects
+        .add(object(0x5000_0010, "Drudge", ItemType::CREATURE));
+    let apply = |w: &mut Window| {
+        let view = AppraisalView {
+            name: None,
+            response: creature_rows_answer(),
+            present_in_ui: true,
+            opens_window: true,
+        };
+        let objects = &w.objects.t;
+        let mut rows = creature_row;
+        assert!(
+            w.host
+                .with_controller::<AppraisalController, _>("examine", |c, ui| {
+                    c.apply(ui, &view, objects, &none, &NoNames, &mut rows)
+                })
+                .unwrap()
+        );
+    };
+    let draw = |w: &mut Window| {
+        w.host.tick(0.016, 16, None);
+        w.host.draw((800.0, 600.0), &ac_ui::draw::NoSprites);
+    };
+    w.host.root.show_window("examine");
+    apply(&mut w);
+    draw(&mut w);
+    let (stats, extra) = w.with(|c, _| c.creature_lists());
+    let lists = [stats.expect("stats list"), extra.expect("extra list")];
+    // Each row of both layers of a list: (chrome row, text row).
+    let layers = |w: &Window, list: usize| {
+        let ui = &w.host.root;
+        let l = lists[list];
+        let chrome = ui
+            .widget::<ListBox>(l.background)
+            .and_then(ListBox::viewport_id)
+            .map(|v| ui.children(v))
+            .unwrap_or_default();
+        let front = l.rows(ui);
+        assert_eq!(chrome.len(), front.len());
+        assert!(!front.is_empty());
+        chrome.into_iter().zip(front).collect::<Vec<_>>()
+    };
+    let value = |w: &Window, row| {
+        w.host
+            .root
+            .find_descendant(row, appraisal::CREATURE_ROW_VALUE_ID)
+            .unwrap()
+    };
+    let right = |w: &Window, e| {
+        let el = w.host.root.element(e).unwrap();
+        el.left + el.width
+    };
+    let screen_right =
+        |w: &Window, e| w.host.root.screen_position(e).0 + w.host.root.element(e).unwrap().width;
+    let width = |w: &Window, e| w.host.root.element(e).unwrap().width;
+    let (rw, _) = appraisal::CREATURE_ROW_SIZE;
+    // The stats rows grow with the window; the extra rows keep their size.
+    // A row's label and value are laid out when the row is drawn, so only
+    // the rows in view are checked for them.
+    let check = |w: &Window, grown: f32| {
+        for (list, grown) in [(0, grown), (1, 0.0)] {
+            for (chrome, front) in layers(w, list) {
+                for row in [chrome, front] {
+                    assert_eq!(width(w, row), rw + grown, "list {list} row width");
+                }
+                if !w.host.root.element(front).unwrap().visible {
+                    continue;
+                }
+                for row in [chrome, front] {
+                    assert_eq!(
+                        right(w, value(w, row)),
+                        283.0 + grown,
+                        "list {list} value right edge"
+                    );
+                }
+                // The text sits the inset right of its chrome.
+                assert_eq!(
+                    screen_right(w, value(w, front)),
+                    screen_right(w, value(w, chrome)) + appraisal::CREATURE_ROW_TEXT_INSET
+                );
+            }
+        }
+    };
+    check(&w, 0.0);
+
+    // Widen the window by 100 pixels.
+    assert!(w.host.root.resize_window("examine", 500.0, 500.0));
+    draw(&mut w);
+    check(&w, 100.0);
+
+    // Rows built while it is wide (a refresh) come out wide.
+    apply(&mut w);
+    draw(&mut w);
+    check(&w, 100.0);
+
+    // Scrolling the stats list two rows still steps the rows from the
+    // offset, in both layers.
+    let fg = lists[0].foreground;
+    w.host.root.with::<ScrollablePanel, _>(fg, |p, ui| {
+        p.scroll.scroll_by_lines(2);
+        p.layout_rows(ui, fg);
+    });
+    draw(&mut w);
+    let ui = &w.host.root;
+    let chrome_viewport = ui
+        .widget::<ListBox>(lists[0].background)
+        .and_then(ListBox::viewport_id)
+        .unwrap();
+    for rows in [ui.children(chrome_viewport), lists[0].rows(ui)] {
+        assert_eq!(rows.len(), 9);
+        for (i, row) in rows.into_iter().enumerate() {
+            let e = ui.element(row).unwrap();
+            assert_eq!(e.top, (i as f32 - 2.0) * 20.0, "row {i} top");
+            assert_eq!(e.width, rw + 100.0, "row {i} width");
+            assert_eq!(e.visible, (2..7).contains(&i), "row {i} visible");
+        }
+    }
+    check(&w, 100.0);
 }
 
 fn examined_spell() -> SpellMetadata {
