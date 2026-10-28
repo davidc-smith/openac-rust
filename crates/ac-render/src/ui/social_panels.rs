@@ -386,14 +386,8 @@ impl WindowUi {
             c.split.quantity().clone()
         });
         let pending: Vec<u32> = facts.state.pending_item.into_iter().collect();
-        let names = &status.names;
-        let resolve = |o: &ac_core::items::ClientObject| {
-            ac_ui::panels::appraisal::AppraisalNames::appropriate_name(names, o)
-        };
-        let view = ac_ui::panels::items::ItemsView {
-            names: Some(&resolve),
-            ..facts.items_view(selected, &pending, split.as_ref())
-        };
+        let resolve = super::facts::composed_names(&status.names);
+        let view = facts.items_view(selected, &pending, split.as_ref(), &resolve);
         let strings = content.strings();
         let shown = |host: &ac_ui::UiHost, name: &str| {
             host.root.is_window_visible(name) || stale.contains(&name)

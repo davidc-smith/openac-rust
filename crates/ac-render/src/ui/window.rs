@@ -978,14 +978,8 @@ impl WindowUi {
             c.split.quantity().clone()
         });
         let numbers = facts.player.as_ref().map(|p| &p.numbers);
-        let names = &status.names;
-        let resolve = |o: &ac_core::items::ClientObject| {
-            ac_ui::panels::appraisal::AppraisalNames::appropriate_name(names, o)
-        };
-        let view = ItemsView {
-            names: Some(&resolve),
-            ..facts.items_view(selected, &pending, split.as_ref())
-        };
+        let resolve = super::facts::composed_names(&status.names);
+        let view = facts.items_view(selected, &pending, split.as_ref(), &resolve);
         let shown =
             |host: &UiHost, name: &str| host.root.is_window_visible(name) || stale.contains(&name);
         host.with_controller::<ToolbarWindowController, _>(TOOLBAR_WINDOW, |c, ui| {
