@@ -443,11 +443,9 @@ fn a_room_seen_through_two_doorways_is_drawn_once() {
     // Beside the static (a drawing at the very same place would read as a
     // double draw).
     let world = Mat4::from_translation(Vec3::new(0.25, 0.0, 0.0)) * blended_static.transform;
-    let sphere = sphere_of(area.model_info[&blended_static.model_id].bounds, world);
     let object = ObjectDraw {
         parts: Cow::Owned(parts.clone()),
         world,
-        sphere,
         lights: NO_LIGHTS,
         indoor: true,
         is_player: false,
@@ -599,4 +597,68 @@ fn the_landscape_seen_through_several_openings_is_drawn_once() {
         .filter(|s| matches!(s, Step::Sky { post: false, .. }))
         .count();
     assert_eq!(pre, 1);
+}
+
+/// The Facility Hub (landblock 0x8A02), from room 0x8A02015E at the pose
+/// the stairs vanished at: the staircase (Setup 0x02000623) is listed in
+/// the room above (0x8A02015F) and runs down into this one. Turning round,
+/// it is drawn while the walk reaches only the lower room (it used to
+/// vanish then), and each of its parts at most once a stage.
+#[test]
+#[ignore = "needs the retail dat files and a GPU"]
+fn the_facility_hub_stairs_stay_drawn_as_the_camera_turns() {
+    let Some(device) = gpu() else {
+        eprintln!("no GPU adapter on this machine: the sink is not checked");
+        return;
+    };
+    let d = content();
+    let area = Area::load(&d, &device, LandblockCoord { x: 0x8A, y: 0x02 });
+    const LOWER: u32 = 0x8A02_015E;
+    const UPPER: u32 = 0x8A02_015F;
+    const STAIR: u32 = 0x0200_0623;
+    let upper = area.near.cells.iter().find(|c| c.id == UPPER).unwrap();
+    let stair = upper
+        .statics
+        .iter()
+        .find(|s| s.model_id == STAIR)
+        .expect("the staircase is listed in the upper room");
+    // Where each of the staircase's parts is drawn.
+    let stair_parts: HashSet<(MeshKey, [u32; 16])> = area.models[&STAIR]
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            let world = stair.transform * p.transform;
+            (
+                u64::from(p.gfx_obj_id),
+                world.to_cols_array().map(f32::to_bits),
+            )
+        })
+        .collect();
+    let eye = Vec3::new(60.251_43, -38.848_2, -5.995 + 1.6);
+    let mut drawn_from_lower_only = 0;
+    for heading in (0..360).step_by(10) {
+        let camera = camera(eye, heading as f32);
+        let reached = area.reached(LOWER, &camera);
+        let cells: HashSet<u32> = reached.floods.iter().flatten().map(|(id, _)| *id).collect();
+        assert!(cells.contains(&LOWER));
+        let frame = area.frame(LOWER, &camera, &HashMap::new());
+        assert_each_drawn_once(&frame);
+        let stair_drawn = drawings_by_stage(&frame)
+            .iter()
+            .flat_map(|stage| stage.keys())
+            .filter(|(mesh, model, _)| stair_parts.contains(&(*mesh, *model)))
+            .count();
+        if !cells.contains(&UPPER) && stair_drawn > 0 {
+            drawn_from_lower_only += 1;
+        }
+        eprintln!(
+            "heading {heading:3}: upper reached {}, stair parts drawn {stair_drawn}",
+            cells.contains(&UPPER)
+        );
+    }
+    assert!(
+        drawn_from_lower_only > 0,
+        "the staircase is never drawn from the lower room alone"
+    );
 }

@@ -276,6 +276,8 @@ pub(crate) struct GfxGpu {
     pub(crate) sort_center: Vec3,
     /// Its box, model-local.
     pub(crate) bounds: Option<(Vec3, Vec3)>,
+    /// The sphere a view admits it by, model-local.
+    pub(crate) drawing_sphere: Option<(Vec3, f32)>,
 }
 
 impl GfxGpu {
@@ -309,6 +311,7 @@ impl GfxGpu {
             degrades: gfx.degrades.clone(),
             sort_center: gfx.sort_center,
             bounds: crate::assets::gfx_bounds(gfx),
+            drawing_sphere: gfx.drawing_sphere,
         }
     }
 }
@@ -370,7 +373,6 @@ pub(crate) struct CellRef<'a> {
 pub(crate) struct ObjectDraw<'a> {
     parts: std::borrow::Cow<'a, [MeshRef]>,
     world: Mat4,
-    sphere: (Vec3, f32),
     lights: LightSet,
     indoor: bool,
     is_player: bool,
@@ -2599,7 +2601,6 @@ impl WorldRenderer {
             out.entry(pos.cell_id).or_default().push(ObjectDraw {
                 parts,
                 world,
-                sphere,
                 lights,
                 indoor,
                 is_player: Some(object.guid) == player_guid,
@@ -2677,7 +2678,7 @@ impl WorldRenderer {
                 ) else {
                     return false;
                 };
-                let Some((parts, bounds)) = self.object_parts(child_setup_id, &child.model) else {
+                let Some((parts, _)) = self.object_parts(child_setup_id, &child.model) else {
                     return false;
                 };
                 let world = parent.world;
@@ -2691,7 +2692,6 @@ impl WorldRenderer {
                         variant: part.variant,
                     })
                     .collect();
-                let sphere = sphere_of(bounds, child_root * Mat4::from_scale(Vec3::splat(scale)));
                 let (cell, lights, indoor, owner) =
                     (parent.cell, parent.lights, parent.indoor, parent.owner);
                 // A held object keeps its own translucency.
@@ -2706,7 +2706,6 @@ impl WorldRenderer {
                 out.entry(cell).or_default().push(ObjectDraw {
                     parts: Cow::Owned(posed),
                     world,
-                    sphere,
                     lights,
                     indoor,
                     is_player: false,
@@ -4549,7 +4548,6 @@ mod tests {
         ObjectDraw {
             parts: Cow::Owned(Vec::new()),
             world: Mat4::IDENTITY,
-            sphere: (Vec3::ZERO, 1.0),
             lights: NO_LIGHTS,
             indoor: true,
             is_player: false,

@@ -179,6 +179,7 @@ pub fn build_cell_mesh(
         sub_meshes: Vec::new(),
         degrades: Vec::new(),
         sort_center: Vec3::ZERO,
+        drawing_sphere: None,
     };
     data.vertices = vertices;
     for (slot, batch) in batches {

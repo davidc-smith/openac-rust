@@ -121,8 +121,36 @@ pub(super) struct FrameSink<'a> {
 pub(super) struct StageDrawn {
     /// Interior cells whose room mesh is drawn.
     cells: crate::IdSet<u32>,
-    /// Objects drawn.
-    objects: crate::IdSet<DrawnObject>,
+    /// Parts drawn: their object and index.
+    parts: crate::IdSet<(DrawnObject, u32)>,
+}
+
+/// Which of a model's parts are in view.
+#[derive(Debug, Clone, Copy)]
+enum Admission<'v> {
+    /// The caller admitted the whole model: every part is drawn.
+    Whole,
+    /// Each part on its own: its drawing sphere, where the part is drawn,
+    /// must be in one of `views`; with `stamp`, each part of that object
+    /// is drawn once a stage (the player is not stamped: it is drawn again
+    /// in every cell it reaches, as the game does).
+    PerPart {
+        views: &'v [ActiveView],
+        stamp: Option<DrawnObject>,
+    },
+}
+
+/// A part's drawing sphere (`(centre, radius)`, model-local) where the part
+/// is placed by `world`: the centre carried by the transform, the radius
+/// scaled by its largest axis scale.
+pub(super) fn transform_drawing_sphere(sphere: (Vec3, f32), world: Mat4) -> (Vec3, f32) {
+    let scale = world
+        .x_axis
+        .truncate()
+        .length()
+        .max(world.y_axis.truncate().length())
+        .max(world.z_axis.truncate().length());
+    (world.transform_point3(sphere.0), sphere.1 * scale)
 }
 
 /// An object a stage drew.
@@ -138,7 +166,7 @@ impl StageDrawn {
     /// A new stage: everything may be drawn again.
     pub(super) fn clear(&mut self) {
         self.cells.clear();
-        self.objects.clear();
+        self.parts.clear();
     }
 }
 
@@ -205,32 +233,11 @@ impl FrameSink<'_> {
         })
     }
 
-    /// Whether the object `stamp` is drawn now: not yet drawn this stage
-    /// (the player is always drawn, as OpenAC's stamp lets the local player
-    /// through), and some view of `views` holds `sphere`. An object drawn
-    /// is stamped.
-    fn first_admission(
-        &mut self,
-        stamp: DrawnObject,
-        always: bool,
-        sphere: (Vec3, f32),
-        views: &[ActiveView],
-    ) -> bool {
-        if !always && self.stage.objects.contains(&stamp) {
-            return false;
-        }
-        if !self.admitted(sphere, views) {
-            return false;
-        }
-        self.stage.objects.insert(stamp);
-        true
-    }
-
-    /// Draw a model's parts at `world` (scale included), once;
-    /// `opacities`, when given, is each part's opacity (else every part is
-    /// solid). A server object's (`owner`: its id and incarnation) drawn
-    /// parts are recorded for the world pick and lit by the selection
-    /// flash. The caller has decided the model is in view.
+    /// Draw a model's parts at `world` (scale included); `opacities`, when
+    /// given, is each part's opacity (else every part is solid). A server
+    /// object's (`owner`: its id and incarnation) drawn parts are recorded
+    /// for the world pick and lit by the selection flash. `admission` says
+    /// which parts are in view; returns whether any part was drawn.
     #[allow(clippy::too_many_arguments)]
     fn draw_model(
         &mut self,
@@ -242,7 +249,9 @@ impl FrameSink<'_> {
         part0: Option<(u32, Option<Mat4>)>,
         opacities: Option<&[f32]>,
         owner: Option<(u32, u32)>,
-    ) {
+        admission: Admission<'_>,
+    ) -> bool {
+        let mut drawn = false;
         let whole = owner.and_then(|(guid, local)| self.input.selection.lighting(guid, local));
         let by_part =
             owner.is_some_and(|(guid, local)| self.input.selection.has_part_lighting(guid, local));
@@ -268,6 +277,31 @@ impl FrameSink<'_> {
             if gpu.is_some_and(|g| g.hidden_marker) {
                 continue;
             }
+            // Each part is admitted on its own: its drawing sphere where it
+            // is drawn must be in a view, and a stamped part is drawn once a
+            // stage, however many cells or views reach it.
+            if let Admission::PerPart { views, stamp } = admission {
+                let Some(g) = gpu else {
+                    self.missing.insert(gfx_id);
+                    continue;
+                };
+                let visible = match g.drawing_sphere.filter(|(_, radius)| *radius > 0.0) {
+                    Some(sphere) => {
+                        self.admitted(transform_drawing_sphere(sphere, part_world), views)
+                    }
+                    // Without a sphere a part is in view wherever a view is.
+                    None => !views.is_empty(),
+                };
+                if !visible {
+                    continue;
+                }
+                if let Some(object) = stamp
+                    && !self.stage.parts.insert((object, i as u32))
+                {
+                    continue;
+                }
+            }
+            drawn = true;
             let mut lighting = whole.unwrap_or(NORMAL_LIGHT);
             if let Some((guid, local)) = owner {
                 if by_part {
@@ -297,6 +331,7 @@ impl FrameSink<'_> {
                 lighting,
             );
         }
+        drawn
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -436,11 +471,11 @@ impl FrameSink<'_> {
             else {
                 continue;
             };
-            let stamp = DrawnObject::Server(object.guid, object.local_id);
-            if !self.first_admission(stamp, object.is_player, object.sphere, views) {
-                continue;
-            }
-            self.draw_model(
+            // The player is not stamped: it is drawn in every cell it
+            // reaches.
+            let stamp =
+                (!object.is_player).then_some(DrawnObject::Server(object.guid, object.local_id));
+            if self.draw_model(
                 &object.parts,
                 object.world,
                 false,
@@ -449,8 +484,10 @@ impl FrameSink<'_> {
                 None,
                 object.opacities.as_deref(),
                 Some((object.guid, object.local_id)),
-            );
-            drawn += 1;
+                Admission::PerPart { views, stamp },
+            ) {
+                drawn += 1;
+            }
         }
         self.out.draws.objects_drawn += drawn;
     }
@@ -554,7 +591,17 @@ impl WalkSink for FrameSink<'_> {
                 self.scenery_wind = self.input.wind
                     && i >= near.scenery_start
                     && has_cutout_subset(parts, self.input.meshes);
-                self.draw_model(parts, world, false, NO_LIGHTS, false, None, opacities, None);
+                self.draw_model(
+                    parts,
+                    world,
+                    false,
+                    NO_LIGHTS,
+                    false,
+                    None,
+                    opacities,
+                    None,
+                    Admission::Whole,
+                );
                 self.out.draws.objects_drawn += 1;
                 self.scenery_wind = false;
             }
@@ -635,17 +682,30 @@ impl WalkSink for FrameSink<'_> {
                     None => (parts.as_slice(), s.transform, None),
                 };
                 let world = offset * transform;
+                // The object's sphere picks its lights; each part is
+                // admitted by its own.
                 let sphere = self.model_sphere(s.model_id, world);
-                if !self.first_admission(DrawnObject::Static(key), false, sphere, &active) {
-                    continue;
-                }
                 // Lit as the cell it stands in.
                 let lights = self
                     .input
                     .lights
                     .object_lights(Some(member.cell), sphere.0, sphere.1);
-                self.draw_model(parts, world, false, lights, true, None, opacities, None);
-                self.out.draws.objects_drawn += 1;
+                if self.draw_model(
+                    parts,
+                    world,
+                    false,
+                    lights,
+                    true,
+                    None,
+                    opacities,
+                    None,
+                    Admission::PerPart {
+                        views: &active,
+                        stamp: Some(DrawnObject::Static(key)),
+                    },
+                ) {
+                    self.out.draws.objects_drawn += 1;
+                }
             }
             self.draw_objects(*cell_id, &active);
             self.cell_particles(*cell_id);
@@ -674,6 +734,7 @@ impl WalkSink for FrameSink<'_> {
             Some(part0),
             None,
             None,
+            Admission::Whole,
         );
         self.out.draws.objects_drawn += 1;
     }
@@ -887,5 +948,18 @@ mod tests {
         let (c, r) = sphere_of(Some((centre - half, centre + half)), world);
         assert!(c.abs_diff_eq(Vec3::new(12.0, 26.0, 42.0), 1e-5), "{c}");
         assert!((r - 2.0).abs() < 1e-5, "{r}");
+    }
+
+    /// OpenAC `WbDrawDispatcherLookInConeTests.DrawingSphereAdmissionUsesTheIndividualPartTransformAndLargestScale`:
+    /// a part's drawing sphere (centre (1, 2, 3), radius 0.5) placed by a
+    /// scale of (2, 3, 4) then a move of (10, 20, 30) is centred at
+    /// (12, 26, 42) with radius 2.
+    #[test]
+    fn a_parts_drawing_sphere_follows_its_transform_and_largest_scale() {
+        let world = Mat4::from_translation(Vec3::new(10.0, 20.0, 30.0))
+            * Mat4::from_scale(Vec3::new(2.0, 3.0, 4.0));
+        let (c, r) = transform_drawing_sphere((Vec3::new(1.0, 2.0, 3.0), 0.5), world);
+        assert_eq!(c, Vec3::new(12.0, 26.0, 42.0));
+        assert_eq!(r, 2.0);
     }
 }
