@@ -425,6 +425,9 @@ pub struct AppearancePage {
     choice: Choice,
     part: Part,
     zoomed_in: bool,
+    /// The headgear taken off when the face choice was made, put back by
+    /// the clothes choice ([`UNSET`]: none).
+    held_headgear: u32,
 }
 
 impl AppearancePage {
@@ -480,6 +483,13 @@ impl AppearancePage {
                 s.model = ScrollSource::Element(h);
             }
         }
+        let shade = ui
+            .find_descendant(root, SHADE_SCROLL_ID)
+            .filter(|s| ui.widget::<Scrollbar>(*s).is_some());
+        // The shade is a value slider: dragging it reports the new shade.
+        if let Some(s) = shade.and_then(|s| ui.widget_mut::<Scrollbar>(s)) {
+            s.scalar = true;
+        }
         let mut page = Self {
             female: button(ui, FEMALE_ID),
             male: button(ui, MALE_ID),
@@ -491,9 +501,7 @@ impl AppearancePage {
             arrows,
             swatches,
             overlays,
-            shade: ui
-                .find_descendant(root, SHADE_SCROLL_ID)
-                .filter(|s| ui.widget::<Scrollbar>(*s).is_some()),
+            shade,
             grad: ui
                 .find_descendant(root, GRAD_CIRCLE_ID)
                 .filter(|g| ui.widget::<DatElement>(*g).is_some()),
@@ -505,6 +513,7 @@ impl AppearancePage {
             choice: Choice::Face,
             part: Part::Hair,
             zoomed_in: false,
+            held_headgear: UNSET,
         };
         // Skin has no styles to step through: its arrows stay ghosted.
         page.set_arrows_enabled(ui, Part::Skin, false);
@@ -674,16 +683,54 @@ impl AppearancePage {
 
     /// Runs where the original refreshes the whole page: the page shown, a
     /// gender pick and a randomize, not every change of the character. A
-    /// heritage without clothes is put back on the face choice there, which
-    /// zooms the preview in: the request it makes.
-    pub fn on_page_update(&mut self, ui: &mut UiRoot, heritage_id: u32) -> Option<PreviewRequest> {
-        if !clothes_hidden(heritage_id) {
-            return None;
+    /// heritage without clothes is put back on the face choice there (see
+    /// [`AppearancePage::set_choice`]), which zooms the preview in: the
+    /// requests it makes.
+    pub fn on_page_update(
+        &mut self,
+        ui: &mut UiRoot,
+        ctx: &PageContext<'_>,
+    ) -> (Vec<CreationCommand>, Option<PreviewRequest>) {
+        if !clothes_hidden(ctx.snapshot.heritage_id) {
+            return (Vec::new(), None);
         }
-        self.choice = Choice::Face;
+        let made = self.set_choice(ui, Choice::Face, ctx);
         self.part = Part::Hair;
+        made
+    }
+
+    /// Show the face or the clothes choices. The face choice takes the
+    /// headgear off, so the hair shows, and keeps it; the clothes choice
+    /// puts the kept headgear back when it is none or one the gender still
+    /// has. The face frames the figure close up, the clothes pull back to
+    /// show it whole. Returns the requests this makes.
+    pub fn set_choice(
+        &mut self,
+        ui: &mut UiRoot,
+        choice: Choice,
+        ctx: &PageContext<'_>,
+    ) -> (Vec<CreationCommand>, Option<PreviewRequest>) {
+        self.choice = choice;
         self.apply_choice_visibility(ui);
-        self.zoom_in(ui)
+        let headgear = AppearanceSlot::HeadgearStyle;
+        match choice {
+            Choice::Face => {
+                self.held_headgear = ctx.snapshot.appearance.headgear_style;
+                let zoom = self.zoom_in(ui);
+                (vec![CreationCommand::SetAppearance(headgear, UNSET)], zoom)
+            }
+            Choice::Clothes => {
+                let held = self.held_headgear;
+                let count = gender(ctx).map_or(0, |g| style_count(Part::Headgear, g));
+                let kept = held == UNSET || i32::try_from(held).is_ok_and(|h| h < count);
+                let commands = if kept {
+                    vec![CreationCommand::SetAppearance(headgear, held)]
+                } else {
+                    Vec::new()
+                };
+                (commands, self.zoom_out(ui))
+            }
+        }
     }
 
     /// The swatches, marks, disc and shade slider for the picked part.
@@ -813,30 +860,21 @@ impl AppearancePage {
         };
         for (button, gender) in [(self.female, 2), (self.male, 1)] {
             if Some(element) == button {
-                let zoom = self.on_page_update(ui, ctx.snapshot.heritage_id);
-                return Some((vec![CreationCommand::SelectGender(gender)], zoom));
+                let (more, zoom) = self.on_page_update(ui, ctx);
+                let mut commands = vec![CreationCommand::SelectGender(gender)];
+                commands.extend(more);
+                return Some((commands, zoom));
             }
         }
         if Some(element) == self.face || Some(element) == self.clothes {
-            self.choice = if Some(element) == self.face {
-                Choice::Face
+            let (choice, part) = if Some(element) == self.face {
+                (Choice::Face, Part::Hair)
             } else {
-                Choice::Clothes
+                (Choice::Clothes, Part::Headgear)
             };
-            self.part = if self.choice == Choice::Face {
-                Part::Hair
-            } else {
-                Part::Headgear
-            };
-            self.apply_choice_visibility(ui);
-            // The face choice frames the figure close up, the clothes
-            // choice pulls back to show it whole.
-            let zoom = if self.choice == Choice::Face {
-                self.zoom_in(ui)
-            } else {
-                self.zoom_out(ui)
-            };
-            return Some((Vec::new(), zoom));
+            let made = self.set_choice(ui, choice, ctx);
+            self.part = part;
+            return Some(made);
         }
         if let Some(&(_, part, step)) = self.arrows.iter().find(|(a, _, _)| *a == element) {
             return Some((self.step_style(part, step, ctx), None));

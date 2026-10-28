@@ -28,7 +28,7 @@ use ac_runtime::session::creation::{
     SeededRandom,
 };
 
-use self::appearance::{AppearancePage, PreviewRequest, SwatchSourcesDyn, SwatchTextures};
+use self::appearance::{AppearancePage, Choice, PreviewRequest, SwatchSourcesDyn, SwatchTextures};
 use self::heritage::HeritagePage;
 use self::profession::ProfessionPage;
 use self::skills::SkillsPage;
@@ -512,7 +512,7 @@ impl CreationScreen {
         let _ = ui.declare_fixed_canvas(CANVAS_OWNER, size);
         // The roll's answer turns the gender over (see `update`).
         self.roll_sent = self.snapshot.as_ref().map(key);
-        self.apply_progress_state(ui, Page::Heritage);
+        let _ = self.apply_progress_state(ui, Page::Heritage);
         vec![CreationCommand::RandomizeCharacter]
     }
 
@@ -559,9 +559,22 @@ impl CreationScreen {
         let changed = self.snapshot.as_ref().map(key) != Some(current);
         self.snapshot = Some(snapshot.clone());
         if changed {
-            // The opening roll arrived: the gender turns over.
+            // The opening roll arrived: the appearance page starts on the
+            // face choice, which takes the rolled headgear off (kept for
+            // the clothes choice), then the gender turns over.
             if self.roll_sent.is_some_and(|sent| sent != current) {
                 self.roll_sent = None;
+                if let Some(options) = self.options.clone() {
+                    let text: &dyn Fn(&str) -> Option<String> = &self.strings.text;
+                    let ctx = PageContext {
+                        snapshot,
+                        options: &options,
+                        text,
+                    };
+                    let (more, zoom) = self.appearance.set_choice(ui, Choice::Face, &ctx);
+                    commands.extend(more);
+                    self.preview_requests.extend(zoom);
+                }
                 match snapshot.gender_key {
                     1 => commands.push(CreationCommand::SelectGender(2)),
                     2 => commands.push(CreationCommand::SelectGender(1)),
@@ -695,20 +708,20 @@ impl CreationScreen {
         let mut commands = self.follow_name_focus(ui, dialogs);
         if let ElementMessage::Clicked { .. } = message {
             if let Some(i) = self.tabs.iter().position(|t| *t == element) {
-                self.apply_progress_state(ui, Page::ALL[i]);
+                commands.extend(self.apply_progress_state(ui, Page::ALL[i]));
                 return Some(commands);
             }
             if element == self.back {
                 if self.current <= Page::Heritage {
                     self.ask_exit(ui, dialogs);
                 } else {
-                    self.apply_progress_state(ui, self.current.offset(-1));
+                    commands.extend(self.apply_progress_state(ui, self.current.offset(-1)));
                 }
                 return Some(commands);
             }
             if element == self.next {
                 if self.current < Page::Summary {
-                    self.apply_progress_state(ui, self.current.offset(1));
+                    commands.extend(self.apply_progress_state(ui, self.current.offset(1)));
                 }
                 return Some(commands);
             }
@@ -849,9 +862,11 @@ impl CreationScreen {
                 .collect(),
             Page::Appearance => {
                 let command = self.appearance.randomize();
-                let zoom = self.appearance.on_page_update(ui, snapshot.heritage_id);
+                let (more, zoom) = self.appearance.on_page_update(ui, &ctx);
                 self.preview_requests.extend(zoom);
-                vec![command]
+                let mut commands = vec![command];
+                commands.extend(more);
+                commands
             }
             Page::Town => TownPage::randomize(&ctx, &mut draw).into_iter().collect(),
             Page::Summary => {
@@ -879,8 +894,9 @@ impl CreationScreen {
     }
 
     /// Show page `target` (an Olthoi skips the profession, skills and town
-    /// pages in the direction of travel).
-    pub fn apply_progress_state(&mut self, ui: &mut UiRoot, target: Page) {
+    /// pages in the direction of travel). Returns the requests showing the
+    /// page makes.
+    pub fn apply_progress_state(&mut self, ui: &mut UiRoot, target: Page) -> Vec<CreationCommand> {
         for page in self.pages {
             ui.set_visible(page, false);
         }
@@ -917,8 +933,18 @@ impl CreationScreen {
         );
         let i = self.current.index();
         ui.set_visible(self.pages[i], true);
-        if self.current == Page::Appearance {
-            let zoom = self.appearance.on_page_update(ui, heritage);
+        let mut commands = Vec::new();
+        if self.current == Page::Appearance
+            && let (Some(snapshot), Some(options)) = (self.snapshot.clone(), self.options.clone())
+        {
+            let text: &dyn Fn(&str) -> Option<String> = &self.strings.text;
+            let ctx = PageContext {
+                snapshot: &snapshot,
+                options: &options,
+                text,
+            };
+            let (more, zoom) = self.appearance.on_page_update(ui, &ctx);
+            commands = more;
             self.preview_requests.extend(zoom);
         }
         let tab = self.tabs[i];
@@ -930,6 +956,7 @@ impl CreationScreen {
         ui.set_enabled(self.random, self.current != Page::Skills);
         ui.set_enabled(self.finish, self.current == Page::Summary);
         self.refreshed = None;
+        commands
     }
 
     fn deactivate(&mut self, ui: &mut UiRoot, dialogs: &mut Dialogs<'_>) {

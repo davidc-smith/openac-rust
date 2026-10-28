@@ -972,6 +972,36 @@ impl Wizard {
         ran
     }
 
+    /// The mouse pressed at `e`'s near end (its top left corner, element
+    /// coordinates), dragged to its far end (bottom right) and released:
+    /// the widget itself turns that into whatever messages it reports.
+    fn drag_across(&mut self, e: ElementId) -> Vec<CreationCommand> {
+        let (w, h) = self
+            .h
+            .ui
+            .element(e)
+            .map(|el| (el.width as i32, el.height as i32))
+            .unwrap();
+        for (k, x, y) in [
+            (kind::MOUSE_DOWN, 0, 0),
+            (kind::MOUSE_MOVE, w, h),
+            (kind::MOUSE_UP, w, h),
+        ] {
+            let event = ac_ui::event::UiEvent {
+                kind: k,
+                data1: x,
+                data2: y,
+                target: Some(e),
+                ..ac_ui::event::UiEvent::default()
+            };
+            self.h.ui.send_event(e, &event);
+        }
+        let out = self.h.route();
+        let mut ran = self.run(&out);
+        ran.extend(self.settle());
+        ran
+    }
+
     fn screen(&self) -> &chargen::CreationScreen {
         self.h.screens.creation().unwrap()
     }
@@ -1028,9 +1058,17 @@ fn create_opens_the_wizard_on_a_rolled_character_of_the_other_gender() {
     let ran = w.open();
     assert_eq!(ran[0], CreationCommand::RandomizeCharacter);
     let rolled = w.owner.snapshot();
+    // The appearance page's face choice takes the rolled headgear off
+    // before the gender turns over.
     assert!(matches!(
         ran[1..],
-        [CreationCommand::SelectGender(g)] if g == rolled.gender_key
+        [
+            CreationCommand::SetAppearance(
+                ac_runtime::session::creation::AppearanceSlot::HeadgearStyle,
+                ac_runtime::session::creation::UNSET
+            ),
+            CreationCommand::SelectGender(g)
+        ] if g == rolled.gender_key
     ));
     assert!(rolled.heritage_id != 0 && rolled.template != u32::MAX);
     let root = w.screen().root();
@@ -1138,6 +1176,131 @@ fn an_olthoi_skips_profession_skills_and_town() {
         .unwrap();
     w.click(aluvian);
     assert!(w.h.visible(tabs[1]) && w.h.visible(tabs[2]) && w.h.visible(tabs[4]));
+}
+
+/// The attribute sliders and the shade slider are value sliders: dragging
+/// the real widget sets the value (GitHub issue #5, the sliders did
+/// nothing). OpenAC wires them through `UiScrollbar.ScalarChanged`.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn dragging_the_attribute_and_shade_sliders_sets_their_values() {
+    use ac_runtime::session::creation::ShadeSlot;
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[1]));
+    let (_, slider, _) = w
+        .screen()
+        .profession_page()
+        .slider(ChargenAttribute::Strength)
+        .unwrap();
+    // Dragged to the far end: the last value set is the top one.
+    let ran = w.drag_across(slider.unwrap());
+    assert_eq!(
+        ran.last(),
+        Some(&CreationCommand::SetAttribute(
+            ChargenAttribute::Strength,
+            100
+        )),
+        "{ran:?}"
+    );
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert_eq!(w.page_shown(), [Page::Appearance]);
+    let (_, shade) = w.screen().appearance_page().grad_and_shade();
+    let ran = w.drag_across(shade.unwrap());
+    assert!(
+        matches!(ran.last(), Some(CreationCommand::SetShade(ShadeSlot::Hair, v)) if (*v - 1.0).abs() < 1e-6),
+        "{ran:?}"
+    );
+}
+
+/// The face choice takes the headgear off (so the hair shows) and keeps
+/// it; the clothes choice puts it back. The page starts on the face
+/// choice, so the opening roll's headgear is off from the start and stays
+/// off in the request unless the clothes choice is opened (GitHub issue
+/// #5, a hat covered the hair).
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_face_choice_takes_the_headgear_off_and_the_clothes_choice_puts_it_back() {
+    use ac_runtime::session::creation::{AppearanceSlot, UNSET};
+    use ac_ui::pregame::chargen::appearance::{self, Part};
+    let mut w = Wizard::new();
+    let opening = w.open();
+    let off = CreationCommand::SetAppearance(AppearanceSlot::HeadgearStyle, UNSET);
+    let at = |c: &CreationCommand| opening.iter().position(|o| o == c);
+    let gender = opening
+        .iter()
+        .position(|c| matches!(c, CreationCommand::SelectGender(_)))
+        .expect("the opening roll turns the gender over");
+    assert!(at(&off).is_some_and(|i| i < gender), "{opening:?}");
+    assert_eq!(w.owner.snapshot().appearance.headgear_style, UNSET);
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let root = w.screen().page_root(Page::Appearance);
+    let find = |w: &Wizard, id| w.h.ui.find_descendant(root, id).unwrap();
+
+    // Put a hat on in the clothes choice.
+    w.click(find(&w, appearance::CLOTHES_ID));
+    let headgear = w.screen().appearance_page().spin(Part::Headgear).unwrap();
+    let up =
+        w.h.ui
+            .find_descendant(headgear, appearance::INCREMENT_ARROW_ID)
+            .unwrap();
+    // The spin's steps pass through "none": step until a hat is on.
+    w.click(up);
+    for _ in 0..3 {
+        if w.owner.snapshot().appearance.headgear_style != UNSET {
+            break;
+        }
+        w.click(up);
+    }
+    let hat = w.owner.snapshot().appearance.headgear_style;
+    assert_ne!(hat, UNSET);
+
+    assert_eq!(w.click(find(&w, appearance::FACE_ID)), [off]);
+    assert_eq!(w.owner.snapshot().appearance.headgear_style, UNSET);
+    assert_eq!(
+        w.click(find(&w, appearance::CLOTHES_ID)),
+        [CreationCommand::SetAppearance(
+            AppearanceSlot::HeadgearStyle,
+            hat
+        )]
+    );
+    assert_eq!(w.owner.snapshot().appearance.headgear_style, hat);
+
+    // Never opening the clothes: the request goes without headgear.
+    let mut w = Wizard::new();
+    w.open();
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    w.owner
+        .apply_command(&CreationCommand::SetName("Hatless".into()));
+    let request = w.owner.try_begin_finish(0, 5, true).unwrap();
+    assert_eq!(request.request.appearance.headgear_style, UNSET);
 }
 
 #[test]
