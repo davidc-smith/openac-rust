@@ -34,6 +34,10 @@ pub struct WorldObject {
     /// Where the session's physics has the object now (the local player's
     /// body, a remote object's simulated body), when it simulates it.
     pub(super) live: Option<Position>,
+    /// Where a window draws the object, when the session's physics places
+    /// it between its fixed steps (the local player); read only beside
+    /// `live`.
+    pub(super) drawn: Option<Position>,
     /// What the session's physics has the object doing now, when it
     /// simulates it (its motion interpreter's axes and ground contact).
     pub(super) live_motion: Option<MotionView>,
@@ -54,6 +58,7 @@ impl WorldObject {
             physics: create.physics.clone(),
             model: create.model.clone(),
             live: None,
+            drawn: None,
             live_motion: None,
             motions_accepted: 0,
             entry_refused: false,
@@ -82,6 +87,21 @@ impl WorldObject {
             .as_ref()
             .and(self.live.as_ref())
             .or(self.physics.position.as_ref())
+    }
+
+    /// Where a window draws the object: for a body the session's physics
+    /// moves in fixed steps and places between them (the local player),
+    /// that place, updated on every pass of the session rather than only on
+    /// each step; otherwise
+    /// [`position`](Self::position).
+    #[must_use]
+    pub fn drawn_position(&self) -> Option<&Position> {
+        self.physics
+            .position
+            .as_ref()
+            .and(self.live.as_ref())
+            .and(self.drawn.as_ref())
+            .or_else(|| self.position())
     }
 
     /// Whether its entry into the world found no clear spot (see
@@ -190,6 +210,7 @@ impl WorldObject {
     pub(super) fn apply_pickup(&mut self) {
         self.physics.position = None;
         self.live = None;
+        self.drawn = None;
         self.live_motion = None;
         self.physics.parent = None;
     }
@@ -198,6 +219,7 @@ impl WorldObject {
     pub(super) fn apply_parent(&mut self, parent_guid: u32, location: u32, placement: u32) {
         self.physics.position = None;
         self.live = None;
+        self.drawn = None;
         self.live_motion = None;
         self.physics.parent = Some(PhysicsAttachment {
             guid: parent_guid,

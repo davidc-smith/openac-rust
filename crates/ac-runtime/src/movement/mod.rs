@@ -2485,6 +2485,14 @@ impl Movement {
         };
         if let Some(p) = player.controller.try_get_outbound_position() {
             world.set_live_position(player.guid, outbound::wire_position(&p));
+            // A window draws the body (and aims its camera) between its
+            // last two steps, in the body's cell with the body's facing;
+            // the cell frame and the world differ by a constant offset, so
+            // the smoothed place moves the cell origin by the same amount.
+            let c = &player.controller;
+            let mut drawn = p;
+            drawn.frame.origin += c.render_position() - c.position();
+            world.set_drawn_position(player.guid, outbound::wire_position(&drawn));
         }
         world.set_live_motion(
             player.guid,

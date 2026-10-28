@@ -219,8 +219,10 @@ pub struct ObjectView {
     pub name: Option<String>,
     /// Model setup (dat id), if any.
     pub setup_id: Option<u32>,
-    /// Where it is; `None` while held or in a container, or while it is not
-    /// in the world (its entry found no clear spot, so it is not drawn).
+    /// Where it is drawn ([`WorldObject::drawn_position`]: the local player
+    /// between its physics steps); `None` while held or in a container, or
+    /// while it is not in the world (its entry found no clear spot, so it
+    /// is not drawn).
     pub position: Option<Position>,
     /// The parent holding it, if any.
     pub parent: Option<PhysicsAttachment>,
@@ -263,7 +265,7 @@ impl ObjectView {
             position: if object.entry_refused() {
                 None
             } else {
-                object.position().copied()
+                object.drawn_position().copied()
             },
             parent: physics.parent,
             placement: physics.animation_frame,

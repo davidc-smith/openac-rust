@@ -874,6 +874,64 @@ fn the_view_carries_the_accepted_motion_until_the_physics_takes_it() {
     assert_eq!(world.snapshot().objects[0].motion, Some(view));
 }
 
+/// A body the session's physics places between its fixed steps is drawn
+/// there (a window's object view and snapshot), and a drawn-only change is
+/// a move for a window to follow; the world's own place (gameplay, plugins)
+/// stays the step. Once the physics lets go the drawn place goes with it.
+#[test]
+fn a_window_draws_the_smoothed_place_while_the_world_keeps_the_step() {
+    let mut world = world_with_door();
+    let key = world.object(DOOR).unwrap().key();
+    let moved_once = [WorldChange::Moved {
+        key,
+        teleported: false,
+        forced: false,
+    }];
+    // No live body: nothing to smooth.
+    world.set_drawn_position(DOOR, position(0xA9B4_0031, 5.5));
+    assert!(physics_changes(&mut world).is_empty());
+    assert_eq!(
+        world.snapshot().objects[0].position.map(|p| p.origin.x),
+        Some(5.0)
+    );
+
+    world.set_live_position(DOOR, position(0xA9B4_0031, 6.0));
+    world.set_drawn_position(DOOR, position(0xA9B4_0031, 5.5));
+    physics_changes(&mut world);
+    assert_eq!(
+        world.object(DOOR).unwrap().position().map(|p| p.origin.x),
+        Some(6.0)
+    );
+    assert_eq!(
+        world.snapshot().objects[0].position.map(|p| p.origin.x),
+        Some(5.5)
+    );
+
+    // Between steps only the drawn place moves.
+    world.set_live_position(DOOR, position(0xA9B4_0031, 6.0));
+    world.set_drawn_position(DOOR, position(0xA9B4_0031, 5.75));
+    let changes = physics_changes(&mut world);
+    assert_eq!(changes, moved_once);
+    let deltas = world.deltas(&changes);
+    let [ObjectDelta::Upsert(view)] = deltas.as_slice() else {
+        panic!("one upsert: {deltas:?}");
+    };
+    assert_eq!(view.position.map(|p| p.origin.x), Some(5.75));
+    assert_eq!(
+        world.object(DOOR).unwrap().position().map(|p| p.origin.x),
+        Some(6.0)
+    );
+    world.set_drawn_position(DOOR, position(0xA9B4_0031, 5.75));
+    assert!(physics_changes(&mut world).is_empty(), "unchanged");
+
+    world.clear_live_position(DOOR);
+    physics_changes(&mut world);
+    assert_eq!(
+        world.snapshot().objects[0].position.map(|p| p.origin.x),
+        Some(5.0)
+    );
+}
+
 /// An object whose entry into the world found no clear spot stays in the
 /// table (its records and updates) but a window does not draw it (OpenAC:
 /// no cell, the projection is not spatially visible), for the rest of its
