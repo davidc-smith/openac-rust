@@ -3383,7 +3383,14 @@ impl WorldRenderer {
             scenery,
             buildings,
             mut cells,
+            membership_failures,
         } = data;
+        for failure in membership_failures {
+            self.notices.push(format!(
+                "cells of landblock {:08X}: {failure}",
+                coord.terrain_id()
+            ));
+        }
         for cell in &mut cells {
             if let Some(mesh) = cell.mesh.take() {
                 self.upload_mesh(device, cell_mesh_key(cell.id), &mesh);

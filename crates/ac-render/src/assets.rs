@@ -568,6 +568,9 @@ pub struct NearData {
     pub buildings: Vec<crate::cells::BuildingData>,
     /// Interior cells.
     pub cells: Vec<crate::cells::CellData>,
+    /// Interior statics whose cells could not be worked out (drawn in no
+    /// cell), one line each.
+    pub membership_failures: Vec<String>,
 }
 
 impl NearData {
@@ -629,11 +632,16 @@ pub fn build_near(content: &Content, coord: LandblockCoord, region: &Region) -> 
             ..NearData::default()
         };
     };
+    let buildings = crate::cells::build_buildings(content, coord, &info);
+    let mut cells = crate::cells::build_cells(content, coord, &info);
+    let membership_failures =
+        crate::membership::assign_interior_membership(content, coord, &mut cells, &buildings);
     NearData {
         statics: place_statics(coord, &info),
         scenery,
-        buildings: crate::cells::build_buildings(content, coord, &info),
-        cells: crate::cells::build_cells(content, coord, &info),
+        buildings,
+        cells,
+        membership_failures,
     }
 }
 

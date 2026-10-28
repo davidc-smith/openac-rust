@@ -39,6 +39,9 @@ pub struct CellData {
     pub physics: Option<ac_physics::CellPhysics>,
     /// Objects standing in it, landblock-local.
     pub statics: Vec<StaticInstance>,
+    /// The statics it draws: every static whose drawn parts reach into it,
+    /// its own and its neighbours' ([`crate::membership`]).
+    pub members: Vec<crate::membership::CellStatic>,
     /// The cell can see outdoors.
     pub seen_outside: bool,
 }
@@ -429,6 +432,7 @@ pub fn build_cells(
             walk: walk_cell(id, &env, cell_struct, transform),
             physics,
             statics,
+            members: Vec::new(),
             seen_outside: env.flags.contains(EnvCellFlags::SEEN_OUTSIDE),
         });
     }

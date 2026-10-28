@@ -40,6 +40,7 @@ pub mod input;
 pub mod lifetime;
 pub mod lights;
 mod loader;
+pub mod membership;
 pub mod meshing;
 mod model_requests;
 pub mod nearby_dump;

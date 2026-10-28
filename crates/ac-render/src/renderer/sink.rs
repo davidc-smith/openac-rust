@@ -596,14 +596,25 @@ impl WalkSink for FrameSink<'_> {
                 self.draw_mesh(key, 0, false, world, lights, true, 1.0, NORMAL_LIGHT);
             }
             let landblock = cell_id & 0xFFFF_0000;
-            for (index, s) in cell.data.statics.iter().enumerate() {
+            // Every static whose drawn parts reach into the cell, whichever
+            // cell lists it (a staircase listed in the room above is drawn
+            // in the room below too).
+            for member in &cell.data.members {
+                let Some(s) = self
+                    .input
+                    .cells
+                    .get(&member.cell)
+                    .and_then(|owner| owner.data.statics.get(member.index as usize))
+                else {
+                    continue;
+                };
                 let Some(Some(parts)) = self.input.models.get(&s.model_id) else {
                     continue;
                 };
                 let key = StaticKey {
                     landblock,
-                    cell: *cell_id,
-                    index: index as u32,
+                    cell: member.cell,
+                    index: member.index,
                 };
                 let animated = self.animated_static(key, parts, s.transform);
                 let (parts, transform, opacities) = match &animated {
@@ -617,10 +628,11 @@ impl WalkSink for FrameSink<'_> {
                 if !self.first_admission(DrawnObject::Static(key), false, sphere, &active) {
                     continue;
                 }
+                // Lit as the cell it stands in.
                 let lights = self
                     .input
                     .lights
-                    .object_lights(Some(*cell_id), sphere.0, sphere.1);
+                    .object_lights(Some(member.cell), sphere.0, sphere.1);
                 self.draw_model(parts, world, false, lights, true, None, opacities, None);
                 self.out.draws.objects_drawn += 1;
             }
