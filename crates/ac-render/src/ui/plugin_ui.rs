@@ -1,4 +1,4 @@
-//! The lugins' UI in the game window (OpenAC `RetailUiRuntime`'s plugin
+//! The plugins' UI in the game window (OpenAC `RetailUiRuntime`'s plugin
 //! panel host, `PluginShelfController`, `PluginCanvasElement`, the world
 //! label, world line and projectile overlays): the window's copy of the
 //! session's plugin UI (`InterfaceFacts::plugin_ui`) drawn with the

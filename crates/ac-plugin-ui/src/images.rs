@@ -99,6 +99,24 @@ impl ImageTable {
         }
     }
 
+    /// An empty table whose handles start after `last` (the last handle an
+    /// earlier table of the same plugin gave out): a plugin reloaded never
+    /// gets a handle it, or a window still showing its old images, used
+    /// before.
+    #[must_use]
+    pub fn after(budget: ImageBudget, last: u32) -> Self {
+        Self {
+            next_handle: last,
+            ..Self::new(budget)
+        }
+    }
+
+    /// The last handle given out (0: none yet).
+    #[must_use]
+    pub fn last_handle(&self) -> u32 {
+        self.next_handle
+    }
+
     /// Moves on each time an image is let go of completely: a request
     /// refused for want of room may succeed once this has moved.
     #[must_use]

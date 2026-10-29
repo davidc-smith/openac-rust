@@ -124,6 +124,9 @@ pub struct PluginUi {
     plugin_folders: BTreeMap<String, PathBuf>,
     /// What each plugin window holds of the file icons it draws.
     panel_files: BTreeMap<u32, file_icons::PanelFiles>,
+    /// The last image handle each plugin was given, kept after it goes so
+    /// a reloaded plugin never gets a handle a window still knows.
+    last_image_handles: BTreeMap<String, u32>,
     /// The file icon refusals already logged.
     file_reported: BTreeSet<String>,
     /// The session clock's last reading, milliseconds.
@@ -733,9 +736,10 @@ impl PluginUi {
 
     fn table(&mut self, owner: &str) -> &mut ImageTable {
         let budget = self.budget;
+        let last = self.last_image_handles.get(owner).copied().unwrap_or(0);
         self.images
             .entry(owner.to_owned())
-            .or_insert_with(|| ImageTable::new(budget))
+            .or_insert_with(|| ImageTable::after(budget, last))
     }
 
     fn image_result(
@@ -1098,6 +1102,9 @@ impl PluginUi {
             self.remove_canvas(owner, canvas);
         }
         if let Some(table) = self.images.remove(owner) {
+            // Its handles are never given out again, even after a reload.
+            self.last_image_handles
+                .insert(owner.to_owned(), table.last_handle());
             for handle in table.handles() {
                 self.changes.push(UiChange::ImageRemoved {
                     owner: owner.to_owned(),
