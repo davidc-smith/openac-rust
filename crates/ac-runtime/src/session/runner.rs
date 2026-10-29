@@ -1831,14 +1831,19 @@ impl Drive<'_> {
                     .state
                     .command(command, self.flow.outbox_mut(), active, clocks)
                 {
+                    // The session clock goes ahead of the snapshot, so the
+                    // window blends the player between its physics steps at
+                    // its own frame times from the snapshot's first frame (a
+                    // window moving from another session never draws the new
+                    // steps on the old clock).
                     Some(SessionCommand::Attach(window))
                         if window
-                            .send(PresentationEvent::Snapshot(self.state.world.snapshot()))
-                            .is_ok() =>
+                            .send(PresentationEvent::SessionClock(self.clock_origin))
+                            .is_ok()
+                            && window
+                                .send(PresentationEvent::Snapshot(self.state.world.snapshot()))
+                                .is_ok() =>
                     {
-                        // The session clock, so the window blends the player
-                        // between its physics steps at its own frame times.
-                        let _ = window.send(PresentationEvent::SessionClock(self.clock_origin));
                         // The clock as of now, so the window's sky starts at
                         // the right time of day.
                         if let Some(ticks) = self.state.world.clock().now_ticks(now) {
