@@ -18,6 +18,8 @@ use super::gpu::UiPixels;
 struct Store {
     next: u32,
     images: HashMap<u32, UiPixels>,
+    /// Textures let go of, for the renderer to drop.
+    released: Vec<u32>,
 }
 
 impl Store {
@@ -62,6 +64,33 @@ impl RuntimeImages {
         })
     }
 
+    /// Keep a plugin's own image (its pixels, or a file its markup draws)
+    /// with its smaller levels, the image first, under a new runtime
+    /// texture name: sampled clamped and between levels. It is given back
+    /// through [`Self::release`] when the plugin lets go of it.
+    pub fn add_plugin_image(&self, levels: Vec<DecodedTexture>) -> TextureRef {
+        self.0.borrow_mut().insert(UiPixels::Plugin(levels))
+    }
+
+    /// Lets go of runtime texture `texture`: the renderer drops its GPU
+    /// copy ([`Self::take_released`]).
+    pub fn release(&self, texture: TextureRef) {
+        if let TextureRef::Runtime(id) = texture {
+            let mut store = self.0.borrow_mut();
+            store.images.remove(&id);
+            store.released.push(id);
+        }
+    }
+
+    /// The textures let go of since the last call.
+    #[must_use]
+    pub fn take_released(&self) -> Vec<TextureRef> {
+        std::mem::take(&mut self.0.borrow_mut().released)
+            .into_iter()
+            .map(TextureRef::Runtime)
+            .collect()
+    }
+
     /// Images waiting for the renderer.
     #[must_use]
     pub fn waiting(&self) -> usize {
@@ -100,6 +129,35 @@ mod tests {
         assert_eq!((pixels.width, pixels.height, pixels.rgba.len()), (2, 1, 8));
         assert!(images.take(id).is_none());
         assert_ne!(up.upload(&Rgba::new(1, 1, vec![0; 4])), t);
+    }
+
+    #[test]
+    fn a_plugin_image_keeps_its_levels_and_is_given_back_once_let_go() {
+        let images = RuntimeImages::new();
+        let levels = vec![
+            DecodedTexture {
+                width: 2,
+                height: 2,
+                rgba: vec![0; 16],
+            },
+            DecodedTexture {
+                width: 1,
+                height: 1,
+                rgba: vec![0; 4],
+            },
+        ];
+        let texture = images.add_plugin_image(levels.clone());
+        assert!(images.take_released().is_empty());
+        let TextureRef::Runtime(id) = texture else {
+            panic!("a runtime texture");
+        };
+        assert_eq!(images.take(id), Some(UiPixels::Plugin(levels)));
+        images.release(texture);
+        images.release(TextureRef::Surface(0x0600_0001));
+        assert_eq!(images.take_released(), [texture]);
+        assert!(images.take_released().is_empty());
+        // A name is never handed out twice.
+        assert_ne!(images.add_plugin_image(Vec::new()), texture);
     }
 
     #[test]

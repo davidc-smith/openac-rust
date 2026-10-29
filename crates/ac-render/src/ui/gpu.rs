@@ -1,7 +1,9 @@
 //! The UI on the GPU: one pipeline (screen-pixel triangles, straight
 //! alpha, no depth), a texture per render surface the UI names, sampled
-//! linear or nearest and always repeating, and one pass drawn over the
-//! world with what the frame's batch holds.
+//! linear or nearest and repeating (a plugin's own images: clamped, with
+//! their smaller levels sampled between), and one pass drawn over the
+//! world with what the frame's batch holds. A texture whose owner lets go
+//! of it is dropped, and its memory with it.
 //!
 //! OpenAC's `TextRenderer` and the UI half of `TextureCache`
 //! (`GetOrUploadRenderSurface`, `UploadUiTexture`): a surface the dats do
@@ -19,6 +21,12 @@ use super::batch::{UiBatch, UiTexture, UiTextureKey};
 pub trait UiTextureSource {
     /// The pixels of `texture`, `None` when there are none.
     fn decode(&mut self, texture: TextureRef) -> Option<UiPixels>;
+
+    /// Textures their owner let go of since the last call, to drop from
+    /// the GPU.
+    fn released(&mut self) -> Vec<TextureRef> {
+        Vec::new()
+    }
 }
 
 /// A UI texture's pixels as they are uploaded.
@@ -37,7 +45,16 @@ pub enum UiPixels {
         /// The alpha of each texel, rows top to bottom.
         alpha: Vec<u8>,
     },
+    /// A plugin's own 8-bit RGBA image, with its smaller levels (mipmaps)
+    /// when it has them, the image first: sampled linearly between
+    /// levels too (trilinear), so a large image drawn small shrinks
+    /// smoothly, and clamped at its edges, so a part cut from the edge of a
+    /// sheet does not pick up the opposite edge.
+    Plugin(Vec<DecodedTexture>),
 }
+
+/// One level of a texture: its width, height and bytes.
+type Level<'a> = (u32, u32, &'a [u8]);
 
 impl UiPixels {
     /// Width and height in texels.
@@ -46,23 +63,71 @@ impl UiPixels {
         match self {
             Self::Rgba(t) => (t.width, t.height),
             Self::Coverage { width, height, .. } => (*width, *height),
+            Self::Plugin(levels) => levels.first().map_or((0, 0), |t| (t.width, t.height)),
         }
     }
 
-    /// The bytes, bytes a texel and the texture format they upload as.
-    fn texels(&self) -> (&[u8], u32, wgpu::TextureFormat) {
+    /// Each level's size and bytes, the image first; bytes a texel and the
+    /// texture format they upload as.
+    fn levels(&self) -> (Vec<Level<'_>>, u32, wgpu::TextureFormat) {
         match self {
-            Self::Rgba(t) => (&t.rgba, 4, wgpu::TextureFormat::Rgba8Unorm),
-            Self::Coverage { alpha, .. } => (alpha, 1, wgpu::TextureFormat::R8Unorm),
+            Self::Rgba(t) => (
+                vec![(t.width, t.height, t.rgba.as_slice())],
+                4,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ),
+            Self::Coverage {
+                width,
+                height,
+                alpha,
+            } => (
+                vec![(*width, *height, alpha.as_slice())],
+                1,
+                wgpu::TextureFormat::R8Unorm,
+            ),
+            Self::Plugin(levels) => (
+                levels
+                    .iter()
+                    .map(|t| (t.width, t.height, t.rgba.as_slice()))
+                    .collect(),
+                4,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ),
         }
     }
 
-    /// The bytes fill the size.
+    /// Every level's bytes fill its size, and each level is half the one
+    /// above (rounded down, at least 1), the way the GPU sizes them.
     #[must_use]
     pub fn is_whole(&self) -> bool {
-        let (w, h) = self.size();
-        let (bytes, per_texel, _) = self.texels();
-        w > 0 && h > 0 && bytes.len() as u64 == u64::from(per_texel) * u64::from(w) * u64::from(h)
+        let (levels, per_texel, _) = self.levels();
+        let Some(&(w, h, _)) = levels.first() else {
+            return false;
+        };
+        let max_levels = 32 - w.max(h).leading_zeros();
+        w > 0
+            && h > 0
+            && levels.len() as u32 <= max_levels
+            && levels.iter().enumerate().all(|(i, (lw, lh, bytes))| {
+                *lw == (w >> i).max(1)
+                    && *lh == (h >> i).max(1)
+                    && bytes.len() as u64 == u64::from(per_texel) * u64::from(*lw) * u64::from(*lh)
+            })
+    }
+
+    /// The GPU memory it takes once uploaded, bytes: every level counted.
+    #[must_use]
+    pub fn gpu_bytes(&self) -> u64 {
+        let (levels, per_texel, _) = self.levels();
+        levels
+            .iter()
+            .map(|(w, h, _)| u64::from(per_texel) * u64::from(*w) * u64::from(*h))
+            .sum()
+    }
+
+    /// Sampled clamped and between levels (a plugin's own image).
+    fn clamped(&self) -> bool {
+        matches!(self, Self::Plugin(_))
     }
 }
 
@@ -72,6 +137,8 @@ struct GpuTexture {
     _texture: Option<wgpu::Texture>,
     /// One byte a texel, drawn by the coverage pipeline.
     coverage: bool,
+    /// The GPU memory it takes, every level counted.
+    bytes: u64,
     linear: wgpu::BindGroup,
     nearest: wgpu::BindGroup,
 }
@@ -101,8 +168,9 @@ pub struct UiRenderer {
     texture_layout: wgpu::BindGroupLayout,
     screen_buffer: wgpu::Buffer,
     screen_group: wgpu::BindGroup,
-    linear: wgpu::Sampler,
-    nearest: wgpu::Sampler,
+    samplers: UiSamplers,
+    /// The GPU memory the uploaded textures take, every level counted.
+    texture_bytes: u64,
     vertices: wgpu::Buffer,
     vertex_capacity: u64,
     white: GpuTexture,
@@ -134,17 +202,68 @@ fn magenta() -> UiPixels {
     })
 }
 
-fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu::Sampler {
+fn sampler(
+    device: &wgpu::Device,
+    label: &str,
+    filter: wgpu::FilterMode,
+    address: wgpu::AddressMode,
+    mipmap: wgpu::MipmapFilterMode,
+) -> wgpu::Sampler {
     device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some(label),
-        address_mode_u: wgpu::AddressMode::Repeat,
-        address_mode_v: wgpu::AddressMode::Repeat,
-        address_mode_w: wgpu::AddressMode::Repeat,
+        address_mode_u: address,
+        address_mode_v: address,
+        address_mode_w: address,
         mag_filter: filter,
         min_filter: filter,
-        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        mipmap_filter: mipmap,
         ..Default::default()
     })
+}
+
+/// The UI's samplers: repeating (dat art, tiled), and clamped with
+/// filtering between levels (a plugin's own images).
+struct UiSamplers {
+    linear: wgpu::Sampler,
+    nearest: wgpu::Sampler,
+    clamp_linear: wgpu::Sampler,
+    clamp_nearest: wgpu::Sampler,
+}
+
+impl UiSamplers {
+    fn new(device: &wgpu::Device) -> Self {
+        use wgpu::{AddressMode, FilterMode, MipmapFilterMode};
+        Self {
+            linear: sampler(
+                device,
+                "ui linear repeat",
+                FilterMode::Linear,
+                AddressMode::Repeat,
+                MipmapFilterMode::Nearest,
+            ),
+            nearest: sampler(
+                device,
+                "ui nearest repeat",
+                FilterMode::Nearest,
+                AddressMode::Repeat,
+                MipmapFilterMode::Nearest,
+            ),
+            clamp_linear: sampler(
+                device,
+                "ui trilinear clamp",
+                FilterMode::Linear,
+                AddressMode::ClampToEdge,
+                MipmapFilterMode::Linear,
+            ),
+            clamp_nearest: sampler(
+                device,
+                "ui nearest clamp",
+                FilterMode::Nearest,
+                AddressMode::ClampToEdge,
+                MipmapFilterMode::Nearest,
+            ),
+        }
+    }
 }
 
 impl UiRenderer {
@@ -236,8 +355,7 @@ impl UiRenderer {
                 resource: screen_buffer.as_entire_binding(),
             }],
         });
-        let linear = sampler(device, "ui linear repeat", wgpu::FilterMode::Linear);
-        let nearest = sampler(device, "ui nearest repeat", wgpu::FilterMode::Nearest);
+        let samplers = UiSamplers::new(device);
         let vertex_capacity = 64 * 1024;
         let vertices = crate::renderer::pipelines::vertex_buffer(
             device,
@@ -248,7 +366,7 @@ impl UiRenderer {
             device,
             queue,
             &texture_layout,
-            (&linear, &nearest),
+            &samplers,
             "ui white",
             &UiPixels::Rgba(DecodedTexture {
                 width: 1,
@@ -262,8 +380,8 @@ impl UiRenderer {
             texture_layout,
             screen_buffer,
             screen_group,
-            linear,
-            nearest,
+            samplers,
+            texture_bytes: 0,
             vertices,
             vertex_capacity,
             white,
@@ -285,6 +403,9 @@ impl UiRenderer {
         size: (u32, u32),
         source: &mut dyn UiTextureSource,
     ) {
+        for texture in source.released() {
+            self.release(texture);
+        }
         self.prepared.clear();
         if batch.is_empty() || size.0 == 0 || size.1 == 0 {
             return;
@@ -337,12 +458,32 @@ impl UiRenderer {
         let gpu = bind(
             device,
             &self.texture_layout,
-            (&self.linear, &self.nearest),
+            (&self.samplers.linear, &self.samplers.nearest),
             &label,
             view,
         );
         self.textures.insert(texture, gpu);
         self.views.insert(texture, generation);
+    }
+
+    /// Gives back a texture its owner let go of (a plugin's image): the GPU
+    /// copy goes, and its memory with it. False for one not uploaded.
+    pub fn release(&mut self, texture: TextureRef) -> bool {
+        self.views.remove(&texture);
+        match self.textures.remove(&texture) {
+            Some(gpu) => {
+                self.texture_bytes -= gpu.bytes;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The GPU memory the uploaded textures take, bytes, every level
+    /// counted.
+    #[must_use]
+    pub fn texture_bytes(&self) -> u64 {
+        self.texture_bytes
     }
 
     /// Render surfaces the dats could not give since the last call (each
@@ -430,22 +571,25 @@ impl UiRenderer {
             device,
             queue,
             &self.texture_layout,
-            (&self.linear, &self.nearest),
+            &self.samplers,
             &label,
             &pixels,
         );
+        self.texture_bytes += gpu.bytes;
         self.textures.insert(texture, gpu);
         true
     }
 }
 
-/// Put `pixels` on the GPU with a linear and a nearest binding. Pixels that
-/// do not fill their size (a broken decode) upload as magenta.
+/// Put `pixels` on the GPU, every level, with a linear and a nearest
+/// binding: repeating, or for a plugin's own image clamped and sampled
+/// between levels. Pixels that do not fill their size (a broken decode)
+/// upload as magenta.
 fn upload(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     layout: &wgpu::BindGroupLayout,
-    (linear, nearest): (&wgpu::Sampler, &wgpu::Sampler),
+    samplers: &UiSamplers,
     label: &str,
     pixels: &UiPixels,
 ) -> GpuTexture {
@@ -457,7 +601,7 @@ fn upload(
         &fallback
     };
     let (width, height) = pixels.size();
-    let (bytes, per_texel, format) = pixels.texels();
+    let (levels, per_texel, format) = pixels.levels();
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -465,26 +609,34 @@ fn upload(
             height,
             depth_or_array_layers: 1,
         },
-        mip_level_count: 1,
+        mip_level_count: levels.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    crate::renderer::pipelines::write_layer_texels(
-        queue,
-        &texture,
-        0,
-        0,
-        (width, height, per_texel),
-        bytes,
-    );
+    for (level, (w, h, bytes)) in levels.iter().enumerate() {
+        crate::renderer::pipelines::write_layer_texels(
+            queue,
+            &texture,
+            level as u32,
+            0,
+            (*w, *h, per_texel),
+            bytes,
+        );
+    }
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let pair = if pixels.clamped() {
+        (&samplers.clamp_linear, &samplers.clamp_nearest)
+    } else {
+        (&samplers.linear, &samplers.nearest)
+    };
     GpuTexture {
         _texture: Some(texture),
         coverage: matches!(pixels, UiPixels::Coverage { .. }),
-        ..bind(device, layout, (linear, nearest), label, &view)
+        bytes: pixels.gpu_bytes(),
+        ..bind(device, layout, pair, label, &view)
     }
 }
 
@@ -516,6 +668,7 @@ fn bind(
         linear: group(linear),
         nearest: group(nearest),
         _texture: None,
+        bytes: 0,
         coverage: false,
     }
 }
@@ -531,6 +684,110 @@ mod tests {
         fn decode(&mut self, texture: TextureRef) -> Option<UiPixels> {
             self.0.remove(&texture)
         }
+    }
+
+    /// An 8 x 4 image's levels as the CPU mip chain builds them.
+    fn plugin_image() -> UiPixels {
+        UiPixels::Plugin(
+            ac_plugin_ui::mips::build(vec![0x80; 8 * 4 * 4], 8, 4)
+                .into_iter()
+                .map(|l| DecodedTexture {
+                    width: l.width,
+                    height: l.height,
+                    rgba: l.rgba,
+                })
+                .collect(),
+        )
+    }
+
+    // OpenAC PR #271's TextureCacheReleasableUiTextureTests
+    // (AMipmappedUploadCountsEveryLevelInTheMemoryTrackerAndGivesThemAllBack,
+    // APlainUploadHasOneLevel): 8x4, 4x2, 2x1, 1x1, every level counted.
+    #[test]
+    fn a_plugin_image_counts_every_level_and_is_sampled_clamped() {
+        let pixels = plugin_image();
+        assert!(pixels.is_whole());
+        assert_eq!(pixels.levels().0.len(), 4);
+        assert_eq!(pixels.gpu_bytes(), (8 * 4 + 4 * 2 + 2 + 1) * 4);
+        assert!(pixels.clamped());
+        let plain = UiPixels::Rgba(DecodedTexture {
+            width: 8,
+            height: 4,
+            rgba: vec![0; 8 * 4 * 4],
+        });
+        assert_eq!(plain.levels().0.len(), 1);
+        assert_eq!(plain.gpu_bytes(), 8 * 4 * 4);
+        assert!(!plain.clamped());
+        // A plugin's pixels without smaller levels are clamped too.
+        let one = UiPixels::Plugin(vec![DecodedTexture {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 16],
+        }]);
+        assert!(one.is_whole() && one.clamped());
+        assert_eq!(one.gpu_bytes(), 16);
+    }
+
+    // A level that is not half the one above, or does not fill its size,
+    // uploads as the magenta placeholder rather than a broken texture.
+    #[test]
+    fn a_broken_level_chain_is_not_whole() {
+        let level = |w: u32, h: u32| DecodedTexture {
+            width: w,
+            height: h,
+            rgba: vec![0; (w * h * 4) as usize],
+        };
+        assert!(!UiPixels::Plugin(vec![level(8, 4), level(3, 2)]).is_whole());
+        assert!(!UiPixels::Plugin(vec![level(1, 1), level(1, 1)]).is_whole());
+        assert!(!UiPixels::Plugin(Vec::new()).is_whole());
+        let mut short = level(4, 4);
+        short.rgba.pop();
+        assert!(!UiPixels::Plugin(vec![short]).is_whole());
+    }
+
+    // OpenAC PR #271's AMipmappedUploadSendsEveryLevelAndSamplesThemTrilinearly
+    // and the GPU memory it counts: uploaded with every level, counted, and
+    // given back, memory and all, when its owner lets go of it.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_plugin_image_uploads_every_level_and_gives_its_memory_back() {
+        let (device, queue) = crate::test_gpu::device().expect("a GPU device");
+        let mut renderer = UiRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let texture = TextureRef::Runtime(7);
+        struct Once(Option<UiPixels>, Vec<TextureRef>);
+        impl UiTextureSource for Once {
+            fn decode(&mut self, _texture: TextureRef) -> Option<UiPixels> {
+                self.0.take()
+            }
+            fn released(&mut self) -> Vec<TextureRef> {
+                std::mem::take(&mut self.1)
+            }
+        }
+        let batch = UiBatch {
+            vertices: quad(0.0, 8.0).to_vec(),
+            runs: vec![super::super::batch::UiRun {
+                key: UiTextureKey {
+                    texture: UiTexture::Named(texture),
+                    filter: Filter::Linear,
+                },
+                first: 0,
+                count: 6,
+            }],
+            skipped_zero_ids: 0,
+        };
+        let before = renderer.texture_bytes();
+        let mut source = Once(Some(plugin_image()), Vec::new());
+        renderer.prepare(&device, &queue, &batch, (W, H), &mut source);
+        assert_eq!(
+            renderer.texture_bytes() - before,
+            (8 * 4 + 4 * 2 + 2 + 1) * 4
+        );
+        assert_eq!(renderer.texture_count(), 1);
+        source.1.push(texture);
+        renderer.prepare(&device, &queue, &UiBatch::default(), (W, H), &mut source);
+        assert_eq!(renderer.texture_bytes(), before);
+        assert_eq!(renderer.texture_count(), 0);
+        assert!(!renderer.release(texture));
     }
 
     const W: u32 = 24;

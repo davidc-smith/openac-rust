@@ -93,8 +93,10 @@ pub struct PluginWindowUi {
     shelf: bool,
     canvases: Option<CanvasLayer>,
     projectile: Option<ProjectileDebugOverlay>,
-    /// The plugins' images as textures, by plugin and handle.
-    images: HashMap<(String, u32), Icon>,
+    /// The plugins' images as textures, by plugin and handle, each with
+    /// whether this window uploaded it (and gives it back when the plugin
+    /// lets go of the image).
+    images: HashMap<(String, u32), (Icon, bool)>,
     /// Each plugin's `icon.png` as a texture, uploaded once per plugin
     /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
     /// was made from: a reloaded plugin's new file uploads again.
@@ -262,7 +264,7 @@ struct WindowIcons<'a> {
     objects: &'a ac_core::items::ClientObjectTable,
     view: &'a ac_plugin_ui::PluginUiView,
     images: &'a super::icons::RuntimeImages,
-    textures: &'a mut HashMap<(String, u32), Icon>,
+    textures: &'a mut HashMap<(String, u32), (Icon, bool)>,
     /// The plugin window being synced.
     panel: u32,
     /// The file paths it drew.
@@ -276,21 +278,27 @@ fn own_image(
     images: &super::icons::RuntimeImages,
     image: &ac_plugin_ui::ImageView,
 ) -> Option<Icon> {
-    let size = (image.width as f32, image.height as f32);
-    match &image.source {
-        ImageSource::Rgba(pixels) => {
-            let rgba = Rgba::new(image.width, image.height, pixels.as_ref().clone());
-            Some((images.uploader().upload(&rgba), size.0, size.1))
-        }
-        ImageSource::File(file) => {
-            let top = file.levels.first()?;
-            let rgba = Rgba::new(top.width, top.height, top.rgba.clone());
-            Some((images.uploader().upload(&rgba), size.0, size.1))
-        }
+    let level = |width: u32, height: u32, rgba: &[u8]| ac_dat::texture::DecodedTexture {
+        width,
+        height,
+        rgba: rgba.to_vec(),
+    };
+    let levels = match &image.source {
+        ImageSource::Rgba(pixels) => vec![level(image.width, image.height, pixels)],
+        ImageSource::File(file) => file
+            .levels
+            .iter()
+            .map(|l| level(l.width, l.height, &l.rgba))
+            .collect(),
         ImageSource::ClientArt(_) | ImageSource::SpellIcon { .. } | ImageSource::ObjectIcon(_) => {
-            None
+            return None;
         }
-    }
+    };
+    Some((
+        images.add_plugin_image(levels),
+        image.width as f32,
+        image.height as f32,
+    ))
 }
 
 fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
@@ -358,11 +366,11 @@ impl MarkupIcons for WindowIcons<'_> {
         }
         let image = self.view.file_icon(self.panel, path)?;
         let key = (image.owner.clone(), image.handle);
-        if let Some(icon) = self.textures.get(&key) {
+        if let Some((icon, _)) = self.textures.get(&key) {
             return Some(*icon);
         }
         let icon = own_image(self.images, image)?;
-        self.textures.insert(key, icon);
+        self.textures.insert(key, (icon, true));
         Some(icon)
     }
 }
@@ -899,12 +907,18 @@ impl WindowUi {
         };
         band.follow_root(&mut host.root);
         let view = &facts.plugin_ui;
-        plugins
-            .images
-            .retain(|key, _| view.images.contains_key(key));
+        // An image the plugin let go of goes, and a texture this window
+        // uploaded for it is given back.
+        plugins.images.retain(|key, (icon, owned)| {
+            let kept = view.images.contains_key(key);
+            if !kept && *owned {
+                images.release(icon.0);
+            }
+            kept
+        });
         let mut image = |owner: &str, handle: u32| -> Option<Icon> {
             let key = (owner.to_owned(), handle);
-            if let Some(icon) = plugins.images.get(&key) {
+            if let Some((icon, _)) = plugins.images.get(&key) {
                 return Some(*icon);
             }
             let source = view.images.get(&key)?;
@@ -925,7 +939,8 @@ impl WindowUi {
                 }),
                 ImageSource::Rgba(_) | ImageSource::File(_) => own_image(images, source),
             }?;
-            plugins.images.insert(key, icon);
+            let owned = matches!(source.source, ImageSource::Rgba(_) | ImageSource::File(_));
+            plugins.images.insert(key, (icon, owned));
             Some(icon)
         };
         let font = content.font(DEFAULT_FONT_ID);

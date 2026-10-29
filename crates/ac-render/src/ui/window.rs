@@ -459,6 +459,10 @@ impl UiTextureSource for DatSurfaces<'_> {
             .ok()
             .map(UiPixels::Rgba)
     }
+
+    fn released(&mut self) -> Vec<TextureRef> {
+        self.images.take_released()
+    }
 }
 
 /// A one-byte alpha image (the font atlases) as stored, drawn white with
