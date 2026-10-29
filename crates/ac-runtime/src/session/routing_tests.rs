@@ -393,6 +393,38 @@ fn use_board(
     state.command(super::SessionCommand::Item(command), outbox, true, CLOCKS);
 }
 
+/// How many times the game window was asked to show, and the status-line
+/// texts, among the host events.
+fn board_events(state: &mut SessionState) -> (usize, Vec<String>) {
+    let events = state.drain_host_events();
+    let shown = events
+        .iter()
+        .filter(|e| **e == super::HostEvent::BeginGame(BOARD))
+        .count();
+    let status = events
+        .into_iter()
+        .filter_map(|e| match e {
+            super::HostEvent::InterfaceText(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    (shown, status)
+}
+
+/// [`use_board`] `after` past the test clock (the use pacing reads it).
+fn use_board_after(
+    state: &mut SessionState,
+    outbox: &mut Outbox,
+    command: crate::inventory::ItemCommand,
+    after: Duration,
+) {
+    let clocks = Clocks {
+        wall_unix_ms: CLOCKS.wall_unix_ms + i64::try_from(after.as_millis()).unwrap(),
+        session: CLOCKS.session + after,
+    };
+    state.command(super::SessionCommand::Item(command), outbox, true, clocks);
+}
+
 #[test]
 fn chess_events_route_into_the_session_owner() {
     // LiveSessionEventRouterTests.ChessEvents_RouteIntoTheSharedRuntimeOwner
@@ -498,21 +530,25 @@ fn using_the_same_board_again_sends_no_second_join() {
     // RuntimeChessBeginGameTests.UsingTheSameBoardAgain_SendsNoSecondJoin.
     let (mut state, mut outbox) = in_world();
     place_board(&mut state);
-    for _ in 0..2 {
-        use_board(
+    // A second later, past the use pacing.
+    for after in [Duration::ZERO, Duration::from_secs(1)] {
+        use_board_after(
             &mut state,
             &mut outbox,
             crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+            after,
         );
     }
     assert_eq!(joins(&mut outbox).len(), 1);
-    // The window shows for each use.
-    let shown = state
-        .drain_host_events()
-        .into_iter()
-        .filter(|e| *e == super::HostEvent::BeginGame(BOARD))
-        .count();
+    // The window shows for each use; the second says so.
+    let (shown, status) = board_events(&mut state);
     assert_eq!(shown, 2);
+    assert!(
+        status
+            .iter()
+            .any(|t| t == "You are already playing this game."),
+        "{status:?}"
+    );
 }
 
 #[test]
@@ -547,4 +583,33 @@ fn leaving_the_world_ends_the_game() {
     state.gameplay.left_world(&mut world);
     assert_eq!(state.gameplay.chess().stage(), ChessStage::NotPlaying);
     assert_eq!(state.gameplay.chess().board_guid(), 0);
+}
+
+#[test]
+fn a_double_click_on_a_board_within_the_use_pacing_is_swallowed() {
+    // OpenAC RuntimeItemInteraction.ActivateItem: the use pacing (200 ms)
+    // comes before the board's primary use, so the second click of a
+    // double-click neither shows the window again nor says anything.
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    for after in [Duration::ZERO, Duration::from_millis(100)] {
+        use_board_after(
+            &mut state,
+            &mut outbox,
+            crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+            after,
+        );
+    }
+    assert_eq!(joins(&mut outbox).len(), 1);
+    let shown = state
+        .drain_host_events()
+        .into_iter()
+        .filter(|e| *e == super::HostEvent::BeginGame(BOARD))
+        .count();
+    assert_eq!(shown, 1);
+    assert!(
+        !texts(&state).iter().any(|t| t.contains("already playing")),
+        "{:?}",
+        texts(&state)
+    );
 }

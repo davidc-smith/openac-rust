@@ -3123,3 +3123,23 @@ fn a_game_board_in_the_world_begins_its_game_instead_of_being_used() {
     assert_eq!(f.inventory.take_begun_games(), [BOARD]);
     assert!(f.sent().is_empty());
 }
+
+#[test]
+fn a_game_board_used_while_a_request_is_pending_says_busy_and_begins_nothing() {
+    // OpenAC RuntimeItemInteraction.ActivateItem: the request gate comes
+    // before the board's primary use.
+    const BOARD: u32 = 0x7A9B_4001;
+    let mut f = Fixture::new();
+    f.world.apply(&create(BOARD, "Chess Board", |d| {
+        d.item_type = ItemType::GAMEBOARD.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+    }));
+    assert!(f.run(ItemCommand::Use(guid(NPC))));
+    f.sent();
+    f.notices();
+    f.now_ms += 10_000;
+    assert!(!f.run(ItemCommand::Use(guid(BOARD))));
+    assert!(f.inventory.take_begun_games().is_empty());
+    assert!(f.sent().is_empty());
+    assert_eq!(f.notices(), [Notice::Interface(REQUEST_BUSY.to_owned())]);
+}

@@ -799,17 +799,6 @@ impl Inventory {
         let Some(item) = ctx.world.item(item_id).cloned() else {
             return false;
         };
-        // Someone else's game board is used by beginning its game, not by
-        // sending a use: no pacing or request gate stands in front of it.
-        if interaction::determine_use_result(
-            &Self::snapshot(&item, ctx),
-            ctx.player(),
-            self.external.current_container_id(),
-        ) == interaction::ItemPrimaryUseResult::BeginGame
-        {
-            self.begun_games.push(item_id);
-            return true;
-        }
         if !self.interaction.try_consume_use_throttle(ctx.now_ms) {
             return true;
         }
