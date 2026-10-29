@@ -139,6 +139,9 @@ pub struct ExternalContainerController {
     /// The placement last seen (its token; 0 for none).
     seen_placement: u64,
     queue: Vec<(ElementId, ElementMessage)>,
+    /// The lists were built for the container open now (false after they
+    /// were emptied: the next fill builds all three).
+    built: bool,
 }
 
 fn is_container(item: Option<&ClientObject>) -> bool {
@@ -245,6 +248,7 @@ impl ExternalContainerController {
             projection: None,
             seen_placement: 0,
             queue: Vec::new(),
+            built: false,
         })
     }
 
@@ -294,6 +298,7 @@ impl ExternalContainerController {
                 self.clear_lists(ui);
             } else {
                 self.open_container = facts.container;
+                self.built = false;
                 self.scroll_to_home(ui);
                 ui.show_window(&self.window);
             }
@@ -355,6 +360,7 @@ impl ExternalContainerController {
         for list in [self.top, self.containers, self.contents] {
             ui.with::<ItemList, _>(list, |l, ui| l.flush(ui));
         }
+        self.built = false;
         self.scroll_to_home(ui);
     }
 
@@ -432,12 +438,24 @@ impl ExternalContainerController {
         }
     }
 
-    /// Whether `item` may go into the open pack: a pack never does.
+    /// Whether `item` may go into the open pack: a pack never does, and
+    /// part of a stack needs a slot of its own, even beside the rest of it.
     fn evaluate_drop(&self, item: u32, view: &ItemsView<'_>) -> Option<PlacementRejection> {
         if is_container(view.get(item)) {
             return Some(PlacementRejection::ContainerCapacityFull);
         }
-        evaluate_container_placement(view.objects, item, self.open_container, 0, true).err()
+        let whole_stack = self.moving_amount(item, view).1;
+        evaluate_container_placement(view.objects, item, self.open_container, 0, whole_stack).err()
+    }
+
+    /// How much of `item` a drag moves, and whether that is the whole
+    /// stack: the selected stack's split quantity splits it.
+    fn moving_amount(&self, item: u32, view: &ItemsView<'_>) -> (u32, bool) {
+        let full = view
+            .get(item)
+            .map_or(1, |d| d.stack_size.max(1).unsigned_abs());
+        let split = view.split_size(item, full, self.selection.get());
+        (split, split >= full)
     }
 
     fn drag_over(
@@ -479,18 +497,17 @@ impl ExternalContainerController {
             emit(ui, PanelOutput::Notice(REQUEST_BUSY.to_owned()));
             return;
         }
-        let Some(item) = view.get(p.obj_id) else {
+        if view.get(p.obj_id).is_none() {
             return;
-        };
-        let full = item.stack_size.max(1).unsigned_abs();
-        let amount = view.split_size(p.obj_id, full, self.selection.get());
+        }
+        let (amount, whole_stack) = self.moving_amount(p.obj_id, view);
         // Lands left of the hovered item, whether it is reordered inside the
         // container or arrives from the inventory.
         let (target_item, target_index) = ui
             .widget::<ItemSlot>(cell)
             .map_or((0, -1), |s| (s.object_id, s.slot_index));
         let Some(placement) =
-            self.contents_drop_placement(view, p.obj_id, target_item, target_index, amount >= full)
+            self.contents_drop_placement(view, p.obj_id, target_item, target_index, whole_stack)
         else {
             return; // the item is already there
         };
@@ -500,7 +517,7 @@ impl ExternalContainerController {
                 item: ObjectRef::Guid(p.obj_id),
                 container: ObjectRef::Guid(self.open_container),
                 slot: placement,
-                amount: if amount < full { amount } else { 0 },
+                amount: if whole_stack { 0 } else { amount },
                 pickup: false,
                 join_stack: false,
             })),
@@ -575,37 +592,44 @@ impl ExternalContainerController {
                 loose.insert(at, pr.item_id);
                 pr.item_id
             });
-        let same = matches(ui, self.top, &[root])
-            && cells(ui, self.top).len() == 1
-            && matches(ui, self.containers, &packs)
-            && matches(ui, self.contents, &loose);
-        if !same {
-            for (list, guids) in [
-                (self.top, std::slice::from_ref(&root)),
-                (self.containers, packs.as_slice()),
-                (self.contents, loose.as_slice()),
-            ] {
-                ui.with::<ItemList, _>(list, |l, ui| {
-                    l.defer_layout();
-                    l.flush(ui);
-                });
-                for (i, &guid) in guids.iter().enumerate() {
-                    let mut s = ItemSlot {
-                        slot_index: i32::try_from(i).unwrap_or(i32::MAX),
-                        drag_accept_sprite: DEFAULT_DRAG_ACCEPT_SPRITE,
-                        drag_reject_sprite: DEFAULT_DRAG_REJECT_SPRITE,
-                        ..ItemSlot::default()
-                    };
-                    // Filled before it joins the list: the list trims empty
-                    // cells past its visible width when it lays out, and an
-                    // unfilled cell would count as one.
-                    fill_slot(&mut s, view.get(guid), view, icons);
-                    s.source_kind = ItemDragSource::Ground;
-                    let cell = ui.insert(slot_element(), s);
-                    ui.with::<ItemList, _>(list, |l, ui| l.add_item(ui, list, cell));
-                }
-                ui.with::<ItemList, _>(list, |l, ui| l.end_defer_layout(ui, list));
+        // Flushing a list's cells cancels a press on one of them, so each
+        // list is rebuilt only when what it shows changed: opening a pack
+        // inside the container changes the contents row alone, and the
+        // pack cell pressed to open it stays to become a drag.
+        let rebuild: Vec<(ElementId, &[u32])> = [
+            (self.top, std::slice::from_ref(&root)),
+            (self.containers, packs.as_slice()),
+            (self.contents, loose.as_slice()),
+        ]
+        .into_iter()
+        .filter(|&(list, guids)| {
+            !self.built
+                || !matches(ui, list, guids)
+                || (list == self.top && cells(ui, list).len() != 1)
+        })
+        .collect();
+        self.built = true;
+        for (list, guids) in rebuild {
+            ui.with::<ItemList, _>(list, |l, ui| {
+                l.defer_layout();
+                l.flush(ui);
+            });
+            for (i, &guid) in guids.iter().enumerate() {
+                let mut s = ItemSlot {
+                    slot_index: i32::try_from(i).unwrap_or(i32::MAX),
+                    drag_accept_sprite: DEFAULT_DRAG_ACCEPT_SPRITE,
+                    drag_reject_sprite: DEFAULT_DRAG_REJECT_SPRITE,
+                    ..ItemSlot::default()
+                };
+                // Filled before it joins the list: the list trims empty
+                // cells past its visible width when it lays out, and an
+                // unfilled cell would count as one.
+                fill_slot(&mut s, view.get(guid), view, icons);
+                s.source_kind = ItemDragSource::Ground;
+                let cell = ui.insert(slot_element(), s);
+                ui.with::<ItemList, _>(list, |l, ui| l.add_item(ui, list, cell));
             }
+            ui.with::<ItemList, _>(list, |l, ui| l.end_defer_layout(ui, list));
         }
         for (list, guids, pack) in [
             (self.top, std::slice::from_ref(&root), true),

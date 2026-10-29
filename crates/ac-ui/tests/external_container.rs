@@ -592,6 +592,93 @@ mod real_dats {
 /// keeps its cell, and the next update leaves the cells alone, so a press
 /// on one is not lost to a rebuild.
 #[test]
+fn pressing_a_pack_inside_the_container_opens_it_and_the_same_press_drags_it() {
+    // Opening the pack changes the contents row alone: the pressed pack
+    // cell stays, so the press can still become a drag of it.
+    let mut s = strip();
+    let mut pack = ClientObject::new(0x7000_0200);
+    pack.item_type = ItemType::CONTAINER;
+    pack.items_capacity = 10;
+    s.objects.add(pack);
+    s.open(CHEST, &[0x7000_0200, ITEM]);
+    s.objects
+        .contained(0x7000_0201, 0x7000_0200, 0, ItemType::MISC);
+    s.update();
+    let (pack_cell, chest_cell) = (s.cell(PACKS, 0), s.cell(TOP, 0));
+    // The packs row is at (40, 0); its first cell is under (58, 18).
+    s.host.mouse_down(ac_ui::MouseButton::Left, 58, 18, 0);
+    s.update();
+    assert_eq!(
+        s.slot(CONTENTS, 0).object_id,
+        0x7000_0201,
+        "the pack opened"
+    );
+    assert_eq!(s.cell(PACKS, 0), pack_cell);
+    assert_eq!(s.cell(TOP, 0), chest_cell);
+    s.host.mouse_move(78, 18);
+    assert_eq!(s.host.root.drag_source(), Some(pack_cell));
+    assert!(
+        s.host
+            .root
+            .drag_payload()
+            .and_then(|p| p.get::<ItemDragPayload>())
+            .is_some_and(|p| p.obj_id == 0x7000_0200)
+    );
+}
+
+#[test]
+fn part_of_a_stack_already_in_the_full_chest_is_refused() {
+    // Part of a stack needs a slot of its own, even beside the rest of it:
+    // a split of a stack in a full chest has nowhere to go.
+    let mut s = strip();
+    let mut chest = ClientObject::new(CHEST);
+    chest.item_type = ItemType::CONTAINER;
+    chest.items_capacity = 1;
+    chest.useability = Some(ItemUseable::REMOTE);
+    s.objects.add(chest);
+    let mut item = ClientObject::new(ITEM);
+    item.stack_size = 5;
+    item.item_type = ItemType::MISC;
+    s.objects.add(item);
+    s.objects.mv(ITEM, CHEST, 0);
+    s.facts = ExternalContainerFacts {
+        container: CHEST,
+        in_range: true,
+    };
+    s.update();
+    let mut split = ac_core::items::StackSplitQuantity::new();
+    split.reset(5, Some(2));
+    fn update_split(s: &mut Strip, split: &ac_core::items::StackSplitQuantity) {
+        let names = |o: &ClientObject| composed_name(o);
+        let resolver: NameResolver<'_> = &names;
+        let view = ItemsView {
+            names: Some(resolver),
+            selected: Some(ITEM),
+            split: Some(split),
+            ..ItemsView::new(&s.objects.t, PLAYER)
+        };
+        let (facts, icons) = (s.facts, &mut s.icons);
+        s.host
+            .with_controller::<ExternalContainerController, _>(WINDOW, |c, ui| {
+                c.update(ui, &view, facts, icons);
+            });
+    }
+    s.outputs();
+    let p = ItemDragPayload::new(ITEM, ItemDragSource::Ground, 0);
+    s.fire(CONTENTS, 1, kind::DRAG_ENTER, Some(p.clone()));
+    update_split(&mut s, &split);
+    assert_eq!(
+        s.slot(CONTENTS, 1).drag_acceptance(),
+        DragAcceptance::Reject
+    );
+    s.fire(CONTENTS, 1, kind::DROP_RELEASED, Some(p));
+    update_split(&mut s, &split);
+    let out = s.outputs();
+    assert!(moves(&out).is_empty(), "{out:?}");
+    assert_eq!(notices(&out).len(), 1, "{out:?}");
+}
+
+#[test]
 fn a_container_with_more_items_than_fit_keeps_a_cell_per_item_across_updates() {
     let mut s = strip();
     let items: Vec<u32> = (0..30).map(|i| ITEM + i).collect();
