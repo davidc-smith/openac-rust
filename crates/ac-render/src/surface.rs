@@ -355,7 +355,8 @@ impl AttachedWindow {
             .with_title(spec.title.clone())
             .with_inner_size(PhysicalSize::new(spec.width, spec.height));
         let window = Arc::new(event_loop.create_window(attributes)?);
-        // Fullscreen is a mode switch to the chosen resolution, as later.
+        // Fullscreen is a mode switch to the chosen resolution, as later
+        // (on Wayland the compositor's fullscreen at the monitor's mode).
         let mut display_lines = Vec::new();
         if options.fullscreen {
             let display = ac_host::settings::DisplaySettings {
