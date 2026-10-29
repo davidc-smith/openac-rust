@@ -3657,6 +3657,60 @@ fn an_item_created_in_the_air_with_gravity_falls_to_the_ground() {
     assert!(still.distance(landed) < 0.001, "it rests: {still}");
 }
 
+/// The token above has landed; the server then sends its position again,
+/// still the spot 1 m up it was created at. The server's position is put
+/// down with a placement, and the placement says what the body touches
+/// there: nothing, so gravity pulls it again and it falls back to the
+/// ground. Snapped there keeping the contact it had on the ground, it hung
+/// 1 m in the air with gravity off.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_landed_item_the_server_puts_back_in_the_air_falls_again() {
+    const TOKEN: u32 = 0x7000_0D53;
+    let mut rig = Rig::entered();
+    let ground = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    let mut aloft = ground;
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(0x0200_0520);
+    physics.state = 0x0000_0414;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: TOKEN,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    rig.frames(120);
+    let landed = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(landed.z - ground.origin.z < 0.05, "it landed: {landed}");
+
+    position_update(&mut rig, TOKEN, aloft, (2, 0, 0));
+    let put_back = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("put back at {put_back:.3}");
+    assert!(
+        (put_back.z - aloft.origin.z).abs() < 0.01,
+        "at the server's position: {put_back}"
+    );
+    rig.frames(120);
+    let fallen = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 2 s at {fallen:.3}");
+    let height = fallen.z - ground.origin.z;
+    assert!(
+        (0.0..0.05).contains(&height),
+        "it fell back to the ground: {height:.3} m above it"
+    );
+}
+
 /// An object without gravity (a sign hung on a wall: state 0) created in
 /// the air stays there: nothing accelerates it.
 #[test]

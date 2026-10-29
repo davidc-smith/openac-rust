@@ -1921,7 +1921,10 @@ impl Movement {
         }
         if self.ordinaries.contains_key(&key.local_id) {
             // An ordinary body is put where the server says and moves on
-            // from there.
+            // from there: a set-position route puts it down with a
+            // placement, which says what it touches there (contact,
+            // walkable ground) and so whether gravity pulls it; one that
+            // finds no spot leaves it where it was.
             let origin = self
                 .residency
                 .is_resident(accepted.cell_id)
@@ -1929,9 +1932,45 @@ impl Movement {
                 .flatten();
             match origin {
                 Some(origin) => {
+                    let sets_position = matches!(
+                        route.disposition,
+                        route::PositionDispositionRoute::SetPosition
+                            | route::PositionDispositionRoute::SetPositionSimple
+                    );
+                    let placed = if sets_position {
+                        self.placement_request(
+                            world,
+                            guid,
+                            key.local_id,
+                            &accepted,
+                            remote::wire_orientation(&accepted),
+                            route.set_position_flags.0,
+                            0,
+                        )
+                        .map(|(request, ..)| self.engine.set_position(&request, None))
+                    } else {
+                        None
+                    };
+                    let placed_origin = placed
+                        .as_ref()
+                        .filter(|p| p.is_committed())
+                        .and_then(|p| self.residency.origin_of(p.cell_id));
                     if let Some(body) = self.ordinaries.get_mut(&key.local_id) {
-                        body.place(&accepted, origin);
-                        world.set_live_position(guid, body.live_position(origin));
+                        match (&placed, placed_origin) {
+                            (Some(placed), Some(placed_origin)) => {
+                                commit_placement(&mut body.body, placed, placed.orientation);
+                                ac_physics::obj_update::commit_set_position_post_ground(
+                                    &mut body.body,
+                                );
+                                body.cell_id = placed.cell_id;
+                                world.set_live_position(guid, body.live_position(placed_origin));
+                            }
+                            (Some(_), None) => {}
+                            (None, _) => {
+                                body.place(&accepted, origin);
+                                world.set_live_position(guid, body.live_position(origin));
+                            }
+                        }
                     }
                 }
                 None => {
@@ -1940,6 +1979,11 @@ impl Movement {
                 }
             }
             self.register_collision(world, guid);
+            // Its rows stand where the body is.
+            if let Some(body) = self.ordinaries.get(&key.local_id) {
+                let at = (body.body.position(), body.body.orientation, body.cell_id);
+                self.follow_rows(key.local_id, at);
+            }
             return;
         }
         if !self.remotes.contains_key(&key.local_id) {
