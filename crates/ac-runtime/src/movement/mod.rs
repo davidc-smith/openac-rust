@@ -343,6 +343,24 @@ fn placement_class(
     }
 }
 
+/// Whether an object with physics `state` that its placement put down as
+/// `placed` accelerates from there with no velocity of its own: gravity
+/// pulls a body that has gravity unless it rests on walkable ground (in
+/// contact, the ground walkable, and not sledding), the body's own
+/// acceleration rule.
+fn falls_after_placement(state: u32, placed: &ac_physics::PhysicsSetPositionResult) -> bool {
+    let mut body = ac_physics::PhysicsBody::default();
+    body.state = ac_physics::PhysicsState::from(state);
+    body.transient_state
+        .set(ac_physics::TransientState::CONTACT, placed.in_contact);
+    body.transient_state.set(
+        ac_physics::TransientState::ON_WALKABLE,
+        placed.in_contact && placed.on_walkable,
+    );
+    body.calc_acceleration();
+    body.acceleration != Vec3::ZERO
+}
+
 /// Commit a placement's result to a body as the set-position commit does
 /// (OpenAC `RuntimeSetPositionState` dormant commit): orientation, cell
 /// frame, the contact plane the placement found, then the contact bits.
@@ -1229,8 +1247,10 @@ impl Movement {
 
     /// An object the runtime neither animates nor flies gets a body of its
     /// own once it has a velocity or spin to move by (`force`: a velocity
-    /// update just arrived), starting where it entered the world; at rest
-    /// it stays where it entered.
+    /// update just arrived), or once its placement leaves it where gravity
+    /// pulls it (it has gravity and does not rest on walkable ground),
+    /// starting where it entered the world; at rest it stays where it
+    /// entered.
     fn bind_ordinary(&mut self, world: &mut World, guid: u32, now: Duration, force: bool) -> bool {
         let placed = match self.entry_placement(world, guid) {
             entry::Entry::Placed(placed) => Some(placed),
@@ -1260,10 +1280,11 @@ impl Movement {
         let moving = |v: Option<ac_proto::Vector3>| {
             v.is_some_and(|v| v.x != 0.0 || v.y != 0.0 || v.z != 0.0)
         };
-        if object.movement().is_some()
-            || physics.state & PhysicsState::MISSILE.bits() != 0
-            || (!force && !moving(physics.velocity) && !moving(physics.omega))
-        {
+        if object.movement().is_some() || physics.state & PhysicsState::MISSILE.bits() != 0 {
+            return false;
+        }
+        let still = !force && !moving(physics.velocity) && !moving(physics.omega);
+        if still && !placed.is_some_and(|p| falls_after_placement(physics.state, p)) {
             return false;
         }
         let Some(accepted) = object.accepted_position() else {
