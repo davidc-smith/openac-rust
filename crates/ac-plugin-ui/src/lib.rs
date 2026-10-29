@@ -16,12 +16,14 @@
 pub mod chrome;
 pub mod color;
 pub mod control_state;
+pub mod file_images;
 pub mod flex;
 pub mod hotkeys;
 pub mod images;
 pub mod list;
 pub mod list_view;
 pub mod markup;
+pub mod mips;
 pub mod model;
 pub mod number;
 pub mod row;
@@ -30,6 +32,7 @@ pub mod theme;
 pub mod value;
 pub mod view;
 
+pub use file_images::{FileImage, FileImageLoader, FileImageRead, FileImageResult};
 pub use images::{DecodedImage, ImageBudget};
 pub use markup::{MarkupDocument, MarkupError, parse};
 pub use model::{
@@ -41,7 +44,8 @@ pub use model::{
 pub use state::{
     DEFAULT_DIALOG_BUTTONS, MAXIMUM_CANVASES, MAXIMUM_DIALOG_BUTTONS, MAXIMUM_LABEL_TEXT,
     MAXIMUM_LABELS, MAXIMUM_LINES_PER_LAYER, MAXIMUM_PAINT_COMMANDS, MAXIMUM_PROJECTILE_SAMPLES,
-    PluginUi, TextMetrics, UiResources,
+    MAXIMUM_STEP_MS, PluginUi, RELEASE_AFTER_MS, RELEASE_CHECK_INTERVAL_MS, TextMetrics,
+    UiResources,
 };
 pub use theme::{ThemeKind, ThemePalette};
 pub use value::{BindingKind, BindingSchema, ItemRecord, Rgba, UiValue};

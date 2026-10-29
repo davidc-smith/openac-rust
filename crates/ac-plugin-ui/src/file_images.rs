@@ -1,0 +1,111 @@
+//! The image files plugin markup names (`<icon file="icons/sword.png"/>`):
+//! what a read of one gives ([`FileImage`]), and the host's reader of them
+//! ([`FileImageLoader`]), which resolves the path inside the plugin's
+//! folder, reads, decodes and builds the smaller levels away from the
+//! session's thread. The session holds what a window draws in the plugin's
+//! own image table ([`crate::PluginUi`]).
+
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use crate::images::DecodedImage;
+
+/// An image file a plugin ships, read, decoded and given its smaller
+/// levels. `path` is the path as the reader spells it (one spelling per
+/// file); `version` tells one version of the file on disk from the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileImage {
+    /// The path in the plugin's folder.
+    pub path: String,
+    /// The file's version (its size and time written).
+    pub version: String,
+    /// The image and every smaller level below it, down to 1 x 1.
+    pub levels: Vec<DecodedImage>,
+    /// The file it was read from, when known, so a holder can ask whether
+    /// it has changed since ([`FileImageLoader::is_current`]).
+    pub full_path: Option<PathBuf>,
+}
+
+impl FileImage {
+    /// The image's width and height (its first level).
+    #[must_use]
+    pub fn size(&self) -> (u32, u32) {
+        self.levels.first().map_or((0, 0), |l| (l.width, l.height))
+    }
+
+    /// The bytes of every level.
+    #[must_use]
+    pub fn bytes(&self) -> u64 {
+        self.levels.iter().map(|l| l.rgba.len() as u64).sum()
+    }
+}
+
+/// What reading one image file came to: the image, or why there is none.
+pub type FileImageResult = Result<Arc<FileImage>, String>;
+
+/// One read of an image file, under way or done. Clones share the read.
+#[derive(Debug, Clone, Default)]
+pub struct FileImageRead(Arc<Mutex<Option<FileImageResult>>>);
+
+impl FileImageRead {
+    /// A read not finished yet ([`Self::finish`] finishes it).
+    #[must_use]
+    pub fn pending() -> Self {
+        Self::default()
+    }
+
+    /// A read already done.
+    #[must_use]
+    pub fn finished(result: FileImageResult) -> Self {
+        Self(Arc::new(Mutex::new(Some(result))))
+    }
+
+    /// Finishes the read (a second result is ignored).
+    pub fn finish(&self, result: FileImageResult) {
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = Some(result);
+        }
+    }
+
+    /// Done.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// What it came to, once done.
+    #[must_use]
+    pub fn result(&self) -> Option<FileImageResult> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The same read.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// Reads the image files plugin markup names, away from the session's
+/// thread.
+pub trait FileImageLoader: fmt::Debug + Send + Sync {
+    /// Starts reading `path` in plugin folder `directory`, or joins the read
+    /// already under way. The read never fails outright: a file that cannot
+    /// be used comes back with the reason.
+    fn load(&self, directory: &Path, path: &str) -> FileImageRead;
+
+    /// Whether `image` is still what is on disk: its file's version now is
+    /// the one it was read from. One whose file cannot be looked at is not,
+    /// and is read again, which says why.
+    fn is_current(&self, _image: &FileImage) -> bool {
+        true
+    }
+}

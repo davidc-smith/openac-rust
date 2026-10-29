@@ -851,6 +851,11 @@ impl WindowUi {
                         source.height as f32,
                     ))
                 }
+                ImageSource::File(file) => {
+                    let top = file.levels.first()?;
+                    let rgba = Rgba::new(top.width, top.height, top.rgba.clone());
+                    Some((uploader.upload(&rgba), top.width as f32, top.height as f32))
+                }
             }?;
             plugins.images.insert(key, icon);
             Some(icon)

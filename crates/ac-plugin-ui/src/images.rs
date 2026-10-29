@@ -45,6 +45,12 @@ enum Key {
     SpellIcon(u32),
     ObjectIcon(u32),
     Rgba(String),
+    /// An image file the plugin's markup draws: its path and the version
+    /// of the file it was read from.
+    File {
+        path: String,
+        version: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +82,7 @@ pub struct ImageTable {
     next_handle: u32,
     owned_bytes: u64,
     reported: Vec<String>,
+    release_generation: u64,
 }
 
 impl ImageTable {
@@ -88,7 +95,15 @@ impl ImageTable {
             next_handle: 0,
             owned_bytes: 0,
             reported: Vec::new(),
+            release_generation: 0,
         }
+    }
+
+    /// Moves on each time an image is let go of completely: a request
+    /// refused for want of room may succeed once this has moved.
+    #[must_use]
+    pub fn release_generation(&self) -> u64 {
+        self.release_generation
     }
 
     /// Distinct images held.
@@ -207,11 +222,11 @@ impl ImageTable {
             ImageSource::ClientArt(id) => Key::ClientArt(*id),
             ImageSource::SpellIcon { spell, .. } => Key::SpellIcon(*spell),
             ImageSource::ObjectIcon(id) => Key::ObjectIcon(*id),
-            ImageSource::Rgba(_) => return Err(String::new()),
+            ImageSource::Rgba(_) | ImageSource::File(_) => return Err(String::new()),
         };
         let id = match key {
             Key::ClientArt(id) | Key::SpellIcon(id) | Key::ObjectIcon(id) => id,
-            Key::Rgba(_) => 0,
+            Key::Rgba(_) | Key::File { .. } => 0,
         };
         if id == 0 {
             return Err(String::new());
@@ -388,6 +403,60 @@ impl ImageTable {
         ))
     }
 
+    /// An image file the plugin ships, which its markup names by path,
+    /// read, decoded and given its smaller levels already, away from the
+    /// session's thread (OpenAC `AcquireFile`). It is held under its path
+    /// and the version of the file it was read from, so a window built
+    /// after the file changed gets the new image while a window still
+    /// showing the old one keeps it until that window lets go. Its smaller
+    /// levels count against the byte budget with the image itself.
+    ///
+    /// # Errors
+    /// Over the count, the size or the byte budget, or an image with no
+    /// pixels (the report, empty when already reported).
+    pub fn acquire_file(
+        &mut self,
+        owner: &str,
+        image: &Arc<crate::file_images::FileImage>,
+    ) -> Result<Acquired, String> {
+        let key = Key::File {
+            path: image.path.clone(),
+            version: image.version.clone(),
+        };
+        if let Some(held) = self.held(&key) {
+            return Ok(held);
+        }
+        let name = image.path.as_str();
+        self.room_for_one_more(&format!("image '{name}'"))?;
+        let (width, height) = image.size();
+        if width == 0 || height == 0 {
+            return Err(self.report_once(
+                format!("empty:{name}"),
+                format!("image '{name}' has nothing in it"),
+            ));
+        }
+        self.within_maximum_dimension(name, width, height)?;
+        let bytes = image.bytes();
+        if self.owned_bytes + bytes > self.budget.maximum_bytes {
+            return Err(self.report_once(
+                format!("bytes:{name}"),
+                format!(
+                    "image '{name}' would take the plugin's own art to {} bytes; the budget is {}",
+                    self.owned_bytes + bytes,
+                    self.budget.maximum_bytes
+                ),
+            ));
+        }
+        Ok(self.add(
+            key,
+            owner,
+            ImageSource::File(Arc::clone(image)),
+            width,
+            height,
+            bytes,
+        ))
+    }
+
     /// Lets go of one hold: `None` for a handle not held, `Some(true)` when
     /// that was the last hold (the image is gone), `Some(false)` otherwise.
     pub fn release(&mut self, handle: u32) -> Option<bool> {
@@ -402,6 +471,7 @@ impl ImageTable {
         }
         self.owned_bytes -= entry.owned_bytes;
         self.entries.remove(index);
+        self.release_generation += 1;
         Some(true)
     }
 }
@@ -680,5 +750,131 @@ mod tests {
         let rgba = t.acquire_rgba("p", "map.png", 8, 8, pixels(8)).unwrap();
         assert_eq!(rgba.handle, first.handle);
         assert_eq!(t.count(), 1);
+    }
+
+    // ── File images (OpenAC PR #271's PluginImageTableTests) ────────────
+
+    fn file_image(
+        path: &str,
+        version: &str,
+        width: u32,
+        height: u32,
+    ) -> Arc<crate::file_images::FileImage> {
+        Arc::new(crate::file_images::FileImage {
+            path: path.to_owned(),
+            version: version.to_owned(),
+            levels: crate::mips::build(vec![0; (width * height * 4) as usize], width, height),
+            full_path: None,
+        })
+    }
+
+    // AFileIsOneImagePerPathAndVersionHeldOncePerAsker.
+    #[test]
+    fn a_file_is_one_image_per_path_and_version_held_once_per_asker() {
+        let mut t = table(ImageBudget::default());
+        let first = t
+            .acquire_file("p", &file_image("icons/sword.png", "1", 16, 16))
+            .unwrap();
+        let second = t
+            .acquire_file("p", &file_image("icons/sword.png", "1", 16, 16))
+            .unwrap();
+        let changed = t
+            .acquire_file("p", &file_image("icons/sword.png", "2", 8, 8))
+            .unwrap();
+        assert_eq!(first.handle, second.handle);
+        assert_ne!(first.handle, changed.handle);
+        assert!(first.added.is_some() && second.added.is_none() && changed.added.is_some());
+        // The window still showing the old version keeps it after another
+        // lets go.
+        assert_eq!(t.release(first.handle), Some(false));
+        assert!(t.resolve(second.handle).is_some());
+        assert_eq!(t.release(second.handle), Some(true));
+        assert!(t.resolve(second.handle).is_none());
+        assert_eq!(t.resolve(changed.handle).map(|v| v.width), Some(8));
+    }
+
+    // AFileAndAStreamOfTheSameNameAreDifferentImages.
+    #[test]
+    fn a_file_and_a_stream_of_the_same_name_are_different_images() {
+        let mut t = table(ImageBudget::default());
+        let stream = t
+            .acquire_decoded("p", "icons/sword.png", &[], |_| None, |_| decoded(32))
+            .unwrap();
+        let file = t
+            .acquire_file("p", &file_image("icons/sword.png", "1", 16, 16))
+            .unwrap();
+        assert_ne!(stream.handle, file.handle);
+        assert_eq!(t.count(), 2);
+    }
+
+    // AFilesSmallerLevelsCountAgainstTheByteBudget.
+    #[test]
+    fn a_files_smaller_levels_count_against_the_byte_budget() {
+        let image = 16 * 16 * 4;
+        let mut t = table(ImageBudget {
+            maximum_count: 256,
+            maximum_bytes: image + 1,
+            maximum_dimension: 2048,
+        });
+        let refused = t
+            .acquire_file("p", &file_image("icons/sword.png", "1", 16, 16))
+            .unwrap_err();
+        assert!(refused.contains("budget is"), "{refused}");
+        assert_eq!(t.count(), 0);
+        assert!(
+            t.acquire_file("p", &file_image("icons/dot.png", "1", 1, 1))
+                .is_ok()
+        );
+        assert_eq!(t.owned_bytes(), 4);
+    }
+
+    // FilesShareTheCountWithThePluginsOtherImages.
+    #[test]
+    fn files_share_the_count_with_the_plugins_other_images() {
+        let mut t = table(ImageBudget {
+            maximum_count: 2,
+            maximum_bytes: 1024 * 1024,
+            maximum_dimension: 2048,
+        });
+        assert!(t.acquire_rgba("p", "map", 32, 32, pixels(32)).is_ok());
+        assert!(
+            t.acquire_file("p", &file_image("icons/a.png", "1", 4, 4))
+                .is_ok()
+        );
+        let refused = t
+            .acquire_file("p", &file_image("icons/b.png", "1", 4, 4))
+            .unwrap_err();
+        assert!(refused.contains("2 images"), "{refused}");
+    }
+
+    // AFileWiderThanTheMaximumDimensionIsRefused.
+    #[test]
+    fn a_file_wider_than_the_maximum_dimension_is_refused() {
+        let mut t = table(ImageBudget {
+            maximum_count: 256,
+            maximum_bytes: 1024 * 1024,
+            maximum_dimension: 8,
+        });
+        let refused = t
+            .acquire_file("p", &file_image("icons/wide.png", "1", 16, 4))
+            .unwrap_err();
+        assert!(refused.contains("16x4"), "{refused}");
+        assert_eq!(t.count(), 0);
+    }
+
+    // The release generation moves on each image let go of completely, and
+    // only then (OpenAC `ReleaseGeneration`).
+    #[test]
+    fn the_release_generation_moves_when_an_image_is_let_go_completely() {
+        let mut t = table(ImageBudget::default());
+        let a = t.acquire_rgba("p", "a", 2, 2, pixels(2)).unwrap();
+        t.acquire_rgba("p", "a", 2, 2, pixels(2)).unwrap();
+        assert_eq!(t.release_generation(), 0);
+        assert_eq!(t.release(a.handle), Some(false));
+        assert_eq!(t.release_generation(), 0);
+        assert_eq!(t.release(a.handle), Some(true));
+        assert_eq!(t.release_generation(), 1);
+        assert_eq!(t.release(a.handle), None);
+        assert_eq!(t.release_generation(), 1);
     }
 }

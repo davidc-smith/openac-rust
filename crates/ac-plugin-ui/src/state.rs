@@ -5,8 +5,9 @@
 //! ([`PluginUi::snapshot`]) and then the changes ([`PluginUi::take_changes`]),
 //! and sends back what the player did ([`PluginUi::input`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::images::{ImageBudget, ImageTable};
@@ -19,7 +20,9 @@ use crate::model::{
 use crate::value::{BindingSchema, UiValue};
 
 mod dialogs;
+mod file_icons;
 pub use dialogs::{DEFAULT_DIALOG_BUTTONS, MAXIMUM_DIALOG_BUTTONS};
+pub use file_icons::{MAXIMUM_STEP_MS, RELEASE_AFTER_MS, RELEASE_CHECK_INTERVAL_MS};
 
 /// The most labels one plugin may have showing at once (a larger set is
 /// refused whole).
@@ -93,6 +96,8 @@ impl TextMetrics {
 struct Panel {
     view: PanelView,
     schema: BindingSchema,
+    /// Its plugin's install folder, where its file icons are read.
+    directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +117,17 @@ pub struct PluginUi {
     /// Each running plugin's `icon.png`, decoded when it started; its
     /// windows carry it from registration.
     file_icons: BTreeMap<String, PluginIcon>,
+    /// The host's reader of the image files plugin markup names.
+    file_images: Option<Arc<dyn crate::file_images::FileImageLoader>>,
+    /// Each running plugin's install folder, where the file icons of its
+    /// windows are read.
+    plugin_folders: BTreeMap<String, PathBuf>,
+    /// What each plugin window holds of the file icons it draws.
+    panel_files: BTreeMap<u32, file_icons::PanelFiles>,
+    /// The file icon refusals already logged.
+    file_reported: BTreeSet<String>,
+    /// The session clock's last reading, milliseconds.
+    file_clock: u64,
     labels: Vec<(String, Vec<WorldLabel>)>,
     layers: Vec<LineLayer>,
     window_attached: bool,
@@ -261,7 +277,12 @@ impl PluginUi {
         };
         self.changes
             .push(UiChange::PanelAdded(Box::new(view.clone())));
-        self.panels.push(Panel { view, schema });
+        let directory = self.plugin_folders.get(&owner.id).cloned();
+        self.panels.push(Panel {
+            view,
+            schema,
+            directory,
+        });
         Ok(id)
     }
 
@@ -274,6 +295,7 @@ impl PluginUi {
         let removed = self.panels.len() != before;
         if removed {
             self.changes.push(UiChange::PanelRemoved(panel));
+            self.drop_panel_files(panel);
         }
         self.follow_dialogs();
         removed
@@ -460,6 +482,8 @@ impl PluginUi {
             self.client_mounted = 0;
             self.client_visible = 0;
             if !attached {
+                // Nothing draws the file icons any more.
+                self.drop_all_panel_files();
                 self.hotkeys.set_client_chords(None);
                 self.follow_hotkeys();
                 self.detach_dialogs();
@@ -1105,6 +1129,7 @@ impl PluginUi {
         self.action_listeners.retain(|o| !same_owner(o, owner));
         self.events.retain(|(o, _)| o != owner);
         self.file_icons.remove(owner);
+        self.plugin_folders.remove(owner);
     }
 
     // ── The window ───────────────────────────────────────────────────────
@@ -1131,6 +1156,7 @@ impl PluginUi {
                     .map(|v| UiChange::ImageAdded(Box::new(v.clone()))),
             );
         }
+        out.extend(self.file_icon_snapshot());
         out.push(UiChange::Labels(self.merged_labels()));
         out.push(UiChange::Lines(self.merged_lines()));
         out.push(UiChange::Hotkeys(Arc::new(self.hotkeys.bound())));
@@ -1231,6 +1257,7 @@ impl PluginUi {
                 }
             }
             UiInput::DialogAnswered { handle, button } => self.answer_dialog(handle, button),
+            UiInput::FileIconsShown { panel, paths } => self.file_icons_shown(panel, paths),
         }
     }
 
