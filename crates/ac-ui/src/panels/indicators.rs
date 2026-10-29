@@ -1229,41 +1229,6 @@ impl PanelController for VitaeController {
 
 // ── The mini-game panel ─────────────────────────────────────────────────
 
-/// The mini-game panel's layout.
-pub const MINI_GAME_LAYOUT_ID: u32 = 0x2100_001E;
-/// Its root.
-pub const MINI_GAME_ROOT_ID: u32 = 0x1000_016A;
-/// Its close button.
-pub const MINI_GAME_CLOSE_ID: u32 = 0x1000_016B;
-
-/// The mini-game panel: only its close button (no mini-game is ported).
-#[derive(Debug)]
-pub struct MiniGameController {
-    close: Option<ElementId>,
-}
-
-impl MiniGameController {
-    /// Bind to the imported panel.
-    pub fn bind(ui: &mut UiRoot, layout: &ImportedLayout) -> Self {
-        Self {
-            close: layout
-                .find(MINI_GAME_CLOSE_ID)
-                .filter(|b| bind_click(ui, *b)),
-        }
-    }
-}
-
-impl PanelController for MiniGameController {
-    fn on_element_message(
-        &mut self,
-        ui: &mut UiRoot,
-        element: ElementId,
-        message: &ElementMessage,
-    ) -> bool {
-        if Some(element) == self.close && matches!(message, ElementMessage::Clicked { .. }) {
-            emit(ui, PanelOutput::ClosePanel(panel_id::MINI_GAME));
-            return true;
-        }
-        false
-    }
-}
+pub use super::mini_game::{
+    MINI_GAME_CLOSE_ID, MINI_GAME_LAYOUT_ID, MINI_GAME_ROOT_ID, MiniGameController,
+};

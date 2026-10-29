@@ -14,6 +14,7 @@ use ac_ui::panels::indicators::{
     MiniGameController, VitaeController, VitaeStrings,
 };
 use ac_ui::panels::main_panels::RESTORE_PREVIOUS_PROPERTY;
+use ac_ui::panels::mini_game;
 use ac_ui::panels::{DatRowTemplates, panel_id};
 use ac_ui::strings::compute_hash;
 use ac_ui::widgets::NineSliceFrame;
@@ -222,10 +223,76 @@ impl WindowUi {
             18.0,
             panel_id::MINI_GAME,
         )?;
-        let c = MiniGameController::bind(&mut self.host.root, &layout);
+        let pieces = import_infos_rooted(
+            &self.content,
+            ind::MINI_GAME_LAYOUT_ID,
+            ind::MINI_GAME_ROOT_ID,
+        )
+        .map(|info| mini_game::read_piece_images(&info))
+        .unwrap_or_default();
+        let content = &self.content;
+        let font = content.font(DEFAULT_FONT_ID);
+        let mut create_square = |ui: &mut ac_ui::root::UiRoot| {
+            import_rooted(
+                ui,
+                content,
+                ind::MINI_GAME_LAYOUT_ID,
+                mini_game::SQUARE_TEMPLATE_ID,
+                font.clone(),
+            )
+        };
+        let c = MiniGameController::bind(&mut self.host.root, &layout, pieces, &mut create_square);
         self.host
             .attach_controller(MINI_GAME_WINDOW, Box::new(c))
             .map_err(|e| e.to_string())
+    }
+
+    /// One frame of the Game Center: a board used shows it, the game as the
+    /// session last sent it is drawn, a game that ended by resigning or
+    /// with no result hides it, and the indicator-bar button is lit while a
+    /// game is on (OpenAC `MiniGameUiController.Tick`).
+    pub(super) fn update_mini_game(&mut self) {
+        let begins = std::mem::take(&mut self.facts.game_begins);
+        if !begins.is_empty() {
+            self.panels
+                .set_visibility(&mut self.host.root, panel_id::MINI_GAME, true);
+        }
+        let view = self.facts.chess.as_ref();
+        let update = self
+            .host
+            .with_controller::<MiniGameController, _>(MINI_GAME_WINDOW, |c, ui| c.update(ui, view))
+            .unwrap_or_default();
+        if update.hide {
+            self.panels
+                .set_visibility(&mut self.host.root, panel_id::MINI_GAME, false);
+        }
+        if let Some(active) = update.indicator {
+            self.host
+                .with_controller::<IndicatorBarController, _>(INDICATORS_WINDOW, |c, ui| {
+                    c.set_mini_game_active(ui, active);
+                });
+        }
+    }
+
+    /// The resignation question was answered: a yes resigns.
+    pub(super) fn chess_resign_answered(
+        &mut self,
+        confirmed: bool,
+        commands: &mut Vec<ac_runtime::session::SessionCommand>,
+    ) {
+        let resign = self
+            .host
+            .with_controller::<MiniGameController, _>(MINI_GAME_WINDOW, |c, _| {
+                c.resign_answered(confirmed)
+            })
+            .unwrap_or(false);
+        if resign {
+            commands.push(ac_runtime::session::SessionCommand::Gameplay(
+                ac_runtime::gameplay::GameplayCommand::Chess(
+                    ac_runtime::gameplay::ChessCommand::Resign,
+                ),
+            ));
+        }
     }
 
     /// OpenAC `RetailUiRuntime.MountIndicators`.

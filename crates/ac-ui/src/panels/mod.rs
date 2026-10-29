@@ -31,6 +31,7 @@ pub mod keyboard_config;
 pub mod magic;
 pub mod main_panels;
 pub mod map_house;
+pub mod mini_game;
 pub mod options;
 pub mod paperdoll;
 pub mod projectile_debug;
@@ -399,4 +400,8 @@ pub enum PanelOutput {
         /// What a no does.
         on_no: Box<PanelOutput>,
     },
+    /// The Game Center's resignation question was answered (yes:
+    /// resign); the window tells the board, which sends the resignation on
+    /// a yes.
+    ChessResignAnswered(bool),
 }

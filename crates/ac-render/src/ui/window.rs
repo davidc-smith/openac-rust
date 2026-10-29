@@ -225,6 +225,7 @@ pub fn session_command(output: &PanelOutput) -> Option<SessionCommand> {
         | PanelOutput::ResetSplitQuantity { .. }
         | PanelOutput::Confirm { .. }
         | PanelOutput::ConfirmEither { .. }
+        | PanelOutput::ChessResignAnswered(_)
         | PanelOutput::FavoriteSpell(_)
         | PanelOutput::ExamineSpell(_)
         | PanelOutput::CloseExamination
@@ -953,6 +954,7 @@ impl WindowUi {
             ..Default::default()
         });
         self.update_indicator_panels(link);
+        self.update_mini_game();
     }
 
     /// The panels' views from the window's copy of the facts, and each
@@ -1425,6 +1427,9 @@ impl WindowUi {
                     });
             }
             PanelOutput::ExamineSpell(spell) => self.examine_spell(spell),
+            PanelOutput::ChessResignAnswered(confirmed) => {
+                self.chess_resign_answered(confirmed, commands);
+            }
             PanelOutput::Confirm { message, on_yes } => {
                 self.ask(message, DialogAction::Panel(*on_yes))
             }
