@@ -2659,7 +2659,8 @@ impl AttachedWindow {
             }
             // The 3-D viewports that show: drawn by the world renderer,
             // their textures handed to the UI before it draws.
-            let (requests, controls) = ui.viewport_requests(source.scene());
+            let (requests, controls) =
+                ui.viewport_requests(source.scene(), self.ui_scale.pixels_per_unit());
             let flashes = ui.take_figure_flashes();
             if let Some(world) = self.world.as_mut() {
                 for (whole_figure, part_mask) in flashes {
