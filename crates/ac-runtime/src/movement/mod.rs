@@ -66,7 +66,7 @@ use route::{
 };
 
 use crate::session::Outbox;
-use crate::world::{MotionView, ObjectKey, World, WorldChange, WorldObject};
+use crate::world::{MotionView, ObjectKey, StepBlend, World, WorldChange, WorldObject};
 
 /// The run skill id.
 const SKILL_RUN: u32 = 24;
@@ -2484,15 +2484,38 @@ impl Movement {
             return;
         };
         if let Some(p) = player.controller.try_get_outbound_position() {
-            world.set_live_position(player.guid, outbound::wire_position(&p));
+            let wire = outbound::wire_position(&p);
+            world.set_live_position(player.guid, wire);
             // A window draws the body (and aims its camera) between its
-            // last two steps, in the body's cell with the body's facing;
-            // the cell frame and the world differ by a constant offset, so
-            // the smoothed place moves the cell origin by the same amount.
+            // last two steps at its own frame's time, in the body's cell
+            // with the body's facing; the cell frame and the world differ
+            // by a constant offset, so each step's place is the body's cell
+            // origin moved by the step's offset from the body. The last
+            // step ended the carried time before this pass, on the session
+            // clock the window reads too.
             let c = &player.controller;
-            let mut drawn = p;
-            drawn.frame.origin += c.render_position() - c.position();
-            world.set_drawn_position(player.guid, outbound::wire_position(&drawn));
+            let steps = c.render_steps();
+            let body = c.position();
+            let in_cell = |at: Vec3| {
+                let o = at - body;
+                ac_proto::Vector3 {
+                    x: wire.origin.x + o.x,
+                    y: wire.origin.y + o.y,
+                    z: wire.origin.z + o.z,
+                }
+            };
+            let pending = Duration::try_from_secs_f64(steps.pending_seconds.max(0.0))
+                .unwrap_or(Duration::ZERO);
+            let blend = StepBlend {
+                previous: in_cell(steps.previous),
+                current: in_cell(steps.current),
+                step_at: self
+                    .last_frame
+                    .unwrap_or(Duration::ZERO)
+                    .saturating_sub(pending),
+                step_seconds: steps.step_seconds,
+            };
+            world.set_step_blend(player.guid, blend);
         }
         world.set_live_motion(
             player.guid,

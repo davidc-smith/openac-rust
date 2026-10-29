@@ -440,6 +440,11 @@ pub enum PresentationEvent {
     /// the same pass (the window takes each up, so a swing a later state
     /// replaced within the pass still plays).
     Motions(Vec<crate::world::AppliedMotion>),
+    /// The instant the session clock counts from, after the snapshot: the
+    /// window reads its frame's time on that clock to blend the local
+    /// player between its physics steps
+    /// ([`StepBlend`](crate::world::StepBlend)).
+    SessionClock(Instant),
 }
 
 /// Messages from a running session to its host.
@@ -878,6 +883,7 @@ fn run(
                     interface: InterfaceFeed::default(),
                     chargen: Arc::clone(&chargen),
                     connect_started,
+                    clock_origin: driver.origin(),
                     pregame: PreGamePresenter::default(),
                     failure: None,
                     link: (Duration::ZERO, 0.0),
@@ -1247,6 +1253,8 @@ struct Drive<'a> {
     chargen: Arc<ac_core::chargen::ChargenOptions>,
     /// When this connection attempt began.
     connect_started: Instant,
+    /// The instant the session clock (the driver's `now`) counts from.
+    clock_origin: Instant,
     /// What the attached window's pre-game screens were last told.
     pregame: PreGamePresenter,
     /// Why the session failed, once it did.
@@ -1828,6 +1836,9 @@ impl Drive<'_> {
                             .send(PresentationEvent::Snapshot(self.state.world.snapshot()))
                             .is_ok() =>
                     {
+                        // The session clock, so the window blends the player
+                        // between its physics steps at its own frame times.
+                        let _ = window.send(PresentationEvent::SessionClock(self.clock_origin));
                         // The clock as of now, so the window's sky starts at
                         // the right time of day.
                         if let Some(ticks) = self.state.world.clock().now_ticks(now) {

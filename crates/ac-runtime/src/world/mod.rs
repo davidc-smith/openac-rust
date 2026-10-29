@@ -41,8 +41,8 @@ pub use object::{ObjectKey, WorldObject};
 pub use player::PlayerState;
 pub use presentation::{
     AppliedMotion, AttackBarView, BodyFacts, EffectFacts, MotionView, ObjectDelta, ObjectView,
-    PlayerView, RadarFacts, VitalReading, WorldSnapshot, accepted_motion_state, motion_line,
-    motion_log_stamp, rest_placement,
+    PlayerView, RadarFacts, StepBlend, VitalReading, WorldSnapshot, accepted_motion_state,
+    motion_line, motion_log_stamp, rest_placement,
 };
 pub use time::GameClock;
 use transit::TeleportDestination;
@@ -371,26 +371,26 @@ impl World {
         }
     }
 
-    /// Where a window draws the object now, when the session's physics
-    /// places it between its fixed steps (the local player: its body moves
-    /// 30 steps a second while the screen redraws more often, so a window
-    /// drawing the step itself shows the character and the camera holding
-    /// still one frame and jumping the next). Gameplay, plugins and the
-    /// server keep [`set_live_position`](Self::set_live_position)'s place;
-    /// the change stream reports a move when the drawn pose changed by the
-    /// same measure. Ignored for an object the physics does not place.
-    pub fn set_drawn_position(&mut self, guid: u32, position: ac_proto::Position) {
+    /// What a window blends to draw the object at its own frame's time,
+    /// when the session's physics moves it in fixed steps (the local
+    /// player: its body moves 30 steps a second while the screen redraws
+    /// more often, so a window drawing the step itself shows the character
+    /// and the camera holding still one frame and jumping the next). The
+    /// places are origins in the cell of
+    /// [`set_live_position`](Self::set_live_position)'s place, which
+    /// gameplay, plugins and the server keep. The change stream reports a
+    /// move when the blend draws differently ([`StepBlend::differs`]).
+    /// Ignored for an object the physics does not place.
+    pub fn set_step_blend(&mut self, guid: u32, blend: StepBlend) {
         let Some(object) = self.objects.get_mut(&guid) else {
             return;
         };
         if object.physics.position.is_none() || object.live.is_none() {
             return;
         }
-        let moved = object
-            .drawn
-            .is_none_or(|old| live_pose_changed(&old, &position));
-        object.drawn = Some(position);
+        let moved = object.step_blend.is_none_or(|old| old.differs(&blend));
         if moved {
+            object.step_blend = Some(blend);
             self.changes.push(WorldChange::Moved {
                 key: object.key,
                 teleported: false,
@@ -429,7 +429,7 @@ impl World {
         }
         object.entry_refused = true;
         object.live = None;
-        object.drawn = None;
+        object.step_blend = None;
         object.live_motion = None;
         self.changes.push(WorldChange::Moved {
             key: object.key,
@@ -443,7 +443,7 @@ impl World {
     pub fn clear_live_position(&mut self, guid: u32) {
         if let Some(object) = self.objects.get_mut(&guid) {
             object.live_motion = None;
-            object.drawn = None;
+            object.step_blend = None;
         }
         if let Some(object) = self.objects.get_mut(&guid)
             && object.live.take().is_some()

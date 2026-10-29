@@ -51,6 +51,8 @@ pub struct Scene {
     window_requests: Vec<WindowRequest>,
     link: Option<ac_runtime::session::LinkStatus>,
     navigation: NavigationView,
+    /// The instant the session clock counts from, once the session sent it.
+    session_clock: Option<Instant>,
 }
 
 impl Scene {
@@ -114,6 +116,25 @@ impl Scene {
             PresentationEvent::WindowRequest(request) => self.window_requests.push(request),
             PresentationEvent::Link(link) => self.link = Some(link),
             PresentationEvent::Navigation(view) => self.navigation = view,
+            PresentationEvent::SessionClock(origin) => self.session_clock = Some(origin),
+        }
+    }
+
+    /// Place the bodies the session's physics moves in fixed steps (the
+    /// local player) where they are at `now`, a frame's time: each blends
+    /// between its last two steps by the time since the last one ended,
+    /// read on the session clock, so it moves on every frame however the
+    /// frames and the session's passes fall. Until the session clock
+    /// arrives such a body stays on its last step.
+    pub fn present_at(&mut self, now: Instant) {
+        let Some(origin) = self.session_clock else {
+            return;
+        };
+        let session_now = now.saturating_duration_since(origin);
+        for view in self.objects.values_mut() {
+            if let (Some(position), Some(blend)) = (view.position.as_mut(), view.step_blend) {
+                position.origin = blend.origin_at(session_now);
+            }
         }
     }
 
@@ -340,6 +361,7 @@ mod tests {
             radar: ac_runtime::world::RadarFacts::default(),
             motion: None,
             effects: ac_runtime::world::EffectFacts::default(),
+            step_blend: None,
         }
     }
 
@@ -397,6 +419,91 @@ mod tests {
         };
         scene.apply(PresentationEvent::Player(view));
         assert_eq!(scene.player_view(), Some(&view));
+    }
+
+    /// The window draws the local player at each frame's own time, on the
+    /// session clock, between the last two physics steps it was sent, with
+    /// no new message from the session in between; other objects stay where
+    /// they were sent. Golden values from OpenAC `PlayerMovementController
+    /// .ComputeRenderPosition` (`Vector3.Lerp(prev, curr, clamp(pending /
+    /// lastQuantum, 0, 1))`): a 1/30 s step ending 5 s into the session,
+    /// frames 1/120 s and 1/60 s after it, a quarter and a half of a step.
+    #[test]
+    fn the_player_is_drawn_at_each_frames_own_time_between_its_steps() {
+        use ac_proto::{Position, Quaternion, Vector3};
+        use ac_runtime::world::StepBlend;
+        use std::time::Duration;
+        let v = |x: f32, y: f32, z: f32| Vector3 { x, y, z };
+        let place = |x: f32, y: f32, z: f32| Position {
+            cell_id: 0xA9B4_0031,
+            origin: v(x, y, z),
+            orientation: Quaternion::IDENTITY,
+        };
+        let mut player = view(1, 10);
+        player.position = Some(place(10.4, 20.3, 0.1));
+        player.step_blend = Some(StepBlend {
+            previous: v(10.0, 20.0, 0.0),
+            current: v(10.4, 20.3, 0.1),
+            step_at: Duration::from_secs(5),
+            step_seconds: 1.0 / 30.0,
+        });
+        let mut door = view(2, 20);
+        door.position = Some(place(30.0, 40.0, 0.0));
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: Some(10),
+            objects: vec![player, door],
+        }));
+        let origin = Instant::now();
+        scene.apply(PresentationEvent::SessionClock(origin));
+        let drawn = |scene: &Scene| scene.player().and_then(|p| p.position).unwrap();
+        let near = |a: Vector3, b: Vector3| {
+            (a.x - b.x).abs() < 1e-5 && (a.y - b.y).abs() < 1e-5 && (a.z - b.z).abs() < 1e-5
+        };
+        let step_end = origin + Duration::from_secs(5);
+
+        scene.present_at(step_end + Duration::from_nanos(8_333_333));
+        let quarter = drawn(&scene);
+        assert!(near(quarter.origin, v(10.1, 20.075, 0.025)), "{quarter:?}");
+        assert_eq!(quarter.cell_id, 0xA9B4_0031, "in the body's cell");
+
+        scene.present_at(step_end + Duration::from_nanos(16_666_667));
+        let half = drawn(&scene);
+        assert!(near(half.origin, v(10.2, 20.15, 0.05)), "{half:?}");
+
+        scene.present_at(step_end + Duration::from_millis(100));
+        assert_eq!(drawn(&scene).origin, v(10.4, 20.3, 0.1), "held on the step");
+        assert_eq!(
+            scene.object_by_guid(20).and_then(|o| o.position),
+            Some(place(30.0, 40.0, 0.0)),
+            "an object the physics does not step stays put"
+        );
+    }
+
+    /// Before the session clock arrives the player is drawn on its step.
+    #[test]
+    fn without_the_session_clock_the_player_stays_on_its_step() {
+        use ac_runtime::world::StepBlend;
+        let mut player = view(1, 10);
+        let mut at = ac_proto::Position::default();
+        at.origin.x = 6.0;
+        player.position = Some(at);
+        player.step_blend = Some(StepBlend {
+            previous: ac_proto::Vector3 {
+                x: 5.0,
+                ..at.origin
+            },
+            current: at.origin,
+            step_at: std::time::Duration::ZERO,
+            step_seconds: 1.0 / 30.0,
+        });
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: Some(10),
+            objects: vec![player],
+        }));
+        scene.present_at(Instant::now());
+        assert_eq!(scene.player().and_then(|p| p.position), Some(at));
     }
 }
 

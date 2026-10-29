@@ -74,6 +74,7 @@ fn object(
         radar,
         motion: None,
         effects: ac_runtime::world::EffectFacts::default(),
+        step_blend: None,
     }
 }
 

@@ -280,6 +280,7 @@ fn horan_created() -> PresentationEvent {
         radar: RadarFacts::default(),
         motion: None,
         effects: ac_runtime::world::EffectFacts::default(),
+        step_blend: None,
     }))])
 }
 

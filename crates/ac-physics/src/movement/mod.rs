@@ -44,7 +44,7 @@ pub use object::{
 pub use player::{
     DEFAULT_PLAYER_HEIGHT, DEFAULT_PLAYER_RADIUS, HookProcessor, JumpChargeSnapshot, MovementEnv,
     MovementInput, MovementResult, PlayerMovementController, PlayerMovementOptions, PlayerState,
-    RootMotionSource, build_raw_motion_state, jump_refusal_text,
+    RenderSteps, RootMotionSource, build_raw_motion_state, jump_refusal_text,
 };
 pub use position::{
     ConstraintManager, PositionManager, PositionManagerHost, PositionOps, StickyManager,
