@@ -21,7 +21,7 @@ use std::sync::mpsc::Sender;
 
 use ac_core::chat::{ChatKind, CombatLineKind, LogTextType};
 use ac_plugin::abi::verbs::split_command_line;
-use ac_plugin::abi::{CharacterInfo, Import, LogLevel, calls, serve};
+use ac_plugin::abi::{CharacterInfo, Import, LogLevel, calls, serve_at};
 use ac_plugin::{Caller, PluginEngine, PluginReport, PluginSessionOptions, SessionApi};
 
 use crate::communication::{ChatLine, HeldText};
@@ -371,10 +371,10 @@ enum Ran {
 /// import the session does not serve (the plugin host's own) answers its
 /// inert reply.
 macro_rules! route {
-    ($import:expr, $request:expr, { $( $variant:ident => $handler:expr ),* $(,)? }) => {
+    ($import:expr, $request:expr, $version:expr, { $( $variant:ident => $handler:expr ),* $(,)? }) => {
         match $import {
-            $( Import::$variant => serve::<calls::$variant>($request, $handler), )*
-            other => Ok(other.default_reply()),
+            $( Import::$variant => serve_at::<calls::$variant>($request, $version, $handler), )*
+            other => Ok(other.default_reply_at($version)),
         }
     };
 }
@@ -438,7 +438,7 @@ impl SessionApi for PluginBinding<'_> {
         import: Import,
         request: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let reply = route!(import, request, {
+        let reply = route!(import, request, caller.api_version, {
             // A. Host services.
             HostClock => |()| self.clock(),
             HostRequestClose => |()| self.request_close(),

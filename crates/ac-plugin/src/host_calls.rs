@@ -418,7 +418,7 @@ pub(crate) fn handle_import(
         }
         Import::LootClassifiers => services.classifiers.available().to_bytes(),
         Import::LootClassify => {
-            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let ask = ClassifyRequest::from_bytes_at(request, manifest.api_version).map_err(bad)?;
             let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
                 Callback::LootClassify(LootQuestion {
                     handle,
@@ -433,7 +433,7 @@ pub(crate) fn handle_import(
             classification.to_bytes()
         }
         Import::LootNeedsIdentification => {
-            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let ask = ClassifyRequest::from_bytes_at(request, manifest.api_version).map_err(bad)?;
             let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
                 Callback::LootNeedsIdentification(LootQuestion {
                     handle,
@@ -444,7 +444,7 @@ pub(crate) fn handle_import(
             matches!(answer, Some(CallbackAnswer::Bool(true))).to_bytes()
         }
         Import::LootNotifyLooted => {
-            let notice = LootedNotice::from_bytes(request).map_err(bad)?;
+            let notice = LootedNotice::from_bytes_at(request, manifest.api_version).map_err(bad)?;
             let item = notice.item.clone();
             ask_classifier(id, &notice.classifier_id, others, cx, |handle| {
                 Callback::LootLooted((handle, item.clone()))
@@ -461,7 +461,13 @@ pub(crate) fn handle_import(
             .to_bytes()
         }
         // Everything about the game is the session's.
-        game => return cx.api.call(Caller { plugin_id: id }, game, request),
+        game => {
+            let caller = Caller {
+                plugin_id: id,
+                api_version: manifest.api_version,
+            };
+            return cx.api.call(caller, game, request);
+        }
     })
 }
 
@@ -495,7 +501,10 @@ fn ask_plugin(
         return None;
     }
     let target = others?.find(owner)?;
-    let bytes = callback.to_bytes();
+    // The question as the plugin it goes to reads it: a record field a later
+    // API version added is left out for a plugin built before it.
+    let version = target.manifest.api_version;
+    let bytes = callback.to_bytes_at(version);
     let Loaded {
         manifest,
         instance,
@@ -514,7 +523,7 @@ fn ask_plugin(
         )
     };
     match result {
-        Ok(Some(answer)) => CallbackAnswer::from_bytes(&answer).ok(),
+        Ok(Some(answer)) => CallbackAnswer::from_bytes_at(&answer, version).ok(),
         Ok(None) => None,
         Err(fault) => {
             cx.services.faulted.push((manifest.id.clone(), fault));

@@ -30,7 +30,14 @@ fn call_as<C: ac_plugin::abi::Call>(
     request: &C::Request,
 ) -> C::Reply {
     let bytes = binding
-        .call(Caller { plugin_id }, C::IMPORT, &request.to_bytes())
+        .call(
+            Caller {
+                plugin_id,
+                api_version: ac_plugin::abi::API_CURRENT,
+            },
+            C::IMPORT,
+            &request.to_bytes(),
+        )
         .expect("a well-formed request");
     C::Reply::from_bytes(&bytes).expect("a well-formed reply")
 }

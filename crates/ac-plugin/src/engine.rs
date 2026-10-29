@@ -456,10 +456,12 @@ pub const LAYOUT_REFUSAL: &str = "built against a different plugin API layout";
 /// section must hold this client's core shape at that version (the start
 /// record, the events that version had, the callbacks:
 /// `ac_plugin_abi::layout::core_shape`) and, for every client function it
-/// imports, this client's shape of that function. A function it does not
-/// import is not compared, so a plugin built before an import was added
-/// still loads; nor is an event a later version added, which the session
-/// never sends it. A module without the section was built by an SDK from
+/// imports, this client's shape of that function at that version
+/// (`Import::shape_at`). A function it does not import is not compared, so
+/// a plugin built before an import was added still loads; nor is an event
+/// a later version added, which the session never sends it, or a record
+/// field a later version added, which the session leaves out of what it
+/// sends it. A module without the section was built by an SDK from
 /// before the fingerprint and is refused the same way (its records may
 /// differ from this client's). Imports this client does not have are left
 /// to [`check_module`].
@@ -490,7 +492,7 @@ pub fn check_layout(module: &PluginModule, api_version: ApiVersion) -> Result<()
         }
         let name = import.name();
         if let Some(known) = Import::from_name(name)
-            && built.import_shape(name) != Some(known.shape())
+            && built.import_shape(name) != Some(known.shape_at(api_version))
         {
             return refuse(format!(
                 "the request or reply of {MODULE}.{name} differs from this client's"

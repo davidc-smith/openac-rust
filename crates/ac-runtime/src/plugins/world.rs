@@ -201,6 +201,7 @@ pub(super) fn project_object(world: &World, object_id: u32) -> Option<abi::World
         portal_maximum_level: portal(class, item)
             .map(|i| i.properties.get_int(PropertyInt::MAX_LEVEL.0, 0))
             .filter(|&level| level > 0),
+        hook_item_types: item.map_or(0, |i| i.hook_item_types),
     })
 }
 

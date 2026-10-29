@@ -87,6 +87,8 @@ pub struct Object {
     pub cooldown: Option<(u32, f64)>,
     pub pet_owner_id: Option<u32>,
     pub scale: Option<f32>,
+    /// The kinds of item a house hook takes (item-type bits).
+    pub hook_item_types: Option<u32>,
     pub hook_type: Option<u16>,
     /// When the radar shows it (4: always).
     pub radar_behavior: Option<u8>,
@@ -190,6 +192,7 @@ impl Object {
         set(&mut wf, 0x80_0000, self.radar_behavior.is_some());
         set(&mut wf, 0x20_0000, self.burden.is_some());
         set(&mut wf, 0x40_0000, self.spell_id.is_some());
+        set(&mut wf, 0x2000_0000, self.hook_item_types.is_some());
         set(&mut wf, 0x1000_0000, self.hook_type.is_some());
         set(&mut wf, 0x4000_0000, self.icon_overlay_id.is_some());
         set(&mut wf, 0x8000_0000, self.material_type.is_some());
@@ -266,6 +269,9 @@ impl Object {
         }
         if let Some(v) = self.spell_id {
             w.u16(v);
+        }
+        if let Some(v) = self.hook_item_types {
+            w.u32(v);
         }
         if let Some(v) = self.hook_type {
             w.u16(v);

@@ -119,6 +119,7 @@ pub(super) fn call<C: ac_plugin::abi::Call>(
         .call(
             Caller {
                 plugin_id: "test.plugin",
+                api_version: ac_plugin::abi::API_CURRENT,
             },
             C::IMPORT,
             &request.to_bytes(),
@@ -312,6 +313,7 @@ fn a_malformed_request_is_a_fault_and_unserved_imports_answer_inert() {
     with_binding(&mut state, &mut outbox, |b| {
         let caller = Caller {
             plugin_id: "test.plugin",
+            api_version: ac_plugin::abi::API_CURRENT,
         };
         let error = b
             .call(caller, Import::CharacterSkill, &[1, 2])
@@ -369,7 +371,14 @@ fn process_stats_measure_cpu_from_each_plugins_previous_call() {
     let mut outbox = Outbox::new();
     let stats = |b: &mut PluginBinding<'_>, plugin_id| {
         let bytes = b
-            .call(Caller { plugin_id }, Import::HostProcessStats, &[])
+            .call(
+                Caller {
+                    plugin_id,
+                    api_version: ac_plugin::abi::API_CURRENT,
+                },
+                Import::HostProcessStats,
+                &[],
+            )
             .unwrap();
         ac_plugin::abi::host::ProcessStats::from_bytes(&bytes).unwrap()
     };

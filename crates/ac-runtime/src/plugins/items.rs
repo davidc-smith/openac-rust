@@ -205,6 +205,7 @@ pub(super) fn project_item(item: &ClientObject, palettes: Vec<Palette>) -> Inven
         icon_underlay_id: item.icon_underlay_id,
         icon_overlay_id: item.icon_overlay_id,
         coverage_mask: item.priority,
+        hook_item_types: item.hook_item_types,
         plural_name: item.plural_name.clone(),
         // The description's distance (OpenAC prefers the live entity's,
         // which the same description and its updates set).

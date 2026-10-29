@@ -22,6 +22,8 @@
 
 use std::fmt;
 
+use crate::version::ApiVersion;
+
 /// Why bytes could not be read as the expected value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -299,6 +301,77 @@ pub trait Wire: Sized {
         r.finish()?;
         Ok(value)
     }
+
+    /// Whether the type, or anything inside it, has a field or variant a
+    /// later API minor version added (`since`): only then does its
+    /// encoding at an older version ([`Self::encode_at`]) differ from
+    /// [`Self::encode`].
+    const VERSIONED: bool = false;
+
+    /// The shape a plugin built for API `version` knows: without the
+    /// fields and variants a later version added ([`Self::SHAPE`] when the
+    /// type has none).
+    #[must_use]
+    fn shape_at(version: ApiVersion) -> u64 {
+        let _ = version;
+        Self::SHAPE
+    }
+
+    /// Appends the value as a plugin built for API `version` reads it:
+    /// the fields a later version added are left out.
+    fn encode_at(&self, version: ApiVersion, w: &mut Writer) {
+        let _ = version;
+        self.encode(w);
+    }
+
+    /// Reads one value a plugin built for API `version` wrote: the fields
+    /// a later version added are not on the wire and read as their
+    /// default.
+    fn read_at(r: &mut Reader<'_>, version: ApiVersion) -> Self {
+        let _ = version;
+        Self::read(r)
+    }
+
+    /// The value's bytes as a plugin built for API `version` reads them
+    /// ([`Self::encode_at`]).
+    #[must_use]
+    fn to_bytes_at(&self, version: ApiVersion) -> Vec<u8> {
+        if !Self::VERSIONED {
+            return self.to_bytes();
+        }
+        let mut w = Writer::new();
+        self.encode_at(version, &mut w);
+        w.into_bytes()
+    }
+
+    /// Reads exactly one value a plugin built for API `version` wrote
+    /// ([`Self::read_at`]).
+    ///
+    /// # Errors
+    /// Any [`DecodeError`], including bytes left over.
+    fn from_bytes_at(bytes: &[u8], version: ApiVersion) -> Result<Self, DecodeError> {
+        if !Self::VERSIONED {
+            return Self::from_bytes(bytes);
+        }
+        let mut r = Reader::new(bytes);
+        let value = Self::read_at(&mut r, version);
+        r.finish()?;
+        Ok(value)
+    }
+}
+
+/// `count` values of a versioned type in a row, as written at `version`
+/// (a list's items; bounded as [`Wire::read_list`] is).
+fn read_list_at<T: Wire>(r: &mut Reader<'_>, count: usize, version: ApiVersion) -> Vec<T> {
+    let mut items = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
+        let item = T::read_at(r, version);
+        if r.error.is_some() {
+            break;
+        }
+        items.push(item);
+    }
+    items
 }
 
 macro_rules! wire_int {
@@ -408,6 +481,26 @@ impl<T: Wire> Wire for Vec<T> {
         let count = r.count();
         T::read_list(r, count)
     }
+    const VERSIONED: bool = T::VERSIONED;
+    fn shape_at(version: ApiVersion) -> u64 {
+        Shape::new("list").of(T::shape_at(version)).finish()
+    }
+    fn encode_at(&self, version: ApiVersion, w: &mut Writer) {
+        if !T::VERSIONED {
+            return self.encode(w);
+        }
+        w.put_count(self.len());
+        for item in self {
+            item.encode_at(version, w);
+        }
+    }
+    fn read_at(r: &mut Reader<'_>, version: ApiVersion) -> Self {
+        if !T::VERSIONED {
+            return Self::read(r);
+        }
+        let count = r.count();
+        read_list_at(r, count, version)
+    }
 }
 
 impl<T: Wire> Wire for Option<T> {
@@ -425,6 +518,29 @@ impl<T: Wire> Wire for Option<T> {
         match u8::read(r) {
             0 => None,
             1 => Some(T::read(r)),
+            other => {
+                r.fail(DecodeError::InvalidFlag(other));
+                None
+            }
+        }
+    }
+    const VERSIONED: bool = T::VERSIONED;
+    fn shape_at(version: ApiVersion) -> u64 {
+        Shape::new("option").of(T::shape_at(version)).finish()
+    }
+    fn encode_at(&self, version: ApiVersion, w: &mut Writer) {
+        match self {
+            None => w.put_raw(&[0]),
+            Some(value) => {
+                w.put_raw(&[1]);
+                value.encode_at(version, w);
+            }
+        }
+    }
+    fn read_at(r: &mut Reader<'_>, version: ApiVersion) -> Self {
+        match u8::read(r) {
+            0 => None,
+            1 => Some(T::read_at(r, version)),
             other => {
                 r.fail(DecodeError::InvalidFlag(other));
                 None
@@ -464,16 +580,56 @@ impl<T: Wire> Wire for Result<T, String> {
             }
         }
     }
+    const VERSIONED: bool = T::VERSIONED;
+    fn shape_at(version: ApiVersion) -> u64 {
+        Shape::new("result")
+            .of(T::shape_at(version))
+            .of(String::SHAPE)
+            .finish()
+    }
+    fn encode_at(&self, version: ApiVersion, w: &mut Writer) {
+        match self {
+            Ok(value) => {
+                w.put_raw(&[0]);
+                value.encode_at(version, w);
+            }
+            Err(message) => {
+                w.put_raw(&[1]);
+                message.encode(w);
+            }
+        }
+    }
+    fn read_at(r: &mut Reader<'_>, version: ApiVersion) -> Self {
+        match u8::read(r) {
+            0 => Ok(T::read_at(r, version)),
+            1 => Err(String::read(r)),
+            other => {
+                r.fail(DecodeError::InvalidFlag(other));
+                Err(String::new())
+            }
+        }
+    }
 }
 
 /// A plain record: its fields encoded in order. Writes the struct, its
 /// derives and its [`Wire`] implementation from one field list.
+///
+/// A field added by a later API minor version goes at the end, marked
+/// `since (MAJOR, MINOR)` before its `pub`: a plugin built for an older
+/// version is sent the record without it ([`Wire::encode_at`]), what such
+/// a plugin sends is read with the field at its default
+/// ([`Wire::read_at`]), and the record's shape as the older version knew
+/// it ([`Wire::shape_at`]) leaves it out, so plugins built for the older
+/// version still load. An unmarked field came with API 1.0.
 #[macro_export]
 macro_rules! wire_record {
     (
         $(#[$meta:meta])*
         pub struct $name:ident {
-            $( $(#[$fmeta:meta])* pub $field:ident : $ty:ty ),* $(,)?
+            $(
+                $(#[$fmeta:meta])*
+                $(since ($smaj:literal, $smin:literal))? pub $field:ident : $ty:ty
+            ),* $(,)?
         }
     ) => {
         $(#[$meta])*
@@ -494,7 +650,62 @@ macro_rules! wire_record {
                 let _ = &r;
                 Self { $( $field: <$ty as $crate::wire::Wire>::read(r), )* }
             }
+            const VERSIONED: bool = false
+                $( || $crate::__wire_marked!($(($smaj, $smin))?)
+                   || <$ty as $crate::wire::Wire>::VERSIONED )*;
+            fn shape_at(version: $crate::ApiVersion) -> u64 {
+                let _ = version;
+                if !<Self as $crate::wire::Wire>::VERSIONED {
+                    return <Self as $crate::wire::Wire>::SHAPE;
+                }
+                let mut shape = $crate::wire::Shape::new("record");
+                $(
+                    if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
+                        shape = shape
+                            .name(stringify!($field))
+                            .of(<$ty as $crate::wire::Wire>::shape_at(version));
+                    }
+                )*
+                shape.finish()
+            }
+            fn encode_at(&self, version: $crate::ApiVersion, w: &mut $crate::wire::Writer) {
+                let _ = version;
+                if !<Self as $crate::wire::Wire>::VERSIONED {
+                    return $crate::wire::Wire::encode(self, w);
+                }
+                $(
+                    if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
+                        $crate::wire::Wire::encode_at(&self.$field, version, w);
+                    }
+                )*
+            }
+            fn read_at(r: &mut $crate::wire::Reader<'_>, version: $crate::ApiVersion) -> Self {
+                let _ = version;
+                if !<Self as $crate::wire::Wire>::VERSIONED {
+                    return <Self as $crate::wire::Wire>::read(r);
+                }
+                Self {
+                    $(
+                        $field: if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
+                            <$ty as $crate::wire::Wire>::read_at(r, version)
+                        } else {
+                            ::core::default::Default::default()
+                        },
+                    )*
+                }
+            }
         }
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __wire_marked {
+    () => {
+        false
+    };
+    (($major:literal, $minor:literal)) => {
+        true
     };
 }
 
@@ -566,9 +777,10 @@ macro_rules! wire_enum {
 /// `since (MAJOR, MINOR)` after its payload: a plugin built for an older
 /// version cannot read it, so the host sends it only to plugins built for
 /// that version or later (the union's generated `since`), and the union's
-/// shape as the older version knew it (its generated `shape_at`) leaves it
-/// out, so plugins built for the older version still load. An unmarked
-/// variant came with API 1.0.
+/// shape as the older version knew it ([`Wire::shape_at`]) leaves it out,
+/// so plugins built for the older version still load. An unmarked variant
+/// came with API 1.0. A payload is sent to an older plugin as that version
+/// knew it ([`Wire::encode_at`]).
 #[macro_export]
 macro_rules! wire_union {
     (
@@ -598,27 +810,16 @@ macro_rules! wire_union {
                     $( $name::$variant { .. } => $crate::__wire_since!($(($smaj, $smin))?), )+
                 }
             }
-
-            /// The layout shape a plugin built for API `version` knows:
-            /// the variants that version had (every variant at the
-            /// newest).
-            #[must_use]
-            pub const fn shape_at(version: $crate::ApiVersion) -> u64 {
-                let mut shape = $crate::wire::Shape::new("union");
-                $(
-                    if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
-                        shape = shape
-                            .tag($tag as u64)
-                            .name(stringify!($variant))
-                            $( .of(<$payload as $crate::wire::Wire>::SHAPE) )?;
-                    }
-                )+
-                shape.finish()
-            }
         }
 
         impl $crate::wire::Wire for $name {
-            const SHAPE: u64 = Self::shape_at($crate::ApiVersion::new(u16::MAX, u16::MAX));
+            const SHAPE: u64 = $crate::wire::Shape::new("union")
+                $(
+                    .tag($tag as u64)
+                    .name(stringify!($variant))
+                    $( .of(<$payload as $crate::wire::Wire>::SHAPE) )?
+                )+
+                .finish();
             fn encode(&self, w: &mut $crate::wire::Writer) {
                 $( $crate::__wire_union_encode!(self, w, $name, $variant, $tag $(, $payload)?); )+
             }
@@ -630,6 +831,44 @@ macro_rules! wire_union {
                 r.fail($crate::wire::DecodeError::UnknownTag { what: $what, tag });
                 // A stand-in: the first variant, read from the failed
                 // reader (no bytes left).
+                $crate::__wire_union_first!(r, $name, $( $tag => $variant $(($payload))? ),+)
+            }
+            const VERSIONED: bool = false
+                $( || $crate::__wire_marked!($(($smaj, $smin))?)
+                   $( || <$payload as $crate::wire::Wire>::VERSIONED )? )+;
+            /// The variants that version had (every variant at the
+            /// newest), each payload as that version knew it.
+            fn shape_at(version: $crate::ApiVersion) -> u64 {
+                let mut shape = $crate::wire::Shape::new("union");
+                $(
+                    if $crate::__wire_since!($(($smaj, $smin))?).is_at_most(version) {
+                        shape = shape
+                            .tag($tag as u64)
+                            .name(stringify!($variant))
+                            $( .of(<$payload as $crate::wire::Wire>::shape_at(version)) )?;
+                    }
+                )+
+                shape.finish()
+            }
+            fn encode_at(&self, version: $crate::ApiVersion, w: &mut $crate::wire::Writer) {
+                let _ = version;
+                if !<Self as $crate::wire::Wire>::VERSIONED {
+                    return $crate::wire::Wire::encode(self, w);
+                }
+                $( $crate::__wire_union_encode_at!(
+                    self, version, w, $name, $variant, $tag $(, $payload)?
+                ); )+
+            }
+            fn read_at(r: &mut $crate::wire::Reader<'_>, version: $crate::ApiVersion) -> Self {
+                let _ = version;
+                if !<Self as $crate::wire::Wire>::VERSIONED {
+                    return <Self as $crate::wire::Wire>::read(r);
+                }
+                let tag = <u32 as $crate::wire::Wire>::read(r);
+                $( if tag == $tag {
+                    return $crate::__wire_union_read_at!(r, version, $name, $variant $(, $payload)?);
+                } )+
+                r.fail($crate::wire::DecodeError::UnknownTag { what: $what, tag });
                 $crate::__wire_union_first!(r, $name, $( $tag => $variant $(($payload))? ),+)
             }
         }
@@ -684,49 +923,64 @@ macro_rules! __wire_union_read {
     };
 }
 
-impl<A: Wire, B: Wire> Wire for (A, B) {
-    const SHAPE: u64 = Shape::new("tuple").of(A::SHAPE).of(B::SHAPE).finish();
-    fn encode(&self, w: &mut Writer) {
-        self.0.encode(w);
-        self.1.encode(w);
-    }
-    fn read(r: &mut Reader<'_>) -> Self {
-        (A::read(r), B::read(r))
-    }
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __wire_union_encode_at {
+    ($self:ident, $version:ident, $w:ident, $name:ident, $variant:ident, $tag:literal) => {
+        if let $name::$variant = $self {
+            <u32 as $crate::wire::Wire>::encode(&$tag, $w);
+            return;
+        }
+    };
+    ($self:ident, $version:ident, $w:ident, $name:ident, $variant:ident, $tag:literal, $payload:ty) => {
+        if let $name::$variant(value) = $self {
+            <u32 as $crate::wire::Wire>::encode(&$tag, $w);
+            <$payload as $crate::wire::Wire>::encode_at(value, $version, $w);
+            return;
+        }
+    };
 }
 
-impl<A: Wire, B: Wire, C: Wire> Wire for (A, B, C) {
-    const SHAPE: u64 = Shape::new("tuple")
-        .of(A::SHAPE)
-        .of(B::SHAPE)
-        .of(C::SHAPE)
-        .finish();
-    fn encode(&self, w: &mut Writer) {
-        self.0.encode(w);
-        self.1.encode(w);
-        self.2.encode(w);
-    }
-    fn read(r: &mut Reader<'_>) -> Self {
-        (A::read(r), B::read(r), C::read(r))
-    }
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __wire_union_read_at {
+    ($r:ident, $version:ident, $name:ident, $variant:ident) => {
+        $name::$variant
+    };
+    ($r:ident, $version:ident, $name:ident, $variant:ident, $payload:ty) => {
+        $name::$variant(<$payload as $crate::wire::Wire>::read_at($r, $version))
+    };
 }
 
-impl<A: Wire, B: Wire, C: Wire, D: Wire> Wire for (A, B, C, D) {
-    const SHAPE: u64 = Shape::new("tuple")
-        .of(A::SHAPE)
-        .of(B::SHAPE)
-        .of(C::SHAPE)
-        .of(D::SHAPE)
-        .finish();
-    fn encode(&self, w: &mut Writer) {
-        self.0.encode(w);
-        self.1.encode(w);
-        self.2.encode(w);
-        self.3.encode(w);
-    }
-    fn read(r: &mut Reader<'_>) -> Self {
-        (A::read(r), B::read(r), C::read(r), D::read(r))
-    }
+/// Tuples: their parts in order.
+macro_rules! wire_tuple {
+    ($( ($($part:ident . $at:tt),+) )+) => {$(
+        impl<$($part: Wire),+> Wire for ($($part,)+) {
+            const SHAPE: u64 = Shape::new("tuple") $( .of($part::SHAPE) )+ .finish();
+            fn encode(&self, w: &mut Writer) {
+                $( self.$at.encode(w); )+
+            }
+            fn read(r: &mut Reader<'_>) -> Self {
+                ($($part::read(r),)+)
+            }
+            const VERSIONED: bool = false $( || $part::VERSIONED )+;
+            fn shape_at(version: ApiVersion) -> u64 {
+                Shape::new("tuple") $( .of($part::shape_at(version)) )+ .finish()
+            }
+            fn encode_at(&self, version: ApiVersion, w: &mut Writer) {
+                $( self.$at.encode_at(version, w); )+
+            }
+            fn read_at(r: &mut Reader<'_>, version: ApiVersion) -> Self {
+                ($($part::read_at(r, version),)+)
+            }
+        }
+    )+};
+}
+
+wire_tuple! {
+    (A.0, B.1)
+    (A.0, B.1, C.2)
+    (A.0, B.1, C.2, D.3)
 }
 
 #[cfg(test)]

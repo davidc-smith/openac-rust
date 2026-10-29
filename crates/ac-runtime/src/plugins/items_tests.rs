@@ -126,6 +126,56 @@ fn an_owned_item_carries_its_icon_layers_coverage_plural_reach_and_header() {
     });
 }
 
+// OpenAC PR #270: a house hook's item-type bits reach both records (zero
+// for anything that is not a hook). The field came with API 1.2, so a
+// plugin built for API 1.1 is sent both records as they were then, and
+// what it reads has no such field.
+#[test]
+fn a_hooks_item_types_reach_both_records_and_older_plugins_get_the_records_they_knew() {
+    use ac_plugin::abi::items::InventoryItem;
+    use ac_plugin::abi::world::WorldObject;
+    use ac_plugin::abi::{API_CURRENT, ApiVersion, Import, Wire};
+    use ac_plugin::api::{Caller, SessionApi};
+    let mut state = in_world();
+    state.world.apply(&owned(SWORD, "Hook", 0x2, |w| {
+        w.hook_item_types = Some(0x0000_0080);
+    }));
+    state.world.apply(&owned(GEM, "Gem", 0x800, |_| {}));
+    state.world.drain_changes().for_each(drop);
+    let mut outbox = Outbox::new();
+    with_binding(&mut state, &mut outbox, |b| {
+        let items = call::<calls::ItemsOwned>(b, &());
+        let hook = |id| items.iter().find(|i| i.object_id == id).unwrap();
+        assert_eq!(hook(SWORD).hook_item_types, 0x80);
+        assert_eq!(hook(GEM).hook_item_types, 0);
+        let object = call::<calls::WorldObject>(b, &SWORD).unwrap();
+        assert_eq!(object.hook_item_types, 0x80);
+
+        let v1_1 = ApiVersion::new(1, 1);
+        let mut ask = |import, version, request: &[u8]| {
+            let caller = Caller {
+                plugin_id: "test.plugin",
+                api_version: version,
+            };
+            b.call(caller, import, request).unwrap()
+        };
+        let older = ask(Import::ItemsOwned, v1_1, &[]);
+        assert_ne!(older, ask(Import::ItemsOwned, API_CURRENT, &[]));
+        // Each record is one `u32` shorter, and reads as API 1.1's.
+        assert_eq!(older.len() + 2 * 4, items.to_bytes().len());
+        assert!(Vec::<InventoryItem>::from_bytes(&older).is_err());
+        let read = Vec::<InventoryItem>::from_bytes_at(&older, v1_1).unwrap();
+        assert_eq!(read.len(), 2);
+        assert!(read.iter().all(|i| i.hook_item_types == 0));
+        let older = ask(Import::WorldObject, v1_1, &SWORD.to_bytes());
+        let read = Option::<WorldObject>::from_bytes_at(&older, v1_1).unwrap();
+        assert_eq!(
+            read.map(|o| (o.object_id, o.hook_item_types)),
+            Some((SWORD, 0))
+        );
+    });
+}
+
 // OpenAC `RuntimeAutomationSurface.MoveToContainer(..., joinStack)`: the
 // plain move's checks, then the runtime's choice; with the flag a stack of
 // the same thing in the container that takes it all is joined by a merge,
