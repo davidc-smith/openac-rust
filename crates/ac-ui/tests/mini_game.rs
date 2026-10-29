@@ -571,3 +571,35 @@ mod real_dats {
         );
     }
 }
+
+/// OpenAC `APieceImageTooWideToBeAnId_DrawsNoPieceInsteadOfFailing`. Here
+/// an image id is a 32-bit data id by type, so a value too wide to be one
+/// can only arrive as another kind of entry (a 64-bit one): it counts as
+/// missing and draws no piece, and the entries after it are still read.
+#[test]
+fn a_piece_image_too_wide_to_be_an_id_draws_no_piece_instead_of_failing() {
+    let mut info = window_info(true);
+    let board = info
+        .children
+        .iter_mut()
+        .find(|c| c.id == mg::BOARD_ID)
+        .unwrap();
+    let state = &mut board.states[0].1;
+    let Some(PropertyValue::Array(list)) = state
+        .properties
+        .get(mg::PIECE_IMAGES_PROPERTY_ID)
+        .map(|p| p.value.clone())
+    else {
+        panic!("the fixture lists the piece images");
+    };
+    let mut list = list;
+    list[0].value = PropertyValue::Bitfield64(1 << 40);
+    state
+        .properties
+        .set_value(mg::PIECE_IMAGES_PROPERTY_ID, PropertyValue::Array(list));
+
+    let images = read_piece_images(&info);
+
+    assert_eq!(images[0], 0);
+    assert_eq!(images[1], WHITE_PIECE_SPRITES + 1);
+}
