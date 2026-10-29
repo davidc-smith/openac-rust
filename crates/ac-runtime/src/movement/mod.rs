@@ -1462,6 +1462,8 @@ impl Movement {
         else {
             return false;
         };
+        body.driver.placement_class =
+            placement_class(world.item(guid), content.storage_weenie_class());
         let described = object
             .movement()
             .map(|data| self.remote_update(world, &content, data, accepted.cell_id));
@@ -1934,7 +1936,10 @@ impl Movement {
             // placement says what it touches; ignore one sent while it was
             // off the ground).
             if let Some(content) = self.content.clone() {
-                let body = RemoteBody::from_ordinary(object, &content, ordinary, now.as_secs_f64());
+                let mut body =
+                    RemoteBody::from_ordinary(object, &content, ordinary, now.as_secs_f64());
+                body.driver.placement_class =
+                    placement_class(world.item(guid), content.storage_weenie_class());
                 self.remotes.insert(key.local_id, body);
             }
         }
