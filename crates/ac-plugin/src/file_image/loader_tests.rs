@@ -66,32 +66,67 @@ impl HeldReads {
 }
 
 // AFileIsReadOnAWorkerNotOnTheThreadThatAsks and
-// TheDefaultLoaderDoesNotReadOnTheCallersThread.
+// TheDefaultLoaderDoesNotReadOnTheCallersThread: the loader the client
+// makes runs its reads on its worker threads.
 #[test]
 fn the_default_loader_reads_on_a_worker() {
     let root = folder();
     write(&root, "icons/sword.png", &png(24, 16));
-    let asking = std::thread::current().id();
-    let reading = Arc::new(Mutex::new(None));
-    let seen = Arc::clone(&reading);
-    let loader = PluginFileImageLoader::with_runner(Box::new(move |job| {
-        let read = FileImageRead::pending();
-        let done = read.clone();
-        let seen = Arc::clone(&seen);
-        std::thread::spawn(move || {
-            *seen.lock().unwrap() = Some(std::thread::current().id());
-            done.finish(job());
-        });
-        read
-    }));
+    let loader = PluginFileImageLoader::new();
+    assert_eq!(loader.reads_on_workers(), 0);
     let image = wait(&loader.load(root.path(), "icons/sword.png")).unwrap();
-    let worker = *reading.lock().unwrap();
-    assert!(worker.is_some() && worker != Some(asking));
     assert_eq!(image.size(), (24, 16));
+    assert_eq!(loader.reads_on_workers(), 1);
+    // A loader whose reads run where they are asked has no workers.
+    let inline = inline();
+    wait(&inline.load(root.path(), "icons/sword.png")).unwrap();
+    assert_eq!(inline.reads_on_workers(), 0);
+}
 
-    let default = PluginFileImageLoader::new();
-    let image = wait(&default.load(root.path(), "icons/sword.png")).unwrap();
-    assert_eq!(image.size(), (24, 16));
+// Many reads at once run on at most READ_THREADS worker threads, never the
+// caller's, and every one finishes.
+#[test]
+fn many_reads_at_once_use_at_most_the_pools_threads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let pool = Arc::new(ReadPool::new(READ_THREADS));
+    let run = pool_runner(Arc::clone(&pool));
+    let active = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let threads = Arc::new(Mutex::new(std::collections::HashSet::new()));
+    let reads: Vec<FileImageRead> = (0..12)
+        .map(|_| {
+            let (active, most, threads) =
+                (Arc::clone(&active), Arc::clone(&most), Arc::clone(&threads));
+            run(Box::new(move || {
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                threads.lock().unwrap().insert(std::thread::current().id());
+                std::thread::sleep(Duration::from_millis(20));
+                active.fetch_sub(1, Ordering::SeqCst);
+                Err("done".to_owned())
+            }))
+        })
+        .collect();
+    for read in &reads {
+        assert_eq!(wait(read).unwrap_err(), "done");
+    }
+    let most = most.load(Ordering::SeqCst);
+    assert!((1..=READ_THREADS).contains(&most), "{most} at once");
+    assert!(
+        !threads
+            .lock()
+            .unwrap()
+            .contains(&std::thread::current().id())
+    );
+    assert_eq!(pool.ran.load(Ordering::SeqCst), 12);
+    // Idle again: no worker is kept.
+    for _ in 0..100 {
+        if pool.lock().workers == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(pool.lock().workers, 0);
 }
 
 // AnImageComesWithEverySmallerLevel.

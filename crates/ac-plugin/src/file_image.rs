@@ -8,9 +8,10 @@
 //! here panics or throws: every refusal is a reason, and the caller draws
 //! nothing in its place.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ac_plugin_ui::{DecodedImage, FileImage, FileImageLoader, FileImageRead, FileImageResult};
@@ -99,35 +100,12 @@ pub fn resolve(
     }
     let resolution = |e: std::io::Error| format!("could not be resolved: {e}");
     let root = std::path::absolute(directory).map_err(resolution)?;
-    // Lexically first: every `..` folds into the part before it, and one
-    // that climbs above the folder leaves it.
-    let mut candidate = root.clone();
-    let mut depth = 0usize;
-    for part in relative.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if depth == 0 {
-                    return Err(OUTSIDE.to_owned());
-                }
-                depth -= 1;
-                candidate.pop();
-            }
-            part => {
-                depth += 1;
-                candidate.push(part);
-            }
-        }
-    }
-    // A part the system reads as a root or a drive replaces the whole path
-    // when pushed: whatever it became must still be under the folder.
-    let inside = match candidate.strip_prefix(&root) {
-        Ok(rest) => depth > 0 && rest.components().all(|c| matches!(c, Component::Normal(_))),
-        Err(_) => false,
-    };
-    if !inside {
+    // Lexically first, as the system would read the full path: every `..`
+    // folds into the part before it, the folder's own parts included, and
+    // what that comes to must lie under the folder.
+    let Some(candidate) = lexical_candidate(&root, &relative) else {
         return Err(OUTSIDE.to_owned());
-    }
+    };
     match std::fs::metadata(&candidate) {
         Ok(m) if !m.is_dir() => {}
         _ => return Err("does not exist".to_owned()),
@@ -139,6 +117,29 @@ pub fn resolve(
         return Err(OUTSIDE.to_owned());
     }
     Ok(real)
+}
+
+/// `relative` (separators already `/`) joined to `root` with every `.` and
+/// `..` folded in, the way the system reads the full path; none when that
+/// does not lie under `root`. A part the system reads as a root or a drive
+/// replaces the whole path when joined, so it never lies under it either.
+fn lexical_candidate(root: &Path, relative: &str) -> Option<PathBuf> {
+    let mut candidate = root.to_path_buf();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if !candidate.pop() {
+                    return None;
+                }
+            }
+            part => candidate.push(part),
+        }
+    }
+    let rest = candidate.strip_prefix(root).ok()?;
+    let inside = rest.components().next().is_some()
+        && rest.components().all(|c| matches!(c, Component::Normal(_)));
+    inside.then_some(candidate)
 }
 
 /// [`resolve`] for an image file: relative, ending in `.png`, `.jpg` or
@@ -158,44 +159,78 @@ pub fn resolve_image_path(directory: &Path, relative_path: &str) -> Result<PathB
 /// Opens `path` for reading without ever waiting on it: on Linux and macOS
 /// the file is opened non-blocking, so a pipe (FIFO) nobody writes to
 /// cannot hold the reader up, and never as the controlling terminal.
-#[cfg(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    target_os = "ios"
-))]
+#[cfg(windows)]
 fn open(path: &Path) -> std::io::Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NONBLOCK | O_NOCTTY.
-        options.custom_flags(0x800 | 0x100);
-    }
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NONBLOCK | O_NOCTTY.
-        options.custom_flags(0x4 | 0x2_0000);
-    }
-    options.open(path)
+    File::open(path)
+}
+
+/// `O_NONBLOCK | O_NOCTTY` where their values are these (they differ on
+/// some processor families); elsewhere none, and plugin files are not read.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        target_arch = "arm",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    )
+))]
+const NON_BLOCKING_OPEN: Option<i32> = Some(0o4000 | 0o400);
+
+/// `O_NONBLOCK | O_NOCTTY` on Apple systems.
+#[cfg(all(
+    any(target_os = "macos", target_os = "ios"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+const NON_BLOCKING_OPEN: Option<i32> = Some(0x4 | 0x2_0000);
+
+/// Elsewhere the values are not known here.
+#[cfg(all(
+    unix,
+    not(any(
+        all(
+            any(target_os = "linux", target_os = "android"),
+            any(
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "arm",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            )
+        ),
+        all(
+            any(target_os = "macos", target_os = "ios"),
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))
+))]
+const NON_BLOCKING_OPEN: Option<i32> = None;
+
+#[cfg(unix)]
+fn open(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(flags) = NON_BLOCKING_OPEN else {
+        return Err(unsupported());
+    };
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
 }
 
 /// Elsewhere plugin files are not read.
-#[cfg(not(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "macos",
-    target_os = "ios"
-)))]
+#[cfg(not(any(windows, unix)))]
 fn open(_path: &Path) -> std::io::Result<File> {
-    Err(std::io::Error::new(
+    Err(unsupported())
+}
+
+#[cfg(not(windows))]
+fn unsupported() -> std::io::Error {
+    std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "reading plugin files is not supported on this system",
-    ))
+    )
 }
 
 /// One read at `offset` through the handle: never the path looked up a
@@ -324,6 +359,110 @@ pub type FileImageJob = Box<dyn FnOnce() -> FileImageResult + Send>;
 /// Runs a read and hands back where its result will land.
 pub type FileImageRunner = Box<dyn Fn(FileImageJob) -> FileImageRead + Send + Sync>;
 
+/// The most threads reading plugin image files at once.
+pub const READ_THREADS: usize = 2;
+
+/// Reads waiting for a worker, and the workers: at most `max` threads,
+/// started as reads come and ended when none are left, so an idle client
+/// keeps none.
+struct ReadPool {
+    max: usize,
+    state: Mutex<PoolState>,
+    /// Reads run, for tests.
+    ran: AtomicUsize,
+}
+
+#[derive(Default)]
+struct PoolState {
+    queue: VecDeque<(FileImageJob, FileImageRead)>,
+    workers: usize,
+}
+
+impl ReadPool {
+    fn new(max: usize) -> Self {
+        Self {
+            max: max.max(1),
+            state: Mutex::new(PoolState::default()),
+            ran: AtomicUsize::new(0),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn submit(self: &Arc<Self>, job: FileImageJob, read: FileImageRead) {
+        let start = {
+            let mut state = self.lock();
+            state.queue.push_back((job, read));
+            let start = state.workers < self.max;
+            if start {
+                state.workers += 1;
+            }
+            start
+        };
+        if !start {
+            return;
+        }
+        let pool = Arc::clone(self);
+        let started = std::thread::Builder::new()
+            .name("plugin file image".to_owned())
+            .spawn(move || pool.work());
+        if let Err(e) = started {
+            let mut state = self.lock();
+            state.workers -= 1;
+            if state.workers == 0 {
+                // No worker is left to take them: they come back refused.
+                for (_, read) in state.queue.drain(..) {
+                    read.finish(Err(format!("could not be read: {e}")));
+                }
+            }
+        }
+    }
+
+    /// One worker: runs reads until none are left. A worker counts itself
+    /// out under the same lock that finds the queue empty, so a read
+    /// queued meanwhile always has a worker.
+    fn work(&self) {
+        loop {
+            let next = {
+                let mut state = self.lock();
+                match state.queue.pop_front() {
+                    Some(next) => next,
+                    None => {
+                        state.workers -= 1;
+                        return;
+                    }
+                }
+            };
+            let (job, read) = next;
+            self.ran.fetch_add(1, Ordering::Relaxed);
+            // A read that panics (a bug) ends its worker: it counts itself
+            // out, so the next read starts another.
+            let running = Running(self);
+            read.finish(job());
+            std::mem::forget(running);
+        }
+    }
+}
+
+/// A worker running a read; dropped only if the read panics.
+struct Running<'a>(&'a ReadPool);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.lock().workers -= 1;
+    }
+}
+
+/// Runs each read on `pool`.
+fn pool_runner(pool: Arc<ReadPool>) -> FileImageRunner {
+    Box::new(move |job| {
+        let read = FileImageRead::pending();
+        pool.submit(job, read.clone());
+        read
+    })
+}
 /// Reads the image files plugin markup names away from the session's
 /// thread: resolving the path, reading the file, decoding it and building
 /// its smaller levels all happen on a worker, so a large image does not
@@ -334,6 +473,8 @@ pub type FileImageRunner = Box<dyn Fn(FileImageJob) -> FileImageRead + Send + Sy
 pub struct PluginFileImageLoader {
     run: FileImageRunner,
     reading: Mutex<HashMap<(PathBuf, String), FileImageRead>>,
+    /// The worker threads, on the loader [`Self::new`] makes.
+    pool: Option<Arc<ReadPool>>,
 }
 
 impl std::fmt::Debug for PluginFileImageLoader {
@@ -350,20 +491,15 @@ impl Default for PluginFileImageLoader {
 }
 
 impl PluginFileImageLoader {
-    /// A loader that reads each file on a worker thread of its own.
+    /// A loader that reads on at most [`READ_THREADS`] worker threads, the
+    /// rest of the reads waiting their turn.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_runner(Box::new(|job| {
-            let read = FileImageRead::pending();
-            let done = read.clone();
-            let started = std::thread::Builder::new()
-                .name("plugin file image".to_owned())
-                .spawn(move || done.finish(job()));
-            if let Err(e) = started {
-                read.finish(Err(format!("could not be read: {e}")));
-            }
-            read
-        }))
+        let pool = Arc::new(ReadPool::new(READ_THREADS));
+        Self {
+            pool: Some(Arc::clone(&pool)),
+            ..Self::with_runner(pool_runner(pool))
+        }
     }
 
     /// A loader whose reads `run` runs (a test runs them where it likes).
@@ -372,7 +508,17 @@ impl PluginFileImageLoader {
         Self {
             run,
             reading: Mutex::new(HashMap::new()),
+            pool: None,
         }
+    }
+
+    /// How many reads the loader's worker threads have run (none for a
+    /// loader whose reads a test runs).
+    #[must_use]
+    pub fn reads_on_workers(&self) -> usize {
+        self.pool
+            .as_ref()
+            .map_or(0, |p| p.ran.load(Ordering::Relaxed))
     }
 
     fn read(directory: &Path, path: &str) -> FileImageResult {

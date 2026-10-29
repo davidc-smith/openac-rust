@@ -208,10 +208,20 @@ fn loads_a_jpeg_as_opaque_rgba() {
 // RefusesAnImageWiderThanTheLimitBeforeDecodingIt.
 #[test]
 fn refuses_an_image_wider_than_the_limit_before_decoding_it() {
+    // A header that claims 100000 x 1 over data that is not an image: a
+    // decode would fail, so only the check of the header's word refuses it
+    // for its size.
     let directory = TemporaryDirectory::new("big");
-    let path = write(&directory, "big.png", &png(MAXIMUM_DIMENSION + 1, 1));
+    let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&100_000u32.to_be_bytes());
+    bytes.extend_from_slice(&1u32.to_be_bytes());
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+    bytes.extend_from_slice(&[0x5A; 4096]);
+    let path = write(&directory, "big.png", &bytes);
     let reason = load_image(&path).unwrap_err();
     assert!(reason.contains("512"), "{reason}");
+    assert!(!reason.contains("could not be decoded"), "{reason}");
 }
 
 // RefusesAFileLargerThanTheByteLimit.
@@ -397,4 +407,125 @@ fn resolve_path_serves_a_folder_that_is_itself_a_link() {
     let alias = outer.path().join("alias");
     std::os::unix::fs::symlink(&folder, &alias).unwrap();
     resolve_image_path(&alias, "icons/sword.png").unwrap();
+}
+
+// The textual check on its own (OpenAC's containment of the full path): a
+// `..` folds into the part before it, the folder's own parts included, and
+// only what that comes to decides.
+#[test]
+fn the_textual_check_folds_dots_as_the_full_path_reads() {
+    let root = Path::new(if cfg!(windows) {
+        r"C:\games\plugin"
+    } else {
+        "/games/plugin"
+    });
+    let inside = root.join("icons").join("a.png");
+    assert_eq!(
+        lexical_candidate(root, "icons/./a.png"),
+        Some(inside.clone())
+    );
+    assert_eq!(
+        lexical_candidate(root, "icons//a.png"),
+        Some(inside.clone())
+    );
+    assert_eq!(
+        lexical_candidate(root, "art/../icons/a.png"),
+        Some(inside.clone())
+    );
+    // Out of the folder and back in by its own name is inside.
+    assert_eq!(
+        lexical_candidate(root, "../plugin/icons/a.png"),
+        Some(inside)
+    );
+    for outside in [
+        "../outside.png",
+        "icons/../../outside.png",
+        "../plugin2/a.png",
+        "../../../../../../../../a.png",
+        "icons/..",
+        "..",
+        ".",
+        "",
+    ] {
+        assert_eq!(lexical_candidate(root, outside), None, "{outside}");
+    }
+    if cfg!(windows) {
+        // A drive replaces the whole path.
+        assert_eq!(lexical_candidate(root, "icons/C:/a.png"), None);
+        assert_eq!(lexical_candidate(root, "D:a.png"), None);
+    }
+}
+
+/// A junction (a folder link Windows lets anyone make) at `link` to
+/// `target`; false when this system did not allow one.
+#[cfg(windows)]
+fn junction(link: &Path, target: &Path) -> bool {
+    std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+// ResolvePathRefusesAFolderLinkThatPointsOutsideTheFolder, on Windows: a
+// junction inside the folder to a folder outside it. The path is inside
+// as written; only following the link shows where it ends.
+#[cfg(windows)]
+#[test]
+fn resolve_path_refuses_a_junction_that_points_outside_the_folder() {
+    let outer = TemporaryDirectory::new("junction-out");
+    let folder = outer.path().join("plugin");
+    let elsewhere = outer.path().join("elsewhere");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("sword.png"), png(4, 4)).unwrap();
+    if !junction(&folder.join("linked"), &elsewhere) {
+        eprintln!("skipped: this system did not let the test make a junction");
+        return;
+    }
+    let reason = resolve_image_path(&folder, "linked/sword.png").unwrap_err();
+    assert!(reason.contains("points outside"), "{reason}");
+}
+
+// ResolvePathAcceptsALinkThatStaysInsideTheFolder, on Windows.
+#[cfg(windows)]
+#[test]
+fn resolve_path_accepts_a_junction_that_stays_inside_the_folder() {
+    let outer = TemporaryDirectory::new("junction-in");
+    let folder = outer.path().join("plugin");
+    let art = folder.join("art");
+    std::fs::create_dir_all(&art).unwrap();
+    std::fs::write(art.join("sword.png"), png(4, 4)).unwrap();
+    if !junction(&folder.join("linked"), &art) {
+        eprintln!("skipped: this system did not let the test make a junction");
+        return;
+    }
+    let full = resolve_image_path(&folder, "linked/sword.png").unwrap();
+    assert!(
+        full.ends_with(Path::new("art").join("sword.png")),
+        "{}",
+        full.display()
+    );
+}
+
+// ResolvePathRefusesAFileLinkThatPointsOutsideTheFolder, on Windows, where
+// making a file link needs the right to (developer mode or an
+// administrator); skipped when it is not granted.
+#[cfg(windows)]
+#[test]
+fn resolve_path_refuses_a_file_link_that_points_outside_the_folder_on_windows() {
+    let outer = TemporaryDirectory::new("symlink-out");
+    let folder = outer.path().join("plugin");
+    std::fs::create_dir_all(folder.join("icons")).unwrap();
+    let outside = outer.path().join("outside.png");
+    std::fs::write(&outside, png(4, 4)).unwrap();
+    if let Err(e) =
+        std::os::windows::fs::symlink_file(&outside, folder.join("icons").join("sword.png"))
+    {
+        eprintln!("skipped: this system did not let the test make a file link: {e}");
+        return;
+    }
+    let reason = resolve_image_path(&folder, "icons/sword.png").unwrap_err();
+    assert!(reason.contains("points outside"), "{reason}");
 }
