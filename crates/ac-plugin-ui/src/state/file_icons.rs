@@ -176,20 +176,31 @@ impl PluginUi {
         let Some(mut files) = self.panel_files.remove(&panel) else {
             return;
         };
-        for path in files.shown.clone() {
-            self.resolve_in(panel, &mut files, &path);
+        let shown = std::mem::take(&mut files.shown);
+        for path in &shown {
+            self.resolve_in(panel, &mut files, path);
         }
+        files.shown = shown;
         self.panel_files.insert(panel, files);
     }
 
     /// One draw of `path` in window `panel` (OpenAC `ResolveFile`).
     fn resolve_in(&mut self, panel: u32, files: &mut PanelFiles, path: &str) {
-        let Some(directory) = files.directory.clone() else {
+        let PanelFiles {
+            owner,
+            directory,
+            icons,
+            time,
+            room_retries,
+            reported_no_folder,
+            ..
+        } = files;
+        let Some(directory) = directory.as_deref() else {
             // Said once per window, so drawing builds no text each time.
-            if !files.reported_no_folder {
-                files.reported_no_folder = true;
+            if !*reported_no_folder {
+                *reported_no_folder = true;
                 self.report_file(
-                    &files.owner,
+                    owner,
                     "*",
                     "file icons need a plugin folder, and this window has no plugin folder",
                 );
@@ -199,15 +210,15 @@ impl PluginUi {
         let Some(loader) = self.file_images.clone() else {
             return;
         };
-        let time = files.time;
-        if !files.icons.contains_key(path) {
-            if files.icons.len() >= MAXIMUM_REMEMBERED {
-                self.release_all(panel, files);
+        let time = *time;
+        if !icons.contains_key(path) {
+            if icons.len() >= MAXIMUM_REMEMBERED {
+                self.release_all(panel, owner, icons);
             }
-            files.icons.insert(
+            icons.insert(
                 path.to_owned(),
                 FileIcon {
-                    reading: Some(loader.load(&directory, path)),
+                    reading: Some(loader.load(directory, path)),
                     handle: 0,
                     refused_for_room: None,
                     offered_at: 0,
@@ -215,25 +226,24 @@ impl PluginUi {
                 },
             );
         }
-        let generation = self.release_generation(&files.owner);
-        let owner = files.owner.clone();
-        let Some(icon) = files.icons.get_mut(path) else {
+        let generation = self.release_generation(owner);
+        let Some(icon) = icons.get_mut(path) else {
             return;
         };
         icon.drawn_at = time;
-        if let Some((image, refused)) = icon.refused_for_room.clone()
+        if let Some((_, refused)) = &icon.refused_for_room
             && time.saturating_sub(icon.offered_at) >= RELEASE_CHECK_INTERVAL_MS
-            && generation != refused
+            && generation != *refused
+            && let Some((image, _)) = icon.refused_for_room.take()
         {
             // Something was let go since the table said no: there may be
             // room now. The kept image is offered as it is, unless the file
             // changed on disk since it was read.
-            icon.refused_for_room = None;
             if loader.is_current(&image) {
-                files.room_retries += 1;
-                self.hold(panel, &owner, path, icon, image, time);
+                *room_retries += 1;
+                self.hold(panel, owner, path, icon, image, time);
             } else {
-                icon.reading = Some(loader.load(&directory, path));
+                icon.reading = Some(loader.load(directory, path));
             }
         }
         let Some(result) = icon.reading.as_ref().and_then(FileImageRead::result) else {
@@ -241,8 +251,8 @@ impl PluginUi {
         };
         icon.reading = None;
         match result {
-            Ok(image) => self.hold(panel, &owner, path, icon, image, time),
-            Err(reason) => self.report_file(&owner, path, &reason),
+            Ok(image) => self.hold(panel, owner, path, icon, image, time),
+            Err(reason) => self.report_file(owner, path, &reason),
         }
     }
 
@@ -312,9 +322,9 @@ impl PluginUi {
         self.panel_files.insert(panel, files);
     }
 
-    fn release_all(&mut self, panel: u32, files: &mut PanelFiles) {
-        for (path, icon) in std::mem::take(&mut files.icons) {
-            self.let_go(&files.owner, panel, &path, icon.handle);
+    fn release_all(&mut self, panel: u32, owner: &str, icons: &mut BTreeMap<String, FileIcon>) {
+        for (path, icon) in std::mem::take(icons) {
+            self.let_go(owner, panel, &path, icon.handle);
         }
     }
 
