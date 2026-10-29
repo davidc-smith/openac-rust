@@ -1148,3 +1148,65 @@ fn the_external_container_probe_names_a_refused_plugin_close_and_why() {
     );
     assert!(outbox.is_empty());
 }
+
+// OpenAC `RuntimeLiveEntitySessionControllerTests
+// .AnItemInsideACorpseReportsTheColoursItWouldOnTheGround`: an item the
+// server creates inside an open corpse has no place in the world, but loot
+// rules test its colours before it is picked up, so it reports the same
+// colour swaps it would lying on the ground. Every colour reads as its own
+// index in the red channel.
+#[test]
+fn an_item_inside_a_corpse_reports_the_colours_it_would_on_the_ground() {
+    use crate::world::tests::{create, position, stamps};
+    const IN_CORPSE: u32 = 0x7000_0071;
+    const ON_GROUND: u32 = 0x7000_0072;
+    let swaps = vec![
+        ac_proto::SubPalette {
+            sub_palette_id: 0x0400_0123,
+            offset: 3,
+            length: 4,
+        },
+        ac_proto::SubPalette {
+            sub_palette_id: 0x0400_0456,
+            offset: 0,
+            length: 2,
+        },
+    ];
+    let item = |guid: u32, at, container_id| {
+        let mut message = create(guid, stamps(1, 1), at);
+        if let ac_proto::Inbound::CreateObject(create) = &mut message {
+            create.model.base_palette_id = Some(0x0400_007E);
+            create.model.sub_palettes.clone_from(&swaps);
+            create.weenie = Some(ac_proto::PublicWeenieDesc {
+                name: "Robe".into(),
+                item_type: 0x2,
+                container_id,
+                ..ac_proto::PublicWeenieDesc::default()
+            });
+        }
+        message
+    };
+    let mut state = in_world();
+    state
+        .world
+        .apply(&item(ON_GROUND, Some(position(0xA9B4_0031, 5.0)), None));
+    state.world.apply(&item(IN_CORPSE, None, Some(CORPSE)));
+
+    let index_as_red = |_: u32, index: usize| Some((u8::try_from(index).unwrap_or(0), 0, 0));
+    let lying = super::items::palettes_with(&state.world, ON_GROUND, index_as_red);
+    let contained = super::items::palettes_with(&state.world, IN_CORPSE, index_as_red);
+
+    assert_eq!(lying.len(), 2);
+    assert_eq!(contained, lying);
+    assert_eq!(
+        contained[0],
+        ac_plugin::abi::items::Palette {
+            palette_id: 0x0400_0123,
+            offset: 3,
+            length: 4,
+            red: 40,
+            green: 0,
+            blue: 0,
+        }
+    );
+}

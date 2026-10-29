@@ -82,16 +82,31 @@ fn palettes_of(
     content: Option<&crate::movement::WorldContent>,
     guid: u32,
 ) -> Vec<Palette> {
-    let (Some(content), Some(object)) = (content, world.object(guid)) else {
+    let Some(content) = content else {
         return Vec::new();
     };
-    project_palettes(&object.model().sub_palettes, |id, index| {
+    palettes_with(world, guid, |id, index| {
         let palette = content
             .dats()
             .get::<ac_dat::objects::Palette>(id)
             .ok()
             .flatten()?;
         palette.colors.get(index).map(|c| (c.red, c.green, c.blue))
+    })
+}
+
+/// The palettes of the object `guid` the world knows, each colour read
+/// through `color` (palette id, colour index); none for an object the world
+/// does not know. Every created object is known, whether it stands in the
+/// world or lies inside a container, so an item in a corpse reports the
+/// same colours it would on the ground.
+pub(super) fn palettes_with(
+    world: &crate::world::World,
+    guid: u32,
+    color: impl Fn(u32, usize) -> Option<(u8, u8, u8)>,
+) -> Vec<Palette> {
+    world.object(guid).map_or_else(Vec::new, |object| {
+        project_palettes(&object.model().sub_palettes, color)
     })
 }
 
