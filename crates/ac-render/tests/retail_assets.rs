@@ -270,6 +270,7 @@ fn a_holtburg_room_floods_through_its_doorway() {
         fn land_block(&mut self, _: usize) {}
         fn land_cell_terrain(&mut self, _: usize, _: usize) {}
         fn land_cell(&mut self, _: usize, _: usize) {}
+        fn sort_cell_exit(&mut self, _: usize, _: usize) {}
         fn building_drawable(&mut self, _: usize) -> bool {
             true
         }
@@ -625,4 +626,119 @@ fn a_humanoid_in_the_world_draws_its_close_models() {
     // A part whose level 0 is itself, and the null parts, stay.
     assert_eq!(world[16], 0x0100_005A);
     assert!(world[17..].iter().all(|&id| id == 0x0100_01EC));
+}
+
+/// Counts the building shells a frame walk draws.
+#[derive(Default)]
+struct ShellCount(Vec<usize>);
+
+impl ac_render::walk::WalkSink for ShellCount {
+    fn landscape_begin(&mut self, _: &ac_render::walk::ViewSet, _: usize, _: bool) {}
+    fn land_block(&mut self, _: usize) {}
+    fn land_cell_terrain(&mut self, _: usize, _: usize) {}
+    fn land_cell(&mut self, _: usize, _: usize) {}
+    fn sort_cell_exit(&mut self, _: usize, _: usize) {}
+    fn building_drawable(&mut self, _: usize) -> bool {
+        true
+    }
+    fn punch(&mut self, _: &[glam::Vec3], _: usize) {}
+    fn draw_cells(&mut self, _: &[(u32, ac_render::walk::ViewSet, usize)]) {}
+    fn building_shell(&mut self, building: usize) {
+        self.0.push(building);
+    }
+    fn interior_landscape_done(
+        &mut self,
+        _: &[(Vec<glam::Vec3>, ac_render::walk::ViewSet, usize)],
+    ) {
+    }
+}
+
+/// OpenAC draws buildings out to the object range: seen from high
+/// above Holtburg with the near tier five rings out (the High preset's four
+/// and a ring kept while the player walks), every building of the town's
+/// dat landblocks within four rings is drawn once and none five rings out.
+/// Golden counts: the buildings of the retail dats in each ring around
+/// 0xA9B4.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn holtburg_draws_its_buildings_out_to_the_object_range() {
+    use ac_render::walk::{BuildingRef, FrameWalk, WalkBlock, WalkCamera};
+    use glam::Vec3;
+
+    let d = dats();
+    let region = d.dats.get::<Region>(REGION_ID).unwrap().unwrap();
+    let center = LandblockCoord { x: 0xA9, y: 0xB4 };
+    let near: Vec<(LandblockCoord, assets::NearData)> =
+        ac_render::world_frame::landblocks_around(center, 5)
+            .into_iter()
+            .map(|c| (c, assets::build_near(&d, c, &region)))
+            .collect();
+    let ring_of = |c: LandblockCoord| {
+        (i32::from(c.x) - i32::from(center.x))
+            .abs()
+            .max((i32::from(c.y) - i32::from(center.y)).abs()) as usize
+    };
+    let mut blocks = Vec::new();
+    let mut refs = Vec::new();
+    let mut ring_of_building = Vec::new();
+    for (coord, data) in &near {
+        let dx = f32::from(coord.x) - f32::from(center.x);
+        let dy = f32::from(coord.y) - f32::from(center.y);
+        let mut by_cell = Vec::new();
+        for b in &data.buildings {
+            by_cell.push((b.land_cell, refs.len()));
+            refs.push(BuildingRef {
+                building: &b.walk,
+                tree: None,
+            });
+            ring_of_building.push(ring_of(*coord));
+        }
+        blocks.push(WalkBlock {
+            coord: (coord.x, coord.y),
+            origin: Vec3::new(dx * 192.0, dy * 192.0, 0.0),
+            min_z: 0.0,
+            max_z: 200.0,
+            near: true,
+            buildings: by_cell,
+        });
+    }
+    let mut per_ring = [0usize; 6];
+    for &r in &ring_of_building {
+        per_ring[r] += 1;
+    }
+
+    // Straight down from 2 km over the town's centre: every block is in view.
+    let eye = Vec3::new(96.0, 96.0, 2000.0);
+    let target = Vec3::new(96.0, 96.0, 0.0);
+    let vp =
+        glam::camera::rh::proj::directx::perspective(std::f32::consts::FRAC_PI_2, 1.0, 0.1, 5000.0)
+            * glam::camera::rh::view::look_at_mat4(eye, target, Vec3::Y);
+    let camera = WalkCamera {
+        view_proj: vp,
+        inverse_view_proj: vp.inverse(),
+        eye,
+        forward: (target - eye).normalize(),
+        width: 1024.0,
+        height: 1024.0,
+    };
+    let mut walk = FrameWalk::new();
+    walk.object_ring_limit = 4;
+    let mut drawn = ShellCount::default();
+    walk.walk_frame(0xA9B4_0019, &camera, &blocks, &refs, &mut drawn);
+    let mut drawn_per_ring = [0usize; 6];
+    for &b in &drawn.0 {
+        drawn_per_ring[ring_of_building[b]] += 1;
+    }
+    assert_eq!(drawn.0.len(), drawn_per_ring.iter().sum::<usize>());
+    let mut once = drawn.0.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), drawn.0.len(), "each shell once");
+    assert_eq!(
+        &drawn_per_ring[..5],
+        &per_ring[..5],
+        "rings 0 to 4 all drawn"
+    );
+    assert_eq!(drawn_per_ring[5], 0, "ring 5 kept loaded but not drawn");
+    assert_eq!(per_ring, [12, 4, 7, 2, 15, 6]);
 }

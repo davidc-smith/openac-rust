@@ -58,13 +58,17 @@ fn dat_dir() -> PathBuf {
 }
 
 fn renderer(device: &wgpu::Device, queue: &wgpu::Queue) -> WorldRenderer {
+    renderer_with_near(device, queue, 0)
+}
+
+fn renderer_with_near(device: &wgpu::Device, queue: &wgpu::Queue, near: u32) -> WorldRenderer {
     let content = Arc::new(ContentSlot::new(dat_dir()));
     content.get().expect("open the retail dats");
     let settings = WorldSettings {
         content,
         quality_overrides: crate::quality::QualityOverrides {
-            near_radius: Some(0),
-            far_radius: Some(0),
+            near_radius: Some(near),
+            far_radius: Some(near),
             msaa_samples: Some(0),
             ..Default::default()
         },
@@ -261,4 +265,25 @@ fn a_server_object_that_leaves_the_world_no_longer_holds_the_reveal() {
         world.server_models_ready,
         "an object that left holds the reveal no longer"
     );
+}
+
+/// OpenAC `RetailPViewRenderer` (`ObjectRingLimit = ctx.RenderRadius`):
+/// each frame walks with the object range set to the near radius (the walk
+/// itself stops at ring 4).
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_frame_walks_with_the_near_radius_as_its_object_range() {
+    let Some((device, queue)) = crate::test_gpu::device() else {
+        eprintln!("no GPU adapter on this machine");
+        return;
+    };
+    for near in [2, 5] {
+        let mut world = renderer_with_near(&device, &queue, near);
+        load_holtburg(&mut world, &device, &queue);
+        frames_until(&mut world, &device, &queue, "the terrain is bound", |w| {
+            w.terrain_group.is_some()
+        });
+        world.prepare(&device, &queue, None, FlyInput::default());
+        assert_eq!(world.walk.object_ring_limit, near);
+    }
 }

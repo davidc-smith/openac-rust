@@ -306,6 +306,7 @@ impl WalkSink for Reached {
     fn land_block(&mut self, _: usize) {}
     fn land_cell_terrain(&mut self, _: usize, _: usize) {}
     fn land_cell(&mut self, _: usize, _: usize) {}
+    fn sort_cell_exit(&mut self, _: usize, _: usize) {}
     fn building_drawable(&mut self, _: usize) -> bool {
         true
     }

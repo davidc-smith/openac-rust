@@ -632,8 +632,11 @@ impl WalkSink for FrameSink<'_> {
             p.visible_cells.push(key);
         }
         self.cell_particles(key);
-        self.out.sort_cell_exit();
         self.views = views;
+    }
+
+    fn sort_cell_exit(&mut self, _block: usize, _cell: usize) {
+        self.out.sort_cell_exit();
     }
 
     fn building_drawable(&mut self, building: usize) -> bool {
