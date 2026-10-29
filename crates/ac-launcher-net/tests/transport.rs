@@ -262,9 +262,16 @@ fn a_refused_connection_is_a_failure() {
     // Instead the port stays held on 127.0.0.1 for the whole test, which
     // keeps every wildcard bind off it, and the request goes to the same
     // port on 127.0.0.2: still this machine, but no socket listens there.
+    // macOS puts only 127.0.0.1 on the loopback (127.0.0.2 goes unanswered
+    // until the timeout), so there it goes to [::1], where no test listens.
     let holder = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = holder.local_addr().unwrap().port();
-    let url = WebUrl::parse(&format!("http://127.0.0.2:{port}/")).unwrap();
+    let host = if cfg!(target_os = "macos") {
+        "[::1]"
+    } else {
+        "127.0.0.2"
+    };
+    let url = WebUrl::parse(&format!("http://{host}:{port}/")).unwrap();
     let result = get(&url, Some(Duration::from_secs(5)));
     assert!(matches!(result, Err(HttpError::Failed(_))), "{result:?}");
     drop(holder);

@@ -12,7 +12,10 @@ if rustup target list --installed | grep -qx 'wasm32-unknown-unknown'; then
 else
     echo "wasm32-unknown-unknown not installed; skipping the plugin-crate WebAssembly build."
 fi
-dat_dir="${OPENAC_DAT_DIR:-${USERPROFILE:-$HOME}/Documents/Asheron's Call}"
+# The default is assigned on its own: macOS's /bin/sh reads the apostrophe inside `${...:-...}`
+# as an opening quote.
+default_dat_dir="${USERPROFILE:-$HOME}/Documents/Asheron's Call"
+dat_dir="${OPENAC_DAT_DIR:-$default_dat_dir}"
 if [ -f "$dat_dir/client_portal.dat" ]; then
     echo "Retail dats found in $dat_dir; running ignored tests too."
     cargo test --workspace -- --include-ignored
