@@ -170,10 +170,21 @@ impl MiniGameController {
         let side = SQUARE_SIZE * SIZE as f32;
         let grid = ui.insert(Element::at(0.0, 0.0, side, side), Container);
         for index in 0..SQUARE_COUNT {
-            let Some(square) =
-                create_square(ui).filter(|s| ui.widget::<DatElement>(s.root).is_some())
-            else {
-                break;
+            // A square that cannot be built leaves the board without any:
+            // the grid is never added.
+            let square = match create_square(ui) {
+                Some(s) if ui.widget::<DatElement>(s.root).is_some() => Some(s),
+                Some(other) => {
+                    ui.destroy(other.root);
+                    None
+                }
+                None => None,
+            };
+            let Some(square) = square else {
+                ui.destroy(grid);
+                self.squares.clear();
+                self.selections.clear();
+                return;
             };
             let id = square.root;
             if let Some(e) = ui.element_mut(id) {

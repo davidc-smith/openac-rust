@@ -603,3 +603,33 @@ fn a_piece_image_too_wide_to_be_an_id_draws_no_piece_instead_of_failing() {
     assert_eq!(images[0], 0);
     assert_eq!(images[1], WHITE_PIECE_SPRITES + 1);
 }
+
+/// OpenAC `MiniGameUiController.BuildSquares`: a square that fails to
+/// build stops the board, and no grid is added at all.
+#[test]
+fn a_square_that_fails_to_build_leaves_the_board_empty() {
+    let mut host = UiHost::new();
+    host.root.set_size(800.0, 600.0);
+    let info = window_info(true);
+    let layout = build_info(&mut host.root, &info);
+    let mut built = 0;
+    let mut create = |ui: &mut UiRoot| {
+        built += 1;
+        if built == 10 { None } else { create_square(ui) }
+    };
+    let c = MiniGameController::bind(
+        &mut host.root,
+        &layout,
+        read_piece_images(&info),
+        &mut create,
+    );
+    assert!(c.squares().is_empty());
+    let board = layout.find(mg::BOARD_ID).unwrap();
+    assert_eq!(
+        host.root
+            .widget::<ListBox>(board)
+            .unwrap()
+            .item_count(&host.root),
+        0
+    );
+}
