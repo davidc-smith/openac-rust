@@ -1335,9 +1335,6 @@ pub struct AppraisalController {
     creature_extra: Option<CreatureRowList>,
     creature_texts: [Option<ElementId>; 6],
     shown: bool,
-    /// The selection last seen (`None` before the first), so a change is
-    /// told from the selection the window found when it was attached.
-    seen_selection: Option<Option<u32>>,
     in_combat: bool,
     refresh_elapsed: f64,
     spell_panel: ElementId,
@@ -1488,7 +1485,6 @@ impl AppraisalController {
             creature_extra,
             creature_texts,
             shown: false,
-            seen_selection: None,
             in_combat: false,
             refresh_elapsed: 0.0,
             spell_panel,
@@ -1766,21 +1762,28 @@ impl AppraisalController {
         true
     }
 
-    /// The selection now. While the window shows, a change examines the
-    /// newly selected object, or (nothing selected) closes the window; a
-    /// change while it is hidden does nothing.
+    /// The selection changed to `selected` (each change once, in order).
+    /// While the window shows, the newly selected object is examined, or
+    /// (nothing selected) the window closes; a change while it is hidden
+    /// does nothing.
     pub fn follow_selection(&mut self, ui: &mut UiRoot, selected: Option<u32>) {
-        let previous = self.seen_selection.replace(selected);
-        if previous.is_none_or(|p| p == selected) || !self.shown {
+        if !self.shown {
             return;
         }
-        let output = match selected {
-            Some(id) if id != 0 => PanelOutput::Session(SessionCommand::Item(
-                ItemCommand::Appraise(ObjectRef::Guid(id)),
-            )),
-            _ => PanelOutput::CloseExamination,
-        };
-        emit(ui, output);
+        match selected {
+            Some(id) if id != 0 => emit(
+                ui,
+                PanelOutput::Session(SessionCommand::Item(ItemCommand::Appraise(
+                    ObjectRef::Guid(id),
+                ))),
+            ),
+            _ => {
+                emit(ui, PanelOutput::CloseExamination);
+                // The window is closing: a later change heard with this
+                // one finds it hidden.
+                self.shown = false;
+            }
+        }
     }
 
     /// The examine key closes the window while it shows (true: the key is

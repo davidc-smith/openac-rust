@@ -762,6 +762,46 @@ fn a_selected_items_mana_query_goes_out_and_its_answer_fills_the_strips_bar() {
 
 #[test]
 #[ignore = "needs the retail dat files"]
+fn the_examination_follows_a_selection_changed_away_and_back_in_one_frame() {
+    // OpenAC `AppraisalUiController.HandleSelectionChanged` runs on every
+    // selection change: away and back before the window's next frame
+    // examines both, in order, though the frame ends on the first again.
+    use ac_runtime::inventory::{ItemCommand, ObjectRef};
+    let size = (1280, 720);
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = scene();
+    interface(&mut scene, InterfaceState::default());
+    let view = *scene.player_view().unwrap();
+    scene.apply(PresentationEvent::Player(PlayerView {
+        selected: Some(SWORD),
+        ..view
+    }));
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::Selection(
+        Some(SWORD),
+    )));
+    ui.feed(&mut scene);
+    ui.host_mut().root.show_window(EXAMINATION_WINDOW);
+    ui.host_mut().pump();
+    let _ = ui.drain();
+    for selected in [Some(DRUDGE), Some(SWORD)] {
+        scene.apply(PresentationEvent::Interface(InterfaceEvent::Selection(
+            selected,
+        )));
+    }
+    ui.feed(&mut scene);
+    let appraised: Vec<u32> = ui
+        .drain()
+        .into_iter()
+        .filter_map(|c| match c {
+            SessionCommand::Item(ItemCommand::Appraise(ObjectRef::Guid(g))) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(appraised, [DRUDGE, SWORD]);
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
 fn the_spell_bar_cannot_cast_a_targeted_spell_without_a_fitting_target() {
     // OpenAC `SpellcastingUiController.ComputeSpellCastState` over
     // `RuntimeSpellCastState.EvaluateCastGate`, in the window: the cast

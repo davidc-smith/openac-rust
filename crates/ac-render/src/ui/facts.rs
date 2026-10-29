@@ -101,6 +101,9 @@ pub struct InterfaceFacts {
     /// Mana query answers the selected-object strip has not heard yet,
     /// oldest first.
     pub item_mana: Vec<ItemManaChange>,
+    /// The selection changes the window has not followed yet, oldest
+    /// first (the examination window follows each).
+    pub selection_changes: Vec<Option<u32>>,
     /// The plugins' UI: their windows, canvases, images, labels and lines.
     pub plugin_ui: ac_plugin_ui::PluginUiView,
     /// The session's chat entry and reply targets, once sent.
@@ -165,6 +168,7 @@ impl InterfaceFacts {
             InterfaceEvent::OpenSalvage(tool) => self.salvage_opens.push(tool),
             InterfaceEvent::OpenContainedContainer(pack) => self.container_opens.push(pack),
             InterfaceEvent::ItemMana(change) => self.item_mana.push(change),
+            InterfaceEvent::Selection(selected) => self.selection_changes.push(selected),
             InterfaceEvent::PluginUi(changes) => self.plugin_ui.apply_all(changes),
             InterfaceEvent::ChatEntry(view) => {
                 self.chat_entry = Some(*view);
