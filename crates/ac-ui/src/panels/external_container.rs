@@ -13,7 +13,7 @@
 use ac_core::items::placement::{
     evaluate_container_placement, item_list_drop_placement, placement_rejection_text,
 };
-use ac_core::items::{ClientObject, PlacementRejection};
+use ac_core::items::{ClientObject, PlacementRejection, PublicWeenieFlags};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, PendingPlacement, REQUEST_BUSY};
 use ac_runtime::session::SessionCommand;
 
@@ -171,11 +171,22 @@ fn configure_list(ui: &mut UiRoot, list: ElementId, cell: f32, horizontal: bool,
     });
 }
 
-/// A container's strip has one cell per unit of its capacity, so a house
-/// hook (capacity 1) shows one cell. A negative capacity means no limit:
-/// the strip fills its width (`None`).
-fn slot_count(capacity: Option<i32>) -> Option<usize> {
-    capacity.and_then(|c| usize::try_from(c).ok())
+/// A container's strip has one cell per unit of its capacity: the pack
+/// strip from its pack capacity, the item strip from its item capacity, so
+/// a house hook (item capacity 1) shows one cell. A container that is not
+/// openable (and is not the player) has capacity 0 and shows no cells. A
+/// negative capacity means no limit: the strip fills its width (`None`).
+fn slot_count(view: &ItemsView<'_>, container: u32, packs: bool) -> Option<usize> {
+    let c = view.get(container)?;
+    if !c.flags().contains(PublicWeenieFlags::OPENABLE) && container != view.player {
+        return Some(0);
+    }
+    let capacity = if packs {
+        c.containers_capacity
+    } else {
+        c.items_capacity
+    };
+    usize::try_from(capacity).ok()
 }
 
 fn cells(ui: &UiRoot, list: ElementId) -> Vec<ElementId> {
@@ -597,8 +608,8 @@ impl ExternalContainerController {
             && matches(ui, self.containers, shown(ui, self.containers, &packs))
             && matches(ui, self.contents, shown(ui, self.contents, &loose));
         if !same {
-            let pack_cells = slot_count(view.get(root).map(|c| c.containers_capacity));
-            let item_cells = slot_count(view.get(self.open_container).map(|c| c.items_capacity));
+            let pack_cells = slot_count(view, root, true);
+            let item_cells = slot_count(view, self.open_container, false);
             for (list, guids, fixed) in [
                 (self.top, std::slice::from_ref(&root), None),
                 (self.containers, packs.as_slice(), pack_cells),

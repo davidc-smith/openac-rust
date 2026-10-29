@@ -174,7 +174,7 @@ const LOOT: u32 = 0x8000_0101;
 
 /// The session's facts with a corpse open (holding one item) or not.
 fn corpse_facts(scene: &mut Scene, open: bool, in_range: bool) {
-    use ac_core::items::{ClientObject, ItemType};
+    use ac_core::items::{ClientObject, ItemType, PublicWeenieFlags};
     use ac_runtime::session::interface::{InterfaceEvent, InterfaceState, ItemsUpdate};
     let mut player = ClientObject::new(PLAYER);
     player.name = "+Horan".to_owned();
@@ -183,6 +183,8 @@ fn corpse_facts(scene: &mut Scene, open: bool, in_range: bool) {
     corpse.name = "Corpse of Drudge".to_owned();
     corpse.item_type = ItemType::CONTAINER;
     corpse.items_capacity = 120;
+    corpse.containers_capacity = 10;
+    corpse.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE | PublicWeenieFlags::CORPSE);
     let mut loot = ClientObject::new(LOOT);
     loot.name = "Drudge Charm".to_owned();
     loot.item_type = ItemType::JEWELRY;

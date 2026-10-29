@@ -14,7 +14,7 @@ mod common;
 
 use std::collections::HashMap;
 
-use ac_core::items::{ClientObject, ItemType, ItemUseable};
+use ac_core::items::{ClientObject, ItemType, ItemUseable, PublicWeenieFlags};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, PendingPlacement};
 use ac_runtime::session::SessionCommand;
 use ac_ui::ElementId;
@@ -49,6 +49,8 @@ struct Strip {
     facts: ExternalContainerFacts,
     can_make_request: bool,
     placement: Option<PendingPlacement>,
+    /// The public description bits the opened container carries.
+    container_flags: PublicWeenieFlags,
 }
 
 fn strip() -> Strip {
@@ -89,6 +91,7 @@ fn strip() -> Strip {
         facts: ExternalContainerFacts::default(),
         can_make_request: true,
         placement: None,
+        container_flags: PublicWeenieFlags::OPENABLE,
     }
 }
 
@@ -111,6 +114,7 @@ impl Strip {
         chest.items_capacity = items_capacity;
         chest.containers_capacity = containers_capacity;
         chest.useability = Some(ItemUseable::REMOTE);
+        chest.public_weenie_bitfield = Some(self.container_flags);
         self.objects.add(chest);
         for (i, &g) in contents.iter().enumerate() {
             if self.objects.t.get(g).is_none() {
@@ -289,6 +293,30 @@ fn items_past_the_capacity_get_no_cell_and_the_cells_refresh_in_place() {
     s.objects.get_mut(ITEM).properties.ints.insert(1, 42);
     s.update();
     assert_eq!(s.cell(CONTENTS, 0), cell);
+}
+
+/// OpenAC `NotOpenableContainer_showsNoCells`: a container that is not
+/// openable has capacity 0 whatever it sends: no item cells and no pack
+/// cells, even with something inside.
+#[test]
+fn a_container_that_is_not_openable_shows_no_cells() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::NONE;
+    s.objects.add(plain_item(ITEM));
+    s.open_with(CHEST, 24, 7, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 0);
+    assert_eq!(s.num_cells(PACKS), 0);
+}
+
+/// OpenAC `ThePlayer_keepsItsCapacity_withoutTheOpenableFlag`: the player
+/// is the one container whose capacity holds without the openable flag.
+#[test]
+fn the_player_keeps_its_capacity_without_the_openable_flag() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::PLAYER;
+    s.open_with(PLAYER, 3, 2, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 3);
+    assert_eq!(s.num_cells(PACKS), 2);
 }
 
 /// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
@@ -513,6 +541,7 @@ fn a_pack_inside_the_container_opens_on_a_press_without_a_request() {
     let mut pack = ClientObject::new(0x7000_0200);
     pack.item_type = ItemType::CONTAINER;
     pack.items_capacity = 10;
+    pack.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
     s.objects.add(pack);
     s.open_with(CHEST, 24, 7, &[0x7000_0200, ITEM]);
     s.objects
@@ -620,6 +649,7 @@ mod real_dats {
         let mut chest = ClientObject::new(CHEST);
         chest.item_type = ItemType::CONTAINER;
         chest.items_capacity = 24;
+        chest.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
         objects.add(chest);
         objects.contained(ITEM, CHEST, 0, ItemType::MISC);
         let view = ItemsView::new(&objects.t, PLAYER);
