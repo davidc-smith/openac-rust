@@ -49,10 +49,11 @@ pub struct ItemList {
     pub horizontal_scroll: bool,
     /// Keep empty cells filling the visible part of a single row.
     pub fill_visible_empty_slots: bool,
-    /// When set, the list pads itself with empty cells to exactly this
-    /// many, whatever its width, in place of
-    /// [`ItemList::fill_visible_empty_slots`]. A cell holding an item is
-    /// never dropped to meet it.
+    /// When set, the list holds exactly this many cells, whatever its
+    /// width, in place of [`ItemList::fill_visible_empty_slots`]: it pads
+    /// with empty cells, and drops the last cells past the count even when
+    /// they hold an item, so a container never shows more items than it
+    /// can hold.
     pub fixed_slot_count: Option<usize>,
     /// Makes those empty cells (default: [`ItemCell`]).
     pub empty_slot_factory: Option<CellFactory>,
@@ -267,7 +268,9 @@ impl ItemList {
         }
         while self.cells.len() > visible {
             let last = *self.cells.last().expect("non-empty");
-            if !ui.widget_dyn(last).is_some_and(|w| w.is_empty_slot()) {
+            if self.fixed_slot_count.is_none()
+                && !ui.widget_dyn(last).is_some_and(|w| w.is_empty_slot())
+            {
                 break;
             }
             self.cells.pop();

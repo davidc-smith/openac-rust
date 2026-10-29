@@ -274,6 +274,23 @@ fn a_hook_shows_one_item_cell_and_no_pack_cells() {
     assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
 }
 
+/// OpenAC `ItemsPastTheCapacity_getNoCell_andCellsRefreshInPlace`: the
+/// strip never shows more items than the container holds: the items past
+/// its capacity get no cell, and the cells still refresh in place.
+#[test]
+fn items_past_the_capacity_get_no_cell_and_the_cells_refresh_in_place() {
+    let mut s = strip();
+    s.objects.add(plain_item(ITEM));
+    s.objects.add(plain_item(ITEM + 1));
+    s.open_with(CHEST, 1, 0, &[ITEM, ITEM + 1]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    let cell = s.cell(CONTENTS, 0);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+    s.objects.get_mut(ITEM).properties.ints.insert(1, 42);
+    s.update();
+    assert_eq!(s.cell(CONTENTS, 0), cell);
+}
+
 /// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
 /// means no limit: the strips fill the window.
 #[test]
@@ -497,7 +514,7 @@ fn a_pack_inside_the_container_opens_on_a_press_without_a_request() {
     pack.item_type = ItemType::CONTAINER;
     pack.items_capacity = 10;
     s.objects.add(pack);
-    s.open(CHEST, &[0x7000_0200, ITEM]);
+    s.open_with(CHEST, 24, 7, &[0x7000_0200, ITEM]);
     s.objects
         .contained(0x7000_0201, 0x7000_0200, 0, ItemType::MISC);
     s.update();
@@ -633,14 +650,14 @@ mod real_dats {
     }
 }
 
-/// More loose items than the row shows at once (24 cells fit): every item
-/// keeps its cell, and the next update leaves the cells alone, so a press
-/// on one is not lost to a rebuild.
+/// More loose items than the row shows at once (24 cells fit) in a
+/// container with no limit: every item keeps its cell, and the next update
+/// leaves the cells alone, so a press on one is not lost to a rebuild.
 #[test]
 fn a_container_with_more_items_than_fit_keeps_a_cell_per_item_across_updates() {
     let mut s = strip();
     let items: Vec<u32> = (0..30).map(|i| ITEM + i).collect();
-    s.open(CHEST, &items);
+    s.open_with(CHEST, -1, 0, &items);
     let list = s.ids[&CONTENTS];
     let cells = |s: &Strip| {
         s.host

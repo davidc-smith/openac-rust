@@ -167,6 +167,34 @@ fn a_fixed_slot_count_pads_to_the_count_whatever_the_width() {
     assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 4);
 }
 
+/// OpenAC `UiItemListTests.FixedSlotCount_DropsTheLastCellsPastTheCount_EvenWithItems`.
+#[test]
+fn a_fixed_slot_count_drops_the_last_cells_past_it_even_with_items() {
+    let mut ui = root(400.0, 400.0);
+    let id = list(&mut ui, 130.0, 32.0, |l| {
+        l.cell_width = 32.0;
+        l.cell_height = 32.0;
+        l.single_row = true;
+        l.fill_visible_empty_slots = true;
+        l.fixed_slot_count = Some(1);
+    });
+    let first = with_list(&mut ui, id, |l, ui| {
+        l.defer_layout();
+        l.flush(ui);
+        let first = ui.insert(Element::default(), Filled);
+        l.add_item(ui, id, first);
+        let second = ui.insert(Element::default(), Filled);
+        l.add_item(ui, id, second);
+        l.end_defer_layout(ui, id);
+        first
+    });
+    assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 1);
+    assert_eq!(ui.widget::<ItemList>(id).unwrap().item(0), Some(first));
+    ui.widget_mut::<ItemList>(id).unwrap().fixed_slot_count = Some(0);
+    layout(&mut ui, id);
+    assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 0);
+}
+
 #[test]
 fn scroll_item_into_view_moves_only_when_the_row_is_outside() {
     let mut ui = root(400.0, 400.0);

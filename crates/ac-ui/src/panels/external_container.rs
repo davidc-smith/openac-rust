@@ -188,7 +188,17 @@ fn slot_object(ui: &UiRoot, cell: ElementId) -> u32 {
     ui.widget::<ItemSlot>(cell).map_or(0, |s| s.object_id)
 }
 
-/// The list's cells show `guids` in order, empty cells after them.
+/// The guids a list shows: a list with a fixed cell count drops the items
+/// past it.
+fn shown<'a>(ui: &UiRoot, list: ElementId, guids: &'a [u32]) -> &'a [u32] {
+    match ui.widget::<ItemList>(list).and_then(|l| l.fixed_slot_count) {
+        Some(count) if guids.len() > count => &guids[..count],
+        _ => guids,
+    }
+}
+
+/// The list's cells show `guids` in order, empty cells after them (a list
+/// pads itself past its items, to its width or to its fixed cell count).
 fn matches(ui: &UiRoot, list: ElementId, guids: &[u32]) -> bool {
     let cells = cells(ui, list);
     if cells.len() < guids.len() {
@@ -584,8 +594,8 @@ impl ExternalContainerController {
             });
         let same = matches(ui, self.top, &[root])
             && cells(ui, self.top).len() == 1
-            && matches(ui, self.containers, &packs)
-            && matches(ui, self.contents, &loose);
+            && matches(ui, self.containers, shown(ui, self.containers, &packs))
+            && matches(ui, self.contents, shown(ui, self.contents, &loose));
         if !same {
             let pack_cells = slot_count(view.get(root).map(|c| c.containers_capacity));
             let item_cells = slot_count(view.get(self.open_container).map(|c| c.items_capacity));
