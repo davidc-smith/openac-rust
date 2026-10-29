@@ -1,4 +1,4 @@
-//! The plugins' UI in the game window (OpenAC `RetailUiRuntime`'s plugin
+//! The lugins' UI in the game window (OpenAC `RetailUiRuntime`'s plugin
 //! panel host, `PluginShelfController`, `PluginCanvasElement`, the world
 //! label, world line and projectile overlays): the window's copy of the
 //! session's plugin UI (`InterfaceFacts::plugin_ui`) drawn with the
@@ -257,7 +257,7 @@ impl MarkupIcons for NoMarkupIcons {
 
 /// The window's art, its icon composer and the objects it knows, as the
 /// images plugin markup names; and the file icons the session holds for
-/// the plugin window being synced, with the paths it drew.
+/// the plugin window being synced.
 struct WindowIcons<'a> {
     content: &'a DatContent,
     icons: &'a mut IconComposer,
@@ -267,8 +267,6 @@ struct WindowIcons<'a> {
     textures: &'a mut HashMap<(String, u32), (Icon, bool)>,
     /// The plugin window being synced.
     panel: u32,
-    /// The file paths it drew.
-    files: Vec<String>,
 }
 
 /// A plugin's own image (its pixels, or a file its markup draws) as a
@@ -361,9 +359,6 @@ impl MarkupIcons for WindowIcons<'_> {
     }
 
     fn file(&mut self, path: &str) -> Option<Icon> {
-        if !self.files.iter().any(|p| p == path) {
-            self.files.push(path.to_owned());
-        }
         let image = self.view.file_icon(self.panel, path)?;
         let key = (image.owner.clone(), image.handle);
         if let Some((icon, _)) = self.textures.get(&key) {
@@ -767,7 +762,6 @@ impl WindowUi {
             images,
             textures: &mut plugins.images,
             panel: 0,
-            files: Vec::new(),
         };
         let theme = plugins.theme;
         for panel in &facts.plugin_ui.panels {
@@ -775,37 +769,12 @@ impl WindowUi {
                 continue;
             };
             markup_icons.panel = panel.id;
-            markup_icons.files.clear();
             let noticed = host.with_controller::<PluginPanelController, _>(name, |c, ui| {
-                // A sync at the revision the window already shows reads
-                // nothing again, so what it draws stays as it was.
-                let fresh = c.synced_revision() != Some(revision);
                 c.sync(ui, panel, revision, &mut markup_icons, theme);
-                (fresh, c.take_notices())
+                c.take_notices()
             });
-            let Some((fresh, noticed)) = noticed else {
-                continue;
-            };
-            for notice in noticed {
+            for notice in noticed.into_iter().flatten() {
                 notices.push(format!("ui: plugin window {name}: {notice}"));
-            }
-            // The session holds the file icons the window draws (none while
-            // it is hidden): told when they change.
-            if fresh {
-                let mut drawn = if panel.shown() {
-                    std::mem::take(&mut markup_icons.files)
-                } else {
-                    Vec::new()
-                };
-                drawn.sort();
-                let told = plugins.files_shown.get(&panel.id);
-                if told.map_or(!drawn.is_empty(), |t| *t != drawn) {
-                    plugins.files_shown.insert(panel.id, drawn.clone());
-                    plugins.outbox.borrow_mut().push(UiInput::FileIconsShown {
-                        panel: panel.id,
-                        paths: drawn,
-                    });
-                }
             }
         }
         if plugins.shelf {
@@ -820,6 +789,34 @@ impl WindowUi {
         }
     }
 
+    /// The session holds the file icons each plugin window drew this frame
+    /// (only the elements drawn: none in a hidden window, a closed tab's
+    /// page or a list row scrolled away): told when they change.
+    pub(super) fn report_drawn_file_icons(&mut self) {
+        let panels: Vec<(u32, String)> = self
+            .plugins
+            .panels
+            .iter()
+            .map(|(id, name)| (*id, name.clone()))
+            .collect();
+        for (panel, name) in panels {
+            let drawn = self
+                .host
+                .with_controller::<PluginPanelController, _>(&name, |c, _| c.take_drawn_files())
+                .unwrap_or_default();
+            let told = self.plugins.files_shown.get(&panel);
+            if told.map_or(!drawn.is_empty(), |t| *t != drawn) {
+                self.plugins.files_shown.insert(panel, drawn.clone());
+                self.plugins
+                    .outbox
+                    .borrow_mut()
+                    .push(UiInput::FileIconsShown {
+                        panel,
+                        paths: drawn,
+                    });
+            }
+        }
+    }
     /// OpenAC `RetailUiRuntime.ToggleClientWindow` and its siblings: a
     /// main panel through the panel switcher (so the toolbar follows), any
     /// other window directly.

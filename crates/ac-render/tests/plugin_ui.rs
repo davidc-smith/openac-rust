@@ -293,9 +293,18 @@ fn a_plugin_windows_file_icon_is_held_while_drawn_and_drawn_once_held() {
             &UiOwner::new("test.files", "Files"),
             PanelDescriptor::new("main", "Files"),
             r#"<panel x="300" y="200" w="240" h="120" title="Files">
-  <icon x="8" y="30" w="24" h="24" file="icons/sword.png"/>
+  <group x="8" y="30" w="100" h="40" visible="{PageOpen}">
+    <icon x="0" y="0" w="24" h="24" file="icons/sword.png"/>
+  </group>
 </panel>"#,
-            BindingSchema::new("Files"),
+            BindingSchema::new("Files").with("PageOpen", K::Bool),
+        )
+        .unwrap();
+    state
+        .set_values(
+            "test.files",
+            panel,
+            vec![("PageOpen".into(), UiValue::Bool(true))],
         )
         .unwrap();
     state.show_panel("test.files", "main", true);
@@ -319,6 +328,48 @@ fn a_plugin_windows_file_icon_is_held_while_drawn_and_drawn_once_held() {
     ui.feed(&mut scene);
     let after = runtime_sprites(&ui.frame(Instant::now(), size));
     assert_eq!(after, before + 1, "the file icon draws once held");
+
+    // Its page closes while the window stays shown: the window says it no
+    // longer draws it, and the session lets go of it 5 s later.
+    state
+        .set_values(
+            "test.files",
+            panel,
+            vec![("PageOpen".into(), UiValue::Bool(false))],
+        )
+        .unwrap();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.take_changes(),
+    )));
+    ui.feed(&mut scene);
+    ui.frame(Instant::now(), size);
+    let commands = ui.drain();
+    assert!(commands.iter().any(|c| matches!(c,
+        SessionCommand::PluginUi(UiInput::FileIconsShown { panel: p, paths })
+            if *p == panel && paths.is_empty())));
+    deliver(&mut state, commands);
+    assert!(state.panels().next().unwrap().shown());
+    for second in 1..=6 {
+        state.tick_file_icons(second * 1000);
+    }
+    assert_eq!(state.image_count("test.files"), 0);
+    assert!(state.file_icon(panel, "icons/sword.png").is_none());
+
+    // Open again: drawn, said, read and held again.
+    state
+        .set_values(
+            "test.files",
+            panel,
+            vec![("PageOpen".into(), UiValue::Bool(true))],
+        )
+        .unwrap();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.take_changes(),
+    )));
+    ui.feed(&mut scene);
+    ui.frame(Instant::now(), size);
+    deliver(&mut state, ui.drain());
+    assert!(state.file_icon(panel, "icons/sword.png").is_some());
 
     // Hidden: the window draws no file icons and tells the session.
     state.show_panel("test.files", "main", false);

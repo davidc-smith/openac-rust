@@ -202,3 +202,111 @@ fn a_blank_bound_path_draws_nothing_without_asking() {
 fn a_resolver_without_file_support_draws_no_file_icons() {
     assert!(drawn(&window("icons/bound.png"), &mut DidOnly).is_empty());
 }
+
+const TABBED: &str = r#"<panel x="0" y="0" w="400" h="300">
+  <tab x="0" y="0" w="60" h="20" text="A" selected="{OnA}" icon="icons/tab-a.png" iconkind="file"/>
+  <tab x="70" y="0" w="60" h="20" text="B" selected="{OnB}"/>
+  <group x="0" y="30" w="200" h="100" visible="{OnA}">
+    <icon x="0" y="0" w="24" h="24" file="icons/page-a.png"/>
+  </group>
+  <group x="0" y="30" w="200" h="100" visible="{OnB}">
+    <icon x="0" y="0" w="24" h="24" file="icons/page-b.png"/>
+  </group>
+  <icon x="0" y="140" w="24" h="24" file="icons/hidden.png" visible="{Never}"/>
+  <list x="0" y="170" w="100" h="60" rowheight="20" selected="{Selected}" items="{Rows}" icons="{RowIcons}" iconkind="file"/>
+</panel>"#;
+
+/// The paths the window says it drew in one frame.
+fn drawn_paths(on_a: bool) -> Vec<String> {
+    let mut ui = PluginUi::new();
+    let schema = BindingSchema::new("Tabbed")
+        .with("OnA", K::Bool)
+        .with("OnB", K::Bool)
+        .with("Never", K::Bool)
+        .with("Rows", K::TextList)
+        .with("RowIcons", K::TextList)
+        .with("Selected", K::Int);
+    let panel = ui
+        .register_panel(
+            &UiOwner::new("acme.hello", "Hello"),
+            PanelDescriptor::new("main", "Hello"),
+            TABBED,
+            schema,
+        )
+        .unwrap();
+    let rows: Vec<String> = (0..5).map(|i| format!("row {i}")).collect();
+    let paths: Vec<String> = (0..5).map(|i| format!("icons/row{i}.png")).collect();
+    ui.set_values(
+        "acme.hello",
+        panel,
+        vec![
+            ("OnA".into(), UiValue::Bool(on_a)),
+            ("OnB".into(), UiValue::Bool(!on_a)),
+            ("Never".into(), UiValue::Bool(false)),
+            ("Rows".into(), UiValue::TextList(rows)),
+            ("RowIcons".into(), UiValue::TextList(paths)),
+            ("Selected".into(), UiValue::Int(-1)),
+        ],
+    )
+    .unwrap();
+    let view = ui.panels().next().unwrap().clone();
+    let mut host = UiHost::new();
+    host.root.set_size(1024.0, 768.0);
+    let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
+    let mut controller = build_panel(&mut host.root, &view, None, outbox);
+    let frame = controller.root;
+    let root = host.root.root();
+    host.root.add_child(root, frame);
+    host.root
+        .register_window(&controller.window_name, frame, Some(frame), 0)
+        .unwrap();
+    controller.sync(
+        &mut host.root,
+        &view,
+        1,
+        &mut FileResolver::default(),
+        PluginTheme::Classic,
+    );
+    // Nothing is drawn yet, so nothing is said.
+    assert!(controller.take_drawn_files().is_empty());
+    let name = view.window_name();
+    host.attach_controller(&name, Box::new(controller)).unwrap();
+    host.draw((1024.0, 768.0), &crate::draw::NoSprites);
+    let drawn = host
+        .with_controller::<PluginPanelController, _>(&name, |c, _| c.take_drawn_files())
+        .unwrap();
+    // Taken: the next frame starts empty.
+    let again = host
+        .with_controller::<PluginPanelController, _>(&name, |c, _| c.take_drawn_files())
+        .unwrap();
+    assert!(again.is_empty());
+    drawn
+}
+
+// The window says only what it drew (OpenAC's resolver hears only the
+// elements it draws): a closed tab's page, a hidden element and list rows
+// scrolled away say nothing; the open tab's page, the tab header's icon and
+// the rows shown do.
+#[test]
+fn only_drawn_elements_say_they_drew_their_file() {
+    assert_eq!(
+        drawn_paths(true),
+        [
+            "icons/page-a.png",
+            "icons/row0.png",
+            "icons/row1.png",
+            "icons/row2.png",
+            "icons/tab-a.png",
+        ]
+    );
+    assert_eq!(
+        drawn_paths(false),
+        [
+            "icons/page-b.png",
+            "icons/row0.png",
+            "icons/row1.png",
+            "icons/row2.png",
+            "icons/tab-a.png",
+        ]
+    );
+}

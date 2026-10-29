@@ -44,8 +44,8 @@ use crate::tree::{Element, ElementId};
 use crate::widgets::{Field, Menu, MenuItem, Meter, Panel, Scrollbar};
 
 pub use widgets::{
-    Cell, Icon, MarkupButton, MarkupFrame, MarkupIcon, MarkupLabel, MarkupList, MarkupLog,
-    MarkupToggle, Palette,
+    Cell, DrawnFiles, FileTag, Icon, MarkupButton, MarkupFrame, MarkupIcon, MarkupLabel,
+    MarkupList, MarkupLog, MarkupToggle, Palette,
 };
 
 /// What the player did with the plugins' UI, for the client to send to the
@@ -217,6 +217,22 @@ fn icon_of(icons: &mut dyn MarkupIcons, source: &IconSource, values: &dyn Values
     }
 }
 
+/// An element's file icon, for it to say when it draws: its path now (none
+/// for another kind of icon, or a blank path).
+fn file_tag(
+    source: Option<&IconSource>,
+    values: &dyn Values,
+    drawn: &DrawnFiles,
+) -> Option<FileTag> {
+    match source? {
+        IconSource::File(path) => path.read(values).map(|path| FileTag {
+            drawn: drawn.clone(),
+            path,
+        }),
+        IconSource::Id { .. } => None,
+    }
+}
+
 /// A list's row icons: ids, or paths for file icons.
 fn row_icons(
     icons: &mut dyn MarkupIcons,
@@ -259,6 +275,8 @@ pub struct PluginPanelController {
     outbox: PluginOutbox,
     expected_visible: bool,
     synced: Option<u64>,
+    /// The plugin file icons the window drew, as its elements say so.
+    drawn: widgets::DrawnFiles,
     /// The window's remembered control values (rows read theirs by key).
     control_state: Option<fold::SharedControlState>,
     /// The window's expander shifts, which rows built later share.
@@ -522,6 +540,7 @@ pub fn build_panel_with_state(
         outbox,
         expected_visible: false,
         synced: None,
+        drawn: widgets::DrawnFiles::default(),
         control_state,
         shifts,
         notices: Vec::new(),
@@ -720,6 +739,14 @@ impl PluginPanelController {
         self.synced
     }
 
+    /// The plugin file icons the window drew since the last call, by path
+    /// as its markup gives them: only elements drawn say so (not a hidden
+    /// one, a closed tab's page or a list row scrolled away).
+    #[must_use]
+    pub fn take_drawn_files(&self) -> Vec<String> {
+        self.drawn.take()
+    }
+
     /// What the build ignored, one line each.
     #[must_use]
     pub fn warnings(&self) -> &[String] {
@@ -897,6 +924,7 @@ impl PluginPanelController {
         look: &Look,
     ) {
         let doc = Arc::clone(&self.document);
+        let drawn = self.drawn.clone();
         let Some(s) = self.sets.get_mut(&set) else {
             return;
         };
@@ -1019,6 +1047,7 @@ impl PluginPanelController {
                         w.background = bg;
                         w.border = edge;
                         w.icon = resolved;
+                        w.icon_file = file_tag(source.as_ref(), values, &drawn);
                         w.outline = p.is_none();
                         w.palette = palette;
                         if let Some(f) = text_font {
@@ -1030,6 +1059,7 @@ impl PluginPanelController {
                     let resolved = icon_of(icons, source, values);
                     if let Some(w) = ui.widget_mut::<MarkupIcon>(el) {
                         w.icon = resolved;
+                        w.file = file_tag(Some(source), values, &drawn);
                     }
                 }
                 Markup::Tab {
@@ -1044,6 +1074,7 @@ impl PluginPanelController {
                     if let Some(w) = ui.widget_mut::<MarkupButton>(el) {
                         w.text = s;
                         w.icon = resolved;
+                        w.icon_file = file_tag(source.as_ref(), values, &drawn);
                         w.tab_selected = Some(on);
                         w.outline = p.is_none();
                         w.palette = palette;
@@ -1249,6 +1280,8 @@ impl PluginPanelController {
                             w.row_icons = row_icons;
                         }
                         w.selected = selected_row;
+                        w.row_files = list_row_files(values, body);
+                        w.drawn_files = (!w.row_files.is_empty()).then(|| drawn.clone());
                         w.palette = palette;
                         if let Some(f) = text_font {
                             w.font.clone_from(f);
@@ -1503,6 +1536,41 @@ fn list_rows(
             (rows, counts, None)
         }
     }
+}
+
+/// The file icon paths each of a list's rows draws (none for a list
+/// without file icons), by the plugin's row.
+fn list_row_files(values: &dyn Values, body: &ListBody) -> Vec<Vec<String>> {
+    let sources: Vec<&str> = match body {
+        ListBody::Single {
+            icons: Some((name, IconKind::File)),
+            ..
+        } => vec![name.as_str()],
+        ListBody::Single { .. } => Vec::new(),
+        ListBody::Columns(columns) => columns
+            .iter()
+            .filter_map(|c| match &c.kind {
+                ColumnKind::Icon {
+                    values,
+                    kind: IconKind::File,
+                    ..
+                } => Some(values.as_str()),
+                _ => None,
+            })
+            .collect(),
+    };
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    for name in sources {
+        for (row, path) in texts(values, name).into_iter().enumerate() {
+            if rows.len() <= row {
+                rows.resize_with(row + 1, Vec::new);
+            }
+            if !path.trim().is_empty() {
+                rows[row].push(path);
+            }
+        }
+    }
+    rows
 }
 
 impl PanelController for PluginPanelController {

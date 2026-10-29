@@ -6,6 +6,9 @@
 //! `UiMarkupTabButton`, `UiMarkupToggle`, `UiMarkupIcon`, `UiMarkupList`,
 //! `UiMarkupLog`, `UiCheckLamp`, `UiPluginMarkupPanel`).
 
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use ac_plugin_ui::list::{self, ColumnPress};
@@ -22,6 +25,46 @@ use crate::widgets::scrollbar::thumb_rect;
 
 /// A resolved image: its texture and its size in pixels.
 pub type Icon = (TextureRef, f32, f32);
+
+/// The file icons a plugin window drew this frame, by path as its markup
+/// gives them: what the session holds while they are drawn. Elements that
+/// are hidden (a closed tab's page, a hidden group, a list row scrolled
+/// away) are not drawn, so they say nothing. Clones share the set.
+#[derive(Debug, Clone, Default)]
+pub struct DrawnFiles(Rc<RefCell<BTreeSet<String>>>);
+
+impl DrawnFiles {
+    /// `path` was drawn.
+    pub fn record(&self, path: &str) {
+        if !self.0.borrow().contains(path) {
+            self.0.borrow_mut().insert(path.to_owned());
+        }
+    }
+
+    /// The paths drawn since the last call, sorted.
+    #[must_use]
+    pub fn take(&self) -> Vec<String> {
+        std::mem::take(&mut *self.0.borrow_mut())
+            .into_iter()
+            .collect()
+    }
+}
+
+/// A file icon an element draws: its path, and where it says it drew it
+/// (whether or not the image is ready yet).
+#[derive(Debug, Clone)]
+pub struct FileTag {
+    /// The window's drawn set.
+    pub drawn: DrawnFiles,
+    /// The path.
+    pub path: String,
+}
+
+impl FileTag {
+    fn record(&self) {
+        self.drawn.record(&self.path);
+    }
+}
 
 /// The plugin theme's colours (OpenAC `PluginUiPalette`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -348,6 +391,8 @@ pub struct MarkupButton {
     pub font: Option<Arc<UiFont>>,
     /// An icon left of the caption.
     pub icon: Option<Icon>,
+    /// The icon is a plugin file: where it says it drew it.
+    pub icon_file: Option<FileTag>,
     /// A tab header: whether it is the selected tab (`None`: a button).
     pub tab_selected: Option<bool>,
     /// The theme's colours on a themed panel.
@@ -368,6 +413,7 @@ impl MarkupButton {
             outline: true,
             font,
             icon: None,
+            icon_file: None,
             tab_selected: None,
             palette: None,
             keyboard_focused: false,
@@ -425,6 +471,9 @@ impl Widget for MarkupButton {
             rc.rect_outline(1.0, 1.0, w - 2.0, h - 2.0, KEYBOARD_FOCUS_OUTLINE, 1.0);
         }
         let mut icon_column = 0.0;
+        if let Some(file) = &self.icon_file {
+            file.record();
+        }
         if let Some(icon) = self.icon {
             let extent = (w.min(h) - 6.0).max(0.0);
             icon_column = extent + 6.0;
@@ -558,11 +607,16 @@ impl Widget for MarkupToggle {
 pub struct MarkupIcon {
     /// What it shows.
     pub icon: Option<Icon>,
+    /// It shows a plugin file: where it says it drew it.
+    pub file: Option<FileTag>,
 }
 
 impl Widget for MarkupIcon {
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
+        if let Some(file) = &self.file {
+            file.record();
+        }
         if let Some(icon) = self.icon {
             draw_icon(rc, icon, 0.0, 0.0, w, h);
         }
@@ -742,6 +796,11 @@ pub struct MarkupList {
     pub rows: Vec<Vec<Cell>>,
     /// Each column's own row count.
     pub column_rows: Vec<usize>,
+    /// The plugin file icons each row draws, by the plugin's row, and
+    /// where the rows drawn say so.
+    pub row_files: Vec<Vec<String>>,
+    /// The window's drawn set, on a list with file icons.
+    pub drawn_files: Option<DrawnFiles>,
     /// The single-column form's per-row icons.
     pub row_icons: Option<Vec<Option<Icon>>>,
     /// The selected row (-1: none).
@@ -846,6 +905,8 @@ impl MarkupList {
             rows: Vec::new(),
             column_rows: Vec::new(),
             row_icons: None,
+            row_files: Vec::new(),
+            drawn_files: None,
             selected: -1,
             row_height,
             selection_band: false,
@@ -1533,6 +1594,11 @@ impl Widget for MarkupList {
         for index in self.top..end {
             let y = (index - self.top) as f32 * self.row_height;
             let plugin = self.plugin_row(index);
+            if let (Some(drawn), Some(files)) = (&self.drawn_files, self.row_files.get(plugin)) {
+                for path in files {
+                    drawn.record(path);
+                }
+            }
             let banded = match &self.ext {
                 Some(ext) if ext.multi => ext.banded(plugin),
                 Some(_) => self.selection_band && plugin as i32 == self.selected,

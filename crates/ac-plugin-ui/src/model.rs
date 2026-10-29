@@ -926,7 +926,9 @@ pub enum UiInput {
     },
     /// The plugin theme the player saved (sent at attach) or just picked.
     Theme(crate::theme::ThemeKind),
-    /// The file icons a plugin window draws now (none while it is hidden),
+    /// The file icons a plugin window draws now: those of the elements it
+    /// draws (none in a hidden window, a closed tab's page or a list row
+    /// scrolled away),
     /// sent when they change: the session holds each while it is drawn and
     /// lets go of one not drawn for a few seconds.
     FileIconsShown {
