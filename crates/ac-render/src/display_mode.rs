@@ -62,12 +62,15 @@ pub trait WindowSizeSurface {
 
 /// The monitor's mode switching.
 pub trait DisplayModeSwitcher {
+    /// How this window is made fullscreen.
+    fn kind(&self) -> FullscreenKind;
     /// The window is fullscreen on a monitor.
     fn is_fullscreen(&self) -> bool;
     /// The fullscreen mode's size, when fullscreen.
     fn current_fullscreen_mode(&self) -> Option<(u32, u32)>;
     /// Switch the monitor to `width` x `height` with the window fullscreen
-    /// on it.
+    /// on it (under a compositor: fullscreen at the monitor's own mode,
+    /// whatever the size).
     ///
     /// # Errors
     /// Why the switch did not happen.
@@ -88,7 +91,8 @@ pub fn parse_resolution(spec: &str) -> Option<(u32, u32)> {
 }
 
 /// Apply `display`'s fullscreen and resolution; `is_offered` says whether
-/// a fullscreen mode is one the monitor offers. Lines for the log go to
+/// a fullscreen mode is one the monitor offers (for a mode switch; under a
+/// compositor the size is not used). Lines for the log go to
 /// `log`. Returns whether the window is fullscreen afterwards.
 pub fn apply_display(
     display: &DisplaySettings,
@@ -98,6 +102,20 @@ pub fn apply_display(
     log: &mut Vec<String>,
 ) -> bool {
     let resolution = parse_resolution(&display.resolution);
+    if display.fullscreen && switcher.kind() == FullscreenKind::Compositor {
+        // The compositor shows the window at the monitor's own mode, so
+        // the chosen size has no effect and is not checked.
+        if switcher.is_fullscreen() {
+            return true;
+        }
+        let (w, h) = resolution.unwrap_or_else(|| surface.size());
+        if let Err(error) = switcher.try_enter_fullscreen(w, h) {
+            log.push(format!(
+                "display: fullscreen failed ({error}) — window state unchanged"
+            ));
+        }
+        return switcher.is_fullscreen();
+    }
     if display.fullscreen {
         let Some((w, h)) = resolution else {
             log.push(format!(
@@ -144,6 +162,21 @@ pub fn apply_display(
     switcher.is_fullscreen()
 }
 
+/// The monitor a fullscreen request goes to: the window's own, else the
+/// primary. Under a compositor a window is on no monitor until it is first
+/// shown and there is no primary monitor, so the first monitor is used.
+fn fullscreen_monitor<M>(
+    kind: FullscreenKind,
+    current: Option<M>,
+    primary: Option<M>,
+    first: impl FnOnce() -> Option<M>,
+) -> Option<M> {
+    current.or(primary).or_else(|| match kind {
+        FullscreenKind::Compositor => first(),
+        FullscreenKind::ModeSwitch => None,
+    })
+}
+
 /// The window as both the size surface and the mode switcher.
 #[derive(Debug)]
 pub struct WinitDisplay<'a>(pub &'a Window);
@@ -169,13 +202,11 @@ impl WindowSizeSurface for WinitDisplay<'_> {
     }
 }
 
-impl WinitDisplay<'_> {
+impl DisplayModeSwitcher for WinitDisplay<'_> {
     fn kind(&self) -> FullscreenKind {
         fullscreen_kind(crate::platform::window_protocol(self.0))
     }
-}
 
-impl DisplayModeSwitcher for WinitDisplay<'_> {
     fn is_fullscreen(&self) -> bool {
         self.0.fullscreen().is_some()
     }
@@ -196,24 +227,29 @@ impl DisplayModeSwitcher for WinitDisplay<'_> {
 
     fn try_enter_fullscreen(&mut self, width: u32, height: u32) -> Result<(), String> {
         let kind = self.kind();
-        let monitor = self
-            .0
-            .current_monitor()
-            .or_else(|| self.0.primary_monitor())
-            .ok_or("no monitor")?;
-        // The highest refresh rate the monitor has at that size.
-        let mode = monitor
-            .video_modes()
-            .filter(|m| {
-                let s = m.size();
-                (s.width, s.height) == (width, height)
-            })
-            .max_by_key(winit::monitor::VideoModeHandle::refresh_rate_millihertz)
-            .ok_or_else(|| format!("mode {width}x{height} is not in the monitor's mode list"))?;
-        // A compositor keeps the monitor at its own mode; the size is still
-        // checked against the monitor's list, as for a mode switch.
+        let monitor = fullscreen_monitor(
+            kind,
+            self.0.current_monitor(),
+            self.0.primary_monitor(),
+            || self.0.available_monitors().next(),
+        )
+        .ok_or("no monitor")?;
         let request = match kind {
-            FullscreenKind::ModeSwitch => Fullscreen::Exclusive(mode),
+            FullscreenKind::ModeSwitch => {
+                // The highest refresh rate the monitor has at that size.
+                let mode = monitor
+                    .video_modes()
+                    .filter(|m| {
+                        let s = m.size();
+                        (s.width, s.height) == (width, height)
+                    })
+                    .max_by_key(winit::monitor::VideoModeHandle::refresh_rate_millihertz)
+                    .ok_or_else(|| {
+                        format!("mode {width}x{height} is not in the monitor's mode list")
+                    })?;
+                Fullscreen::Exclusive(mode)
+            }
+            // The monitor keeps its own mode; the size has no effect.
             FullscreenKind::Compositor => Fullscreen::Borderless(Some(monitor)),
         };
         self.0.set_fullscreen(Some(request));
@@ -275,6 +311,7 @@ mod tests {
     }
 
     struct Switcher {
+        kind: FullscreenKind,
         fullscreen: bool,
         mode: Option<(u32, u32)>,
         enter_succeeds: bool,
@@ -284,6 +321,7 @@ mod tests {
     impl Default for Switcher {
         fn default() -> Self {
             Self {
+                kind: FullscreenKind::ModeSwitch,
                 fullscreen: false,
                 mode: None,
                 enter_succeeds: true,
@@ -293,6 +331,9 @@ mod tests {
     }
 
     impl DisplayModeSwitcher for Switcher {
+        fn kind(&self) -> FullscreenKind {
+            self.kind
+        }
         fn is_fullscreen(&self) -> bool {
             self.fullscreen
         }
@@ -433,6 +474,80 @@ mod tests {
                 "{protocol:?}"
             );
         }
+    }
+
+    fn compositor() -> Switcher {
+        Switcher {
+            kind: FullscreenKind::Compositor,
+            ..Switcher::default()
+        }
+    }
+
+    /// The compositor keeps the monitor at its own mode, so the chosen
+    /// size is not checked: the default 1280x720 is rarely in a Wayland
+    /// monitor's list, which usually holds only the current mode.
+    #[test]
+    fn compositor_fullscreen_does_not_need_an_offered_size() {
+        let (mut s, mut w) = (Surface::default(), compositor());
+        assert!(apply(&display(true, "1280x720"), &mut s, &mut w, |_| {
+            false
+        }));
+        assert_eq!(w.calls, ["enter:1280x720"]);
+        assert_eq!(s.writes, 0);
+    }
+
+    #[test]
+    fn compositor_fullscreen_does_not_need_a_readable_size() {
+        let mut s = Surface {
+            size: (1600, 900),
+            ..Surface::default()
+        };
+        let mut w = compositor();
+        assert!(apply(&display(true, "garbage"), &mut s, &mut w, |_| true));
+        assert_eq!(w.calls, ["enter:1600x900"]);
+    }
+
+    /// Any chosen size is the compositor's fullscreen at the monitor's
+    /// mode, so a window already fullscreen there is left alone.
+    #[test]
+    fn compositor_fullscreen_already_fullscreen_does_nothing() {
+        let (mut s, mut w) = (
+            Surface::default(),
+            Switcher {
+                fullscreen: true,
+                mode: Some((2560, 1440)),
+                ..compositor()
+            },
+        );
+        apply(&display(true, "1920x1080"), &mut s, &mut w, |_| true);
+        assert!(w.calls.is_empty());
+    }
+
+    /// Before the first frame a Wayland window is on no monitor yet and
+    /// there is no primary monitor, so the first monitor is used (as the
+    /// primary monitor is the first one there in OpenAC's window library).
+    #[test]
+    fn compositor_fullscreen_falls_back_to_the_first_monitor() {
+        assert_eq!(
+            fullscreen_monitor(FullscreenKind::Compositor, None, None, || Some(3)),
+            Some(3)
+        );
+        assert_eq!(
+            fullscreen_monitor(FullscreenKind::Compositor, Some(1), Some(2), || Some(3)),
+            Some(1)
+        );
+        assert_eq!(
+            fullscreen_monitor(FullscreenKind::Compositor, None, Some(2), || Some(3)),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn a_mode_switch_uses_the_windows_monitor_else_the_primary_only() {
+        let k = FullscreenKind::ModeSwitch;
+        assert_eq!(fullscreen_monitor(k, Some(1), Some(2), || Some(3)), Some(1));
+        assert_eq!(fullscreen_monitor(k, None, Some(2), || Some(3)), Some(2));
+        assert_eq!(fullscreen_monitor(k, None, None, || Some(3)), None);
     }
 
     #[test]

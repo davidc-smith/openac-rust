@@ -327,7 +327,8 @@ mod tests {
     fn a_window_handle_names_its_windowing_system() {
         use std::ptr::NonNull;
         use winit::raw_window_handle::{
-            RawWindowHandle, WaylandWindowHandle, XcbWindowHandle, XlibWindowHandle,
+            AppKitWindowHandle, RawWindowHandle, WaylandWindowHandle, Win32WindowHandle,
+            XcbWindowHandle, XlibWindowHandle,
         };
         let surface = NonNull::<std::ffi::c_void>::dangling();
         assert_eq!(
@@ -343,6 +344,16 @@ mod tests {
                 std::num::NonZeroU32::new(7).unwrap()
             ))),
             DisplayProtocol::X11
+        );
+        assert_eq!(
+            protocol_of_handle(&RawWindowHandle::Win32(Win32WindowHandle::new(
+                std::num::NonZeroIsize::new(7).unwrap()
+            ))),
+            DisplayProtocol::Windows
+        );
+        assert_eq!(
+            protocol_of_handle(&RawWindowHandle::AppKit(AppKitWindowHandle::new(surface))),
+            DisplayProtocol::Cocoa
         );
     }
 
