@@ -138,6 +138,11 @@ pub struct ExternalContainerController {
     projection: Option<PendingPlacement>,
     /// The placement last seen (its token; 0 for none).
     seen_placement: u64,
+    /// The containers whose items the strips show now, so an update keeps
+    /// the shown items of a full strip instead of letting an arrival push
+    /// one out.
+    packs_shown_for: u32,
+    contents_shown_for: u32,
     queue: Vec<(ElementId, ElementMessage)>,
 }
 
@@ -199,13 +204,36 @@ fn slot_object(ui: &UiRoot, cell: ElementId) -> u32 {
     ui.widget::<ItemSlot>(cell).map_or(0, |s| s.object_id)
 }
 
-/// The guids a list shows: a list with a fixed cell count drops the items
-/// past it.
-fn shown<'a>(ui: &UiRoot, list: ElementId, guids: &'a [u32]) -> &'a [u32] {
-    match ui.widget::<ItemList>(list).and_then(|l| l.fixed_slot_count) {
-        Some(count) if guids.len() > count => &guids[..count],
-        _ => guids,
+/// The guids a strip with `slots` cells shows, in their order. When there
+/// are more than its cells, an item it shows already (`current`, the strip
+/// as it stands for the same container) keeps its cell, so an item arriving
+/// in a full strip is not shown; the free cells go to the first of the
+/// others.
+fn shown(ui: &UiRoot, guids: &[u32], slots: Option<usize>, current: Option<ElementId>) -> Vec<u32> {
+    let Some(count) = slots.filter(|&c| guids.len() > c) else {
+        return guids.to_vec();
+    };
+    let mut keep: Vec<u32> = Vec::with_capacity(count);
+    if let Some(list) = current {
+        for cell in cells(ui, list) {
+            if keep.len() >= count {
+                break;
+            }
+            let id = slot_object(ui, cell);
+            if id != 0 && guids.contains(&id) && !keep.contains(&id) {
+                keep.push(id);
+            }
+        }
     }
+    for &guid in guids {
+        if keep.len() >= count {
+            break;
+        }
+        if !keep.contains(&guid) {
+            keep.push(guid);
+        }
+    }
+    guids.iter().copied().filter(|g| keep.contains(g)).collect()
 }
 
 /// The list's cells show `guids` in order, empty cells after them (a list
@@ -272,6 +300,8 @@ impl ExternalContainerController {
             pending: Vec::new(),
             projection: None,
             seen_placement: 0,
+            packs_shown_for: 0,
+            contents_shown_for: 0,
             queue: Vec::new(),
         })
     }
@@ -322,6 +352,8 @@ impl ExternalContainerController {
                 self.clear_lists(ui);
             } else {
                 self.open_container = facts.container;
+                self.packs_shown_for = 0;
+                self.contents_shown_for = 0;
                 self.scroll_to_home(ui);
                 ui.show_window(&self.window);
             }
@@ -380,6 +412,8 @@ impl ExternalContainerController {
     }
 
     fn clear_lists(&mut self, ui: &mut UiRoot) {
+        self.packs_shown_for = 0;
+        self.contents_shown_for = 0;
         for list in [self.top, self.containers, self.contents] {
             ui.with::<ItemList, _>(list, |l, ui| l.flush(ui));
         }
@@ -605,6 +639,20 @@ impl ExternalContainerController {
             });
         let pack_cells = slot_count(view, root, true);
         let item_cells = slot_count(view, self.open_container, false);
+        let packs = shown(
+            ui,
+            &packs,
+            pack_cells,
+            (self.packs_shown_for == root).then_some(self.containers),
+        );
+        let loose = shown(
+            ui,
+            &loose,
+            item_cells,
+            (self.contents_shown_for == self.open_container).then_some(self.contents),
+        );
+        self.packs_shown_for = root;
+        self.contents_shown_for = self.open_container;
         let fixed =
             |ui: &UiRoot, list| ui.widget::<ItemList>(list).and_then(|l| l.fixed_slot_count);
         // A strip whose cell count changed (another container opened, or its
@@ -613,8 +661,8 @@ impl ExternalContainerController {
             && fixed(ui, self.contents) == item_cells
             && matches(ui, self.top, &[root])
             && cells(ui, self.top).len() == 1
-            && matches(ui, self.containers, shown(ui, self.containers, &packs))
-            && matches(ui, self.contents, shown(ui, self.contents, &loose));
+            && matches(ui, self.containers, &packs)
+            && matches(ui, self.contents, &loose);
         if !same {
             for (list, guids, fixed) in [
                 (self.top, std::slice::from_ref(&root), None),

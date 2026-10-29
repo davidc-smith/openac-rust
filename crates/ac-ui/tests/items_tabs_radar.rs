@@ -195,6 +195,26 @@ fn a_fixed_slot_count_drops_the_last_cells_past_it_even_with_items() {
     assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 0);
 }
 
+/// OpenAC `UiItemListTests.FixedSlotCount_HoldsBeforeTheCellSizeIsKnown`.
+#[test]
+fn a_fixed_slot_count_holds_before_the_cell_size_is_known() {
+    let mut ui = root(400.0, 400.0);
+    let id = list(&mut ui, 130.0, 32.0, |l| l.fixed_slot_count = Some(2));
+    with_list(&mut ui, id, |l, ui| {
+        l.defer_layout();
+        l.flush(ui);
+        for _ in 0..3 {
+            let c = ui.insert(Element::default(), Filled);
+            l.add_item(ui, id, c);
+        }
+        l.end_defer_layout(ui, id);
+    });
+    assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 2);
+    ui.widget_mut::<ItemList>(id).unwrap().fixed_slot_count = Some(4);
+    layout(&mut ui, id);
+    assert_eq!(ui.widget::<ItemList>(id).unwrap().num_items(), 4);
+}
+
 #[test]
 fn scroll_item_into_view_moves_only_when_the_row_is_outside() {
     let mut ui = root(400.0, 400.0);

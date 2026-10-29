@@ -353,6 +353,42 @@ fn a_corpse_gets_one_cell_per_unit_of_capacity_and_the_item_strip_scrolls() {
     assert!(!visible(&s, 0));
 }
 
+/// OpenAC `ItemArrivingInAFullStrip_isNotShown_andTheShownItemStays`: an
+/// item arriving in a full strip gets no cell and does not push out an item
+/// already shown: from the server, or as a pending placement.
+#[test]
+fn an_item_arriving_in_a_full_strip_is_not_shown_and_the_shown_item_stays() {
+    let mut s = strip();
+    for g in [ITEM, ITEM + 1, ITEM + 2] {
+        s.objects.add(plain_item(g));
+    }
+    s.open_with(CHEST, 1, 0, &[ITEM]);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+
+    // The server puts another item in front.
+    let mut ev = Vec::new();
+    assert!(s.objects.t.apply_server_move(
+        ITEM + 1,
+        ac_core::items::ClientObjectPlacement::in_container(CHEST, 0),
+        None,
+        &mut ev,
+    ));
+    assert_eq!(s.objects.t.get_contents(CHEST).first(), Some(&(ITEM + 1)));
+    s.update();
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+
+    s.placement = Some(PendingPlacement {
+        token: 1,
+        item_id: ITEM + 2,
+        container_id: CHEST,
+        placement: 0,
+    });
+    s.update();
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+}
+
 /// OpenAC `OpeningAnotherEmptyPack_resizesTheItemStripToItsCapacity`:
 /// opening another pack that shows the same items (none) but holds a
 /// different number resizes the item strip to that pack's capacity.

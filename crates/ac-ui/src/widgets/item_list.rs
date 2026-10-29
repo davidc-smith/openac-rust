@@ -250,10 +250,9 @@ impl ItemList {
     }
 
     fn update_empty_slots(&mut self, ui: &mut UiRoot, me: ElementId, width: f32) {
-        if self.cell_width <= 0.0 {
-            return;
-        }
-        if self.fixed_slot_count.is_none() && (!self.fill_visible_empty_slots || !self.single_row) {
+        if self.fixed_slot_count.is_none()
+            && (!self.fill_visible_empty_slots || !self.single_row || self.cell_width <= 0.0)
+        {
             return;
         }
         let visible = self
@@ -283,6 +282,9 @@ impl ItemList {
         let Some((width, height)) = ui.element(me).map(|e| (e.width, e.height)) else {
             return;
         };
+        // A fixed cell count holds whatever the cell size; the width only
+        // decides how many cells fill the strip without one.
+        self.update_empty_slots(ui, me, width);
         if self.cell_width <= 0.0 {
             if let Some(&c) = self.cells.first() {
                 if let Some(e) = ui.element_mut(c) {
@@ -292,7 +294,6 @@ impl ItemList {
             }
             return;
         }
-        self.update_empty_slots(ui, me, width);
         let cols = if self.single_row {
             self.cells.len().max(1)
         } else {
