@@ -577,7 +577,8 @@ impl InventoryController {
         let (legality, source_is_bag, destination) =
             self.evaluate_drop(list, target_item, p.obj_id, view);
         // Over a pack's own icon the answer is that pack's; anywhere else a
-        // full pack is no refusal while the drop has somewhere to go.
+        // full pack is no refusal while the drop has somewhere to go, found
+        // by the same search the drop runs.
         let over_a_pack_icon = !source_is_bag && Some(list) != self.contents_grid;
         if over_a_pack_icon
             && legality.is_none()
@@ -592,7 +593,7 @@ impl InventoryController {
             && choose_container(
                 view.objects,
                 p.obj_id,
-                view.player,
+                destination,
                 destination,
                 view.player,
                 self.moving_amount(p.obj_id, view).1,
@@ -704,13 +705,11 @@ impl InventoryController {
         }
         let mut fallthrough = 0;
         if is_capacity_rejection(legality) {
-            // A drop on a pack's icon looks for room in that pack and the
-            // packs inside it; a drop on the grid in the whole inventory.
-            let root = if Some(list) == self.contents_grid {
-                view.player
-            } else {
-                destination
-            };
+            // The search starts where the drop names: a pack's icon looks in
+            // that pack and the packs inside it, the grid in the pack shown
+            // open (the whole inventory when that is the main pack, nothing
+            // more for a side pack, which holds no packs).
+            let root = destination;
             let whole_stack = self.moving_amount(item, view).1;
             match choose_container(
                 view.objects,

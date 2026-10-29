@@ -131,7 +131,15 @@ pub fn evaluate_container_placement(
         .count();
     // Part of a stack takes a slot of its own, even beside the rest of it.
     let reorder = already_directly_contained && (moving_container || whole_stack);
-    if !reorder && capacity > 0 && occupied >= usize::try_from(capacity).unwrap_or(usize::MAX) {
+    // Item slots: only -1 is unbounded, and 0 is none (a description
+    // carries a capacity only when it is not zero). An undescribed player
+    // has no known capacity and takes anything.
+    let limited = match destination {
+        None => false,
+        Some(_) if moving_container => capacity > 0,
+        Some(_) => capacity != -1,
+    };
+    if !reorder && limited && occupied >= usize::try_from(capacity).unwrap_or(0) {
         return Err(if moving_container {
             PlacementRejection::ContainerCapacityFull
         } else {
@@ -775,6 +783,32 @@ mod tests {
         assert_eq!(
             choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true),
             Ok(SIDE_PACK_B)
+        );
+    }
+
+    #[test]
+    fn the_legality_check_reads_an_item_capacity_of_zero_as_no_room() {
+        let mut w = player_with_packs(3, 2);
+        let mut none = object(SIDE_PACK_A, "Pack A", ItemType::CONTAINER);
+        none.items_capacity = 0;
+        w.add(none);
+        w.mv(SIDE_PACK_A, PLAYER, 0);
+        let loot = world_item(&mut w);
+        assert_eq!(
+            evaluate_container_placement(&w.t, loot, SIDE_PACK_A, PLAYER, true),
+            Err(PlacementRejection::ItemCapacityFull)
+        );
+        // -1 is unbounded; an undescribed player takes anything.
+        w.t.get_mut(SIDE_PACK_A).expect("present").items_capacity = -1;
+        assert_eq!(
+            evaluate_container_placement(&w.t, loot, SIDE_PACK_A, PLAYER, true),
+            Ok(())
+        );
+        let mut lone = World::new();
+        lone.add(object(0x7000_0001, "Loot", ItemType::MISC));
+        assert_eq!(
+            evaluate_container_placement(&lone.t, 0x7000_0001, PLAYER, PLAYER, true),
+            Ok(())
         );
     }
 

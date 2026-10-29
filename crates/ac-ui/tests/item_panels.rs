@@ -1824,6 +1824,52 @@ fn part_of_an_own_stack_dropped_on_the_full_main_pack_icon_goes_to_a_pack_with_r
 }
 
 #[test]
+fn part_of_a_stack_dropped_on_its_full_open_side_pack_says_that_pack_is_full() {
+    // A drop on the grid looks for room from the pack shown open: a side
+    // pack holds no packs, so a full one has nowhere else to look. The
+    // main pack is full and the side pack 0xD has room, but neither is
+    // where the drop looks.
+    let mut o = Objects::new();
+    o.player(1, 7);
+    o.contained(0xA, PLAYER, 0, ItemType::MISC);
+    o.bag(0xC, 1, 2);
+    o.bag(0xD, 2, 2);
+    stack(&mut o, 0xB, 0xC, 0, 10, 273);
+    o.contained(0xE, 0xC, 1, ItemType::MISC);
+    let mut split = StackSplitQuantity::new();
+    split.reset(10, Some(4));
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView {
+        selected: Some(0xB),
+        split: Some(&split),
+        ..ItemsView::new(&o.t, PLAYER)
+    };
+    inv.update(&view);
+    let containers = inv.containers;
+    assert_eq!(inv.slot(containers, 0).object_id, 0xC);
+    inv.click(containers, 0);
+    inv.update(&view);
+    inv.outputs();
+    let g = inv.grid;
+    assert_eq!(inv.slot(g, 0).object_id, 0xB);
+    // Opening the pack selected it; select the stack again so the split
+    // quantity applies to it.
+    inv.click(g, 0);
+    inv.update(&view);
+    inv.outputs();
+    assert_eq!(
+        drag_over(&mut inv, g, 1, payload(0xB), &view),
+        DragAcceptance::Reject
+    );
+    let out = drop_on(&mut inv, g, 1, payload(0xB), &view);
+    assert!(sessions(&out).is_empty());
+    assert_eq!(
+        notices(&out),
+        vec!["The Pack C is completely full!".to_owned()]
+    );
+}
+
+#[test]
 fn a_stack_in_the_full_main_pack_dropped_on_its_icon_moves_whole_or_splits_elsewhere() {
     let mut o = Objects::new();
     o.player(1, 7);
