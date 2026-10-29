@@ -497,14 +497,14 @@ fn an_unknown_command_names_the_commands() {
 
 // --- The transport ----------------------------------------------------------------------------
 
+/// Short: the socket is staged at `$TMPDIR/CoreFxPipe_<name>.<pid>.tmp/socket`, and macOS's
+/// per-user temp folder is long while its socket paths stop at 104 bytes.
 fn pipe_name() -> String {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
     format!(
-        "launcher-test-{}-{}",
+        "lt-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
 

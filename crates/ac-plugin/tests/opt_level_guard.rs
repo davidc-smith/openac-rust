@@ -3,6 +3,7 @@
 //! the toolchain has the bug, and this file says when it can go.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_arch = "x86_64")]
 use std::process::Command;
 
 fn workspace_root() -> PathBuf {

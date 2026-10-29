@@ -57,7 +57,9 @@ winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "
 wayland-client = { version = "0.31.15", features = ["system", "dlopen"] }
 wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "unstable"] }
 x11-dl = "2.21.0"
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"] }
+# `metal` is macOS's native backend (objc2 bindings, compiles nothing); it is target-gated, so
+# Windows and Linux builds do not change.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "metal", "wgsl"] }
 # Plain-data casts for GPU uploads (ac-render), pure Rust; already in the graph through wgpu.
 bytemuck = { version = "1.25", features = ["derive"] }
 # Read-only memory maps of the dat files (ac-dat), pure Rust; already in the lock file through
