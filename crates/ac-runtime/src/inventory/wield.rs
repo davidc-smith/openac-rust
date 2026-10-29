@@ -354,26 +354,32 @@ impl Inventory {
         // pack with room. With no room anywhere nothing is sent and the
         // blocker stays where it is.
         let name = ctx.world.item(blocker).map(|b| b.appropriate_name());
-        let destination =
-            match placement::choose_container(ctx.world.items(), blocker, player, 0, player) {
-                Ok(destination) => destination,
-                Err(no_room) => {
-                    let items = ctx.world.items();
-                    let full = placement::placement_rejection_text(
-                        no_room,
-                        items.get(blocker),
-                        items.get(player),
-                        player,
-                    );
-                    self.notices.push(Notice::Interface(full));
-                    if let Some(name) = name {
-                        self.notices.push(Notice::Interface(format!(
-                            "Moving {name} to your backpack - cannot unwield the {name}"
-                        )));
-                    }
-                    return false;
+        let destination = match placement::choose_container(
+            ctx.world.items(),
+            blocker,
+            player,
+            0,
+            player,
+            true,
+        ) {
+            Ok(destination) => destination,
+            Err(no_room) => {
+                let items = ctx.world.items();
+                let full = placement::placement_rejection_text(
+                    no_room,
+                    items.get(blocker),
+                    items.get(player),
+                    player,
+                );
+                self.notices.push(Notice::Interface(full));
+                if let Some(name) = name {
+                    self.notices.push(Notice::Interface(format!(
+                        "Moving {name} to your backpack - cannot unwield the {name}"
+                    )));
                 }
-            };
+                return false;
+            }
+        };
         self.wield.pending = Some(PendingSwitch {
             requested,
             blocking: blocker,

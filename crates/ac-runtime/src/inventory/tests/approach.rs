@@ -374,7 +374,8 @@ fn the_pickup_key_refuses_a_creature_before_any_pack_is_chosen() {
             OTHER_PLAYER,
             PLAYER,
             PLAYER,
-            PLAYER
+            PLAYER,
+            true
         ),
         Err(ac_core::items::placement::PlacementRejection::ContainerCapacityFull)
     );
