@@ -868,6 +868,31 @@ pub trait WalkSink {
 /// The object range a walk starts with, in landblock rings.
 pub const DEFAULT_OBJECT_RING_LIMIT: u32 = 4;
 
+/// Land cells per side of a landblock's landscape grid at `ring` from the
+/// viewer's block: 8 for the 3x3 around the viewer, 4 at ring 2, 2 at
+/// rings 3 and 4, 1 beyond.
+#[must_use]
+pub fn side_cell_count_for_ring(ring: u32) -> u32 {
+    match ring {
+        0 | 1 => 8,
+        2 => 4,
+        3 | 4 => 2,
+        _ => 1,
+    }
+}
+
+/// A near block at `ring` draws its objects and buildings: always on the
+/// full grid, on a coarse grid within the object range, never on a
+/// one-cell grid (it carries no objects).
+#[must_use]
+pub fn draws_objects(ring: u32, object_ring_limit: u32) -> bool {
+    match side_cell_count_for_ring(ring) {
+        8 => true,
+        1 => false,
+        _ => ring <= object_ring_limit,
+    }
+}
+
 /// The walk: the cells it can reach and their view state.
 #[derive(Debug)]
 pub struct FrameWalk {
@@ -877,7 +902,9 @@ pub struct FrameWalk {
     /// the viewer's block (the larger of the x and y differences) is at
     /// most this, or at most 1; beyond it only its terrain is. The renderer
     /// sets it to the near radius each frame, so a near landblock kept a
-    /// little past the edge while the player walks shows no objects.
+    /// little past the edge while the player walks shows no objects. A
+    /// block on a one-cell grid (ring 5 and out) draws none whatever the
+    /// limit ([`side_cell_count_for_ring`]).
     pub object_ring_limit: u32,
 }
 
@@ -1156,7 +1183,7 @@ impl FrameWalk {
             let by = (blocks[b].origin.y / BLOCK_LENGTH).round() as i32 - viewer_y;
             let closest = closest_cell(bx, by, viewer_cell);
             let ring = bx.unsigned_abs().max(by.unsigned_abs());
-            let objects = ring <= 1 || ring <= self.object_ring_limit;
+            let objects = draws_objects(ring, self.object_ring_limit);
             for cell in cell_order_far_to_near(closest) {
                 // The cell's terrain, then its buildings (a doorway punch
                 // opens the depth of everything drawn so far inside the
@@ -2147,6 +2174,46 @@ mod tests {
             assert_eq!(shells(&mut walk, &from_home, &with), (3, 64));
             assert_eq!(shells(&mut walk, &from_home, &[block(Vec::new())]), (0, 64));
         }
+    }
+
+    /// OpenAC `WalkLandscapeAssembler.SideCellCountForRing` and
+    /// `RetailFrameWalk.DrawLandscape`: the grid per ring, and which rings
+    /// draw objects. A one-cell block (ring 5 and out) draws none, even
+    /// with the object range past it (a near radius above 4).
+    #[test]
+    fn rings_past_four_draw_no_objects_whatever_the_range() {
+        let sides: Vec<u32> = (0..7).map(side_cell_count_for_ring).collect();
+        assert_eq!(sides, [8, 8, 4, 2, 2, 1, 1]);
+        assert!(draws_objects(1, 0));
+        assert!(draws_objects(4, 4));
+        assert!(!draws_objects(4, 3));
+        assert!(!draws_objects(5, 5));
+        assert!(!draws_objects(6, 8));
+
+        let house = WalkBuilding {
+            portals: Vec::new(),
+            world: Mat4::IDENTITY,
+            inverse: Mat4::IDENTITY,
+        };
+        let buildings = [BuildingRef {
+            building: &house,
+            tree: None,
+        }];
+        let x = 5.0 * BLOCK_LENGTH;
+        let blocks = [WalkBlock {
+            coord: (0, 0),
+            origin: Vec3::new(x, 0.0, 0.0),
+            min_z: 0.0,
+            max_z: 10.0,
+            near: true,
+            buildings: vec![(0, 0)],
+        }];
+        let cam = camera(Vec3::new(12.0, 96.0, 50.0), Vec3::new(x, 96.0, 0.0));
+        let mut walk = FrameWalk::new();
+        walk.object_ring_limit = 5;
+        let mut s = Shells::default();
+        walk.walk_frame(0x0000_0001, &cam, &blocks, &buildings, &mut s);
+        assert_eq!((s.shells.len(), s.object_turns, s.exits), (0, 0, 64));
     }
 
     /// OpenAC `RetailFrameWalk.DrawLandscape`: the viewer's block and its
