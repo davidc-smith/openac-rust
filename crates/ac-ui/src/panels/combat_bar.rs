@@ -163,6 +163,9 @@ impl CombatBarController {
         let power = layout
             .find(POWER_CONTROL_ID)
             .filter(|p| ui.widget::<Scrollbar>(*p).is_some())?;
+        // The layout builds a plain bar; the power control is a value
+        // slider, so a press or drag moves it and reports the new power.
+        ui.with::<Scrollbar, _>(power, |s, _| s.scalar = true);
         let button = |id| {
             layout
                 .find(id)
