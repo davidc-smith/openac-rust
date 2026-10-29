@@ -823,7 +823,8 @@ pub struct WalkBlock {
     pub min_z: f32,
     /// Terrain heights.
     pub max_z: f32,
-    /// Objects and buildings are drawn (the near tier).
+    /// Its land cells are walked and its objects and buildings loaded (the
+    /// near tier); they are drawn within the walk's object range.
     pub near: bool,
     /// Buildings by land cell (`x * 8 + y`): indices into the caller's
     /// building list.
@@ -844,7 +845,11 @@ pub trait WalkSink {
     /// restores the depth the punch opened.
     fn land_cell_terrain(&mut self, block: usize, cell: usize);
     /// A land cell's objects turn (far to near): draw them in each view.
+    /// Made only in blocks within the walk's object range.
     fn land_cell(&mut self, block: usize, cell: usize);
+    /// A near land cell is done (every walked cell, whether or not its
+    /// objects were drawn): end its sort cell.
+    fn sort_cell_exit(&mut self, block: usize, cell: usize);
     /// A building is reached: decide its level; `false` skips it.
     fn building_drawable(&mut self, building: usize) -> bool;
     /// A doorway's far-depth punch, a polygon in the drawing frame, in
@@ -860,11 +865,30 @@ pub trait WalkSink {
     fn interior_landscape_done(&mut self, seals: &[(Vec<Vec3>, ViewSet, usize)]);
 }
 
+/// The object range a walk starts with, in landblock rings.
+pub const DEFAULT_OBJECT_RING_LIMIT: u32 = 4;
+
 /// The walk: the cells it can reach and their view state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FrameWalk {
     cells: HashMap<u32, WalkCell>,
     views: HashMap<u32, CellViews>,
+    /// Objects and buildings of a near block are drawn when its ring from
+    /// the viewer's block (the larger of the x and y differences) is at
+    /// most this, or at most 1; beyond it only its terrain is. The renderer
+    /// sets it to the near radius each frame, so a near landblock kept a
+    /// little past the edge while the player walks shows no objects.
+    pub object_ring_limit: u32,
+}
+
+impl Default for FrameWalk {
+    fn default() -> Self {
+        Self {
+            cells: HashMap::new(),
+            views: HashMap::new(),
+            object_ring_limit: DEFAULT_OBJECT_RING_LIMIT,
+        }
+    }
 }
 
 /// One flood's state.
@@ -1131,18 +1155,23 @@ impl FrameWalk {
             let bx = (blocks[b].origin.x / BLOCK_LENGTH).round() as i32 - viewer;
             let by = (blocks[b].origin.y / BLOCK_LENGTH).round() as i32 - viewer_y;
             let closest = closest_cell(bx, by, viewer_cell);
+            let ring = bx.unsigned_abs().max(by.unsigned_abs());
+            let objects = ring <= 1 || ring <= self.object_ring_limit;
             for cell in cell_order_far_to_near(closest) {
                 // The cell's terrain, then its buildings (a doorway punch
                 // opens the depth of everything drawn so far inside the
                 // doorway), then its objects. A nearer cell's terrain comes
                 // later and covers a punch it stands in front of.
                 sink.land_cell_terrain(b, cell);
-                for &(building_cell, building) in &blocks[b].buildings {
-                    if building_cell == cell {
-                        self.draw_building(camera, buildings, building, views, sink);
+                if objects {
+                    for &(building_cell, building) in &blocks[b].buildings {
+                        if building_cell == cell {
+                            self.draw_building(camera, buildings, building, views, sink);
+                        }
                     }
+                    sink.land_cell(b, cell);
                 }
-                sink.land_cell(b, cell);
+                sink.sort_cell_exit(b, cell);
             }
         }
     }
@@ -1902,6 +1931,7 @@ mod tests {
         fn land_block(&mut self, _b: usize) {}
         fn land_cell_terrain(&mut self, _b: usize, _c: usize) {}
         fn land_cell(&mut self, _b: usize, _c: usize) {}
+        fn sort_cell_exit(&mut self, _b: usize, _c: usize) {}
         fn building_drawable(&mut self, _b: usize) -> bool {
             true
         }
@@ -1963,6 +1993,7 @@ mod tests {
         fn land_cell(&mut self, b: usize, c: usize) {
             self.0.push(format!("objects {b}:{c}"));
         }
+        fn sort_cell_exit(&mut self, _b: usize, _c: usize) {}
         fn building_drawable(&mut self, b: usize) -> bool {
             self.0.push(format!("building {b}"));
             true
@@ -2027,6 +2058,125 @@ mod tests {
         // building.
         assert!(at("building 0") < at("terrain 0:0"));
         assert_eq!(turns.0.last().map(String::as_str), Some("objects 0:0"));
+    }
+
+    /// Shells, objects turns and sort-cell exits of one walk.
+    #[derive(Default)]
+    struct Shells {
+        shells: Vec<usize>,
+        object_turns: usize,
+        exits: usize,
+    }
+
+    impl WalkSink for Shells {
+        fn landscape_begin(&mut self, _views: &ViewSet, _count: usize, _full: bool) {}
+        fn land_block(&mut self, _b: usize) {}
+        fn land_cell_terrain(&mut self, _b: usize, _c: usize) {}
+        fn land_cell(&mut self, _b: usize, _c: usize) {
+            self.object_turns += 1;
+        }
+        fn sort_cell_exit(&mut self, _b: usize, _c: usize) {
+            self.exits += 1;
+        }
+        fn building_drawable(&mut self, _b: usize) -> bool {
+            true
+        }
+        fn punch(&mut self, _p: &[Vec3], _v: usize) {}
+        fn draw_cells(&mut self, _cells: &[(u32, ViewSet, usize)]) {}
+        fn building_shell(&mut self, b: usize) {
+            self.shells.push(b);
+        }
+        fn interior_landscape_done(&mut self, _seals: &[(Vec<Vec3>, ViewSet, usize)]) {}
+    }
+
+    /// OpenAC `RetailFrameWalkTests.CoarseTerrainDrawsAllBuildingShellsWithinObjectRangeAndUpdatesOnRecenter`
+    /// (rings 2, 3 and 4): a near block's buildings, three of them in land
+    /// cells 1, 2 and 64, are all drawn once while its ring from the
+    /// viewer's block is within the object range, none when the range is
+    /// one ring short (its terrain is still walked), all again when the
+    /// viewer stands in the block or comes back, and none once the block
+    /// has no buildings.
+    #[test]
+    fn near_buildings_are_drawn_within_the_object_range_and_follow_the_viewer() {
+        let house = WalkBuilding {
+            portals: Vec::new(),
+            world: Mat4::IDENTITY,
+            inverse: Mat4::IDENTITY,
+        };
+        let buildings: Vec<BuildingRef<'_>> = (0..3)
+            .map(|_| BuildingRef {
+                building: &house,
+                tree: None,
+            })
+            .collect();
+        for ring in 2u32..=4 {
+            let x = ring as f32 * BLOCK_LENGTH;
+            let block = |buildings: Vec<(usize, usize)>| WalkBlock {
+                coord: (0, 0),
+                origin: Vec3::new(x, 0.0, 0.0),
+                min_z: 0.0,
+                max_z: 10.0,
+                near: true,
+                buildings,
+            };
+            let with = [block(vec![(0, 0), (1, 1), (63, 2)])];
+            // The viewer in the first land cell of block (0, 0), looking
+            // east at the block `ring` landblocks away.
+            let from_home = camera(Vec3::new(12.0, 96.0, 50.0), Vec3::new(x, 96.0, 0.0));
+            let from_inside = camera(
+                Vec3::new(x + 12.0, 96.0, 50.0),
+                Vec3::new(x + 180.0, 96.0, 0.0),
+            );
+            let shells = |walk: &mut FrameWalk, cam: &WalkCamera, blocks: &[WalkBlock]| {
+                let mut s = Shells::default();
+                walk.walk_frame(0x0000_0001, cam, blocks, &buildings, &mut s);
+                assert_eq!(s.exits, 64, "every walked cell ends its sort cell");
+                let mut distinct = s.shells.clone();
+                distinct.sort_unstable();
+                distinct.dedup();
+                assert_eq!(distinct.len(), s.shells.len(), "each shell once");
+                (s.shells.len(), s.object_turns)
+            };
+            let mut walk = FrameWalk::new();
+            walk.object_ring_limit = ring;
+            assert_eq!(shells(&mut walk, &from_home, &with), (3, 64), "ring {ring}");
+            walk.object_ring_limit = ring - 1;
+            assert_eq!(shells(&mut walk, &from_home, &with), (0, 0), "ring {ring}");
+            walk.object_ring_limit = ring;
+            assert_eq!(shells(&mut walk, &from_inside, &with), (3, 64));
+            assert_eq!(shells(&mut walk, &from_home, &with), (3, 64));
+            assert_eq!(shells(&mut walk, &from_home, &[block(Vec::new())]), (0, 64));
+        }
+    }
+
+    /// OpenAC `RetailFrameWalk.DrawLandscape`: the viewer's block and its
+    /// eight neighbours draw their objects and buildings whatever the
+    /// object range.
+    #[test]
+    fn the_blocks_around_the_viewer_draw_their_objects_at_any_range() {
+        let house = WalkBuilding {
+            portals: Vec::new(),
+            world: Mat4::IDENTITY,
+            inverse: Mat4::IDENTITY,
+        };
+        let buildings = [BuildingRef {
+            building: &house,
+            tree: None,
+        }];
+        let blocks = [WalkBlock {
+            coord: (0, 0),
+            origin: Vec3::new(BLOCK_LENGTH, 0.0, 0.0),
+            min_z: 0.0,
+            max_z: 10.0,
+            near: true,
+            buildings: vec![(9, 0)],
+        }];
+        let cam = camera(Vec3::new(12.0, 96.0, 50.0), Vec3::new(300.0, 96.0, 0.0));
+        let mut walk = FrameWalk::new();
+        walk.object_ring_limit = 0;
+        let mut s = Shells::default();
+        walk.walk_frame(0x0000_0001, &cam, &blocks, &buildings, &mut s);
+        assert_eq!((s.shells.len(), s.object_turns, s.exits), (1, 64, 64));
     }
 
     // Ported from OpenAC tests/AcDream.App.Tests/Rendering/Walk/WalkVisibilityMathTests.cs.

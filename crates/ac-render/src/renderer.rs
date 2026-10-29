@@ -2315,6 +2315,9 @@ impl WorldRenderer {
             scenery_wind: false,
             stage: Default::default(),
         };
+        // Objects and buildings are drawn out to the near radius from the
+        // viewer's landblock, however far the near tier still reaches.
+        walk.object_ring_limit = self.near_radius;
         walk.walk_frame(self.viewer_cell, camera, &blocks, &building_refs, &mut sink);
         if !sink.views.is_empty() {
             sink.landscape_end();
