@@ -624,6 +624,8 @@ pub struct Inventory {
     placement: Option<PendingPlacement>,
     /// The items the salvage window marked as staged.
     salvage_marked: std::collections::BTreeSet<u32>,
+    /// Game boards used, oldest first, whose games the session begins.
+    begun_games: Vec<u32>,
     notices: Vec<Notice>,
     events: Vec<InventoryEvent>,
     /// `OPENAC_PROBE_EXTERNAL_CONTAINER=1`: the viewed container's probe
@@ -1080,6 +1082,13 @@ impl Inventory {
     /// Take what a host should show, oldest first.
     pub fn drain_events(&mut self) -> std::vec::Drain<'_, InventoryEvent> {
         self.events.drain(..)
+    }
+
+    /// Take the game boards used, oldest first: using someone else's board
+    /// begins its game rather than sending a use, and the session begins
+    /// it (the chess owner's join) on every host.
+    pub fn take_begun_games(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.begun_games)
     }
 
     fn interface(&mut self, text: impl Into<String>) {

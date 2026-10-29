@@ -22,7 +22,7 @@ use super::runner::HostEvent;
 use super::state::SessionState;
 use crate::character::CharacterOptions;
 use crate::communication::{ClientConfirmation, JournalView, TrackedContract};
-use crate::gameplay::{BookView, FellowshipView, HouseView, TitleState};
+use crate::gameplay::{BookView, ChessView, FellowshipView, HouseView, TitleState};
 use crate::inventory::{
     AppraisalView, HousePurchaseView, InteractionMode, PendingPlacement, TradeView, VendorView,
     VendorViewReason,
@@ -60,6 +60,10 @@ pub enum InterfaceEvent {
     Journal(Box<JournalView>),
     /// A salvaging tool was used: the salvage panel opens on it.
     OpenSalvage(u32),
+    /// The chess game as it stands (after the snapshot and each change).
+    Chess(Box<ChessView>),
+    /// Someone else's game board was used: the game window shows.
+    BeginGame(u32),
     /// A pack the player carries was used: the inventory window shows and
     /// opens on it (the main pack when it is the player).
     OpenContainedContainer(u32),
@@ -513,6 +517,7 @@ pub(crate) struct InterfaceFeed {
     social: Option<SocialKey>,
     contracts: Option<u64>,
     book: Option<u64>,
+    chess: Option<u64>,
     house: Option<u64>,
     house_purchase: Option<u64>,
     journal: Option<u64>,
@@ -612,6 +617,11 @@ impl InterfaceFeed {
             self.book = Some(book.revision());
             events.push(InterfaceEvent::Book(Box::new(book.view())));
         }
+        let chess = state.gameplay.chess();
+        if self.chess != Some(chess.revision()) {
+            self.chess = Some(chess.revision());
+            events.push(InterfaceEvent::Chess(Box::new(chess.view())));
+        }
         let house = state.gameplay.house();
         if self.house != Some(house.revision()) {
             self.house = Some(house.revision());
@@ -644,6 +654,7 @@ impl InterfaceFeed {
             HostEvent::Appraisal(view) => Some(InterfaceEvent::Appraisal(view.clone())),
             HostEvent::Trade(view) => Some(InterfaceEvent::Trade(Box::new(view.clone()))),
             HostEvent::OpenSalvage(tool) => Some(InterfaceEvent::OpenSalvage(*tool)),
+            HostEvent::BeginGame(board) => Some(InterfaceEvent::BeginGame(*board)),
             HostEvent::OpenContainedContainer(pack) => {
                 Some(InterfaceEvent::OpenContainedContainer(*pack))
             }

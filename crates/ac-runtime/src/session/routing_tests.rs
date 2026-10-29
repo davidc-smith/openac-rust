@@ -335,3 +335,216 @@ fn a_message_before_the_world_is_entered_reaches_no_player_state() {
     assert!(state.world.player().is_none());
     assert_eq!(outbox.drain().count(), 0);
 }
+
+// -- Chess ------------------------------------------------------------------
+
+const BOARD: u32 = 0x7A9B_4001;
+
+fn chess_event(
+    state: &mut SessionState,
+    outbox: &mut Outbox,
+    event: GameEventType,
+    values: &[i32],
+) {
+    let mut payload = vec![BOARD];
+    payload.extend(values.iter().map(|v| v.cast_unsigned()));
+    let body = game_event(event, &payload);
+    apply(state, outbox, &Inbound::parse(&body).unwrap());
+}
+
+/// A chess board out in the world, someone else's.
+fn place_board(state: &mut SessionState) {
+    use ac_core::items::{ItemType, PublicWeenieFlags};
+    use ac_proto::{CreateObject, ModelData, PhysicsTimestamps, PublicWeenieDesc};
+    let desc = PublicWeenieDesc {
+        name: "Chess Board".into(),
+        item_type: ItemType::GAMEBOARD.bits(),
+        object_description_flags: PublicWeenieFlags::STUCK.bits(),
+        ..PublicWeenieDesc::default()
+    };
+    let create = Inbound::CreateObject(Box::new(CreateObject {
+        guid: BOARD,
+        model: ModelData::default(),
+        physics: crate::world::tests::physics(
+            PhysicsTimestamps {
+                instance: 1,
+                ..PhysicsTimestamps::default()
+            },
+            None,
+        ),
+        weenie: Some(desc),
+    }));
+    state.world.apply(&create);
+}
+
+fn joins(outbox: &mut Outbox) -> Vec<Vec<u8>> {
+    outbox
+        .drain()
+        .map(|o| o.body)
+        .filter(|b| b.get(8..12) == Some(&0x0269u32.to_le_bytes()[..]))
+        .collect()
+}
+
+fn use_board(
+    state: &mut SessionState,
+    outbox: &mut Outbox,
+    command: crate::inventory::ItemCommand,
+) {
+    state.command(super::SessionCommand::Item(command), outbox, true, CLOCKS);
+}
+
+#[test]
+fn chess_events_route_into_the_session_owner() {
+    // LiveSessionEventRouterTests.ChessEvents_RouteIntoTheSharedRuntimeOwner
+    // and GameEventWiringTests.WireAll_ChessEvents_ReachTheirCallbacks.
+    use crate::gameplay::{ChessCommand, ChessStage, GameplayCommand};
+    use ac_core::chess::ChessSquare;
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    use_board(
+        &mut state,
+        &mut outbox,
+        crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+    );
+    let stage = |s: &SessionState| s.gameplay.chess().stage();
+
+    chess_event(
+        &mut state,
+        &mut outbox,
+        GameEventType::JOIN_GAME_RESPONSE,
+        &[1],
+    );
+    chess_event(&mut state, &mut outbox, GameEventType::START_GAME, &[0]);
+    assert_eq!(stage(&state), ChessStage::OpponentsTurn);
+
+    chess_event(
+        &mut state,
+        &mut outbox,
+        GameEventType::OPPONENT_TURN,
+        &[0, 5, 0x5000_0002, 4, 1, 4, 3],
+    );
+    assert_eq!(stage(&state), ChessStage::MyTurn);
+
+    outbox.drain().count();
+    state.command(
+        super::SessionCommand::Gameplay(GameplayCommand::Chess(ChessCommand::Move {
+            from: ChessSquare::new(4, 6),
+            to: ChessSquare::new(4, 4),
+        })),
+        &mut outbox,
+        true,
+        CLOCKS,
+    );
+    let sent: Vec<Vec<u8>> = outbox.drain().map(|o| o.body).collect();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0][8..12], 0x026Bu32.to_le_bytes());
+    chess_event(&mut state, &mut outbox, GameEventType::MOVE_RESPONSE, &[1]);
+    assert_eq!(stage(&state), ChessStage::OpponentsTurn);
+
+    chess_event(
+        &mut state,
+        &mut outbox,
+        GameEventType::OPPONENT_STALEMATE,
+        &[1, 1],
+    );
+    assert!(
+        texts(&state)
+            .iter()
+            .any(|t| t.contains("declared a stalemate"))
+    );
+
+    chess_event(&mut state, &mut outbox, GameEventType::GAME_OVER, &[0]);
+    assert_eq!(stage(&state), ChessStage::NotPlaying);
+    assert!(
+        texts(&state)
+            .iter()
+            .any(|t| t == "You have been defeated!  To join a game, select and use the game board."),
+        "{:?}",
+        texts(&state)
+    );
+}
+
+#[test]
+fn using_a_board_with_no_window_sends_the_join_and_waits_for_the_answer() {
+    // RuntimeChessBeginGameTests.UsingABoardWithNoWindow_SendsTheJoinAndWaitsForTheAnswer
+    // and RuntimeChessStateTests.GameRuntime_OwnsTheChessStateAndSendsItsLinesToChat.
+    use crate::gameplay::ChessStage;
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    use_board(
+        &mut state,
+        &mut outbox,
+        crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+    );
+    let joins = joins(&mut outbox);
+    assert_eq!(joins.len(), 1);
+    assert_eq!(joins[0][12..16], BOARD.to_le_bytes());
+    assert_eq!(state.gameplay.chess().stage(), ChessStage::Joining);
+    assert_eq!(state.gameplay.chess().board_guid(), BOARD);
+    assert!(
+        texts(&state)
+            .iter()
+            .any(|t| t.contains("Attempting to join game"))
+    );
+    assert!(
+        state
+            .drain_host_events()
+            .contains(&super::HostEvent::BeginGame(BOARD))
+    );
+}
+
+#[test]
+fn using_the_same_board_again_sends_no_second_join() {
+    // RuntimeChessBeginGameTests.UsingTheSameBoardAgain_SendsNoSecondJoin.
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    for _ in 0..2 {
+        use_board(
+            &mut state,
+            &mut outbox,
+            crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+        );
+    }
+    assert_eq!(joins(&mut outbox).len(), 1);
+    // The window shows for each use.
+    let shown = state
+        .drain_host_events()
+        .into_iter()
+        .filter(|e| *e == super::HostEvent::BeginGame(BOARD))
+        .count();
+    assert_eq!(shown, 2);
+}
+
+#[test]
+fn an_automation_use_of_a_board_joins_its_game_instead_of_using_it() {
+    // RuntimeChessBeginGameTests.AnAutomationUseOfABoard_JoinsItsGameInsteadOfUsingIt.
+    use crate::gameplay::ChessStage;
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    use_board(
+        &mut state,
+        &mut outbox,
+        crate::inventory::ItemCommand::UseWorldObject(crate::inventory::ObjectRef::Guid(BOARD)),
+    );
+    let sent: Vec<Vec<u8>> = outbox.drain().map(|o| o.body).collect();
+    assert_eq!(sent.len(), 1, "only the join goes out");
+    assert_eq!(sent[0][8..12], 0x0269u32.to_le_bytes());
+    assert_eq!(state.gameplay.chess().stage(), ChessStage::Joining);
+}
+
+#[test]
+fn leaving_the_world_ends_the_game() {
+    // RuntimeGenerationReset's chess stage: the session reset ends any game.
+    use crate::gameplay::ChessStage;
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    use_board(
+        &mut state,
+        &mut outbox,
+        crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+    );
+    let mut world = std::mem::take(&mut state.world);
+    state.gameplay.left_world(&mut world);
+    assert_eq!(state.gameplay.chess().stage(), ChessStage::NotPlaying);
+    assert_eq!(state.gameplay.chess().board_guid(), 0);
+}

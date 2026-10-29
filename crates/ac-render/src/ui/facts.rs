@@ -8,7 +8,7 @@ use ac_core::items::vendor::is_split_exempt;
 use ac_core::items::{ClientObject, ClientObjectTable, ItemManaChange, StackSplitQuantity};
 use ac_core::player::{AttributeKind, LocalPlayerState};
 use ac_runtime::communication::JournalView;
-use ac_runtime::gameplay::{BookView, HouseView};
+use ac_runtime::gameplay::{BookView, ChessView, HouseView};
 use ac_runtime::inventory::{
     AppraisalView, HousePurchaseView, InteractionMode, TradeView, VendorView,
 };
@@ -95,6 +95,10 @@ pub struct InterfaceFacts {
     /// Salvaging tools used, oldest first (the salvage panel opens on
     /// the last).
     pub salvage_opens: Vec<u32>,
+    /// The chess game, once sent.
+    pub chess: Option<ChessView>,
+    /// Game boards used, oldest first: the game window shows for each.
+    pub game_begins: Vec<u32>,
     /// Carried packs used, oldest first: the inventory window shows and
     /// opens on each.
     pub container_opens: Vec<u32>,
@@ -163,6 +167,8 @@ impl InterfaceFacts {
                 self.dirty.titles = true;
             }
             InterfaceEvent::OpenSalvage(tool) => self.salvage_opens.push(tool),
+            InterfaceEvent::Chess(view) => self.chess = Some(*view),
+            InterfaceEvent::BeginGame(board) => self.game_begins.push(board),
             InterfaceEvent::OpenContainedContainer(pack) => self.container_opens.push(pack),
             InterfaceEvent::ItemMana(change) => self.item_mana.push(change),
             InterfaceEvent::PluginUi(changes) => self.plugin_ui.apply_all(changes),

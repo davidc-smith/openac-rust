@@ -799,6 +799,17 @@ impl Inventory {
         let Some(item) = ctx.world.item(item_id).cloned() else {
             return false;
         };
+        // Someone else's game board is used by beginning its game, not by
+        // sending a use: no pacing or request gate stands in front of it.
+        if interaction::determine_use_result(
+            &Self::snapshot(&item, ctx),
+            ctx.player(),
+            self.external.current_container_id(),
+        ) == interaction::ItemPrimaryUseResult::BeginGame
+        {
+            self.begun_games.push(item_id);
+            return true;
+        }
         if !self.interaction.try_consume_use_throttle(ctx.now_ms) {
             return true;
         }
@@ -841,6 +852,12 @@ impl Inventory {
         }
         if primary == interaction::ItemPrimaryUseResult::PlaceInBackpack {
             return self.place_world_item_in_backpack(object, ctx);
+        }
+        // A game board out in the world is used by joining its game, the
+        // same as when a person clicks it.
+        if primary == interaction::ItemPrimaryUseResult::BeginGame {
+            self.begun_games.push(object);
+            return true;
         }
         self.request_use_for(object, false, ctx)
     }
@@ -1343,6 +1360,10 @@ impl Inventory {
                 K::OpenSalvage => {
                     self.events
                         .push(InventoryEvent::OpenSalvage(action.object_id));
+                    acted = true;
+                }
+                K::BeginGame => {
+                    self.begun_games.push(action.object_id);
                     acted = true;
                 }
                 K::ConfirmPlayerKillerSwitch
