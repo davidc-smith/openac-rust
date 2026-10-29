@@ -898,11 +898,13 @@ impl AttachedWindow {
         self.screenshots.take_results()
     }
 
-    /// Take what the session sent since the last frame.
-    fn pump_scene(&mut self) {
+    /// Take what the session sent since the last frame, and place what
+    /// moves between the session's physics steps at the frame's time `now`.
+    fn pump_scene(&mut self, now: Instant) {
         let token = self.profiler.begin(FrameStage::Update);
         if let Some(scene) = self.scene.as_mut() {
             scene.pump();
+            scene.scene_mut().present_at(now);
         }
         if let Some(icon) = self.world.as_mut().and_then(WorldRenderer::take_icon) {
             set_icon(&self.window, &icon);
@@ -942,7 +944,7 @@ impl AttachedWindow {
         if let Some(line) = self.profiler.frame_boundary(now) {
             report.profile = Some(line);
         }
-        self.pump_scene();
+        self.pump_scene(now);
         let input = FrameInput {
             delta_seconds: delta,
             width: if self.minimized() {

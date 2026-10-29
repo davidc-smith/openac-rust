@@ -421,6 +421,7 @@ fn player_at_arwic(scene: &mut Scene) {
             radar: RadarFacts::default(),
             motion: None,
             effects: ac_runtime::world::EffectFacts::default(),
+            step_blend: None,
         }],
     }));
     scene.apply(PresentationEvent::Interface(InterfaceEvent::State(

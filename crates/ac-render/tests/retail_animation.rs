@@ -58,6 +58,7 @@ fn human(motion: Option<MotionView>) -> ObjectView {
         radar: RadarFacts::default(),
         motion,
         effects: ac_runtime::world::EffectFacts::default(),
+        step_blend: None,
     }
 }
 

@@ -221,6 +221,7 @@ fn object_at_holtburg(local_id: u32) -> ac_runtime::world::ObjectView {
         radar: RadarFacts::default(),
         motion: None,
         effects: EffectFacts::default(),
+        step_blend: None,
     }
 }
 

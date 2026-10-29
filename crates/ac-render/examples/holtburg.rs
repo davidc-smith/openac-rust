@@ -215,6 +215,7 @@ fn player() -> ObjectView {
         radar: ac_runtime::world::RadarFacts::default(),
         motion: example_motion(),
         effects: ac_runtime::world::EffectFacts::default(),
+        step_blend: None,
     }
 }
 

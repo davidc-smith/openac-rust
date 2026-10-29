@@ -432,23 +432,26 @@ fn an_emote_key_plays_its_motion_and_the_server_hears_it() {
 }
 
 /// The body moves in fixed steps (30 a second) while a window redraws 60
-/// times a second or more: the window draws the character, and its camera
-/// follows it, between the last two steps by the time carried past the
-/// last one, so it moves between steps instead of holding still one frame
-/// and jumping the next. The cell and the facing are the body's. The
-/// world keeps the body on its step for gameplay, plugins and the server.
+/// times a second or more, on its own clock: the window draws the
+/// character, and its camera follows it, between the last two steps by the
+/// time since the last one ended at its own frame's time, so it moves on
+/// every frame, between the session's passes too, instead of holding still
+/// one frame and jumping the next. What it blends comes in the object's
+/// view, in the body's cell; the view's place, like the world's (gameplay,
+/// plugins, the server), is the body on its step.
 #[test]
 #[ignore = "needs the retail dat files"]
 fn a_window_draws_the_running_character_between_its_steps() {
     let mut rig = Rig::entered();
     rig.command(run(2.0));
     rig.frames(30);
-    let origin = |p: &Position| Vec3::new(p.origin.x, p.origin.y, p.origin.z);
+    let origin = |v: Vector3| Vec3::new(v.x, v.y, v.z);
     let mut between = 0;
     for _ in 0..10 {
         rig.frames(1);
         let c = rig.movement.controller().unwrap();
         let (body, smoothed) = (c.position(), c.render_position());
+        let steps = c.render_steps();
         let outbound = super::outbound::wire_position(&c.try_get_outbound_position().unwrap());
         let live = rig
             .world
@@ -458,24 +461,32 @@ fn a_window_draws_the_running_character_between_its_steps() {
             .copied()
             .unwrap();
         assert_eq!(live, outbound, "the world keeps the body on its step");
-        let drawn = rig
+        let view = rig
             .world
             .snapshot()
             .objects
             .into_iter()
             .find(|o| o.guid == PLAYER)
-            .and_then(|o| o.position)
             .unwrap();
-        assert_eq!(drawn.cell_id, live.cell_id, "drawn in the body's cell");
-        assert_eq!(
-            drawn.orientation, live.orientation,
-            "the facing is the body's"
-        );
-        let offset = origin(&drawn) - origin(&live);
+        assert_eq!(view.position, Some(live), "the view's place is the step");
+        let blend = view.step_blend.expect("the view carries the blend");
+        // At this pass's time the blend is the physics' smoothed place.
+        let now = origin(blend.origin_at(rig.now)) - origin(live.origin);
         assert!(
-            (offset - (smoothed - body)).length() < 1e-4,
-            "drawn {offset} from the body, smoothed {}",
+            (now - (smoothed - body)).length() < 1e-4,
+            "drawn {now} from the body, smoothed {}",
             smoothed - body
+        );
+        // A frame 8 ms later, before the next pass: further along, as the
+        // physics would place it with that much more time carried.
+        let later = Duration::from_millis(8);
+        let alpha = ((steps.pending_seconds + later.as_secs_f64()) / f64::from(steps.step_seconds))
+            .clamp(0.0, 1.0) as f32;
+        let expected = steps.previous.lerp(steps.current, alpha) - body;
+        let drawn = origin(blend.origin_at(rig.now + later)) - origin(live.origin);
+        assert!(
+            (drawn - expected).length() < 1e-4,
+            "drawn {drawn} from the body 8 ms on, expected {expected}"
         );
         if (smoothed - body).length() > 0.01 {
             between += 1;
