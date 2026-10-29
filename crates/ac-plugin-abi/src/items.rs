@@ -183,6 +183,13 @@ wire_record! {
         /// Its latest full description's layout and optional values, as
         /// sent; none before one arrived.
         pub header: Option<ObjectHeader>,
+        /// The kinds of item a house hook will take, as the item-type bits
+        /// the server sends with the object; 0 for anything that is not a
+        /// hook, and for a hook the server sent none for. The original
+        /// client's macro tools read this as the hook mask. Added in API
+        /// 1.2: a plugin built for an older version is sent the record
+        /// without it.
+        since (1, 2) pub hook_item_types: u32,
     }
 }
 

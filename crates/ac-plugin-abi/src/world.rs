@@ -335,6 +335,12 @@ wire_record! {
         /// A portal's maximum character level; none when it is not a
         /// portal or no maximum is known.
         pub portal_maximum_level: Option<i32>,
+        /// The kinds of item a house hook will take, as the item-type bits
+        /// the server sends when the object first appears (the same value
+        /// as the inventory record's); 0 for anything that is not a hook.
+        /// Added in API 1.2: a plugin built for an older version is sent
+        /// the record without it.
+        since (1, 2) pub hook_item_types: u32,
     }
 }
 

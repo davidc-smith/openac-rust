@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use ac_plugin_abi::callback::{Callback, CallbackAnswer, InterceptDecision};
 use ac_plugin_abi::verbs::split_command_line;
-use ac_plugin_abi::{API_CURRENT, ChatLine, Event, Import, LogLevel, Permission, StartInfo, Wire};
+use ac_plugin_abi::{
+    API_CURRENT, ApiVersion, ChatLine, Event, Import, LogLevel, Permission, StartInfo, Wire,
+};
 
 use crate::api::{PluginReport, SessionApi};
 use crate::commands::CommandRegistry;
@@ -566,7 +568,7 @@ impl PluginSession {
             api_version: API_CURRENT.to_string(),
             client_version: self.options.host_version.to_string(),
         }
-        .to_bytes();
+        .to_bytes_at(manifest.api_version);
         match self.invoke(index, api, |instance, handler| {
             instance.enable(&start, handler)
         }) {
@@ -576,7 +578,8 @@ impl PluginSession {
                 let entities = api.entities();
                 let ids: Vec<u32> = entities.iter().map(|e| e.id).collect();
                 for entity in entities {
-                    let (entry, bytes) = encode(&Event::EntitySpawned(entity));
+                    let (entry, bytes) =
+                        encode(&Event::EntitySpawned(entity), self.version_of(index));
                     if let Err(fault) = self.invoke(index, api, |instance, handler| {
                         instance.event(&bytes, entry, handler)
                     }) {
@@ -609,7 +612,7 @@ impl PluginSession {
             return;
         }
         if let Some(index) = self.index_of(id) {
-            let (entry, bytes) = encode(&Event::LoginComplete);
+            let (entry, bytes) = encode(&Event::LoginComplete, self.version_of(index));
             self.call(index, api, |instance, handler| {
                 instance.event(&bytes, entry, handler)
             });
@@ -1045,7 +1048,8 @@ impl PluginSession {
                 Event::EntitySpawned(entity) => Some(entity.id),
                 _ => None,
             };
-            let (entry, bytes) = encode(&event);
+            let entry = Entry::of_event(&event);
+            let mut encodings = Encodings::new(&event);
             for id in self.listeners(&event) {
                 // A spawn the plugin already heard replayed at its enable.
                 if let Some(object) = spawned
@@ -1057,8 +1061,9 @@ impl PluginSession {
                     continue;
                 }
                 if let Some(index) = self.index_of(&id) {
+                    let bytes = encodings.at(self.version_of(index));
                     self.call(index, api, |instance, handler| {
-                        instance.event(&bytes, entry, handler)
+                        instance.event(bytes, entry, handler)
                     });
                     self.settle(api);
                 }
@@ -1068,7 +1073,7 @@ impl PluginSession {
             if let Some(index) = self.index_of(&owner)
                 && hears(&self.plugins[index].manifest, &event)
             {
-                let (entry, bytes) = encode(&event);
+                let (entry, bytes) = encode(&event, self.version_of(index));
                 self.call(index, api, |instance, handler| {
                     instance.event(&bytes, entry, handler)
                 });
@@ -1099,6 +1104,11 @@ impl PluginSession {
             .collect()
     }
 
+    /// The API version loaded plugin `index` was built for (its manifest's).
+    fn version_of(&self, index: usize) -> ApiVersion {
+        self.plugins[index].manifest.api_version
+    }
+
     fn index_of(&self, id: &str) -> Option<usize> {
         self.plugins
             .iter()
@@ -1125,11 +1135,13 @@ impl PluginSession {
         }
         self.settling = true;
         for event in events {
-            let (entry, bytes) = encode(&event);
+            let entry = Entry::of_event(&event);
+            let mut encodings = Encodings::new(&event);
             for id in self.listeners(&event) {
                 if let Some(index) = self.index_of(&id) {
+                    let bytes = encodings.at(self.version_of(index));
                     self.call(index, api, |instance, handler| {
-                        instance.event(&bytes, entry, handler)
+                        instance.event(bytes, entry, handler)
                     });
                 }
             }
@@ -1159,14 +1171,15 @@ impl PluginSession {
                 continue;
             };
             let callback = Callback::ChatIntercept((handle, typed.to_owned()));
-            let (entry, bytes) = (Entry::of_callback(&callback), callback.to_bytes());
+            let version = self.version_of(index);
+            let (entry, bytes) = (Entry::of_callback(&callback), callback.to_bytes_at(version));
             let mut answer = None;
             self.call(index, api, |instance, handler| {
                 answer = instance.callback(&bytes, entry, handler)?;
                 Ok(())
             });
             if let Some(CallbackAnswer::Intercept(d)) =
-                answer.and_then(|a| CallbackAnswer::from_bytes(&a).ok())
+                answer.and_then(|a| CallbackAnswer::from_bytes_at(&a, version).ok())
                 && d != InterceptDecision::Pass
             {
                 decision = d;
@@ -1200,14 +1213,15 @@ impl PluginSession {
                 continue;
             };
             let callback = Callback::ChatFilter((handle, line.clone()));
-            let (entry, bytes) = (Entry::of_callback(&callback), callback.to_bytes());
+            let version = self.version_of(index);
+            let (entry, bytes) = (Entry::of_callback(&callback), callback.to_bytes_at(version));
             let mut answer = None;
             self.call(index, api, |instance, handler| {
                 answer = instance.callback(&bytes, entry, handler)?;
                 Ok(())
             });
             if let Some(CallbackAnswer::Bool(true)) =
-                answer.and_then(|a| CallbackAnswer::from_bytes(&a).ok())
+                answer.and_then(|a| CallbackAnswer::from_bytes_at(&a, version).ok())
             {
                 suppress = true;
                 break;
@@ -1243,7 +1257,10 @@ impl PluginSession {
             else {
                 continue;
             };
-            let (entry, bytes) = encode(&ac_plugin_abi::ui_host::event(event));
+            let (entry, bytes) = encode(
+                &ac_plugin_abi::ui_host::event(event),
+                self.version_of(index),
+            );
             self.call(index, api, |instance, handler| {
                 instance.event(&bytes, entry, handler)
             });
@@ -1262,7 +1279,7 @@ impl PluginSession {
             else {
                 continue;
             };
-            let (entry, bytes) = encode(&Event::Net(event));
+            let (entry, bytes) = encode(&Event::Net(event), self.version_of(index));
             self.call(index, api, |instance, handler| {
                 instance.event(&bytes, entry, handler)
             });
@@ -1304,7 +1321,7 @@ impl PluginSession {
         else {
             return false;
         };
-        let (entry, bytes) = encode(&Event::Command(call));
+        let (entry, bytes) = encode(&Event::Command(call), self.version_of(index));
         self.call(index, api, |instance, handler| {
             instance.event(&bytes, entry, handler)
         });
@@ -1390,9 +1407,38 @@ impl PluginSession {
     }
 }
 
-/// An event's entry call (for reports) and its encoding.
-fn encode(event: &Event) -> (Entry, Vec<u8>) {
-    (Entry::of_event(event), event.to_bytes())
+/// An event's entry call (for reports) and its encoding as a plugin built
+/// for API `version` reads it (a record field a later version added left
+/// out).
+fn encode(event: &Event, version: ApiVersion) -> (Entry, Vec<u8>) {
+    (Entry::of_event(event), event.to_bytes_at(version))
+}
+
+/// One event's encodings for its listeners, made once per API version a
+/// listener was built for.
+struct Encodings<'a> {
+    event: &'a Event,
+    made: Vec<(ApiVersion, Vec<u8>)>,
+}
+
+impl<'a> Encodings<'a> {
+    fn new(event: &'a Event) -> Self {
+        Self {
+            event,
+            made: Vec::new(),
+        }
+    }
+
+    /// The event as a plugin built for API `version` reads it.
+    fn at(&mut self, version: ApiVersion) -> &[u8] {
+        let at = if let Some(at) = self.made.iter().position(|(v, _)| *v == version) {
+            at
+        } else {
+            self.made.push((version, self.event.to_bytes_at(version)));
+            self.made.len() - 1
+        };
+        &self.made[at].1
+    }
 }
 
 /// Whether the plugin of `manifest` is sent `event`: it was built for the
@@ -1446,5 +1492,38 @@ mod tests {
         assert!(!hears(&manifest("1.1", false), &status));
         assert!(!hears(&manifest("1.1", false), &chat));
         assert!(hears(&manifest("1.1", false), &Event::LoginComplete));
+    }
+
+    // An object change carries the world object; API 1.2 gave that record
+    // a field, so a plugin built for API 1.1 is sent the event without it,
+    // and a plugin of this version the event as it is. Each version's
+    // bytes are made once.
+    #[test]
+    fn an_event_reaches_each_plugin_as_its_api_version_reads_it() {
+        use ac_plugin_abi::world::{ObjectChange, WorldObject};
+        let event = Event::ObjectChanged(ObjectChange {
+            object_id: 7,
+            current: Some(WorldObject {
+                object_id: 7,
+                hook_item_types: 0x80,
+                ..WorldObject::default()
+            }),
+            ..ObjectChange::default()
+        });
+        let v1_1 = ApiVersion::new(1, 1);
+        let mut encodings = Encodings::new(&event);
+        assert_eq!(encodings.at(API_CURRENT), event.to_bytes().as_slice());
+        let older = encodings.at(v1_1).to_vec();
+        assert_eq!(older.len() + 4, event.to_bytes().len());
+        assert_eq!(encodings.at(v1_1), older.as_slice());
+        assert_eq!(encodings.made.len(), 2);
+        let Ok(Event::ObjectChanged(read)) = Event::from_bytes_at(&older, v1_1) else {
+            panic!("an API 1.1 object change");
+        };
+        assert_eq!(
+            read.current.map(|o| (o.object_id, o.hook_item_types)),
+            Some((7, 0))
+        );
+        assert_eq!(encode(&event, v1_1).1, older);
     }
 }

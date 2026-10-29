@@ -1,4 +1,4 @@
-//! The test plugins (`hello`, `probe`, `misbehave`, `uidemo`, `fetcher`, `parity`), built to wasm for
+//! The test plugins (`hello`, `probe`, `misbehave`, `uidemo`, `fetcher`, `parity`, `rawbytes`), built to wasm for
 //! tests and installed into a plugin root. Tests only (feature
 //! `test-fixtures`).
 //!
@@ -60,7 +60,7 @@ fn build() -> Result<PathBuf, String> {
     Ok(target.join("wasm32-unknown-unknown/release"))
 }
 
-/// Installs the test plugin `name` (`hello`, `probe`, `misbehave`, `uidemo`, `fetcher`, `parity`) into the
+/// Installs the test plugin `name` (`hello`, `probe`, `misbehave`, `uidemo`, `fetcher`, `parity`, `rawbytes`) into the
 /// plugin root `root`: `<root>/<name>/plugin.json` and `<name>.wasm`.
 /// Returns the plugin's folder.
 ///
