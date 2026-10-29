@@ -767,7 +767,7 @@ impl InventoryController {
         }
         if Some(list) == self.contents_grid
             && target_item != 0
-            && self.try_merge(ui, item, target_item, view)
+            && self.try_merge(ui, p, target_item, target_index, fallthrough, view)
         {
             return;
         }
@@ -899,13 +899,20 @@ impl InventoryController {
         true
     }
 
+    /// A drop on a stack in the grid: a legal merge takes the drop. The
+    /// session merges, or (the merge no longer legal by its own copy of the
+    /// stacks) makes the plain drop this one would have been: into the pack
+    /// shown open, left of the stack dropped on, or the pack with room.
     fn try_merge(
         &mut self,
         ui: &mut UiRoot,
-        source: u32,
+        p: &ItemDragPayload,
         target: u32,
+        target_index: i32,
+        fallthrough: u32,
         view: &ItemsView<'_>,
     ) -> bool {
+        let source = p.obj_id;
         let (Some(s), Some(t)) = (view.get(source), view.get(target)) else {
             return false;
         };
@@ -926,12 +933,27 @@ impl InventoryController {
         else {
             return false;
         };
+        let (split, whole_stack) = self.moving_amount(source, view);
+        // As the plain grid drop: left of the stack dropped on, in the pack
+        // shown open or, when it has no room, the pack the search found.
+        let open = self.open_container(view.player);
+        let slot =
+            list_drop_placement(view, open, source, false, target, target_index, whole_stack);
+        let container = if fallthrough != 0 { fallthrough } else { open };
         emit(
             ui,
-            PanelOutput::Session(SessionCommand::Item(ItemCommand::Merge {
-                from: ObjectRef::Guid(plan.source_object_id),
-                to: ObjectRef::Guid(plan.target_object_id),
-                amount: plan.amount,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::DropOnStack {
+                item: ObjectRef::Guid(plan.source_object_id),
+                target: ObjectRef::Guid(plan.target_object_id),
+                merge_amount: plan.amount,
+                container: if container == view.player {
+                    ObjectRef::Player
+                } else {
+                    ObjectRef::Guid(container)
+                },
+                slot: slot.filter(|_| container != source),
+                amount: if whole_stack { 0 } else { split },
+                pickup: p.source_kind == ItemDragSource::Ground,
             })),
         );
         self.select(ui, plan.target_object_id);

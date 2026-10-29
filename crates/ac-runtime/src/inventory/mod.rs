@@ -243,6 +243,29 @@ pub enum ItemCommand {
         /// none has room.
         join_stack: bool,
     },
+    /// A drop on a stack in a pack's grid: the dragged stack (from a pack,
+    /// the paperdoll, an outside container or the ground) merges into
+    /// that stack when the merge is legal; otherwise it is the plain drop
+    /// into the pack.
+    DropOnStack {
+        /// The dragged item.
+        item: ObjectRef,
+        /// The stack dropped on.
+        target: ObjectRef,
+        /// How many the merge moves (the split chooser's quantity of the
+        /// selected stack, else the whole stack; capped at the room).
+        merge_amount: u32,
+        /// The plain drop's pack (the player for the main pack).
+        container: ObjectRef,
+        /// The plain drop's slot; `None` when the item is already there
+        /// (no plain drop).
+        slot: Option<i32>,
+        /// The plain drop's amount; 0 for the whole stack.
+        amount: u32,
+        /// The item is not the player's (it lies in the world or in an
+        /// outside container).
+        pickup: bool,
+    },
     /// An item dropped on the toolbar's backpack button: one of the
     /// player's goes into the preferred pack (the open pack, or the main
     /// pack when MainPackPreferred is on), shown waiting there; anything

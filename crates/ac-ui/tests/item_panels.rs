@@ -1581,14 +1581,53 @@ fn a_matching_stack_dropped_on_a_stack_merges_and_selects_the_joined_stack() {
     let view = ItemsView::new(&o.t, PLAYER);
     inv.update(&view);
     let g = inv.grid;
+    // The session merges, or makes the plain drop when its own copy of
+    // the stacks no longer allows the merge (here none: A already sits
+    // left of B).
     let out = drop_on(&mut inv, g, 1, payload(0xA), &view);
     assert_dbg_eq!(
         out,
         vec![
-            PanelOutput::Session(SessionCommand::Item(ItemCommand::Merge {
-                from: ObjectRef::Guid(0xA),
-                to: ObjectRef::Guid(0xB),
-                amount: 5,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::DropOnStack {
+                item: ObjectRef::Guid(0xA),
+                target: ObjectRef::Guid(0xB),
+                merge_amount: 5,
+                container: ObjectRef::Player,
+                slot: None,
+                amount: 0,
+                pickup: false,
+            })),
+            PanelOutput::SelectObject(0xB),
+        ]
+    );
+    // A matching stack from the ground merges the same way (OpenAC
+    // `TryMergeStacks` asks nothing of where the stack lies); its plain
+    // drop is the pickup left of B.
+    let mut loose = ClientObject::new(0xE);
+    loose.weenie_class_id = 273;
+    loose.stack_size = 3;
+    loose.stack_size_max = 100;
+    o.add(loose);
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let out = drop_on(
+        &mut inv,
+        g,
+        1,
+        ItemDragPayload::new(0xE, ItemDragSource::Ground, 0),
+        &view,
+    );
+    assert_dbg_eq!(
+        out,
+        vec![
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::DropOnStack {
+                item: ObjectRef::Guid(0xE),
+                target: ObjectRef::Guid(0xB),
+                merge_amount: 3,
+                container: ObjectRef::Player,
+                slot: Some(1),
+                amount: 0,
+                pickup: true,
             })),
             PanelOutput::SelectObject(0xB),
         ]
