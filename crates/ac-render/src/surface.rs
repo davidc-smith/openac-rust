@@ -876,8 +876,23 @@ impl AttachedWindow {
             self.send_session(SessionCommand::WindowMinimized(minimized));
         }
         // A compositor's answer to a fullscreen request resizes the window.
-        self.follow_fullscreen();
+        // The drawing surface follows the window's size afterwards: a size
+        // asked for while following may take at once, with no resize of
+        // its own (Wayland).
+        let size = self.follow_fullscreen();
         if self.apply_size(size) {
+            self.window.request_redraw();
+        }
+    }
+
+    /// Rebuilds the drawing surface when the window's size is no longer
+    /// the surface's: a size asked for can take at once with no resize of
+    /// its own (Wayland).
+    fn follow_window_size(&mut self) {
+        let size = self.window.inner_size();
+        if (size.width, size.height) != (self.config.width, self.config.height)
+            && self.apply_size(size)
+        {
             self.window.request_redraw();
         }
     }
@@ -1752,14 +1767,15 @@ impl AttachedWindow {
         );
         self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
+        self.follow_window_size();
     }
 
-    /// Follow the window's fullscreen state as reported now: finish what a
-    /// request to the compositor still owes, and keep the screen awake
-    /// while fullscreen.
-    fn follow_fullscreen(&mut self) {
+    /// Follow a resize of the window: finish what a request to the
+    /// compositor still owes, and keep the screen awake while fullscreen.
+    /// Returns the window's size afterwards.
+    fn follow_fullscreen(&mut self) -> PhysicalSize<u32> {
         let mut lines = Vec::new();
-        crate::display_mode::follow_compositor(
+        let (width, height) = crate::display_mode::follow_resize(
             &mut self.fullscreen_awaiting,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
@@ -1767,6 +1783,13 @@ impl AttachedWindow {
         );
         self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
+        PhysicalSize::new(width, height)
+    }
+
+    /// The event loop is ending: let go of the screen while the window's
+    /// display connection is still open.
+    pub(crate) fn release_screen(&mut self) {
+        self.screen_saver.release();
     }
 
     /// Ctrl+F3 (or `/dumpnearby`): log what stands near the player.

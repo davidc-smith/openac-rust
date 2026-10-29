@@ -8,11 +8,20 @@
 //!   put back when the window leaves fullscreen or closes.
 //! - Windows: the windowing layer already refuses the screen saver for a
 //!   fullscreen window; nothing is done here.
+//!
+//! What holds the screen uses the window's own display connection, so it is
+//! let go while that connection is open: when the window closes, or when
+//! the event loop ends ([`ScreenSaver::release`]). An X11 hold keeps the
+//! window, and with it the connection, alive; a Wayland one cannot, so it
+//! is left alone (not destroyed) when dropped during a panic, as the event
+//! loop's connection may already be closed then.
+
+use std::sync::Arc;
 
 use winit::window::Window;
 
-/// Keeps the screen awake while its window is fullscreen; dropped before
-/// the window, it lets go.
+/// Keeps the screen awake while its window is fullscreen; dropped, it lets
+/// go.
 #[derive(Debug, Default)]
 pub(crate) struct ScreenSaver {
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -22,12 +31,18 @@ pub(crate) struct ScreenSaver {
 impl ScreenSaver {
     /// Follow `window`'s fullscreen state: hold the screen awake while it
     /// is fullscreen, let go when it is not. Lines for the log go to `log`.
-    pub(crate) fn follow(&mut self, window: &Window, log: &mut Vec<String>) {
+    pub(crate) fn follow(&mut self, window: &Arc<Window>, log: &mut Vec<String>) {
         let fullscreen = window.fullscreen().is_some();
         #[cfg(all(unix, not(target_os = "macos")))]
         self.platform.keep_awake(window, fullscreen, log);
         #[cfg(not(all(unix, not(target_os = "macos"))))]
         let _ = (fullscreen, log);
+    }
+
+    /// Let go now, and of everything reached on the window's display
+    /// connection (the event loop is ending, the connection still open).
+    pub(crate) fn release(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -97,6 +112,7 @@ pub(crate) const fn step(held: bool, fullscreen: bool, refused: bool) -> Step {
 mod linux {
     use std::ffi::c_void;
     use std::ptr::NonNull;
+    use std::sync::Arc;
 
     use winit::raw_window_handle::{
         HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
@@ -146,7 +162,7 @@ mod linux {
     impl Platform {
         pub(super) fn keep_awake(
             &mut self,
-            window: &Window,
+            window: &Arc<Window>,
             fullscreen: bool,
             log: &mut Vec<String>,
         ) {
@@ -165,16 +181,18 @@ mod linux {
             }
         }
 
-        fn take(&mut self, window: &Window) -> Result<Hold, String> {
+        fn take(&mut self, window: &Arc<Window>) -> Result<Hold, String> {
             let display = window.display_handle().map_err(|e| e.to_string())?.as_raw();
             let surface = window.window_handle().map_err(|e| e.to_string())?.as_raw();
             match (display, surface) {
                 (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
                     if self.wayland.is_none() {
-                        // SAFETY: the display is the window's own live
-                        // connection, which the event loop keeps open for
-                        // longer than any of its windows (and so this
-                        // manager) live.
+                        // SAFETY: the display is the window's own connection,
+                        // open now (the event loop is running). It is closed
+                        // only when the loop ends: the manager is dropped
+                        // before that (`ScreenSaver::release` on the loop's
+                        // end, or with the window), and is left alone when
+                        // dropped during a panic.
                         self.wayland = Some(unsafe { wayland::Manager::new(display.display) }?);
                     }
                     let manager = self.wayland.as_mut().ok_or("no idle-inhibit manager")?;
@@ -186,10 +204,13 @@ mod linux {
                 }
                 (RawDisplayHandle::Xlib(display), _) => {
                     let display: NonNull<c_void> = display.display.ok_or("no X display")?;
-                    // SAFETY: the display is the window's own live X
-                    // connection, open for longer than its windows live.
-                    unsafe { x11::SaverOff::new(display) }.map(|saver_off| Hold::X11 {
-                        _saver_off: Box::new(saver_off),
+                    // SAFETY: the display is the window's own X connection;
+                    // the window holds it open, and the hold holds the
+                    // window.
+                    unsafe { x11::SaverOff::new(display, Arc::clone(window)) }.map(|saver_off| {
+                        Hold::X11 {
+                            _saver_off: Box::new(saver_off),
+                        }
                     })
                 }
                 _ => Err("this windowing system has no screen-saver control here".into()),
@@ -285,9 +306,20 @@ mod linux {
 
         impl Drop for Manager {
             fn drop(&mut self) {
+                if std::thread::panicking() {
+                    leave_alone(&self.connection);
+                    return;
+                }
                 self.manager.destroy();
                 let _ = self.connection.flush();
             }
+        }
+
+        /// During a panic the event loop's display connection may already
+        /// be closed, so nothing on it is touched: this connection is kept
+        /// (never dropped), and its objects are not destroyed.
+        fn leave_alone(connection: &Connection) {
+            std::mem::forget(connection.clone());
         }
 
         /// The screen kept awake while the surface is shown; dropped, the
@@ -299,6 +331,10 @@ mod linux {
 
         impl Drop for Inhibitor {
             fn drop(&mut self) {
+                if std::thread::panicking() {
+                    leave_alone(&self.connection);
+                    return;
+                }
                 self.inhibitor.destroy();
                 let _ = self.connection.flush();
             }
@@ -308,7 +344,9 @@ mod linux {
     mod x11 {
         use std::ffi::c_void;
         use std::ptr::NonNull;
+        use std::sync::Arc;
 
+        use winit::window::Window;
         use x11_dl::xlib::{Display, Xlib};
 
         use crate::screen_saver::{SaverSettings, saver_off};
@@ -317,22 +355,20 @@ mod linux {
         /// from before are put back.
         pub(super) struct SaverOff {
             xlib: Xlib,
-            display: XDisplay,
+            display: NonNull<Display>,
             saved: SaverSettings,
+            /// The window, which holds `display` open.
+            _window: Arc<Window>,
         }
-
-        /// The window's X display connection.
-        struct XDisplay(NonNull<Display>);
-
-        // SAFETY: the windowing layer initialises Xlib for threads before it
-        // opens the display, so the display may be used from any thread.
-        unsafe impl Send for XDisplay {}
 
         impl SaverOff {
             /// # Safety
-            /// `display` is a live X display that stays open for longer
-            /// than the returned value lives.
-            pub(super) unsafe fn new(display: NonNull<c_void>) -> Result<Self, String> {
+            /// `display` is `window`'s X display connection (which the
+            /// window holds open).
+            pub(super) unsafe fn new(
+                display: NonNull<c_void>,
+                window: Arc<Window>,
+            ) -> Result<Self, String> {
                 let xlib = Xlib::open().map_err(|e| e.to_string())?;
                 let display = display.cast::<Display>();
                 let (mut timeout, mut interval, mut prefer_blanking, mut allow_exposures) =
@@ -356,24 +392,26 @@ mod linux {
                 };
                 let held = Self {
                     xlib,
-                    display: XDisplay(display),
+                    display,
                     saved,
+                    _window: window,
                 };
                 held.set(saver_off());
                 Ok(held)
             }
 
             fn set(&self, settings: SaverSettings) {
-                // SAFETY: the display is live while `self` is (see `new`).
+                // SAFETY: the display is open while `self` holds the window
+                // (see `new`).
                 unsafe {
                     (self.xlib.XSetScreenSaver)(
-                        self.display.0.as_ptr(),
+                        self.display.as_ptr(),
                         settings.timeout,
                         settings.interval,
                         settings.prefer_blanking,
                         settings.allow_exposures,
                     );
-                    (self.xlib.XFlush)(self.display.0.as_ptr());
+                    (self.xlib.XFlush)(self.display.as_ptr());
                 }
             }
         }
