@@ -392,13 +392,13 @@ fn clone_keeps_the_en_passant_chance() {
 }
 
 #[test]
-fn set_squares_restores_only_the_pieces() {
+fn restore_squares_puts_back_only_the_pieces() {
     // The squares come back; the turn and the en passant chance stay as
     // they are (what a server-refused move restores).
     let mut board = ChessBoard::standard();
-    let before = *board.squares();
+    let before = board.clone();
     play(&mut board, &["e2e4"]);
-    board.set_squares(&before);
+    board.restore_squares(&before);
     assert_eq!(board.get(sq("e2")), Some(white(P::Pawn)));
     assert_eq!(board.get(sq("e4")), None);
     assert_eq!(board.turn(), ChessTeam::Black);

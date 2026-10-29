@@ -206,7 +206,11 @@ fn refused_move_says_why_and_keeps_the_turn() {
 }
 
 #[test]
-fn move_the_server_refuses_is_put_back() {
+fn move_the_server_refuses_puts_the_squares_back_but_not_the_turn() {
+    // The game puts back only the squares when the server refuses a move.
+    // The turn has already passed on the board, so the board looks as it
+    // did, but every move the player tries after it is refused as not
+    // their piece.
     let mut chess = seated(ChessTeam::White);
     chess.try_move(sq("e2"), sq("e4"));
     chess.apply_move_response(&response(R::INVALID_COMMAND));
@@ -217,11 +221,16 @@ fn move_the_server_refuses_is_put_back() {
         board.get(sq("e2")),
         Some(ChessPiece::new(ChessPieceType::Pawn, ChessTeam::White))
     );
-    assert_eq!(board.turn(), ChessTeam::White);
     assert_eq!(
         last_line(&mut chess),
         "That move is invalid, try again.  It is your turn to move."
     );
+    assert_eq!(chess.board().turn(), ChessTeam::Black);
+
+    assert_eq!(chess.try_move(sq("e2"), sq("e4")), R::NOT_YOURS);
+    assert_eq!(last_line(&mut chess), own_move_text(R::NOT_YOURS));
+    assert_eq!(chess.stage(), ChessStage::MyTurn);
+    assert_eq!(chess.board().get(sq("e4")), None);
 }
 
 #[test]

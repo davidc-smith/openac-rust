@@ -5,10 +5,11 @@
 //! move, a pass, a draw offer or a resignation; the server's game events
 //! move it along. Every step says a line the way the game always has.
 //!
-//! A move shown before the server confirms it is put back if the server
-//! refuses it. When a game ends the final position stays on the board until
-//! the next game; [`ChessView::games_ended`] counts the games that ended by
-//! resigning or with no result, which close the window.
+//! A move shown before the server confirms it has its squares put back if
+//! the server refuses it; the turn stays passed. When a game ends the final
+//! position stays on the board until the next game;
+//! [`ChessView::games_ended`] counts the games that ended by resigning or
+//! with no result, which close the window.
 
 use ac_core::chat::LogTextType;
 use ac_core::chess::{ChessBoard, ChessMoveResult, ChessSquare, ChessTeam};
@@ -271,8 +272,13 @@ impl ChessState {
             self.stage = ChessStage::OpponentsTurn;
             "Waiting for your opponent to move.".to_owned()
         } else {
+            // The board is left as the game leaves it: the squares go back
+            // to how they were before the move, but the turn has already
+            // passed on the board and stays passed. The board looks
+            // unchanged, and every move the player tries after this is
+            // refused as not their piece until the game ends.
             if let Some(before) = self.before_move.take() {
-                self.board = before;
+                self.board.restore_squares(&before);
             }
             self.stage = ChessStage::MyTurn;
             own_move_text(result)

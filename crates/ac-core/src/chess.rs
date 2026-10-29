@@ -360,10 +360,10 @@ impl ChessBoard {
         &self.squares
     }
 
-    /// Lay `squares` (in [`ChessBoard::squares`]'s order) over the board,
-    /// leaving whose turn it is and the en passant chance as they are.
-    pub fn set_squares(&mut self, squares: &[Option<ChessPiece>; 64]) {
-        self.squares = *squares;
+    /// Put every square back as it is on `snapshot` and nothing else: the
+    /// side to move and the en passant chance stay as they are now.
+    pub fn restore_squares(&mut self, snapshot: &ChessBoard) {
+        self.squares = snapshot.squares;
     }
 
     /// Every piece with its square, in square order.
