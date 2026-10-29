@@ -613,3 +613,159 @@ fn a_double_click_on_a_board_within_the_use_pacing_is_swallowed() {
         texts(&state)
     );
 }
+
+/// Run a chess command through the session; the bodies it sent.
+fn chess(
+    state: &mut SessionState,
+    outbox: &mut Outbox,
+    command: crate::gameplay::ChessCommand,
+) -> Vec<Vec<u8>> {
+    outbox.drain().count();
+    state.command(
+        super::SessionCommand::Gameplay(crate::gameplay::GameplayCommand::Chess(command)),
+        outbox,
+        true,
+        CLOCKS,
+    );
+    outbox.drain().map(|o| o.body).collect()
+}
+
+/// The action type and the words after it.
+fn action(body: &[u8]) -> (u32, Vec<u32>) {
+    let words: Vec<u32> = body
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    (words[2], words[3..].to_vec())
+}
+
+/// In the world at the board, White, White to move.
+fn seated_white() -> (SessionState, Outbox) {
+    let (mut state, mut outbox) = in_world();
+    place_board(&mut state);
+    use_board(
+        &mut state,
+        &mut outbox,
+        crate::inventory::ItemCommand::Use(crate::inventory::ObjectRef::Guid(BOARD)),
+    );
+    chess_event(
+        &mut state,
+        &mut outbox,
+        GameEventType::JOIN_GAME_RESPONSE,
+        &[0],
+    );
+    chess_event(&mut state, &mut outbox, GameEventType::START_GAME, &[0]);
+    state.drain_host_events();
+    (state, outbox)
+}
+
+fn status_texts(state: &mut SessionState) -> Vec<String> {
+    state
+        .drain_host_events()
+        .into_iter()
+        .filter_map(|e| match e {
+            super::HostEvent::InterfaceText(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_move_the_rules_refuse_sends_nothing_and_says_why() {
+    // OpenAC MiniGameUiController.ClickSquare: a move goes out only when the
+    // board accepts it; RuntimeChessState.TryMove says the refusal.
+    use crate::gameplay::ChessCommand;
+    use ac_core::chess::ChessSquare;
+    let (mut state, mut outbox) = seated_white();
+    let sent = chess(
+        &mut state,
+        &mut outbox,
+        ChessCommand::Move {
+            from: ChessSquare::new(4, 1),
+            to: ChessSquare::new(4, 4),
+        },
+    );
+    assert!(sent.is_empty(), "{sent:?}");
+    assert!(texts(&state).iter().any(|t| t
+        == "The selected piece cannot move that direction, try again.  It is your turn to move."));
+
+    let sent = chess(
+        &mut state,
+        &mut outbox,
+        ChessCommand::Move {
+            from: ChessSquare::new(4, 1),
+            to: ChessSquare::new(4, 3),
+        },
+    );
+    assert_eq!(sent.len(), 1);
+    assert_eq!(action(&sent[0]), (0x026B, vec![4, 1, 4, 3]));
+}
+
+#[test]
+fn stalemate_sends_the_offer_then_the_retraction_and_nothing_outside_a_game() {
+    use crate::gameplay::ChessCommand;
+    let (mut state, mut outbox) = seated_white();
+    let first = chess(&mut state, &mut outbox, ChessCommand::ToggleStalemate);
+    let second = chess(&mut state, &mut outbox, ChessCommand::ToggleStalemate);
+    assert_eq!(
+        first.iter().map(|b| action(b)).collect::<Vec<_>>(),
+        [(0x026E, vec![1])]
+    );
+    assert_eq!(
+        second.iter().map(|b| action(b)).collect::<Vec<_>>(),
+        [(0x026E, vec![0])]
+    );
+
+    let (mut state, mut outbox) = in_world();
+    assert!(chess(&mut state, &mut outbox, ChessCommand::ToggleStalemate).is_empty());
+    assert_eq!(
+        status_texts(&mut state),
+        [crate::gameplay::chess::NOT_PLAYING_TEXT]
+    );
+}
+
+#[test]
+fn pass_goes_out_only_in_a_game() {
+    use crate::gameplay::ChessCommand;
+    let (mut state, mut outbox) = seated_white();
+    let sent = chess(&mut state, &mut outbox, ChessCommand::Pass);
+    assert_eq!(
+        sent.iter().map(|b| action(b)).collect::<Vec<_>>(),
+        [(0x026D, vec![])]
+    );
+
+    let (mut state, mut outbox) = in_world();
+    assert!(chess(&mut state, &mut outbox, ChessCommand::Pass).is_empty());
+    assert_eq!(
+        status_texts(&mut state),
+        [crate::gameplay::chess::NOT_PLAYING_TEXT]
+    );
+}
+
+#[test]
+fn resign_sends_the_quit_whether_or_not_a_game_is_on_and_ends_the_game() {
+    // OpenAC MiniGameUiController.OnResign: on a yes the quit goes out, then
+    // the game ends (RuntimeChessState.Resign, which does nothing outside a
+    // game).
+    use crate::gameplay::{ChessCommand, ChessStage};
+    let (mut state, mut outbox) = in_world();
+    let sent = chess(&mut state, &mut outbox, ChessCommand::Resign);
+    assert_eq!(
+        sent.iter().map(|b| action(b)).collect::<Vec<_>>(),
+        [(0x026A, vec![])]
+    );
+    assert_eq!(state.gameplay.chess().view().games_ended, 0);
+
+    let (mut state, mut outbox) = seated_white();
+    let sent = chess(&mut state, &mut outbox, ChessCommand::Resign);
+    assert_eq!(
+        sent.iter().map(|b| action(b)).collect::<Vec<_>>(),
+        [(0x026A, vec![])]
+    );
+    assert_eq!(state.gameplay.chess().stage(), ChessStage::NotPlaying);
+    assert_eq!(state.gameplay.chess().view().games_ended, 1);
+    assert_eq!(
+        texts(&state).last().map(String::as_str),
+        Some(crate::gameplay::chess::JOIN_PROMPT)
+    );
+}
