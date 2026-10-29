@@ -130,6 +130,20 @@ pub enum PlayerState {
     PortalSpace,
 }
 
+/// What the place to draw is blended from
+/// ([`PlayerMovementController::render_steps`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderSteps {
+    /// The body after the quantum before the last one (world).
+    pub previous: Vec3,
+    /// The body after the last quantum (world).
+    pub current: Vec3,
+    /// Time carried past the last quantum, seconds.
+    pub pending_seconds: f64,
+    /// The last quantum's length, seconds.
+    pub step_seconds: f32,
+}
+
 /// What one update produced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MovementResult {
@@ -507,6 +521,19 @@ impl PlayerMovementController {
             as f32)
             .clamp(0.0, 1.0);
         self.prev_physics_pos.lerp(self.curr_physics_pos, alpha)
+    }
+
+    /// What [`render_position`](Self::render_position) blends: the places
+    /// of the last two quanta, the time carried past the last one and its
+    /// length, so a caller with its own clock can blend at its own time.
+    #[must_use]
+    pub fn render_steps(&self) -> RenderSteps {
+        RenderSteps {
+            previous: self.prev_physics_pos,
+            current: self.curr_physics_pos,
+            pending_seconds: self.obj.clock.pending_seconds(),
+            step_seconds: self.last_quantum_seconds,
+        }
     }
 
     /// The body's cell.

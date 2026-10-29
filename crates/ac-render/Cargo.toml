@@ -31,6 +31,12 @@ ac-plugin-ui.workspace = true
 ac-host.workspace = true
 arboard.workspace = true
 
+# The screen kept awake while fullscreen (Wayland idle inhibitor, X11 screen saver).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+wayland-client.workspace = true
+wayland-protocols.workspace = true
+x11-dl.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse"] }
 

@@ -36,7 +36,8 @@ use crate::obj_update::{
 };
 use crate::quantum::{RetailObjectActivityResult, evaluate_activity};
 use crate::set_position::{
-    PhysicsSetPositionFlags, PhysicsSetPositionRequest, PhysicsSetPositionResult,
+    PhysicsPlacementClass, PhysicsSetPositionFlags, PhysicsSetPositionRequest,
+    PhysicsSetPositionResult,
 };
 use crate::state::ObjectInfoState;
 use crate::transition::CollisionSphere;
@@ -306,6 +307,9 @@ pub struct RemoteMotionDriver {
     pub step_down_height: f32,
     /// Local entity id (the sweep skips it).
     pub local_entity_id: u32,
+    /// What kind of object it is for a placement (a hook, a storage
+    /// chest and a corpse are forced into their cell).
+    pub placement_class: PhysicsPlacementClass,
     /// Stop the cycle when the server velocity goes stale.
     pub apply_stale_velocity_cycle: bool,
     /// Hidden (not drawn: no animation advance).
@@ -352,6 +356,7 @@ impl RemoteMotionDriver {
             step_up_height: 0.4,
             step_down_height: 0.4,
             local_entity_id: 0,
+            placement_class: PhysicsPlacementClass::Ordinary,
             apply_stale_velocity_cycle: false,
             hidden: false,
             last_shadow_sync_pos: position,
@@ -1111,6 +1116,7 @@ impl RemoteMotionDriver {
                         | PhysicsSetPositionFlags::SLIDE
                         | PhysicsSetPositionFlags::SEND_POSITION_EVENT,
                 ),
+                placement_class: self.placement_class,
                 ..PhysicsSetPositionRequest::default()
             },
         ))
@@ -1138,6 +1144,16 @@ impl RemoteMotionDriver {
         let previous_on_walkable = body.on_walkable();
         body.orientation = placed.orientation;
         body.snap_to_cell(placed.cell_id, placed.position, placed.cell_local_position);
+        if placed.forced_into_cell {
+            // Forced into its cell: the frame and the cell only; the body
+            // keeps the contact it had.
+            self.obj.cell_id = placed.cell_id;
+            self.last_server_pos = placed.position;
+            self.last_server_pos_time = now;
+            self.last_shadow_sync_pos = placed.position;
+            self.last_shadow_sync_orientation = placed.orientation;
+            return true;
+        }
         body.contact_plane_valid = placed.in_contact;
         body.contact_plane = placed.contact_plane;
         body.contact_plane_cell_id = placed.contact_plane_cell_id;
@@ -1221,6 +1237,12 @@ impl RemoteMotionDriver {
         let previous_on_walkable = body.on_walkable();
         body.orientation = placed.orientation;
         body.snap_to_cell(placed.cell_id, placed.position, placed.cell_local_position);
+        if placed.forced_into_cell {
+            // Forced into its cell: the frame and the cell only; the body
+            // keeps the contact it had.
+            self.obj.cell_id = placed.cell_id;
+            return true;
+        }
         body.contact_plane_valid = placed.in_contact;
         body.contact_plane = placed.contact_plane;
         body.contact_plane_cell_id = placed.contact_plane_cell_id;

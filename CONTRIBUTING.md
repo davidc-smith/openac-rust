@@ -102,6 +102,13 @@ layouts differ. So:
   or import in `ac-plugin-abi` changes the layout fingerprint
   (`ac_plugin_abi::layout`). Update the pinned value in its tests, and say in
   the pull request that plugins must be rebuilt.
+- **Versioned additions keep older plugins loading.** A new event kind, or a
+  new field at the end of a record, added in a new API minor version is
+  marked with that version (`since (MAJOR, MINOR)` in `wire_union!` and
+  `wire_record!`) and `API_CURRENT` moves to it. A plugin built for an older
+  version is compared with that version's shapes, is never sent the new
+  event, and is sent the record without the new field, so it keeps loading
+  unrebuilt; pin the older version's shapes in the layout tests.
 - **Additive where possible.** A new capability is a new import or event
   with an inert answer when the client has nothing to say, so plugins that do
   not use it are unaffected.

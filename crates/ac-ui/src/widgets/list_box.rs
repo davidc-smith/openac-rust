@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::draw::RenderContext;
 use crate::element_info::{ElementInfo, TemplateEntry};
 use crate::event::{UiEvent, kind};
-use crate::geometry::AnchorEdges;
+use crate::geometry::{AnchorEdges, compute_anchored_rect};
 use crate::root::UiRoot;
 use crate::text::Scrollable;
 use crate::tree::{Element, ElementId, Widget};
@@ -27,6 +27,20 @@ pub struct ScrollablePanel {
     pub line_height: i32,
     base_tops: HashMap<ElementId, f32>,
     content_height: i32,
+    /// When set, the rows follow the panel's width: each keeps its
+    /// horizontal edges as they stood against a panel this wide.
+    row_width_base: Option<f32>,
+    /// Each row's horizontal edges, left and width as added (only while
+    /// the rows follow the width).
+    row_spans: HashMap<ElementId, RowSpan>,
+}
+
+/// A row's horizontal edges and its left and width as added.
+#[derive(Debug, Clone, Copy)]
+struct RowSpan {
+    edges: AnchorEdges,
+    left: f32,
+    width: f32,
 }
 
 impl ScrollablePanel {
@@ -45,10 +59,28 @@ impl ScrollablePanel {
         self.content_height
     }
 
+    /// Rows follow the panel's width from now on, each keeping its own
+    /// horizontal edges against a panel `base_width` wide (the width the
+    /// rows were designed for): a row anchored left and right stretches by
+    /// the panel's growth, one anchored right only moves by it. The panel
+    /// still places them vertically. `None`: rows keep the size they came
+    /// with.
+    pub fn set_rows_follow_width(&mut self, base_width: Option<f32>) {
+        self.row_width_base = base_width;
+    }
+
     /// Add `row` at content offset `top` as the panel's last child.
     pub fn add_row(&mut self, ui: &mut UiRoot, me: ElementId, row: ElementId, top: f32) {
         if let Some(e) = ui.element_mut(row) {
             e.top = top;
+            if self.row_width_base.is_some() {
+                let span = RowSpan {
+                    edges: e.anchors & (AnchorEdges::LEFT | AnchorEdges::RIGHT),
+                    left: e.left,
+                    width: e.width,
+                };
+                self.row_spans.insert(row, span);
+            }
         }
         ui.add_child(me, row);
         ui.set_anchors(row, AnchorEdges::NONE);
@@ -58,6 +90,7 @@ impl ScrollablePanel {
 
     /// Detach and free `row`.
     pub fn remove_row(&mut self, ui: &mut UiRoot, row: ElementId) {
+        self.row_spans.remove(&row);
         if self.base_tops.remove(&row).is_some() {
             ui.destroy(row);
             self.recompute_content_height(ui);
@@ -70,6 +103,7 @@ impl ScrollablePanel {
             ui.destroy(child);
         }
         self.base_tops.clear();
+        self.row_spans.clear();
         self.content_height = 0;
         self.scroll.set_scroll_y(0);
     }
@@ -88,7 +122,7 @@ impl ScrollablePanel {
 
     /// Place the rows for the current scroll offset.
     pub fn layout_rows(&mut self, ui: &mut UiRoot, me: ElementId) {
-        let height = ui.element(me).map_or(0.0, |e| e.height);
+        let (width, height) = ui.element(me).map_or((0.0, 0.0), |e| (e.width, e.height));
         self.scroll.line_height = self.line_height.max(1);
         self.scroll.content_height = self.content_height;
         self.scroll.view_height = (height.floor() as i32).max(0);
@@ -101,8 +135,24 @@ impl ScrollablePanel {
             };
             let top = base - scroll_y;
             let child_h = ui.element(child).map_or(0.0, |e| e.height);
+            let span = self.row_width_base.zip(self.row_spans.get(&child).copied());
             if let Some(e) = ui.element_mut(child) {
                 e.top = top;
+                if let Some((base, s)) = span {
+                    let r = compute_anchored_rect(
+                        s.edges,
+                        s.left,
+                        0.0,
+                        base - (s.left + s.width),
+                        0.0,
+                        s.width,
+                        0.0,
+                        width,
+                        0.0,
+                    );
+                    e.left = r.x;
+                    e.width = r.w;
+                }
             }
             ui.set_visible(child, top + child_h > 0.5 && top < height - 0.5);
         }
@@ -140,6 +190,7 @@ pub struct ListBox {
     pub scrollbar_element_id: u32,
     viewport: Option<ElementId>,
     pending_line_height: i32,
+    pending_row_width_base: Option<f32>,
 }
 
 impl ListBox {
@@ -152,6 +203,7 @@ impl ListBox {
             inner: DatElement::new(info),
             viewport: None,
             pending_line_height: DEFAULT_LINE_HEIGHT,
+            pending_row_width_base: None,
         }
     }
 
@@ -163,6 +215,7 @@ impl ListBox {
         let (w, h) = ui.element(me).map_or((0.0, 0.0), |e| (e.width, e.height));
         let mut panel = ScrollablePanel::new();
         panel.line_height = self.pending_line_height;
+        panel.set_rows_follow_width(self.pending_row_width_base);
         let v = ui.add(
             me,
             Element::at(0.0, 0.0, w, h).with_anchors(AnchorEdges::ALL),
@@ -188,6 +241,18 @@ impl ListBox {
             && let Some(p) = ui.widget_mut::<ScrollablePanel>(v)
         {
             p.line_height = value;
+        }
+    }
+
+    /// The rows follow the list's width, each by its own horizontal edges
+    /// against a list `base_width` wide (see
+    /// [`ScrollablePanel::set_rows_follow_width`]). Off by default.
+    pub fn set_rows_follow_width(&mut self, ui: &mut UiRoot, base_width: Option<f32>) {
+        self.pending_row_width_base = base_width;
+        if let Some(v) = self.viewport
+            && let Some(p) = ui.widget_mut::<ScrollablePanel>(v)
+        {
+            p.set_rows_follow_width(base_width);
         }
     }
 

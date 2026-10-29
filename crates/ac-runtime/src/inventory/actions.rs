@@ -230,6 +230,24 @@ impl Inventory {
                 }
                 self.drop_into(item, container, *slot, *amount, *pickup, ctx)
             }
+            C::DropOnStack {
+                item,
+                target,
+                merge_amount,
+                container,
+                slot,
+                amount,
+                pickup,
+            } => {
+                let (item, target, container) =
+                    (resolve!(item), resolve!(target), resolve!(container));
+                if self.merge_stacks(item, target, *merge_amount, ctx) {
+                    return true;
+                }
+                slot.is_some_and(|slot| {
+                    self.drop_into(item, container, slot, *amount, *pickup, ctx)
+                })
+            }
             C::DropOnBackpack(item) => {
                 let item = resolve!(item);
                 self.drop_on_backpack(item, ctx)
@@ -842,6 +860,12 @@ impl Inventory {
         if primary == interaction::ItemPrimaryUseResult::PlaceInBackpack {
             return self.place_world_item_in_backpack(object, ctx);
         }
+        // A game board out in the world is used by joining its game, the
+        // same as when a person clicks it.
+        if primary == interaction::ItemPrimaryUseResult::BeginGame {
+            self.begun_games.push(object);
+            return true;
+        }
         self.request_use_for(object, false, ctx)
     }
 
@@ -970,6 +994,48 @@ impl Inventory {
             self.replace_fully_merged_shortcut(join.source_object_id, join.target_object_id, ctx);
         }
         Some(sent)
+    }
+
+    /// Merge `amount` of one stack into another when the merge is legal
+    /// (the same kind, room in the target, neither in a trade), wherever
+    /// the source lies: a drop on a stack in a pack's grid merges a stack
+    /// from the ground too, as the server moves a stack from anywhere the
+    /// player may take it. False when the merge is not legal or could not
+    /// be sent.
+    fn merge_stacks(
+        &mut self,
+        source_id: u32,
+        target_id: u32,
+        amount: u32,
+        ctx: &mut ItemContext<'_>,
+    ) -> bool {
+        let items = ctx.world.items();
+        let (Some(source), Some(target)) = (items.get(source_id), items.get(target_id)) else {
+            return false;
+        };
+        let requested = i32::try_from(amount).unwrap_or(i32::MAX);
+        let Some(plan) = StackMergePlan::plan(
+            &merge_item(source),
+            &merge_item(target),
+            self.can_make_request(ctx),
+            requested,
+        ) else {
+            return false;
+        };
+        let sent = self.dispatch_request(InventoryRequestKind::Merge, source_id, ctx, |ctx| {
+            ctx.send(|seq| {
+                build_stackable_merge(
+                    seq,
+                    plan.source_object_id,
+                    plan.target_object_id,
+                    plan.amount,
+                )
+            })
+        });
+        if sent {
+            self.replace_fully_merged_shortcut(plan.source_object_id, plan.target_object_id, ctx);
+        }
+        sent
     }
 
     /// An item dropped on the toolbar's backpack button: the player's goes
@@ -1345,6 +1411,10 @@ impl Inventory {
                         .push(InventoryEvent::OpenSalvage(action.object_id));
                     acted = true;
                 }
+                K::BeginGame => {
+                    self.begun_games.push(action.object_id);
+                    acted = true;
+                }
                 K::ConfirmPlayerKillerSwitch
                 | K::ConfirmNonPlayerKillerSwitch
                 | K::ConfirmVolatileRare => {
@@ -1425,7 +1495,8 @@ impl Inventory {
             return false;
         }
         let target = self.preferred_backpack_container(main_pack, ctx);
-        let chosen = placement::choose_container(ctx.world.items(), item_id, root, target, root);
+        let chosen =
+            placement::choose_container(ctx.world.items(), item_id, root, target, root, true);
         if let Some(merge) = self.plan_auto_merge(item_id, ctx) {
             // The joined stack's pack is where the quantity is shown
             // waiting (the main pack when that pack is not known).
@@ -1617,33 +1688,7 @@ impl Inventory {
         if !self.is_owned_by_player(source_id, ctx) || !self.is_owned_by_player(target_id, ctx) {
             return false;
         }
-        let items = ctx.world.items();
-        let (Some(source), Some(target)) = (items.get(source_id), items.get(target_id)) else {
-            return false;
-        };
-        let requested = i32::try_from(amount).unwrap_or(i32::MAX);
-        let Some(plan) = StackMergePlan::plan(
-            &merge_item(source),
-            &merge_item(target),
-            self.can_make_request(ctx),
-            requested,
-        ) else {
-            return false;
-        };
-        let sent = self.dispatch_request(InventoryRequestKind::Merge, source_id, ctx, |ctx| {
-            ctx.send(|seq| {
-                build_stackable_merge(
-                    seq,
-                    plan.source_object_id,
-                    plan.target_object_id,
-                    plan.amount,
-                )
-            })
-        });
-        if sent {
-            self.replace_fully_merged_shortcut(plan.source_object_id, plan.target_object_id, ctx);
-        }
-        sent
+        self.merge_stacks(source_id, target_id, amount, ctx)
     }
 
     /// Drop an owned item (or part of a stack) on the ground.

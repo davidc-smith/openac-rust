@@ -11,8 +11,8 @@ use crate::movement_out::{MotionTimestamps, RawMotionState};
 use crate::vendor::ItemAmount;
 use crate::{
     GameActionSequence, Position, Shortcut, Vector3, allegiance, appraise, book, character, chat,
-    client_commands, combat, contract, fellowship, house, inventory, magic, movement_out, social,
-    trade,
+    chess, client_commands, combat, contract, fellowship, house, inventory, magic, movement_out,
+    social, trade,
 };
 
 type Builder = Box<dyn Fn(u32) -> Vec<u8>>;
@@ -88,6 +88,11 @@ fn builders() -> Vec<(u32, Builder)> {
             Box::new(|s| trade::build_open_trade_negotiations(s, 1)),
         ),
         (0x0204, Box::new(trade::build_reset_trade)),
+        (0x0269, Box::new(|s| chess::build_join(s, 1))),
+        (0x026A, Box::new(chess::build_quit)),
+        (0x026B, Box::new(|s| chess::build_move(s, 4, 1, 4, 3))),
+        (0x026D, Box::new(chess::build_move_pass)),
+        (0x026E, Box::new(|s| chess::build_stalemate(s, true))),
         (
             0x005F,
             Box::new(|s| {

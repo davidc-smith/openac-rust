@@ -1033,7 +1033,9 @@ impl Host<'_> {
         decode(Import::UiImageRelease, &reply)
     }
 
-    /// How many distinct images the plugin holds.
+    /// How many distinct images the plugin holds: the ones it asked for,
+    /// and the file icons its markup windows are drawing, which count
+    /// against the same limits.
     #[must_use]
     pub fn image_count(&mut self) -> u32 {
         let reply = ui_call!(self, UiImageCount, ui_image_count, &[]);

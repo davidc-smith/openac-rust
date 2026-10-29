@@ -243,6 +243,29 @@ pub enum ItemCommand {
         /// none has room.
         join_stack: bool,
     },
+    /// A drop on a stack in a pack's grid: the dragged stack (from a pack,
+    /// the paperdoll, an outside container or the ground) merges into
+    /// that stack when the merge is legal; otherwise it is the plain drop
+    /// into the pack.
+    DropOnStack {
+        /// The dragged item.
+        item: ObjectRef,
+        /// The stack dropped on.
+        target: ObjectRef,
+        /// How many the merge moves (the split chooser's quantity of the
+        /// selected stack, else the whole stack; capped at the room).
+        merge_amount: u32,
+        /// The plain drop's pack (the player for the main pack).
+        container: ObjectRef,
+        /// The plain drop's slot; `None` when the item is already there
+        /// (no plain drop).
+        slot: Option<i32>,
+        /// The plain drop's amount; 0 for the whole stack.
+        amount: u32,
+        /// The item is not the player's (it lies in the world or in an
+        /// outside container).
+        pickup: bool,
+    },
     /// An item dropped on the toolbar's backpack button: one of the
     /// player's goes into the preferred pack (the open pack, or the main
     /// pack when MainPackPreferred is on), shown waiting there; anything
@@ -624,6 +647,8 @@ pub struct Inventory {
     placement: Option<PendingPlacement>,
     /// The items the salvage window marked as staged.
     salvage_marked: std::collections::BTreeSet<u32>,
+    /// Game boards used, oldest first, whose games the session begins.
+    begun_games: Vec<u32>,
     notices: Vec<Notice>,
     events: Vec<InventoryEvent>,
     /// `OPENAC_PROBE_EXTERNAL_CONTAINER=1`: the viewed container's probe
@@ -1080,6 +1105,13 @@ impl Inventory {
     /// Take what a host should show, oldest first.
     pub fn drain_events(&mut self) -> std::vec::Drain<'_, InventoryEvent> {
         self.events.drain(..)
+    }
+
+    /// Take the game boards used, oldest first: using someone else's board
+    /// begins its game rather than sending a use, and the session begins
+    /// it (the chess owner's join) on every host.
+    pub fn take_begun_games(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.begun_games)
     }
 
     fn interface(&mut self, text: impl Into<String>) {

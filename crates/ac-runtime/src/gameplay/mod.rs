@@ -10,6 +10,7 @@
 
 pub mod allegiance;
 pub mod book;
+pub mod chess;
 pub mod combat;
 pub mod combat_animation;
 pub mod death;
@@ -38,8 +39,8 @@ use ac_proto::book::{
 };
 use ac_proto::{
     GameEventEnvelope, GameEventType, Inbound, PlayerDescription, ProtoError,
-    allegiance as wire_allegiance, combat as wire_combat, fellowship as wire_fellowship,
-    house as wire_house, magic as wire_magic,
+    allegiance as wire_allegiance, chess as wire_chess, combat as wire_combat,
+    fellowship as wire_fellowship, house as wire_house, magic as wire_magic,
 };
 
 use crate::character::{CharacterOptions, option_id};
@@ -52,6 +53,7 @@ use crate::world::{World, distance};
 pub use ac_core::combat::{AttackHeight, CombatMode};
 pub use allegiance::{AllegianceMemberView, AllegianceState, AllegianceView};
 pub use book::{BookFlushAction, BookPageAction, BookPageTurn, BookState, BookView};
+pub use chess::{ChessCommand, ChessStage, ChessState, ChessView};
 pub use combat::{
     CombatAttackCommand, CombatAttackState, CombatModeRequestResult, CombatModeRequestStatus,
     CombatModeState, CombatTargetState, CreatureDeathState, HealthQuery, InputActivation,
@@ -304,6 +306,8 @@ pub enum GameplayCommand {
     ShowCombat,
     /// The open book.
     Book(BookCommand),
+    /// The chess game.
+    Chess(ChessCommand),
     /// The fellowship.
     Fellowship(FellowshipCommand),
     /// The allegiance.
@@ -471,6 +475,7 @@ pub struct Gameplay {
     death: DeathState,
     health: HealthQuery,
     book: BookState,
+    chess: ChessState,
     fellowship: FellowshipState,
     allegiance: AllegianceState,
     house: HouseState,
@@ -509,6 +514,7 @@ impl Gameplay {
             death: DeathState::default(),
             health: HealthQuery::default(),
             book: BookState::default(),
+            chess: ChessState::default(),
             fellowship: FellowshipState::default(),
             allegiance: AllegianceState::default(),
             house: HouseState::default(),
@@ -689,6 +695,12 @@ impl Gameplay {
     #[must_use]
     pub fn book(&self) -> &BookState {
         &self.book
+    }
+
+    /// The chess game.
+    #[must_use]
+    pub fn chess(&self) -> &ChessState {
+        &self.chess
     }
 
     /// The fellowship.
@@ -994,6 +1006,36 @@ impl Gameplay {
                     self.events.push(GameplayEvent::Book(self.book.view()));
                 }
             }
+            GameEventType::JOIN_GAME_RESPONSE => {
+                let response = wire_chess::JoinGameResponse::parse(payload)?;
+                self.chess.apply_join_response(&response);
+                self.chess_said();
+            }
+            GameEventType::START_GAME => {
+                let start = wire_chess::StartGame::parse(payload)?;
+                self.chess.apply_start_game(&start);
+                self.chess_said();
+            }
+            GameEventType::MOVE_RESPONSE => {
+                let response = wire_chess::MoveResponse::parse(payload)?;
+                self.chess.apply_move_response(&response);
+                self.chess_said();
+            }
+            GameEventType::OPPONENT_TURN => {
+                let turn = wire_chess::OpponentTurn::parse(payload)?;
+                self.chess.apply_opponent_turn(&turn);
+                self.chess_said();
+            }
+            GameEventType::OPPONENT_STALEMATE => {
+                let stalemate = wire_chess::OpponentStalemate::parse(payload)?;
+                self.chess.apply_opponent_stalemate(&stalemate);
+                self.chess_said();
+            }
+            GameEventType::GAME_OVER => {
+                let over = wire_chess::GameOver::parse(payload)?;
+                self.chess.apply_game_over(&over);
+                self.chess_said();
+            }
             GameEventType::FELLOWSHIP_FULL_UPDATE => {
                 let update = wire_fellowship::FellowshipFullUpdate::parse(payload)?;
                 self.fellowship.apply_full_update(&update);
@@ -1155,7 +1197,14 @@ impl Gameplay {
         let _ = world;
         self.cast.reset();
         self.attack.reset_session();
-        self.selection.reset();
+        // The reset is a selection change like any other, even with
+        // nothing selected: whatever follows the selection (an open
+        // examination window) lets the session's go.
+        let reset = self.selection.reset();
+        self.events.push(GameplayEvent::Selection {
+            selected: reset.selected,
+            name: None,
+        });
         self.combat.clear();
         self.mode.reset();
         self.target = CombatTargetState::default();
@@ -1163,6 +1212,7 @@ impl Gameplay {
         self.death = DeathState::default();
         self.health.reset();
         self.book.reset_session();
+        self.chess.reset_session();
         self.fellowship.reset_session();
         self.allegiance.reset_session();
         self.house.reset_session();
@@ -1400,6 +1450,7 @@ impl Gameplay {
                 self.events.push(GameplayEvent::Combat(view));
             }
             GameplayCommand::Book(command) => self.book_command(command, ctx),
+            GameplayCommand::Chess(command) => self.chess_command(command, ctx),
             GameplayCommand::Fellowship(command) => self.fellowship_command(command, ctx),
             GameplayCommand::Allegiance(command) => self.allegiance_command(command, ctx),
             GameplayCommand::QueryHouse => {
@@ -1511,6 +1562,49 @@ impl Gameplay {
             self.refuse(format!("No known spell is called \"{}\".", text.trim()));
         }
         id
+    }
+
+    /// The local player used a game board in the world (the item owner's
+    /// primary use of someone else's board): its game begins here, a join
+    /// going out when the player is not already at a board, so every host
+    /// joins the same way.
+    pub fn begin_game(&mut self, board_guid: u32, ctx: &mut GameplayContext<'_>) {
+        if self.chess.begin(board_guid) {
+            ctx.send(|seq| wire_chess::build_join(seq, board_guid));
+        }
+        self.chess_said();
+    }
+
+    /// The chess game's lines into the notices.
+    fn chess_said(&mut self) {
+        for (text, class) in self.chess.drain_lines() {
+            self.notices.push(GameplayNotice::Text(text, class));
+        }
+    }
+
+    fn chess_command(&mut self, command: ChessCommand, ctx: &mut GameplayContext<'_>) {
+        match command {
+            ChessCommand::Move { from, to } => {
+                if self.chess.try_move(from, to).is_accepted() {
+                    ctx.send(|seq| wire_chess::build_move(seq, from.x, from.y, to.x, to.y));
+                }
+            }
+            ChessCommand::Pass => {
+                if self.chess.try_pass() {
+                    ctx.send(wire_chess::build_move_pass);
+                }
+            }
+            ChessCommand::ToggleStalemate => {
+                if let Some(offer) = self.chess.try_toggle_stalemate() {
+                    ctx.send(|seq| wire_chess::build_stalemate(seq, offer));
+                }
+            }
+            ChessCommand::Resign => {
+                ctx.send(wire_chess::build_quit);
+                self.chess.resign();
+            }
+        }
+        self.chess_said();
     }
 
     fn book_command(&mut self, command: BookCommand, ctx: &mut GameplayContext<'_>) {

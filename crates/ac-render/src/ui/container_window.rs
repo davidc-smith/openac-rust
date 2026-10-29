@@ -234,7 +234,7 @@ mod tests {
     /// the material in front, as it does in the player's own inventory.
     #[test]
     fn a_corpse_item_hovers_with_its_material_in_front() {
-        use ac_core::items::{ClientObject, EquipMask, ItemType, ItemUseable};
+        use ac_core::items::{ClientObject, EquipMask, ItemType, ItemUseable, PublicWeenieFlags};
         use ac_ui::widgets::{ItemList, ItemSlot};
         const PLAYER: u32 = 0x5000_0001;
         const CORPSE: u32 = 0x7000_0001;
@@ -247,6 +247,9 @@ mod tests {
         corpse.name = "Corpse of Drudge".into();
         corpse.item_type = ItemType::CONTAINER;
         corpse.items_capacity = 120;
+        corpse.containers_capacity = 10;
+        corpse.public_weenie_bitfield =
+            Some(PublicWeenieFlags::OPENABLE | PublicWeenieFlags::CORPSE);
         corpse.useability = Some(ItemUseable::REMOTE);
         facts.objects.add_or_update(corpse, &mut events);
         let mut baton = ClientObject::new(BATON);

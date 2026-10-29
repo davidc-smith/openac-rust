@@ -7,6 +7,7 @@ mod wire_enum;
 
 pub mod chargen;
 pub mod chat;
+pub mod chess;
 pub mod combat;
 pub mod items;
 pub mod journal;

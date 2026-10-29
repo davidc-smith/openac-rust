@@ -118,7 +118,11 @@ pub fn key<K>(
     }
     let captured = ui.root.wants_keyboard();
     ui.key_down(key, modifiers);
-    for c in text.into_iter().flat_map(str::chars) {
+    // A Ctrl chord (Ctrl+V, Ctrl+C) is a command, though the window still
+    // reports its letter as text. AltGr comes as Ctrl and Alt together and
+    // does type (AltGr+2 is "@" on some keyboards).
+    let chord = modifiers.contains(Modifiers::CTRL) && !modifiers.contains(Modifiers::ALT);
+    for c in text.into_iter().flat_map(str::chars).filter(|_| !chord) {
         // Control characters (Enter, Backspace, Tab, Escape) acted as keys.
         if !c.is_control() {
             ui.char_typed(c);
@@ -321,6 +325,20 @@ mod tests {
         down(&mut ui, 14, Key::Backspace, Some("\u{8}"));
         down(&mut ui, 30, Key::A, Some("a"));
         assert_eq!(ui.root.widget::<Entry>(entry).unwrap().text, "a");
+    }
+
+    #[test]
+    fn a_ctrl_chord_types_nothing_but_altgr_still_types() {
+        let (mut ui, entry) = host();
+        ui.root.set_keyboard_focus(Some(entry));
+        // Ctrl+V arrives with its letter as text; it is a command, not typing.
+        super::key(&mut ui, 47, Key::V, true, false, Modifiers::CTRL, Some("v"));
+        assert_eq!(ui.root.widget::<Entry>(entry).unwrap().text, "");
+        // AltGr reports Ctrl and Alt together; AltGr+2 types "@" on some
+        // keyboards.
+        let altgr = Modifiers::CTRL | Modifiers::ALT;
+        super::key(&mut ui, 3, Key::Number2, true, false, altgr, Some("@"));
+        assert_eq!(ui.root.widget::<Entry>(entry).unwrap().text, "@");
     }
 
     #[test]

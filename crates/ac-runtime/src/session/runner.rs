@@ -440,6 +440,11 @@ pub enum PresentationEvent {
     /// the same pass (the window takes each up, so a swing a later state
     /// replaced within the pass still plays).
     Motions(Vec<crate::world::AppliedMotion>),
+    /// The instant the session clock counts from, after the snapshot: the
+    /// window reads its frame's time on that clock to blend the local
+    /// player between its physics steps
+    /// ([`StepBlend`](crate::world::StepBlend)).
+    SessionClock(Instant),
 }
 
 /// Messages from a running session to its host.
@@ -499,6 +504,10 @@ pub enum HostEvent {
     ItemMana(ac_core::items::ItemManaChange),
     /// A salvaging tool was used: the salvage panel opens on it.
     OpenSalvage(u32),
+    /// Someone else's game board was used: its game began (the join went
+    /// out unless the player already sits at a board) and the game window
+    /// shows.
+    BeginGame(u32),
     /// A pack the player carries was used: the inventory window shows and
     /// opens on it (the main pack when it is the player).
     OpenContainedContainer(u32),
@@ -782,6 +791,11 @@ fn run(
                 Arc::new(crate::plugins::ui::DatUiResources::new(Arc::clone(content)))
                     as Arc<dyn ac_plugin_ui::UiResources>
             }));
+        // The image files plugin markup names are read from each plugin's
+        // folder on a worker, with or without the dats.
+        state.plugin_ui.set_file_images(Some(Arc::new(
+            ac_plugin::file_image::PluginFileImageLoader::new(),
+        )));
         // The player's hotkey overrides, before any plugin registers one.
         if let Some(path) = config
             .plugins
@@ -878,6 +892,7 @@ fn run(
                     interface: InterfaceFeed::default(),
                     chargen: Arc::clone(&chargen),
                     connect_started,
+                    clock_origin: driver.origin(),
                     pregame: PreGamePresenter::default(),
                     failure: None,
                     link: (Duration::ZERO, 0.0),
@@ -1247,6 +1262,8 @@ struct Drive<'a> {
     chargen: Arc<ac_core::chargen::ChargenOptions>,
     /// When this connection attempt began.
     connect_started: Instant,
+    /// The instant the session clock (the driver's `now`) counts from.
+    clock_origin: Instant,
     /// What the attached window's pre-game screens were last told.
     pregame: PreGamePresenter,
     /// Why the session failed, once it did.
@@ -1823,10 +1840,18 @@ impl Drive<'_> {
                     .state
                     .command(command, self.flow.outbox_mut(), active, clocks)
                 {
+                    // The session clock goes ahead of the snapshot, so the
+                    // window blends the player between its physics steps at
+                    // its own frame times from the snapshot's first frame (a
+                    // window moving from another session never draws the new
+                    // steps on the old clock).
                     Some(SessionCommand::Attach(window))
                         if window
-                            .send(PresentationEvent::Snapshot(self.state.world.snapshot()))
-                            .is_ok() =>
+                            .send(PresentationEvent::SessionClock(self.clock_origin))
+                            .is_ok()
+                            && window
+                                .send(PresentationEvent::Snapshot(self.state.world.snapshot()))
+                                .is_ok() =>
                     {
                         // The clock as of now, so the window's sky starts at
                         // the right time of day.
@@ -2142,6 +2167,11 @@ impl Drive<'_> {
         let attached = self.attached.is_some();
         plugins.set_window_attached(attached);
         self.state.plugin_ui.set_window_attached(attached);
+        // The file icons plugin windows draw: reads that finished are held,
+        // and those not drawn for a while let go.
+        self.state
+            .plugin_ui
+            .tick_file_icons(u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
         let in_world = self.flow.phase() == Phase::InWorld;
         if !self.plugin_feed_closed {
             let listening = in_world && self.flow.login_complete_sent();

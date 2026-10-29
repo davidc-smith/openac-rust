@@ -5,13 +5,16 @@
 //! session's thread: every plugin call that reads or changes the game has
 //! that one implementation, with or without a window.
 
-use ac_plugin_abi::{CharacterInfo, Event, Import, LogLevel};
+use ac_plugin_abi::{ApiVersion, CharacterInfo, Event, Import, LogLevel};
 
 /// The plugin making a call, as the session sees it.
 #[derive(Debug, Clone, Copy)]
 pub struct Caller<'a> {
     /// Its id (from its manifest).
     pub plugin_id: &'a str,
+    /// The API version it was built for (from its manifest): its requests
+    /// are read, and its replies written, as that version knows them.
+    pub api_version: ApiVersion,
 }
 
 /// The session, as the plugin host reaches it during a plugin call.
@@ -46,8 +49,8 @@ pub trait SessionApi {
         import: Import,
         request: &[u8],
     ) -> Result<Vec<u8>, String> {
-        let _ = (caller, request);
-        Ok(import.default_reply())
+        let _ = request;
+        Ok(import.default_reply_at(caller.api_version))
     }
 
     /// Plugin `plugin_id` was unloaded (stopped, faulted, refused to start

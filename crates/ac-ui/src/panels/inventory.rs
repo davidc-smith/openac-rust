@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use ac_core::items::placement::{
-    choose_container, evaluate_container_placement, item_list_drop_placement,
+    choose_container, empty_item_slots, evaluate_container_placement, item_list_drop_placement,
     placement_rejection_text,
 };
 use ac_core::items::{
@@ -576,25 +576,31 @@ impl InventoryController {
         let target_item = slot(ui, cell).map_or(0, |s| s.object_id);
         let (legality, source_is_bag, destination) =
             self.evaluate_drop(list, target_item, p.obj_id, view);
-        // Over a pack's own icon the answer is that pack's; anywhere else a
-        // full pack is no refusal while the drop has somewhere to go.
-        let over_a_pack_icon = !source_is_bag && Some(list) != self.contents_grid;
-        if over_a_pack_icon
-            && legality.is_none()
-            && Some(list) == self.container_list
-            && view.get(target_item).is_some_and(|t| t.items_capacity == 0)
-        {
-            return DragAcceptance::Reject;
+        // Over a pack's own icon (a side pack or the main pack) the answer
+        // is that pack's free item slots alone: none refuses, even for a
+        // stack already inside it, and even though letting go there still
+        // finds the item a place in another pack. Something in the side
+        // column that carries nothing, a focus for one, has none.
+        let over_a_pack_icon = !source_is_bag
+            && (Some(list) == self.container_list || Some(list) == self.top_container);
+        if over_a_pack_icon {
+            return if target_item != 0 && empty_item_slots(view.objects, target_item) != 0 {
+                DragAcceptance::Accept
+            } else {
+                DragAcceptance::Reject
+            };
         }
+        // Anywhere else a full pack is no refusal while the drop has
+        // somewhere to go, found by the same search the drop runs.
         let mut legality = legality;
         if is_capacity_rejection(legality)
-            && !over_a_pack_icon
             && choose_container(
                 view.objects,
                 p.obj_id,
-                view.player,
+                destination,
                 destination,
                 view.player,
+                self.moving_amount(p.obj_id, view).1,
             )
             .is_ok()
         {
@@ -650,11 +656,26 @@ impl InventoryController {
                 0,
             );
         }
+        let whole_stack = self.moving_amount(item, view).1;
         (
-            evaluate_container_placement(view.objects, item, destination, view.player).err(),
+            evaluate_container_placement(view.objects, item, destination, view.player, whole_stack)
+                .err(),
             source_is_bag,
             destination,
         )
+    }
+
+    /// How much of `item` a drag moves, and whether that is the whole
+    /// stack: the selected stack's split quantity splits it, wherever it
+    /// comes from; the whole of it is a pickup when it comes from the
+    /// ground. Part of a stack needs a slot of its own, even in the pack
+    /// that holds the rest.
+    fn moving_amount(&self, item: u32, view: &ItemsView<'_>) -> (u32, bool) {
+        let full = view
+            .get(item)
+            .map_or(1, |d| d.stack_size.max(1).unsigned_abs());
+        let split = view.split_size(item, full, self.selection.get());
+        (split, split >= full)
     }
 
     fn notice(ui: &mut UiRoot, view: &ItemsView<'_>, r: PlacementRejection, item: u32, dest: u32) {
@@ -688,16 +709,35 @@ impl InventoryController {
         }
         let mut fallthrough = 0;
         if is_capacity_rejection(legality) {
-            match choose_container(view.objects, item, view.player, destination, view.player) {
+            // The search starts where the drop names: a pack's icon looks in
+            // that pack and the packs inside it, the grid in the pack shown
+            // open (the whole inventory when that is the main pack, nothing
+            // more for a side pack, which holds no packs).
+            let root = destination;
+            let whole_stack = self.moving_amount(item, view).1;
+            match choose_container(
+                view.objects,
+                item,
+                root,
+                destination,
+                view.player,
+                whole_stack,
+            ) {
                 Ok(c) => fallthrough = c,
                 Err(no_room) => {
-                    // Nothing has room: the notice names the inventory.
-                    Self::notice(ui, view, no_room, item, view.player);
+                    // Nothing has room: the notice names where it looked.
+                    Self::notice(ui, view, no_room, item, root);
                     return;
                 }
             }
-            legality =
-                evaluate_container_placement(view.objects, item, fallthrough, view.player).err();
+            legality = evaluate_container_placement(
+                view.objects,
+                item,
+                fallthrough,
+                view.player,
+                whole_stack,
+            )
+            .err();
             destination = fallthrough;
         }
         if let Some(r) = legality {
@@ -727,19 +767,15 @@ impl InventoryController {
         }
         if Some(list) == self.contents_grid
             && target_item != 0
-            && self.try_merge(ui, item, target_item, view)
+            && self.try_merge(ui, p, target_item, target_index, fallthrough, view)
         {
             return;
         }
         let dragged = view.get(item);
         let source_is_bag = dragged.is_some_and(is_bag);
-        // The selected stack's split quantity splits it, wherever it comes
-        // from; the whole of it is a pickup when it comes from the ground.
-        let full = dragged.map_or(1, |d| d.stack_size.max(1).unsigned_abs());
-        let split = view.split_size(item, full, self.selection.get());
-        let whole_stack = split >= full;
+        let (split, whole_stack) = self.moving_amount(item, view);
         let mut container;
-        let mut placement: Option<i32>;
+        let placement: Option<i32>;
         if Some(list) == self.contents_grid {
             container = self.open_container(view.player);
             // Lands left of the hovered item, wherever it came from: this
@@ -776,19 +812,18 @@ impl InventoryController {
                 if target_item == 0 || target_item == item {
                     return;
                 }
+                // A full pack was a capacity refusal, answered by the
+                // search above; one that takes it here has room.
                 container = target_item;
-                if is_container_full(view, container) {
-                    // The refusal already showed over the pack.
-                    return;
-                }
                 placement = Some(0);
             }
         } else {
             return;
         }
+        // The pack the search found takes the item at the slot this drop
+        // named: the grid's drop slot, or the top for a pack's icon.
         if fallthrough != 0 {
             container = fallthrough;
-            placement = Some(0);
         }
         let Some(placement) = placement else {
             return; // the item is already there
@@ -864,13 +899,20 @@ impl InventoryController {
         true
     }
 
+    /// A drop on a stack in the grid: a legal merge takes the drop. The
+    /// session merges, or (the merge no longer legal by its own copy of the
+    /// stacks) makes the plain drop this one would have been: into the pack
+    /// shown open, left of the stack dropped on, or the pack with room.
     fn try_merge(
         &mut self,
         ui: &mut UiRoot,
-        source: u32,
+        p: &ItemDragPayload,
         target: u32,
+        target_index: i32,
+        fallthrough: u32,
         view: &ItemsView<'_>,
     ) -> bool {
+        let source = p.obj_id;
         let (Some(s), Some(t)) = (view.get(source), view.get(target)) else {
             return false;
         };
@@ -891,12 +933,27 @@ impl InventoryController {
         else {
             return false;
         };
+        let (split, whole_stack) = self.moving_amount(source, view);
+        // As the plain grid drop: left of the stack dropped on, in the pack
+        // shown open or, when it has no room, the pack the search found.
+        let open = self.open_container(view.player);
+        let slot =
+            list_drop_placement(view, open, source, false, target, target_index, whole_stack);
+        let container = if fallthrough != 0 { fallthrough } else { open };
         emit(
             ui,
-            PanelOutput::Session(SessionCommand::Item(ItemCommand::Merge {
-                from: ObjectRef::Guid(plan.source_object_id),
-                to: ObjectRef::Guid(plan.target_object_id),
-                amount: plan.amount,
+            PanelOutput::Session(SessionCommand::Item(ItemCommand::DropOnStack {
+                item: ObjectRef::Guid(plan.source_object_id),
+                target: ObjectRef::Guid(plan.target_object_id),
+                merge_amount: plan.amount,
+                container: if container == view.player {
+                    ObjectRef::Player
+                } else {
+                    ObjectRef::Guid(container)
+                },
+                slot: slot.filter(|_| container != source),
+                amount: if whole_stack { 0 } else { split },
+                pickup: p.source_kind == ItemDragSource::Ground,
             })),
         );
         self.select(ui, plan.target_object_id);
@@ -1235,11 +1292,6 @@ fn list_drop_placement(
         i32::MAX
     };
     item_list_drop_placement(drop_index, listed.len(), source, whole_stack)
-}
-
-fn is_container_full(view: &ItemsView<'_>, container: u32) -> bool {
-    let cap = view.get(container).map_or(0, |o| o.items_capacity);
-    cap > 0 && count_loose_contents(view, container) >= cap as usize
 }
 
 /// An item cell's container fullness meter (every item cell, the toolbar's

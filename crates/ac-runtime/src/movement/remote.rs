@@ -135,7 +135,102 @@ pub fn remote_motion_update(
     }
 }
 
+/// A motion driver for `object` in `cell_id` at `world_pos`: its scale,
+/// physics state, shape and step heights from its setup, animated when its
+/// setup and motion table are known. With the setup's cylinder (radius,
+/// height), 0 when it has none.
+fn driver_for(
+    object: &WorldObject,
+    content: &WorldContent,
+    cell_id: u32,
+    world_pos: Vec3,
+    orientation: Quat,
+) -> (RemoteMotionDriver, f32, f32) {
+    let physics = object.physics();
+    let key = object.key();
+    let token = ObjectToken {
+        id: object.guid(),
+        incarnation: u64::from(key.incarnation),
+    };
+    let mut driver = RemoteMotionDriver::new(token, cell_id, world_pos, orientation);
+    let scale = physics.scale.filter(|s| *s > 0.0).unwrap_or(1.0);
+    driver.object_scale = scale;
+    driver.sphere_scale = scale;
+    driver.local_entity_id = key.local_id;
+    driver.apply_stale_velocity_cycle = true;
+    driver.obj.body.state = PhysicsState::from(physics.state);
+    driver.hidden = physics.state & PhysicsState::HIDDEN.bits() != 0;
+    let (mut radius, mut height) = (0.0, 0.0);
+    if let Some(setup) = physics.setup_id.and_then(|id| content.setup(id)) {
+        radius = setup.radius * scale;
+        height = setup.height * scale;
+        driver.step_up_height = setup.step_up_height * scale;
+        driver.step_down_height = setup.step_down_height * scale;
+        driver.sphere_list = setup
+            .spheres
+            .iter()
+            .map(|s| {
+                ac_physics::CollisionSphere::new(
+                    Vec3::new(s.origin.x, s.origin.y, s.origin.z),
+                    s.radius,
+                )
+            })
+            .collect();
+        if let Some(mut sequencer) = physics
+            .motion_table_id
+            .filter(|id| *id != 0)
+            .and_then(|table| content.sequencer(setup.id, table))
+        {
+            // The table's default state first; the motion the object
+            // was created in is taken up on it (see `enter_world`).
+            sequencer.initialize_state();
+            driver.attach_sequencer(sequencer);
+        }
+    }
+    driver.obj.radius = radius;
+    driver.obj.height = height;
+    (driver, radius, height)
+}
+
 impl RemoteBody {
+    /// The body an object moving by its own physics (`ordinary`) already
+    /// has becomes the body the server's positions drive, as it is: where
+    /// it is, with its velocity and contact. A server position then
+    /// routes for it as for every other object's body (catch up to a near
+    /// one, re-place it at a far one or a teleport, ignore one sent while
+    /// it was off the ground), instead of putting it where the server says
+    /// at once. Where it is at `now` stands as the last place the server
+    /// had it, so the first position is caught up to like any later one
+    /// (the body is in the world already; it is not a body seen for the
+    /// first time).
+    #[must_use]
+    pub fn from_ordinary(
+        object: &WorldObject,
+        content: &WorldContent,
+        ordinary: super::ordinary::OrdinaryBody,
+        now: f64,
+    ) -> Self {
+        let position = ordinary.body.position();
+        let (mut driver, ..) = driver_for(
+            object,
+            content,
+            ordinary.cell_id,
+            position,
+            ordinary.body.orientation,
+        );
+        driver.obj.body = ordinary.body;
+        driver.airborne = !driver.obj.body.on_walkable();
+        driver.last_server_pos = position;
+        driver.last_server_pos_time = now;
+        driver.arm_leash();
+        Self {
+            guid: object.guid(),
+            key: object.key(),
+            driver,
+            motions_applied: 0,
+        }
+    }
+
     /// Arm a body for `object` where its entry into the world `placed` it
     /// (a committed placement), else at its accepted position (in the
     /// engine's frame at `origin`, the corner of its landblock); settled
@@ -150,7 +245,6 @@ impl RemoteBody {
         placed: Option<&PhysicsSetPositionResult>,
     ) -> Option<Self> {
         let accepted = object.accepted_position()?;
-        let physics = object.physics();
         let (cell_id, world_pos, orientation) = match placed {
             Some(placed) => (placed.cell_id, placed.position, placed.orientation),
             None => (
@@ -160,47 +254,8 @@ impl RemoteBody {
             ),
         };
         let key = object.key();
-        let token = ObjectToken {
-            id: object.guid(),
-            incarnation: u64::from(key.incarnation),
-        };
-        let mut driver = RemoteMotionDriver::new(token, cell_id, world_pos, orientation);
-        let scale = physics.scale.filter(|s| *s > 0.0).unwrap_or(1.0);
-        driver.object_scale = scale;
-        driver.sphere_scale = scale;
-        driver.local_entity_id = key.local_id;
-        driver.apply_stale_velocity_cycle = true;
-        driver.obj.body.state = PhysicsState::from(physics.state);
-        driver.hidden = physics.state & PhysicsState::HIDDEN.bits() != 0;
-        let (mut radius, mut height) = (0.0, 0.0);
-        if let Some(setup) = physics.setup_id.and_then(|id| content.setup(id)) {
-            radius = setup.radius * scale;
-            height = setup.height * scale;
-            driver.step_up_height = setup.step_up_height * scale;
-            driver.step_down_height = setup.step_down_height * scale;
-            driver.sphere_list = setup
-                .spheres
-                .iter()
-                .map(|s| {
-                    ac_physics::CollisionSphere::new(
-                        Vec3::new(s.origin.x, s.origin.y, s.origin.z),
-                        s.radius,
-                    )
-                })
-                .collect();
-            if let Some(mut sequencer) = physics
-                .motion_table_id
-                .filter(|id| *id != 0)
-                .and_then(|table| content.sequencer(setup.id, table))
-            {
-                // The table's default state first; the motion the object
-                // was created in is taken up on it (see `enter_world`).
-                sequencer.initialize_state();
-                driver.attach_sequencer(sequencer);
-            }
-        }
-        driver.obj.radius = radius;
-        driver.obj.height = height;
+        let (mut driver, radius, height) =
+            driver_for(object, content, cell_id, world_pos, orientation);
 
         // A standing body gains its ground contact from one short sweep
         // down (retail gains it from its first gravity frame).

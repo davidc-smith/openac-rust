@@ -313,3 +313,63 @@ fn a_pack_icon_drop_with_no_stack_to_join_is_the_plain_drop() {
     assert_eq!(f.sent(), [build_put_item_in_container(1, source, PACK, 0)]);
     assert_eq!(f.placement(), Some((source, PACK, 0)));
 }
+
+// A drop on a stack in the pack's grid (OpenAC
+// `InventoryController.HandleDropRelease`, `TryMergeStacks`): a legal merge
+// takes the drop, wherever the dragged stack lies, the ground included;
+// with no legal merge the drop goes on as the plain one into the pack.
+fn stack_drop(item: u32, target: u32, slot: Option<i32>, pickup: bool) -> ItemCommand {
+    ItemCommand::DropOnStack {
+        item: guid(item),
+        target: guid(target),
+        merge_amount: 100,
+        container: guid(PACK),
+        slot,
+        amount: 0,
+        pickup,
+    }
+}
+
+#[test]
+fn a_ground_stack_dropped_on_a_matching_stack_in_the_grid_merges_into_it() {
+    let mut f = Fixture::new();
+    assert!(f.run(stack_drop(LOOSE, GEM, Some(1), true)));
+    assert_eq!(f.sent(), [build_stackable_merge(1, LOOSE, GEM, 2)]);
+    assert_eq!(f.placement(), None);
+}
+
+#[test]
+fn a_stack_drop_with_no_legal_merge_is_the_plain_drop() {
+    let mut f = Fixture::new();
+    let (full, other_kind) = (0x6100_0055, 0x6100_0056);
+    // The gems' own kind (class 10), its stack full.
+    add_stack(&mut f, full, 10, 100, PACK);
+    add_stack(&mut f, other_kind, JOIN_KIND + 1, 5, PACK);
+    // A full stack takes nothing: the ground stack is picked up into the
+    // pack at the slot dropped on.
+    assert!(f.run(stack_drop(LOOSE, full, Some(1), true)));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, LOOSE, PACK, 1)]);
+    assert_eq!(f.placement(), Some((LOOSE, PACK, 1)));
+    // A stack of another kind: the plain move.
+    let mut f = Fixture::new();
+    add_stack(&mut f, other_kind, JOIN_KIND + 1, 5, PACK);
+    assert!(f.run(stack_drop(GEM, other_kind, Some(0), false)));
+    assert_eq!(f.sent(), [build_put_item_in_container(1, GEM, PACK, 0)]);
+    // Already where it was dropped: nothing goes.
+    let mut f = Fixture::new();
+    add_stack(&mut f, other_kind, JOIN_KIND + 1, 5, PACK);
+    assert!(!f.run(stack_drop(GEM, other_kind, None, false)));
+    assert!(f.sent().is_empty());
+}
+
+#[test]
+fn a_plugins_merge_still_needs_both_stacks_carried() {
+    // OpenAC `RuntimeItemInteraction.TryMergeItemsForAutomation`.
+    let mut f = Fixture::new();
+    assert!(!f.run(ItemCommand::Merge {
+        from: guid(LOOSE),
+        to: guid(GEM),
+        amount: 0,
+    }));
+    assert!(f.sent().is_empty());
+}

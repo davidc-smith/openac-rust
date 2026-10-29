@@ -197,6 +197,13 @@ impl UdpDriver {
         NetTime::from_duration(self.origin.elapsed())
     }
 
+    /// The instant [`now`](Self::now) counts from, so another thread can
+    /// read the same clock.
+    #[must_use]
+    pub fn origin(&self) -> Instant {
+        self.origin
+    }
+
     /// Socket counters.
     #[must_use]
     pub fn counters(&self) -> DriverCounters {

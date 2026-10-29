@@ -107,7 +107,8 @@ pub const CHARACTER_GROUPS: [CharacterGroup; 6] = [
             ),
             stored(o::DISPLAY_DATE_OF_BIRTH, "DisplayDateOfBirth"),
             stored(o::DISPLAY_AGE, "DisplayAge"),
-            stored(o::DISPLAY_CHESS_RANK, "DisplayChessRank"),
+            // The server hides the chess rank from appraisals when off.
+            live(o::DISPLAY_CHESS_RANK, "DisplayChessRank"),
             stored(o::DISPLAY_FISHING_SKILL, "DisplayFishingSkill"),
             stored(o::DISPLAY_NUMBER_DEATHS, "DisplayNumberDeaths"),
             stored(
@@ -1077,7 +1078,6 @@ mod tests {
                 "UseDeception",
                 "DisplayDateOfBirth",
                 "DisplayAge",
-                "DisplayChessRank",
                 "DisplayFishingSkill",
                 "DisplayNumberDeaths",
                 "DisplayNumberCharacterTitles",
@@ -1085,6 +1085,10 @@ mod tests {
                 "HearPKDeaths",
             ]
         );
+        // OpenAC CharacterOptionsPageControllerTests: 10 of the 50 rows
+        // only store their value; the 40 others are live.
+        let rows = CHARACTER_GROUPS.iter().map(|g| g.rows.len()).sum::<usize>();
+        assert_eq!((stored.len(), rows - stored.len()), (10, 40));
     }
 
     fn option_rows(rows: &[ConfigRow]) -> usize {

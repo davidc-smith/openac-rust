@@ -517,6 +517,29 @@ fn a_placement_resnaps_the_render_endpoints() {
     assert_eq!(result.render_position, snapped);
 }
 
+/// What the place to draw is blended from, for a caller blending at its
+/// own time (a window's frame): the same blend gives the render position,
+/// and a placement leaves both ends on the new place, so no blend crosses
+/// the jump.
+#[test]
+fn the_render_steps_blend_to_the_render_position_and_a_placement_snaps_both() {
+    let mut r = Rig::seeded();
+    r.c.set_yaw(0.0);
+    r.update(object_tick(), forward());
+    let half = r.update(PhysicsBody::MIN_QUANTUM * 0.5, forward());
+    let steps = r.c.render_steps();
+    assert!(steps.current.x > steps.previous.x, "running east");
+    let alpha = (steps.pending_seconds / f64::from(steps.step_seconds)) as f32;
+    assert!(alpha > 0.0 && alpha < 1.0, "between steps: {alpha}");
+    let blended = steps.previous.lerp(steps.current, alpha);
+    assert!((blended - half.render_position).length() < 1e-5);
+
+    let snapped = Vec3::new(120.0, 80.0, 50.0);
+    r.seed(snapped, 0x0001, snapped);
+    let steps = r.c.render_steps();
+    assert_eq!((steps.previous, steps.current), (snapped, snapped));
+}
+
 #[test]
 fn a_force_position_keeps_the_motion() {
     let mut r = Rig::seeded();

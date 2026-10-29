@@ -170,6 +170,10 @@ pub(crate) fn handle_import(
     others: Option<&mut Others<'_>>,
 ) -> Result<Vec<u8>, String> {
     let id = manifest.id.as_str();
+    // What the plugin sends is read, and what it is answered written, as
+    // the API version it was built for knows them, so a record field a later
+    // version adds never reaches a plugin built before it.
+    let version = manifest.api_version;
     if let Some(permission) = import.permission()
         && !manifest.allows(permission)
     {
@@ -190,50 +194,56 @@ pub(crate) fn handle_import(
             return Err(format!("{} reached the client", import.name()));
         }
         Import::HostLog => {
-            let line = LogRequest::from_bytes(request).map_err(bad)?;
+            let line = LogRequest::from_bytes_at(request, version).map_err(bad)?;
             cx.api.log(id, line.level, &line.message);
             Vec::new()
         }
-        Import::HostWindowAttached => cx.api.window_attached().to_bytes(),
+        Import::HostWindowAttached => cx.api.window_attached().to_bytes_at(version),
         Import::HostSetting => {
-            let key = String::from_bytes(request).map_err(bad)?;
-            cx.settings.get(id, &key).map(str::to_owned).to_bytes()
+            let key = String::from_bytes_at(request, version).map_err(bad)?;
+            cx.settings
+                .get(id, &key)
+                .map(str::to_owned)
+                .to_bytes_at(version)
         }
-        Import::HostSettings => cx.settings.all(id).to_bytes(),
+        Import::HostSettings => cx.settings.all(id).to_bytes_at(version),
         Import::CommandsRegister => {
-            let definition = CommandDef::from_bytes(request).map_err(bad)?;
-            services.commands.register(id, &definition).to_bytes()
+            let definition = CommandDef::from_bytes_at(request, version).map_err(bad)?;
+            services
+                .commands
+                .register(id, &definition)
+                .to_bytes_at(version)
         }
         Import::CommandsUnregister => {
-            let verb = String::from_bytes(request).map_err(bad)?;
-            services.commands.unregister(id, &verb).to_bytes()
+            let verb = String::from_bytes_at(request, version).map_err(bad)?;
+            services.commands.unregister(id, &verb).to_bytes_at(version)
         }
-        Import::CommandsDefinitions => services.commands.definitions().to_bytes(),
-        Import::CommandsHelp => services.commands.help().to_bytes(),
+        Import::CommandsDefinitions => services.commands.definitions().to_bytes_at(version),
+        Import::CommandsHelp => services.commands.help().to_bytes_at(version),
         Import::CommandsComplete => {
-            let mut call = CommandCall::from_bytes(request).map_err(bad)?;
+            let mut call = CommandCall::from_bytes_at(request, version).map_err(bad)?;
             let Some((owner, verb)) = services
                 .commands
                 .owner_of(&call.verb)
                 .map(|(o, v)| (o.to_owned(), v.to_owned()))
             else {
-                return Ok(Vec::<CommandCompletion>::new().to_bytes());
+                return Ok(Vec::<CommandCompletion>::new().to_bytes_at(version));
             };
             call.verb = verb;
             match ask_plugin(id, &owner, others, cx, &Callback::CommandComplete(call)) {
                 Some(CallbackAnswer::Completions(completions)) => completions,
                 _ => Vec::new(),
             }
-            .to_bytes()
+            .to_bytes_at(version)
         }
         Import::ChatSubmit => {
             services
                 .submits
-                .push(String::from_bytes(request).map_err(bad)?);
+                .push(String::from_bytes_at(request, version).map_err(bad)?);
             Vec::new()
         }
         Import::ChatPost => {
-            let post = ChatPost::from_bytes(request).map_err(bad)?;
+            let post = ChatPost::from_bytes_at(request, version).map_err(bad)?;
             cx.api.post_chat(&post.text, post.log_text_type);
             Vec::new()
         }
@@ -295,21 +305,26 @@ pub(crate) fn handle_import(
         }
         // Net: the permission is checked above; the host here.
         Import::NetHttpRequest => {
-            let request = ac_plugin_abi::net::HttpRequest::from_bytes(request).map_err(bad)?;
+            let request =
+                ac_plugin_abi::net::HttpRequest::from_bytes_at(request, version).map_err(bad)?;
             let Some(host) = ac_plugin_net::request_host(&request.url) else {
                 return Ok(Err::<u32, String>(format!(
                     "'{}' is not an http(s) address",
                     request.url
                 ))
-                .to_bytes());
+                .to_bytes_at(version));
             };
             match reach(services, &mut *cx.api, manifest, &host) {
-                Ok(allowed) => services.net.http_request(id, request, allowed).to_bytes(),
-                Err(refusal) => Err::<u32, String>(refusal).to_bytes(),
+                Ok(allowed) => services
+                    .net
+                    .http_request(id, request, allowed)
+                    .to_bytes_at(version),
+                Err(refusal) => Err::<u32, String>(refusal).to_bytes_at(version),
             }
         }
         Import::NetTcpConnect | Import::NetTcpConnectProxied => {
-            let connect = ac_plugin_abi::net::TcpConnect::from_bytes(request).map_err(bad)?;
+            let connect =
+                ac_plugin_abi::net::TcpConnect::from_bytes_at(request, version).map_err(bad)?;
             let via_proxy = import == Import::NetTcpConnectProxied;
             match reach(
                 services,
@@ -317,108 +332,126 @@ pub(crate) fn handle_import(
                 manifest,
                 &connect.host.to_lowercase(),
             ) {
-                Ok(_) => services.net.tcp_connect(id, &connect, via_proxy).to_bytes(),
-                Err(refusal) => Err::<u32, String>(refusal).to_bytes(),
+                Ok(_) => services
+                    .net
+                    .tcp_connect(id, &connect, via_proxy)
+                    .to_bytes_at(version),
+                Err(refusal) => Err::<u32, String>(refusal).to_bytes_at(version),
             }
         }
         Import::NetTcpListen => {
-            let port = u32::from_bytes(request).map_err(bad)?;
-            services.net.tcp_listen(id, port).to_bytes()
+            let port = u32::from_bytes_at(request, version).map_err(bad)?;
+            services.net.tcp_listen(id, port).to_bytes_at(version)
         }
         Import::NetSend => {
-            let (handle, bytes) = <(u32, Vec<u8>)>::from_bytes(request).map_err(bad)?;
-            services.net.send(id, handle, &bytes).to_bytes()
+            let (handle, bytes) = <(u32, Vec<u8>)>::from_bytes_at(request, version).map_err(bad)?;
+            services.net.send(id, handle, &bytes).to_bytes_at(version)
         }
         Import::NetReceive => {
-            let (handle, max) = <(u32, u32)>::from_bytes(request).map_err(bad)?;
-            services.net.receive(id, handle, max).to_bytes()
+            let (handle, max) = <(u32, u32)>::from_bytes_at(request, version).map_err(bad)?;
+            services.net.receive(id, handle, max).to_bytes_at(version)
         }
         Import::NetClose => {
-            let handle = u32::from_bytes(request).map_err(bad)?;
-            services.net.close(id, handle).to_bytes()
+            let handle = u32::from_bytes_at(request, version).map_err(bad)?;
+            services.net.close(id, handle).to_bytes_at(version)
         }
         // M. The status board.
         Import::StatusPublish => {
-            let (key, value) = <(String, Option<String>)>::from_bytes(request).map_err(bad)?;
-            services.status.publish(id, &key, value).to_bytes()
+            let (key, value) =
+                <(String, Option<String>)>::from_bytes_at(request, version).map_err(bad)?;
+            services
+                .status
+                .publish(id, &key, value)
+                .to_bytes_at(version)
         }
         Import::StatusRead => {
-            let (owner, key) = <(String, String)>::from_bytes(request).map_err(bad)?;
-            services.status.read(&owner, &key).to_bytes()
+            let (owner, key) = <(String, String)>::from_bytes_at(request, version).map_err(bad)?;
+            services.status.read(&owner, &key).to_bytes_at(version)
         }
         Import::StatusCapture => {
-            let owner = String::from_bytes(request).map_err(bad)?;
-            services.status.capture(&owner).to_bytes()
+            let owner = String::from_bytes_at(request, version).map_err(bad)?;
+            services.status.capture(&owner).to_bytes_at(version)
         }
         // N. Storage.
         Import::StorageRead => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
-            files::read(cx.storage_roots, &caller, &key).to_bytes()
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
+            files::read(cx.storage_roots, &caller, &key).to_bytes_at(version)
         }
         Import::StorageReadText => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
             files::read(cx.storage_roots, &caller, &key)
                 .map(|bytes| bytes.map(|b| files::decode_text(&b)))
-                .to_bytes()
+                .to_bytes_at(version)
         }
         Import::StorageWrite => {
-            let write = StorageWrite::from_bytes(request).map_err(bad)?;
-            files::write(&mut services.storage, cx.storage_roots, &caller, &write).to_bytes()
+            let write = StorageWrite::from_bytes_at(request, version).map_err(bad)?;
+            files::write(&mut services.storage, cx.storage_roots, &caller, &write)
+                .to_bytes_at(version)
         }
         Import::StorageList => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
-            files::list(cx.storage_roots, &caller, &key).to_bytes()
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
+            files::list(cx.storage_roots, &caller, &key).to_bytes_at(version)
         }
         Import::StorageDelete => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
-            files::delete(cx.storage_roots, &caller, &key).to_bytes()
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
+            files::delete(cx.storage_roots, &caller, &key).to_bytes_at(version)
         }
         Import::StorageEnsureFolder => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
-            files::ensure_folder(cx.storage_roots, &caller, &key).to_bytes()
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
+            files::ensure_folder(cx.storage_roots, &caller, &key).to_bytes_at(version)
         }
         Import::StorageDescribe => {
-            let place = StoragePlace::from_bytes(request).map_err(bad)?;
-            files::describe(cx.storage_roots, &caller, &place).to_bytes()
+            let place = StoragePlace::from_bytes_at(request, version).map_err(bad)?;
+            files::describe(cx.storage_roots, &caller, &place).to_bytes_at(version)
         }
         Import::StorageLock => {
-            let key = StorageKey::from_bytes(request).map_err(bad)?;
+            let key = StorageKey::from_bytes_at(request, version).map_err(bad)?;
             services
                 .storage
                 .lock(cx.storage_roots, &caller, &key)
-                .to_bytes()
+                .to_bytes_at(version)
         }
         Import::StorageUnlock => {
-            let handle = u32::from_bytes(request).map_err(bad)?;
-            services.storage.unlock(id, handle).to_bytes()
+            let handle = u32::from_bytes_at(request, version).map_err(bad)?;
+            services.storage.unlock(id, handle).to_bytes_at(version)
         }
         Import::ResourcesListDataFiles => {
-            let relative = String::from_bytes(request).map_err(bad)?;
-            files::list_data_files(cx.storage_roots, &caller, &relative).to_bytes()
+            let relative = String::from_bytes_at(request, version).map_err(bad)?;
+            files::list_data_files(cx.storage_roots, &caller, &relative).to_bytes_at(version)
         }
-        Import::ChatAddFilter => services.filters.register(id).to_bytes(),
+        Import::ChatAddFilter => services.filters.register(id).to_bytes_at(version),
         Import::ChatRemoveFilter => {
-            let handle = u32::from_bytes(request).map_err(bad)?;
-            services.filters.unregister(id, handle).to_bytes()
+            let handle = u32::from_bytes_at(request, version).map_err(bad)?;
+            services.filters.unregister(id, handle).to_bytes_at(version)
         }
-        Import::ChatAddInterceptor => services.interceptors.register(id).to_bytes(),
+        Import::ChatAddInterceptor => services.interceptors.register(id).to_bytes_at(version),
         Import::ChatRemoveInterceptor => {
-            let handle = u32::from_bytes(request).map_err(bad)?;
-            services.interceptors.unregister(id, handle).to_bytes()
+            let handle = u32::from_bytes_at(request, version).map_err(bad)?;
+            services
+                .interceptors
+                .unregister(id, handle)
+                .to_bytes_at(version)
         }
-        Import::CharacterInfo => cx.api.character().to_bytes(),
+        Import::CharacterInfo => cx.api.character().to_bytes_at(version),
         // G. The loot classifiers plugins share.
         Import::LootClassifierRegister => {
-            let registration = ClassifierRegistration::from_bytes(request).map_err(bad)?;
-            services.classifiers.register(id, &registration).to_bytes()
+            let registration =
+                ClassifierRegistration::from_bytes_at(request, version).map_err(bad)?;
+            services
+                .classifiers
+                .register(id, &registration)
+                .to_bytes_at(version)
         }
         Import::LootClassifierUnregister => {
-            let handle = u32::from_bytes(request).map_err(bad)?;
-            services.classifiers.unregister(id, handle).to_bytes()
+            let handle = u32::from_bytes_at(request, version).map_err(bad)?;
+            services
+                .classifiers
+                .unregister(id, handle)
+                .to_bytes_at(version)
         }
-        Import::LootClassifiers => services.classifiers.available().to_bytes(),
+        Import::LootClassifiers => services.classifiers.available().to_bytes_at(version),
         Import::LootClassify => {
-            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let ask = ClassifyRequest::from_bytes_at(request, version).map_err(bad)?;
             let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
                 Callback::LootClassify(LootQuestion {
                     handle,
@@ -430,10 +463,10 @@ pub(crate) fn handle_import(
                 Some(CallbackAnswer::Classification(c)) => c,
                 _ => None,
             };
-            classification.to_bytes()
+            classification.to_bytes_at(version)
         }
         Import::LootNeedsIdentification => {
-            let ask = ClassifyRequest::from_bytes(request).map_err(bad)?;
+            let ask = ClassifyRequest::from_bytes_at(request, version).map_err(bad)?;
             let answer = ask_classifier(id, &ask.classifier_id, others, cx, |handle| {
                 Callback::LootNeedsIdentification(LootQuestion {
                     handle,
@@ -441,27 +474,33 @@ pub(crate) fn handle_import(
                     context: ask.context.clone(),
                 })
             });
-            matches!(answer, Some(CallbackAnswer::Bool(true))).to_bytes()
+            matches!(answer, Some(CallbackAnswer::Bool(true))).to_bytes_at(version)
         }
         Import::LootNotifyLooted => {
-            let notice = LootedNotice::from_bytes(request).map_err(bad)?;
+            let notice = LootedNotice::from_bytes_at(request, version).map_err(bad)?;
             let item = notice.item.clone();
             ask_classifier(id, &notice.classifier_id, others, cx, |handle| {
                 Callback::LootLooted((handle, item.clone()))
             })
             .is_some()
-            .to_bytes()
+            .to_bytes_at(version)
         }
         Import::LootNotifyRemoved => {
-            let notice = RemovedNotice::from_bytes(request).map_err(bad)?;
+            let notice = RemovedNotice::from_bytes_at(request, version).map_err(bad)?;
             ask_classifier(id, &notice.classifier_id, others, cx, |handle| {
                 Callback::LootRemoved((handle, notice.object_id))
             })
             .is_some()
-            .to_bytes()
+            .to_bytes_at(version)
         }
         // Everything about the game is the session's.
-        game => return cx.api.call(Caller { plugin_id: id }, game, request),
+        game => {
+            let caller = Caller {
+                plugin_id: id,
+                api_version: version,
+            };
+            return cx.api.call(caller, game, request);
+        }
     })
 }
 
@@ -495,7 +534,10 @@ fn ask_plugin(
         return None;
     }
     let target = others?.find(owner)?;
-    let bytes = callback.to_bytes();
+    // The question as the plugin it goes to reads it: a record field a later
+    // API version added is left out for a plugin built before it.
+    let version = target.manifest.api_version;
+    let bytes = callback.to_bytes_at(version);
     let Loaded {
         manifest,
         instance,
@@ -514,7 +556,7 @@ fn ask_plugin(
         )
     };
     match result {
-        Ok(Some(answer)) => CallbackAnswer::from_bytes(&answer).ok(),
+        Ok(Some(answer)) => CallbackAnswer::from_bytes_at(&answer, version).ok(),
         Ok(None) => None,
         Err(fault) => {
             cx.services.faulted.push((manifest.id.clone(), fault));

@@ -1186,23 +1186,31 @@ pub struct CreatureRowList {
 impl CreatureRowList {
     /// Split `host` around `viewport` in `panel`: the host goes behind the
     /// portrait at `background_z`, a text layer takes the host's place in
-    /// front of it.
+    /// front of it. `stretch_rows`: the rows widen and narrow with the
+    /// list by their own horizontal edges, in both layers.
     fn create(
         ui: &mut UiRoot,
         panel: ElementId,
         host: ElementId,
         background_z: i32,
+        stretch_rows: bool,
     ) -> Option<Self> {
         ui.widget::<ListBox>(host)?;
-        let (left, top, height, anchors, z) = ui
+        let (left, top, width, height, anchors, z) = ui
             .element(host)
-            .map(|e| (e.left, e.top, e.height, e.anchors, e.z_order))?;
+            .map(|e| (e.left, e.top, e.width, e.height, e.anchors, e.z_order))?;
+        // Both layers measure the rows' edges from their authored widths
+        // (the window binds at its authored size).
+        ui.with::<ListBox, _>(host, |b, ui| {
+            b.set_rows_follow_width(ui, stretch_rows.then_some(width));
+        });
         ui.set_z_order(host, background_z);
         if let Some(e) = ui.element_mut(host) {
             e.click_through = true;
         }
         let mut panel_widget = ScrollablePanel::new();
         panel_widget.line_height = CREATURE_ROW_SIZE.1 as i32;
+        panel_widget.set_rows_follow_width(stretch_rows.then_some(CREATURE_ROW_SIZE.0));
         let foreground = ui.add(
             panel,
             Element::at(
@@ -1327,9 +1335,6 @@ pub struct AppraisalController {
     creature_extra: Option<CreatureRowList>,
     creature_texts: [Option<ElementId>; 6],
     shown: bool,
-    /// The selection last seen (`None` before the first), so a change is
-    /// told from the selection the window found when it was attached.
-    seen_selection: Option<Option<u32>>,
     in_combat: bool,
     refresh_elapsed: f64,
     spell_panel: ElementId,
@@ -1441,7 +1446,9 @@ impl AppraisalController {
             .map_or((0.0, 32.0), |e| (e.left, e.width));
         let inscription = Inscription::bind(ui, layout);
         // OpenAC: the rows' chrome behind the portrait (stats two below
-        // it, extras one below), their text in front.
+        // it, extras one below), their text in front. The attribute and
+        // vital rows stretch with the window; the extra rows keep their
+        // size.
         let viewport_z = layout
             .find(CREATURE_VIEWPORT_ID)
             .and_then(|v| ui.element(v))
@@ -1450,10 +1457,10 @@ impl AppraisalController {
             Some(z) => (
                 layout
                     .find(CREATURE_STATS_LIST_ID)
-                    .and_then(|h| CreatureRowList::create(ui, creature_panel, h, z - 2)),
+                    .and_then(|h| CreatureRowList::create(ui, creature_panel, h, z - 2, true)),
                 layout
                     .find(CREATURE_EXTRA_LIST_ID)
-                    .and_then(|h| CreatureRowList::create(ui, creature_panel, h, z - 1)),
+                    .and_then(|h| CreatureRowList::create(ui, creature_panel, h, z - 1, false)),
             ),
             None => (None, None),
         };
@@ -1478,7 +1485,6 @@ impl AppraisalController {
             creature_extra,
             creature_texts,
             shown: false,
-            seen_selection: None,
             in_combat: false,
             refresh_elapsed: 0.0,
             spell_panel,
@@ -1756,21 +1762,28 @@ impl AppraisalController {
         true
     }
 
-    /// The selection now. While the window shows, a change examines the
-    /// newly selected object, or (nothing selected) closes the window; a
-    /// change while it is hidden does nothing.
+    /// The selection changed to `selected` (each change once, in order).
+    /// While the window shows, the newly selected object is examined, or
+    /// (nothing selected) the window closes; a change while it is hidden
+    /// does nothing.
     pub fn follow_selection(&mut self, ui: &mut UiRoot, selected: Option<u32>) {
-        let previous = self.seen_selection.replace(selected);
-        if previous.is_none_or(|p| p == selected) || !self.shown {
+        if !self.shown {
             return;
         }
-        let output = match selected {
-            Some(id) if id != 0 => PanelOutput::Session(SessionCommand::Item(
-                ItemCommand::Appraise(ObjectRef::Guid(id)),
-            )),
-            _ => PanelOutput::CloseExamination,
-        };
-        emit(ui, output);
+        match selected {
+            Some(id) if id != 0 => emit(
+                ui,
+                PanelOutput::Session(SessionCommand::Item(ItemCommand::Appraise(
+                    ObjectRef::Guid(id),
+                ))),
+            ),
+            _ => {
+                emit(ui, PanelOutput::CloseExamination);
+                // The window is closing: a later change heard with this
+                // one finds it hidden.
+                self.shown = false;
+            }
+        }
     }
 
     /// The examine key closes the window while it shows (true: the key is

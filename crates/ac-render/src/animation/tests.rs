@@ -89,6 +89,7 @@ fn view(local_id: u32, incarnation: u16, setup_id: u32) -> ObjectView {
         radar: RadarFacts::default(),
         motion: None,
         effects: ac_runtime::world::EffectFacts::default(),
+        step_blend: None,
     }
 }
 

@@ -6,18 +6,24 @@
 //! The rule: **a record never changes shape silently.** Adding, removing,
 //! renaming, reordering or retyping a field, a variant or a tag of any
 //! record, reply or event changes its shape, so the fingerprint changes,
-//! and the plugins that use it must be rebuilt against the new SDK.
+//! and the plugins that use it must be rebuilt against the new SDK. The
+//! one exception is an addition a later API minor version marks with its
+//! version (`since`): a new event kind, or a new field at the end of a
+//! record. A plugin built for an older version is compared with the shapes
+//! its version had ([`core_shape`], [`Import::shape_at`]), is never sent
+//! the event, and is sent the record without the field, so it keeps
+//! loading unrebuilt.
 //!
 //! The SDK writes, into the plugin's `.wasm` ([`LAYOUT_SECTION`]), the
 //! shapes it was built with: one for what every plugin decodes (the start
 //! record, the events, the callbacks and their answers: [`CORE_SHAPE`]),
 //! and one per import of its table ([`Import::shape`]: the name, the
 //! request and the reply). The client and `plugincheck` refuse a module
-//! whose core shape differs from theirs at the API version it was built for
-//! ([`core_shape`]), or that imports a function whose shape differs, or
-//! that has no section. A plugin is not refused for an import it does not
-//! use, so a new import alone needs no rebuild; nor for an event a later
-//! minor version added, which the client does not send it.
+//! whose core shape or import shapes differ from theirs at the API version
+//! it was built for ([`core_shape`], [`Import::shape_at`]), or that has no
+//! section. A plugin is not refused for an import it does not use, so a
+//! new import alone needs no rebuild; nor for an event or a record field a
+//! later minor version added.
 //!
 //! Nothing here is written by hand: each type's [`Wire::SHAPE`] is computed
 //! by the compiler from the definition that also writes its encoding
@@ -27,7 +33,7 @@
 use crate::callback::{Callback, CallbackAnswer};
 use crate::imports::Import;
 use crate::types::{Event, StartInfo};
-use crate::version::{API_CURRENT, ApiVersion};
+use crate::version::ApiVersion;
 use crate::wire::{Shape, Wire};
 
 /// The custom section the SDK writes into every plugin's `.wasm`:
@@ -38,21 +44,44 @@ pub const LAYOUT_SECTION: &str = "openac.layout";
 
 /// The shape of what every plugin decodes or answers whatever it imports:
 /// the start record, the events, the callbacks and their answers, at this
-/// build's API version ([`core_shape`] of [`API_CURRENT`]).
-pub const CORE_SHAPE: u64 = core_shape(API_CURRENT);
+/// build's API version (what [`core_shape`] of [`API_CURRENT`](crate::API_CURRENT) answers).
+pub const CORE_SHAPE: u64 = Shape::new("openac plugin api core")
+    .of(StartInfo::SHAPE)
+    .of(Event::SHAPE)
+    .of(Callback::SHAPE)
+    .of(CallbackAnswer::SHAPE)
+    .finish();
 
 /// The core shape a plugin built for API `version` has: the events that
-/// version had ([`Event::shape_at`]), so an event a later minor version
-/// added does not change an older plugin's core shape and it still loads
-/// (the host never sends it an event it cannot read).
+/// version had, and every record in them and in the callbacks as that
+/// version knew it ([`Wire::shape_at`]), so an event or a record field a
+/// later minor version added does not change an older plugin's core shape
+/// and it still loads (the host never sends it an event it cannot read,
+/// and sends each record as its version knew it).
 #[must_use]
-pub const fn core_shape(version: ApiVersion) -> u64 {
+pub fn core_shape(version: ApiVersion) -> u64 {
     Shape::new("openac plugin api core")
-        .of(StartInfo::SHAPE)
+        .of(StartInfo::shape_at(version))
         .of(Event::shape_at(version))
-        .of(Callback::SHAPE)
-        .of(CallbackAnswer::SHAPE)
+        .of(Callback::shape_at(version))
+        .of(CallbackAnswer::shape_at(version))
         .finish()
+}
+
+/// The [`LAYOUT_SECTION`] an SDK built for API `version` wrote: the core
+/// shape and the shape of every import of its table (the imports that
+/// version had, each as that version knew it). For [`API_CURRENT`](crate::API_CURRENT) it is
+/// [`LAYOUT_SECTION_BYTES`].
+#[must_use]
+pub fn section_at(version: ApiVersion) -> Vec<u8> {
+    let mut out = core_shape(version).to_le_bytes().to_vec();
+    for import in Import::ALL {
+        if import.since().is_at_most(version) {
+            out.extend_from_slice(&import_key(import.name()).to_le_bytes());
+            out.extend_from_slice(&import.shape_at(version).to_le_bytes());
+        }
+    }
+    out
 }
 
 /// The whole layout in one number, for people (reports, the published
@@ -164,14 +193,16 @@ impl PluginLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::API_CURRENT;
     use crate::{wire_enum, wire_record, wire_union};
 
     /// The fingerprint this ABI was last published with. A failure here
     /// means a record, reply, event or import changed: allowed while API
     /// 1.0 is unfrozen, but never silently. Update this value in the same
     /// commit; when an existing record changed shape (not only a new
-    /// import), say in the commit message which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0xcab0_c017_b645_600d;
+    /// import, event or `since`-marked field), say in the commit message
+    /// which plugins must be rebuilt.
+    const PUBLISHED: u64 = 0xa7e9_ffe2_33f6_5ae3;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -192,6 +223,50 @@ mod tests {
         assert_eq!(core_shape(ApiVersion::new(1, 0)), API_1_0_CORE);
         assert_ne!(CORE_SHAPE, API_1_0_CORE);
         assert_eq!(core_shape(API_CURRENT), CORE_SHAPE);
+    }
+
+    /// The core shape every plugin built for API 1.1 carries (an event
+    /// that version added, records as they were then).
+    const API_1_1_CORE: u64 = 0x30da_79e6_987e_c597;
+
+    /// The import shapes an API 1.1 SDK wrote for the calls whose records
+    /// API 1.2 gave a field (the house hook's item types on the inventory
+    /// and world-object records); every other import is as it was.
+    const API_1_1_IMPORTS: [(Import, u64); 7] = [
+        (Import::WorldObjects, 0x001b_e2ad_09b2_7238),
+        (Import::WorldObject, 0x1579_5703_0d8b_7bcc),
+        (Import::ItemsOwned, 0xed66_6352_01bd_02ed),
+        (Import::LootContents, 0xf000_6f51_7695_a450),
+        (Import::LootClassify, 0x62f1_8b7c_4679_4184),
+        (Import::LootNeedsIdentification, 0x99d6_7d8a_8f61_8fa8),
+        (Import::LootNotifyLooted, 0x4014_883b_f67a_6245),
+    ];
+
+    #[test]
+    fn api_1_1_plugins_keep_their_core_and_import_shapes() {
+        let v1_1 = ApiVersion::new(1, 1);
+        assert_eq!(core_shape(v1_1), API_1_1_CORE);
+        assert_ne!(CORE_SHAPE, API_1_1_CORE);
+        for (import, shape) in API_1_1_IMPORTS {
+            assert_eq!(import.shape_at(v1_1), shape, "{import:?}");
+            assert_ne!(import.shape(), shape, "{import:?}");
+        }
+        for import in Import::ALL {
+            if !API_1_1_IMPORTS.iter().any(|(i, _)| i == import) {
+                assert_eq!(import.shape_at(v1_1), import.shape(), "{import:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_section_at_this_version_is_the_one_the_sdk_writes() {
+        assert_eq!(section_at(API_CURRENT), LAYOUT_SECTION_BYTES);
+        let older = PluginLayout::parse(&section_at(ApiVersion::new(1, 1))).unwrap();
+        assert_eq!(older.core, API_1_1_CORE);
+        assert_eq!(
+            older.import_shape(Import::WorldObjects.name()),
+            Some(API_1_1_IMPORTS[0].1)
+        );
     }
 
     mod before {
@@ -298,6 +373,79 @@ mod tests {
             Result::<before::Loot, String>::SHAPE,
             Result::<after::Loot, String>::SHAPE
         );
+    }
+
+    mod marked {
+        crate::wire_record! {
+            /// The same corpse with a field a later minor version added.
+            pub struct Loot {
+                /// Its id.
+                pub id: u32,
+                /// Its name.
+                pub name: String,
+                /// Whether its appraisal was answered.
+                since (1, 7) pub answered: bool,
+            }
+        }
+    }
+
+    // A field marked `since` reads, for a plugin built before it, exactly
+    // as the record did then: the same shape, the same bytes, and what such
+    // a plugin sends reads with the field at its default. Inside a list
+    // and an option the same holds.
+    #[test]
+    fn a_field_marked_since_is_left_out_for_older_plugins() {
+        let older = ApiVersion::new(1, 6);
+        let newer = ApiVersion::new(1, 7);
+        const { assert!(marked::Loot::VERSIONED) };
+        const { assert!(!before::Loot::VERSIONED) };
+        assert_eq!(marked::Loot::shape_at(older), before::Loot::SHAPE);
+        assert_eq!(marked::Loot::shape_at(newer), after::Loot::SHAPE);
+        assert_eq!(marked::Loot::SHAPE, after::Loot::SHAPE);
+        assert_eq!(
+            Vec::<Option<marked::Loot>>::shape_at(older),
+            Vec::<Option<before::Loot>>::SHAPE
+        );
+        assert_ne!(OldReply::SHAPE, OldReplyNewLoot::SHAPE);
+
+        let loot = marked::Loot {
+            id: 7,
+            name: "Corpse".into(),
+            answered: true,
+        };
+        let list = vec![Some(loot.clone()), None];
+        let sent = list.to_bytes_at(older);
+        assert_eq!(
+            Vec::<Option<before::Loot>>::from_bytes(&sent).unwrap(),
+            vec![
+                Some(before::Loot {
+                    id: 7,
+                    name: "Corpse".into(),
+                }),
+                None
+            ]
+        );
+        assert_eq!(list.to_bytes_at(newer), list.to_bytes());
+
+        let from_older = before::Loot {
+            id: 7,
+            name: "Corpse".into(),
+        }
+        .to_bytes();
+        assert_eq!(
+            marked::Loot::from_bytes_at(&from_older, older).unwrap(),
+            marked::Loot {
+                answered: false,
+                ..loot.clone()
+            }
+        );
+        assert_eq!(
+            marked::Loot::from_bytes_at(&loot.to_bytes(), newer).unwrap(),
+            loot
+        );
+        // Bytes from a plugin of the newer version are not read as the
+        // older shape.
+        assert!(marked::Loot::from_bytes_at(&loot.to_bytes(), older).is_err());
     }
 
     wire_enum! {

@@ -67,6 +67,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rawbytes"
+version = "0.1.0"
+dependencies = [
+ "ac-plugin-abi",
+ "openac-plugin",
+]
+
+[[package]]
 name = "roxmltree"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

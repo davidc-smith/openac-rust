@@ -874,6 +874,123 @@ fn the_view_carries_the_accepted_motion_until_the_physics_takes_it() {
     assert_eq!(world.snapshot().objects[0].motion, Some(view));
 }
 
+/// A window draws a stepped body by the physics' own smoothed place, at its
+/// frame's time: from the step before the last toward the last by the share
+/// of a step elapsed since the last one ended, held at the two ends outside
+/// it. Golden values from OpenAC `PlayerMovementController
+/// .ComputeRenderPosition`: `Vector3.Lerp(prev, curr, clamp(pending /
+/// lastQuantum, 0, 1))`, here with a step of 1/30 s ending at 5 s and frames
+/// 1/120 s and 1/60 s after it (a quarter and a half of a step). A jump
+/// leaves both places the same: nothing blends across it.
+#[test]
+fn a_step_blend_draws_two_frames_between_two_steps_by_their_own_time() {
+    use std::time::Duration;
+    let v = |x: f32, y: f32, z: f32| Vector3 { x, y, z };
+    let blend = StepBlend {
+        previous: v(10.0, 20.0, 0.0),
+        current: v(10.4, 20.3, 0.1),
+        step_at: Duration::from_secs(5),
+        step_seconds: 1.0 / 30.0,
+    };
+    let near = |a: Vector3, b: Vector3| {
+        (a.x - b.x).abs() < 1e-5 && (a.y - b.y).abs() < 1e-5 && (a.z - b.z).abs() < 1e-5
+    };
+    let at = |nanos: u64| blend.origin_at(Duration::from_secs(5) + Duration::from_nanos(nanos));
+    let quarter = at(8_333_333);
+    assert!(near(quarter, v(10.1, 20.075, 0.025)), "{quarter:?}");
+    let half = at(16_666_667);
+    assert!(near(half, v(10.2, 20.15, 0.05)), "{half:?}");
+    assert_eq!(
+        blend.origin_at(Duration::from_millis(4_900)),
+        blend.previous,
+        "before the step ended"
+    );
+    assert_eq!(at(100_000_000), blend.current, "a whole step later");
+
+    let jumped = StepBlend {
+        previous: v(50.0, 60.0, 1.0),
+        current: v(50.0, 60.0, 1.0),
+        ..blend
+    };
+    for nanos in [0, 8_333_333, 16_666_667, 40_000_000] {
+        let t = Duration::from_secs(5) + Duration::from_nanos(nanos);
+        assert_eq!(jumped.origin_at(t), v(50.0, 60.0, 1.0));
+    }
+}
+
+/// A body the session's physics moves in fixed steps carries, in a window's
+/// object view and snapshot, what the window blends to draw it at its own
+/// frame's time; the view's place, like the world's (gameplay, plugins),
+/// is the body on its step. A new step is a move for a window to follow;
+/// a pass with no new step, rounding in the step's end, or a body standing
+/// still whose steps go on ending is not. Once the physics lets go the blend
+/// goes with it.
+#[test]
+fn the_change_stream_carries_the_step_blend_while_the_world_keeps_the_step() {
+    use std::time::Duration;
+    let mut world = world_with_door();
+    let key = world.object(DOOR).unwrap().key();
+    let moved_once = [WorldChange::Moved {
+        key,
+        teleported: false,
+        forced: false,
+    }];
+    let at = |x: f32| position(0xA9B4_0031, x).origin;
+    let blend = |from: f32, to: f32, ms: u64| StepBlend {
+        previous: at(from),
+        current: at(to),
+        step_at: Duration::from_millis(ms),
+        step_seconds: 1.0 / 30.0,
+    };
+    // No live body: nothing to blend.
+    world.set_step_blend(DOOR, blend(5.5, 6.0, 100));
+    assert!(physics_changes(&mut world).is_empty());
+    assert_eq!(world.snapshot().objects[0].step_blend, None);
+
+    world.set_live_position(DOOR, position(0xA9B4_0031, 6.0));
+    world.set_step_blend(DOOR, blend(5.5, 6.0, 100));
+    physics_changes(&mut world);
+    let view = world.snapshot().objects[0].clone();
+    assert_eq!(view.position.map(|p| p.origin.x), Some(6.0), "the step");
+    assert_eq!(view.step_blend, Some(blend(5.5, 6.0, 100)));
+
+    // The next step: its blend alone is a move, carried in the delta.
+    world.set_live_position(DOOR, position(0xA9B4_0031, 6.5));
+    physics_changes(&mut world);
+    world.set_step_blend(DOOR, blend(6.0, 6.5, 133));
+    let changes = physics_changes(&mut world);
+    assert_eq!(changes, moved_once);
+    let deltas = world.deltas(&changes);
+    let [ObjectDelta::Upsert(view)] = deltas.as_slice() else {
+        panic!("one upsert: {deltas:?}");
+    };
+    assert_eq!(view.position.map(|p| p.origin.x), Some(6.5));
+    assert_eq!(view.step_blend, Some(blend(6.0, 6.5, 133)));
+
+    // A pass with no new step, its end off by rounding: nothing to follow.
+    let mut rounded = blend(6.0, 6.5, 133);
+    rounded.step_at += Duration::from_nanos(3);
+    world.set_step_blend(DOOR, rounded);
+    assert!(physics_changes(&mut world).is_empty(), "unchanged");
+    assert_eq!(
+        world.snapshot().objects[0].step_blend,
+        Some(blend(6.0, 6.5, 133)),
+        "the window's copy is the world's"
+    );
+
+    // Standing still, the steps go on ending without changing the drawing.
+    world.set_step_blend(DOOR, blend(6.5, 6.5, 166));
+    assert_eq!(physics_changes(&mut world), moved_once, "stopped");
+    world.set_step_blend(DOOR, blend(6.5, 6.5, 200));
+    assert!(physics_changes(&mut world).is_empty(), "standing still");
+
+    world.clear_live_position(DOOR);
+    physics_changes(&mut world);
+    let view = world.snapshot().objects[0].clone();
+    assert_eq!(view.step_blend, None);
+    assert_eq!(view.position.map(|p| p.origin.x), Some(5.0));
+}
+
 /// An object whose entry into the world found no clear spot stays in the
 /// table (its records and updates) but a window does not draw it (OpenAC:
 /// no cell, the projection is not spatially visible), for the rest of its

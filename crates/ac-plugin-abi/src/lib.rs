@@ -67,3 +67,19 @@ pub fn serve<C: Call>(
     let request = C::Request::from_bytes(request)?;
     Ok(serve(request).to_bytes())
 }
+
+/// [`serve`] for a plugin built for API `version`: the request is read and
+/// the reply written as that version knows them ([`Wire::from_bytes_at`],
+/// [`Wire::to_bytes_at`]), so a record field a later version added is left
+/// out of what an older plugin is sent.
+///
+/// # Errors
+/// The request does not decode.
+pub fn serve_at<C: Call>(
+    request: &[u8],
+    version: ApiVersion,
+    serve: impl FnOnce(C::Request) -> C::Reply,
+) -> Result<Vec<u8>, DecodeError> {
+    let request = C::Request::from_bytes_at(request, version)?;
+    Ok(serve(request).to_bytes_at(version))
+}

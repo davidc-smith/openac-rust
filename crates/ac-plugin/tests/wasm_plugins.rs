@@ -7,11 +7,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ac_plugin::abi::layout::{LAYOUT_SECTION_BYTES, core_shape, import_key};
+use ac_plugin::abi::layout::{LAYOUT_SECTION_BYTES, core_shape, import_key, section_at};
 use ac_plugin::abi::{
-    API_CURRENT, ApiVersion, CharacterInfo, ChatLine, Event, Import, LAYOUT_SECTION, LogLevel,
+    API_CURRENT, ApiVersion, CharacterInfo, ChatLine, Event, Import, LAYOUT_SECTION, LogLevel, Wire,
 };
-use ac_plugin::engine::check_layout;
+use ac_plugin::engine::{LAYOUT_REFUSAL, check_layout};
 use ac_plugin::fixtures::{fresh_root, install, with_custom_section};
 use ac_plugin::{
     HostVersion, PluginEngine, PluginReport, PluginSession, PluginSessionOptions,
@@ -416,7 +416,7 @@ fn hello_runs_its_verb_chat_tick_and_window_events() {
     assert_eq!(
         api.messages("openac.hello"),
         vec![
-            "hello openac.hello enabled on API 1.1 (client 0.1.0), window attached: false",
+            "hello openac.hello enabled on API 1.2 (client 0.1.0), window attached: false",
             "plugin loaded: openac.hello (Hello)",
         ]
     );
@@ -625,13 +625,13 @@ fn a_listed_plugin_that_is_missing_or_unreadable_is_reported() {
 fn an_api_version_this_client_does_not_support_is_refused() {
     let root = Root::new("api");
     let folder = install(&root.0, "probe");
-    edit_manifest(&folder, r#""apiVersion": "1.1""#, r#""apiVersion": "1.2""#);
+    edit_manifest(&folder, r#""apiVersion": "1.2""#, r#""apiVersion": "1.3""#);
     let mut api = FakeSession::default();
     let mut plugins = session(&[&root.0], None);
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.probe").unwrap(),
-        "plugin 'openac.probe' declares apiVersion 1.2, but this build supports 1.0..1.1"
+        "plugin 'openac.probe' declares apiVersion 1.3, but this build supports 1.0..1.2"
     );
 }
 
@@ -680,10 +680,9 @@ fn a_status_notice_reaches_only_plugins_built_for_api_1_1() {
 
     let root = Root::new("status-1-0");
     let folder = install(&root.0, "hello");
-    edit_manifest(&folder, r#""apiVersion": "1.1""#, r#""apiVersion": "1.0""#);
+    edit_manifest(&folder, r#""apiVersion": "1.2""#, r#""apiVersion": "1.0""#);
     let wasm = folder.join("hello.wasm");
-    let mut layout = LAYOUT_SECTION_BYTES.to_vec();
-    layout[..8].copy_from_slice(&core_shape(ApiVersion::new(1, 0)).to_le_bytes());
+    let layout = section_at(ApiVersion::new(1, 0));
     let built = std::fs::read(&wasm).unwrap();
     let built = with_custom_section(&built, "openac.api", Some(b"1.0"));
     let built = with_custom_section(&built, LAYOUT_SECTION, Some(&layout));
@@ -788,6 +787,168 @@ fn every_test_plugin_is_built_with_this_clients_layout() {
     }
 }
 
+/// `probe` as an SDK for API `version` built it, with `layout` as its
+/// layout section; whether it loaded, and its failure if not.
+fn load_probe_built_for(tag: &str, version: &str, layout: &[u8]) -> (Vec<String>, Option<String>) {
+    let root = Root::new(tag);
+    let folder = install(&root.0, "probe");
+    edit_manifest(
+        &folder,
+        r#""apiVersion": "1.2""#,
+        &format!(r#""apiVersion": "{version}""#),
+    );
+    let wasm = folder.join("probe.wasm");
+    let built = std::fs::read(&wasm).unwrap();
+    let built = with_custom_section(&built, "openac.api", Some(version.as_bytes()));
+    let built = with_custom_section(&built, LAYOUT_SECTION, Some(layout));
+    std::fs::write(&wasm, built).unwrap();
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], Some(&["openac.probe"]));
+    plugins.start(&mut api);
+    let error = failed(&plugins.take_reports(), "openac.probe");
+    let loaded = plugins.loaded_ids();
+    plugins.shutdown(&mut api);
+    (loaded, error)
+}
+
+/// API 1.2 gave the inventory and world-object records a field (a house
+/// hook's item types). A plugin an API 1.1 SDK built, which reads those
+/// records (`probe` imports `items_owned` and `world_objects`), still
+/// loads: its layout is compared with the shapes API 1.1 had, and the
+/// session sends it the records as they were then. The same plugin
+/// claiming 1.1 with this SDK's shapes is refused.
+#[test]
+fn a_plugin_built_for_api_1_1_loads_with_the_records_it_knew() {
+    let used = imported("probe");
+    assert!(used.contains(&Import::ItemsOwned) && used.contains(&Import::WorldObjects));
+    let v1_1 = ApiVersion::new(1, 1);
+    let (loaded, error) = load_probe_built_for("probe-1-1", "1.1", &section_at(v1_1));
+    assert_eq!((loaded, error), (vec!["openac.probe".to_owned()], None));
+
+    let (loaded, error) = load_probe_built_for("probe-1-1-new", "1.1", &LAYOUT_SECTION_BYTES);
+    assert!(loaded.is_empty());
+    assert!(error.unwrap().contains(LAYOUT_REFUSAL));
+}
+
+/// Installs the test plugin `name` into `root` as an SDK for API `version`
+/// built it: its manifest, version section and layout section that
+/// version's ([`section_at`]). This SDK's own version installs it as built.
+fn install_built_for(root: &Path, name: &str, version: ApiVersion) -> PathBuf {
+    let folder = install(root, name);
+    if version == API_CURRENT {
+        return folder;
+    }
+    edit_manifest(
+        &folder,
+        &format!(r#""apiVersion": "{API_CURRENT}""#),
+        &format!(r#""apiVersion": "{version}""#),
+    );
+    let wasm = folder.join(format!("{name}.wasm"));
+    let built = std::fs::read(&wasm).unwrap();
+    let built = with_custom_section(&built, "openac.api", Some(version.to_string().as_bytes()));
+    let built = with_custom_section(&built, LAYOUT_SECTION, Some(&section_at(version)));
+    std::fs::write(&wasm, built).unwrap();
+    folder
+}
+
+/// The bytes `rawbytes` logged for its `kind` (`event` or `callback`)
+/// handings, in order, exactly as the client handed them to it.
+fn raw_handed(api: &FakeSession, kind: &str) -> Vec<Vec<u8>> {
+    let prefix = format!("{kind} ");
+    api.logs
+        .iter()
+        .filter(|(id, _, _)| id == "openac.rawbytes")
+        .filter_map(|(_, _, line)| line.strip_prefix(&prefix))
+        .map(|hex| {
+            (0..hex.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).unwrap())
+                .collect()
+        })
+        .collect()
+}
+
+/// An object change, its world object a house hook with item-type bits
+/// (a field API 1.2 added).
+fn hook_object_changed() -> Event {
+    use ac_plugin::abi::world::{ObjectChange, WorldObject};
+    Event::ObjectChanged(ObjectChange {
+        object_id: 0x7000_0001,
+        revision: 3,
+        current: Some(WorldObject {
+            object_id: 0x7000_0001,
+            name: "Wall Hook".into(),
+            hook_item_types: 0x0000_0080,
+            ..WorldObject::default()
+        }),
+        ..ObjectChange::default()
+    })
+}
+
+/// An object change reaches a plugin exactly as its API version encodes
+/// it: a plugin built for API 1.1 gets the world object without the house
+/// hook's item types (byte for byte the 1.1 encoding), one built for 1.2
+/// gets the field.
+#[test]
+fn an_object_change_reaches_each_plugin_in_its_api_versions_encoding() {
+    let event = hook_object_changed();
+    for version in [ApiVersion::new(1, 1), API_CURRENT] {
+        let root = Root::new(&format!("raw-event-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert_eq!(plugins.loaded_ids(), ["openac.rawbytes"], "{version}");
+        plugins.queue_event(event.clone());
+        plugins.pump(0.0, None, &mut api);
+        plugins.shutdown(&mut api);
+        let handed = raw_handed(&api, "event");
+        assert_eq!(handed, [event.to_bytes_at(version)], "{version}");
+        if version == API_CURRENT {
+            assert_eq!(handed[0], event.to_bytes());
+        } else {
+            assert_ne!(handed[0], event.to_bytes(), "{version}");
+            let Ok(Event::ObjectChanged(read)) = Event::from_bytes_at(&handed[0], version) else {
+                panic!("{version}: an object change");
+            };
+            assert_eq!(read.current.map(|o| o.hook_item_types), Some(0));
+        }
+    }
+}
+
+/// A loot classifier question reaches the classifier's plugin exactly as
+/// its API version encodes it: `hello` asks `rawbytes`'s classifier, and a
+/// `rawbytes` built for API 1.1 is handed the item record without the house
+/// hook's item types, one built for 1.2 with it.
+#[test]
+fn a_loot_question_reaches_each_classifier_in_its_api_versions_encoding() {
+    use ac_plugin::abi::callback::Callback;
+    for version in [ApiVersion::new(1, 1), API_CURRENT] {
+        let root = Root::new(&format!("raw-callback-{version}"));
+        install(&root.0, "hello");
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.hello", "openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert_eq!(plugins.loaded_ids(), ["openac.hello", "openac.rawbytes"]);
+        assert!(plugins.handle_line("/hello classify openac.rawbytes/rules", &mut api));
+        plugins.shutdown(&mut api);
+        let handed = raw_handed(&api, "callback");
+        assert_eq!(handed.len(), 1, "{version}");
+        let Ok(Callback::LootClassify(question)) = Callback::from_bytes_at(&handed[0], version)
+        else {
+            panic!("{version}: a loot question in that version's encoding");
+        };
+        let asked = Callback::LootClassify(question);
+        assert_eq!(handed[0], asked.to_bytes_at(version), "{version}");
+        assert_eq!(
+            handed[0] == asked.to_bytes(),
+            version == API_CURRENT,
+            "{version}"
+        );
+    }
+}
+
 #[test]
 fn a_plugin_built_with_another_shape_of_an_import_it_uses_is_refused_at_load() {
     // The MossTank fault: `loot_corpses`'s reply gained a field under the
@@ -882,7 +1043,7 @@ fn an_import_this_client_does_not_have_is_named_at_load() {
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.future").unwrap(),
-        "imports openac.teleport_anywhere, which API 1.1 of this client does not have (the plugin was \
+        "imports openac.teleport_anywhere, which API 1.2 of this client does not have (the plugin was \
          built for API 1.0)"
     );
 }
@@ -1884,7 +2045,7 @@ fn a_new_copy_this_client_cannot_run_leaves_the_running_copy_alone() {
             "requires openAC 9.0.0 or newer (this is 0.1.20)",
         ),
         (
-            r#""apiVersion": "1.1""#,
+            r#""apiVersion": "1.2""#,
             r#""apiVersion": "99.0""#,
             "needs plugin API version 99.0",
         ),

@@ -165,6 +165,30 @@ macro_rules! define_imports {
                 }
             }
 
+            /// The shape of its call as a plugin built for API `version`
+            /// knows it ([`Wire::shape_at`] of its request and reply);
+            /// [`Self::shape`] at this build's version.
+            #[must_use]
+            pub fn shape_at(self, version: ApiVersion) -> u64 {
+                match self {
+                    $( Import::$variant => $crate::wire::Shape::new("import")
+                        .name(stringify!($name))
+                        .of(<$request as Wire>::shape_at(version))
+                        .of(<$reply as Wire>::shape_at(version))
+                        .finish(), )*
+                }
+            }
+
+            /// The encoded inert reply as a plugin built for API `version`
+            /// reads it ([`Self::default_reply`] at this build's version).
+            #[must_use]
+            pub fn default_reply_at(self, version: ApiVersion) -> Vec<u8> {
+                match self {
+                    $( Import::$variant => Wire::to_bytes_at(
+                        &<calls::$variant as Call>::default_reply(), version), )*
+                }
+            }
+
             /// The encoded inert reply ([`Call::default_reply`]).
             #[must_use]
             pub fn default_reply(self) -> Vec<u8> {
