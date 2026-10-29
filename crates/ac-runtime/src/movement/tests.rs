@@ -3657,6 +3657,144 @@ fn an_item_created_in_the_air_with_gravity_falls_to_the_ground() {
     assert!(still.distance(landed) < 0.001, "it rests: {still}");
 }
 
+/// A gem token (setup 0x02000520, state 0x414: gravity) created 1 m above
+/// flat ground, left two seconds to fall and land. With the rig, the
+/// ground position under it and the spot it was created at.
+fn landed_token(guid: u32) -> (Rig, Position, Position) {
+    let mut rig = Rig::entered();
+    let ground = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    let mut aloft = ground;
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(0x0200_0520);
+    physics.state = 0x0000_0414;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    rig.frames(120);
+    let landed = shown_at_3d(&rig, guid).unwrap();
+    assert!(landed.z - ground.origin.z < 0.05, "it landed: {landed}");
+    (rig, ground, aloft)
+}
+
+/// The server's position for `guid`, sent off the ground (no grounded
+/// flag), with its position, teleport and force-position sequences.
+fn airborne_position_update(rig: &mut Rig, guid: u32, position: Position, stamps: (u16, u16, u16)) {
+    let (position_sequence, teleport_sequence, force_position_sequence) = stamps;
+    apply(
+        rig,
+        &Inbound::UpdatePosition(ac_proto::UpdatePosition {
+            guid,
+            flags: 0,
+            position,
+            velocity: None,
+            placement_id: None,
+            instance_sequence: 1,
+            position_sequence,
+            teleport_sequence,
+            force_position_sequence,
+        }),
+    );
+}
+
+/// The landed token is teleported back to the spot 1 m up it was created
+/// at: a teleport puts the server's position down with a placement, and
+/// the placement says what the body touches there: nothing, so gravity
+/// pulls it again and it falls back to the ground. Snapped there keeping
+/// the contact it had on the ground, it hung 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_landed_item_teleported_back_into_the_air_falls_again() {
+    const TOKEN: u32 = 0x7000_0D53;
+    let (mut rig, ground, aloft) = landed_token(TOKEN);
+    position_update(&mut rig, TOKEN, aloft, (2, 1, 0));
+    let put_back = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("put back at {put_back:.3}");
+    assert!(
+        (put_back.z - aloft.origin.z).abs() < 0.01,
+        "placed at the server's position: {put_back}"
+    );
+    rig.frames(120);
+    let fallen = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 2 s at {fallen:.3}");
+    let height = fallen.z - ground.origin.z;
+    assert!(
+        (0.0..0.05).contains(&height),
+        "it fell back to the ground: {height:.3} m above it"
+    );
+}
+
+/// A position for the landed token sent while the server has it off the
+/// ground (no grounded flag) and no teleport changes nothing: the body
+/// stays where it lies. Put where the server said, it hung 1 m up.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_position_sent_off_the_ground_leaves_a_landed_item_where_it_lies() {
+    const TOKEN: u32 = 0x7000_0D54;
+    let (mut rig, _, aloft) = landed_token(TOKEN);
+    let landed = shown_at_3d(&rig, TOKEN).unwrap();
+    airborne_position_update(&mut rig, TOKEN, aloft, (2, 0, 0));
+    assert!(
+        shown_at_3d(&rig, TOKEN).unwrap().distance(landed) < 0.001,
+        "it lies where it was"
+    );
+    rig.frames(60);
+    let still = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(
+        still.distance(landed) < 0.001,
+        "it still lies there: {still}"
+    );
+}
+
+/// A grounded position near the character for the landed token, 1 m up:
+/// the body is not put there at once; it is caught up to from where it
+/// lies, as every body catches up to a near position. Walking on the
+/// ground it cannot rise to it, so the catch-up stalls, and a stalled
+/// catch-up re-places the body at the server's position with a placement
+/// that says what it touches there: nothing, so it falls back and lies on
+/// the ground again. Put up there at once with the contact it had, it hung
+/// 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_near_grounded_position_for_a_landed_item_is_caught_up_to_not_snapped() {
+    const TOKEN: u32 = 0x7000_0D55;
+    let (mut rig, ground, aloft) = landed_token(TOKEN);
+    position_update(&mut rig, TOKEN, aloft, (2, 0, 0));
+    let at_once = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(
+        at_once.z - ground.origin.z < 0.05,
+        "not put up there at once: {at_once}"
+    );
+    let mut highest = at_once.z;
+    for _ in 0..180 {
+        rig.frames(1);
+        highest = highest.max(shown_at_3d(&rig, TOKEN).unwrap().z);
+    }
+    assert!(
+        (highest - aloft.origin.z).abs() < 0.01,
+        "the stalled catch-up put it at the server's position: {highest:.3}"
+    );
+    let lies = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 3 s at {lies:.3}");
+    assert!(
+        (0.0..0.05).contains(&(lies.z - ground.origin.z)),
+        "it fell back to the ground: {lies}"
+    );
+}
+
 /// An object without gravity (a sign hung on a wall: state 0) created in
 /// the air stays there: nothing accelerates it.
 #[test]
@@ -4053,4 +4191,30 @@ fn bodies_in_a_neighbouring_landblock_are_seen_where_they_are() {
         );
         assert!(off.length() < 0.05, "{guid:#X} seen where it is: {off}");
     }
+}
+
+/// A placement forced into its cell (a hook, a storage chest, a corpse)
+/// commits only the frame and the cell to the body; it keeps the contact it
+/// had. Taking the placement's empty contact fields, it lost its contact
+/// and gravity pulled it out of the cell it was forced into.
+#[test]
+fn a_placement_forced_into_its_cell_keeps_the_contact_the_body_had() {
+    let mut body = ac_physics::PhysicsBody::default();
+    body.transient_state
+        .insert(ac_physics::TransientState::CONTACT | ac_physics::TransientState::ON_WALKABLE);
+    body.contact_plane_valid = true;
+    let placed = ac_physics::PhysicsSetPositionResult {
+        residence: ac_physics::PhysicsResidenceDisposition::Committed,
+        position: Vec3::new(12.0, 10.0, 51.0),
+        orientation: Quat::IDENTITY,
+        cell_id: 0xA9B4_0002,
+        cell_local_position: Vec3::new(12.0, 10.0, 51.0),
+        forced_into_cell: true,
+        ..ac_physics::PhysicsSetPositionResult::default()
+    };
+    commit_placement(&mut body, &placed, Quat::IDENTITY);
+    assert_eq!(body.position(), placed.position);
+    assert!(body.in_contact(), "keeps its contact");
+    assert!(body.on_walkable(), "keeps its walkable ground");
+    assert!(body.contact_plane_valid, "keeps its contact plane");
 }

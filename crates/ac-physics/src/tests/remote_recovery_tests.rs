@@ -285,3 +285,46 @@ fn a_non_finite_vector_changes_nothing() {
     assert!(!d.apply_authoritative_vector(&NoTargets, Vec3::ZERO, Vec3::splat(f32::INFINITY), 1.0));
     assert_eq!(d.obj.body.velocity, Vec3::ZERO);
 }
+
+/// A corpse whose catch-up stalled is put into its cell at the target as it
+/// is by every placement (never searched aside), and keeps the contact it
+/// had: the engine forces a hook, a storage chest and a corpse into the
+/// cell and sets only their frame and cell. Placed as an ordinary object,
+/// a solid object at the target refused the placement and the corpse never
+/// got there.
+#[test]
+fn a_stalled_corpse_is_forced_into_its_cell_and_keeps_its_contact() {
+    let mut engine = flat_engine();
+    register_shadow(
+        &mut engine,
+        0x8602,
+        0,
+        Vec3::new(12.1, 20.0, 7.0),
+        Quat::IDENTITY,
+        10.0,
+        LB,
+        ShadowCollisionType::Cylinder,
+        10.0,
+        1.0,
+        PhysicsState::STATIC.bits(),
+        EntityCollisionFlags(0),
+        CELL,
+        true,
+    );
+    let mut d = remote(Vec3::new(1.0, 20.0, 7.0));
+    d.placement_class = crate::set_position::PhysicsPlacementClass::Corpse;
+    d.obj.body.contact_plane_valid = true;
+    assert!(d.obj.body.in_contact() && d.obj.body.on_walkable());
+    let target = Vec3::new(12.1, 20.0, 7.0);
+    blip(&mut d, target, Quat::IDENTITY);
+    let (_, request) = d.recovery_request(origin_of).unwrap();
+    assert_eq!(
+        request.placement_class,
+        crate::set_position::PhysicsPlacementClass::Corpse
+    );
+    assert!(recover(&mut engine, &mut d), "the corpse is placed");
+    assert_eq!(d.obj.body.position(), target);
+    assert!(d.obj.body.in_contact(), "keeps its contact");
+    assert!(d.obj.body.on_walkable(), "keeps its walkable ground");
+    assert!(d.obj.body.contact_plane_valid, "keeps its contact plane");
+}
