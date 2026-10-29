@@ -460,6 +460,10 @@ impl UiTextureSource for DatSurfaces<'_> {
             .ok()
             .map(UiPixels::Rgba)
     }
+
+    fn released(&mut self) -> Vec<TextureRef> {
+        self.images.take_released()
+    }
 }
 
 /// A one-byte alpha image (the font atlases) as stored, drawn white with
@@ -1208,8 +1212,13 @@ impl WindowUi {
         self.tick_examination(dt);
         self.tick_keyboard_dialogs();
         self.tick_tooltips(dt, now_ms);
-        self.host
-            .draw((size.0 as f32, size.1 as f32), &self.content)
+        let list = self
+            .host
+            .draw((size.0 as f32, size.1 as f32), &self.content);
+        // What the plugin windows drew of their file icons goes to the
+        // session, which holds those and lets go of the rest.
+        self.report_drawn_file_icons();
+        list
     }
 
     /// The textures the UI names: dat surfaces and composed icons.

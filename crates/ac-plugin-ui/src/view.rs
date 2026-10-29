@@ -28,6 +28,9 @@ pub struct PluginUiView {
     pub panels: Vec<PanelView>,
     /// Every canvas, in registration order.
     pub canvases: Vec<CanvasView>,
+    /// The image each plugin window's file icon draws, by window and
+    /// path (as its markup gives it): the plugin's handle.
+    pub file_icons: BTreeMap<(u32, String), u32>,
     /// Every image, by plugin and handle.
     pub images: BTreeMap<(String, u32), ImageView>,
     /// The world labels.
@@ -85,6 +88,15 @@ impl PluginUiView {
         self.images.get(&(owner.to_owned(), handle))
     }
 
+    /// The image panel `panel`'s file icon `path` draws (the path as its
+    /// markup gives it), once the session holds one.
+    #[must_use]
+    pub fn file_icon(&self, panel: u32, path: &str) -> Option<&ImageView> {
+        let handle = *self.file_icons.get(&(panel, path.to_owned()))?;
+        let owner = &self.panel(panel)?.owner.id;
+        self.images.get(&(owner.clone(), handle))
+    }
+
     /// What changed since the last call.
     pub fn take_dirty(&mut self) -> ViewDirty {
         std::mem::take(&mut self.dirty)
@@ -104,6 +116,7 @@ impl PluginUiView {
                 self.panels.clear();
                 self.canvases.clear();
                 self.images.clear();
+                self.file_icons.clear();
                 self.labels = Arc::default();
                 self.lines = Arc::default();
                 self.hotkeys = Arc::default();
@@ -123,6 +136,7 @@ impl PluginUiView {
             }
             UiChange::PanelRemoved(id) => {
                 self.panels.retain(|p| p.id != id);
+                self.file_icons.retain(|(panel, _), _| *panel != id);
                 self.dirty.panels = true;
             }
             UiChange::PanelValues { panel, values } => {
@@ -189,6 +203,17 @@ impl PluginUiView {
                 self.images
                     .insert((image.owner.clone(), image.handle), *image);
                 self.dirty.images = true;
+            }
+            UiChange::FileIcon {
+                panel,
+                path,
+                handle,
+            } => {
+                if handle == 0 {
+                    self.file_icons.remove(&(panel, path));
+                } else {
+                    self.file_icons.insert((panel, path), handle);
+                }
             }
             UiChange::ImageRemoved { owner, handle } => {
                 self.images.remove(&(owner, handle));

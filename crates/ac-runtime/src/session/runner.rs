@@ -791,6 +791,11 @@ fn run(
                 Arc::new(crate::plugins::ui::DatUiResources::new(Arc::clone(content)))
                     as Arc<dyn ac_plugin_ui::UiResources>
             }));
+        // The image files plugin markup names are read from each plugin's
+        // folder on a worker, with or without the dats.
+        state.plugin_ui.set_file_images(Some(Arc::new(
+            ac_plugin::file_image::PluginFileImageLoader::new(),
+        )));
         // The player's hotkey overrides, before any plugin registers one.
         if let Some(path) = config
             .plugins
@@ -2162,6 +2167,11 @@ impl Drive<'_> {
         let attached = self.attached.is_some();
         plugins.set_window_attached(attached);
         self.state.plugin_ui.set_window_attached(attached);
+        // The file icons plugin windows draw: reads that finished are held,
+        // and those not drawn for a while let go.
+        self.state
+            .plugin_ui
+            .tick_file_icons(u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
         let in_world = self.flow.phase() == Phase::InWorld;
         if !self.plugin_feed_closed {
             let listening = in_world && self.flow.login_complete_sent();

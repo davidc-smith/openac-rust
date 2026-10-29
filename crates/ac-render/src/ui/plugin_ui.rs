@@ -93,12 +93,17 @@ pub struct PluginWindowUi {
     shelf: bool,
     canvases: Option<CanvasLayer>,
     projectile: Option<ProjectileDebugOverlay>,
-    /// The plugins' images as textures, by plugin and handle.
-    images: HashMap<(String, u32), Icon>,
+    /// The plugins' images as textures, by plugin and handle, each with
+    /// whether this window uploaded it (and gives it back when the plugin
+    /// lets go of the image).
+    images: HashMap<(String, u32), (Icon, bool)>,
     /// Each plugin's `icon.png` as a texture, uploaded once per plugin
     /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
     /// was made from: a reloaded plugin's new file uploads again.
     file_icons: HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    /// The file icons each plugin window draws, as the session was last
+    /// told them.
+    files_shown: HashMap<u32, Vec<String>>,
     synced: Option<u64>,
     reported: Option<(u16, u16)>,
     /// The key map's chords as last told to the session, with the
@@ -251,11 +256,47 @@ impl MarkupIcons for NoMarkupIcons {
 }
 
 /// The window's art, its icon composer and the objects it knows, as the
-/// images plugin markup names.
+/// images plugin markup names; and the file icons the session holds for
+/// the plugin window being synced.
 struct WindowIcons<'a> {
     content: &'a DatContent,
     icons: &'a mut IconComposer,
     objects: &'a ac_core::items::ClientObjectTable,
+    view: &'a ac_plugin_ui::PluginUiView,
+    images: &'a super::icons::RuntimeImages,
+    textures: &'a mut HashMap<(String, u32), (Icon, bool)>,
+    /// The plugin window being synced.
+    panel: u32,
+}
+
+/// A plugin's own image (its pixels, or a file its markup draws) as a
+/// texture of this window, uploaded the first time it is drawn; none for
+/// the client's art, which plugins name by id.
+fn own_image(
+    images: &super::icons::RuntimeImages,
+    image: &ac_plugin_ui::ImageView,
+) -> Option<Icon> {
+    let level = |width: u32, height: u32, rgba: &[u8]| ac_dat::texture::DecodedTexture {
+        width,
+        height,
+        rgba: rgba.to_vec(),
+    };
+    let levels = match &image.source {
+        ImageSource::Rgba(pixels) => vec![level(image.width, image.height, pixels)],
+        ImageSource::File(file) => file
+            .levels
+            .iter()
+            .map(|l| level(l.width, l.height, &l.rgba))
+            .collect(),
+        ImageSource::ClientArt(_) | ImageSource::SpellIcon { .. } | ImageSource::ObjectIcon(_) => {
+            return None;
+        }
+    };
+    Some((
+        images.add_plugin_image(levels),
+        image.width as f32,
+        image.height as f32,
+    ))
 }
 
 fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
@@ -315,6 +356,17 @@ impl MarkupIcons for WindowIcons<'_> {
                 o.effects,
             )
             .map(|t| (t, ICON_SIZE, ICON_SIZE))
+    }
+
+    fn file(&mut self, path: &str) -> Option<Icon> {
+        let image = self.view.file_icon(self.panel, path)?;
+        let key = (image.owner.clone(), image.handle);
+        if let Some((icon, _)) = self.textures.get(&key) {
+            return Some(*icon);
+        }
+        let icon = own_image(self.images, image)?;
+        self.textures.insert(key, (icon, true));
+        Some(icon)
     }
 }
 
@@ -636,6 +688,7 @@ impl WindowUi {
             .collect();
         for (id, name) in gone {
             self.plugins.panels.remove(&id);
+            self.plugins.files_shown.remove(&id);
             let frame = self.host.root.window(&name).map(|w| w.frame);
             self.host.root.unregister_window(&name);
             self.host.pump();
@@ -705,12 +758,17 @@ impl WindowUi {
             content,
             icons,
             objects: &facts.objects,
+            view: &facts.plugin_ui,
+            images,
+            textures: &mut plugins.images,
+            panel: 0,
         };
         let theme = plugins.theme;
         for panel in &facts.plugin_ui.panels {
             let Some(name) = plugins.panels.get(&panel.id) else {
                 continue;
             };
+            markup_icons.panel = panel.id;
             let noticed = host.with_controller::<PluginPanelController, _>(name, |c, ui| {
                 c.sync(ui, panel, revision, &mut markup_icons, theme);
                 c.take_notices()
@@ -731,6 +789,34 @@ impl WindowUi {
         }
     }
 
+    /// The session holds the file icons each plugin window drew this frame
+    /// (only the elements drawn: none in a hidden window, a closed tab's
+    /// page or a list row scrolled away): told when they change.
+    pub(super) fn report_drawn_file_icons(&mut self) {
+        let panels: Vec<(u32, String)> = self
+            .plugins
+            .panels
+            .iter()
+            .map(|(id, name)| (*id, name.clone()))
+            .collect();
+        for (panel, name) in panels {
+            let drawn = self
+                .host
+                .with_controller::<PluginPanelController, _>(&name, |c, _| c.take_drawn_files())
+                .unwrap_or_default();
+            let told = self.plugins.files_shown.get(&panel);
+            if told.map_or(!drawn.is_empty(), |t| *t != drawn) {
+                self.plugins.files_shown.insert(panel, drawn.clone());
+                self.plugins
+                    .outbox
+                    .borrow_mut()
+                    .push(UiInput::FileIconsShown {
+                        panel,
+                        paths: drawn,
+                    });
+            }
+        }
+    }
     /// OpenAC `RetailUiRuntime.ToggleClientWindow` and its siblings: a
     /// main panel through the panel switcher (so the toolbar follows), any
     /// other window directly.
@@ -818,13 +904,18 @@ impl WindowUi {
         };
         band.follow_root(&mut host.root);
         let view = &facts.plugin_ui;
-        plugins
-            .images
-            .retain(|key, _| view.images.contains_key(key));
-        let mut uploader = images.uploader();
+        // An image the plugin let go of goes, and a texture this window
+        // uploaded for it is given back.
+        plugins.images.retain(|key, (icon, owned)| {
+            let kept = view.images.contains_key(key);
+            if !kept && *owned {
+                images.release(icon.0);
+            }
+            kept
+        });
         let mut image = |owner: &str, handle: u32| -> Option<Icon> {
             let key = (owner.to_owned(), handle);
-            if let Some(icon) = plugins.images.get(&key) {
+            if let Some((icon, _)) = plugins.images.get(&key) {
                 return Some(*icon);
             }
             let source = view.images.get(&key)?;
@@ -843,16 +934,10 @@ impl WindowUi {
                         )
                         .map(|t| (t, ICON_SIZE, ICON_SIZE))
                 }),
-                ImageSource::Rgba(pixels) => {
-                    let rgba = Rgba::new(source.width, source.height, pixels.as_ref().clone());
-                    Some((
-                        uploader.upload(&rgba),
-                        source.width as f32,
-                        source.height as f32,
-                    ))
-                }
+                ImageSource::Rgba(_) | ImageSource::File(_) => own_image(images, source),
             }?;
-            plugins.images.insert(key, icon);
+            let owned = matches!(source.source, ImageSource::Rgba(_) | ImageSource::File(_));
+            plugins.images.insert(key, (icon, owned));
             Some(icon)
         };
         let font = content.font(DEFAULT_FONT_ID);
