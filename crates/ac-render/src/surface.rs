@@ -250,6 +250,9 @@ pub(crate) struct AttachedWindow {
     brightness: Option<crate::gamma::BrightnessPass>,
     /// The retail UI: its panels, fed from the scene.
     ui: Option<WindowUi>,
+    /// Keeps the screen awake while the window is fullscreen (let go
+    /// before the window closes).
+    screen_saver: crate::screen_saver::ScreenSaver,
     /// What a fullscreen request to the compositor still waits for.
     fullscreen_awaiting: crate::display_mode::Awaiting,
     surface: wgpu::Surface<'static>,
@@ -376,6 +379,8 @@ impl AttachedWindow {
                 &mut display_lines,
             );
         }
+        let mut screen_saver = crate::screen_saver::ScreenSaver::default();
+        screen_saver.follow(&window, &mut display_lines);
         let surface = instance.create_surface(Arc::clone(&window))?;
 
         let (adapter, mut summary) = choose_adapter(instance, &surface, options)?;
@@ -548,6 +553,7 @@ impl AttachedWindow {
             ui_renderer,
             brightness: None,
             ui,
+            screen_saver,
             fullscreen_awaiting,
             surface,
             device,
@@ -1744,11 +1750,13 @@ impl AttachedWindow {
             |m| offered.iter().any(|o| o == m),
             &mut lines,
         );
+        self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
     }
 
     /// Follow the window's fullscreen state as reported now: finish what a
-    /// request to the compositor still owes.
+    /// request to the compositor still owes, and keep the screen awake
+    /// while fullscreen.
     fn follow_fullscreen(&mut self) {
         let mut lines = Vec::new();
         crate::display_mode::follow_compositor(
@@ -1757,6 +1765,7 @@ impl AttachedWindow {
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut lines,
         );
+        self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
     }
 
