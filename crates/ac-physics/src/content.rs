@@ -23,6 +23,7 @@ use ac_dat::{CachedDats, DatCollection, DatError, DatObject};
 use ac_motion::Frame;
 use glam::{Quat, Vec3};
 
+use crate::PhysicsState;
 use crate::cell_surface::CellSurface;
 use crate::collision_flags::EntityCollisionFlags;
 use crate::dat::{quat, vec3};
@@ -754,7 +755,9 @@ pub fn register_static(
             entity.id,
             &shapes,
             site,
-            0,
+            // An object made from the dats is static: an ethereal mover
+            // still collides with it.
+            PhysicsState::STATIC.bits(),
             EntityCollisionFlags::default(),
             true,
             Some(&part_array),

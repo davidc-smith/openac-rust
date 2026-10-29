@@ -20,6 +20,7 @@ mod ground_tests;
 mod indoor_walkable;
 mod insert_retry_tests;
 mod interpolation_tests;
+mod mover_ethereal;
 mod object_clock;
 mod placement;
 mod placement_room_tests;
