@@ -53,6 +53,7 @@ mod renderer;
 pub mod retirement;
 pub mod reveal;
 pub mod scene;
+mod screen_saver;
 pub use ac_physics::scenery;
 pub mod selection;
 pub mod sky;

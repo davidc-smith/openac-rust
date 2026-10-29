@@ -5,7 +5,12 @@
 //!
 //! On Wayland a client cannot switch the monitor's mode: fullscreen there
 //! asks the compositor to show the window over the whole monitor, which
-//! stays at its own mode, and the window takes the monitor's size.
+//! stays at its own mode, and the window takes the monitor's size. The
+//! compositor answers a request later, and a size asked for while the
+//! window is still shown fullscreen is not honoured, so what a request
+//! still owes is kept ([`Awaiting`]) and finished when the compositor
+//! answers ([`follow_resize`]): the chosen size once the window is shown
+//! windowed (and not maximized) again.
 
 use winit::window::{Fullscreen, Window};
 
@@ -90,30 +95,162 @@ pub fn parse_resolution(spec: &str) -> Option<(u32, u32)> {
     (w > 0 && h > 0).then_some((w, h))
 }
 
+/// What a request to the compositor still waits for (Wayland): the window
+/// reports its old state until the compositor answers, and a size asked
+/// for while it is shown fullscreen or maximized is dropped. Always
+/// [`Awaiting::Nothing`] for a mode switch, which is done when the request
+/// returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Awaiting {
+    /// Nothing asked is unanswered.
+    #[default]
+    Nothing,
+    /// Fullscreen is asked for and the window is not shown fullscreen yet.
+    Fullscreen,
+    /// Leaving is asked for; once the window is shown windowed after being
+    /// shown fullscreen, it is given this size.
+    Windowed {
+        /// Inner width, physical pixels.
+        width: u32,
+        /// Inner height, physical pixels.
+        height: u32,
+        /// The window has been shown fullscreen since the leave was asked
+        /// for. A leave asked for before an unanswered fullscreen was shown
+        /// gives the size at once (the window is still windowed), and a
+        /// resize that shows the window windowed before it is ever shown
+        /// fullscreen ends the wait: the compositor answered both requests
+        /// at once, or refused the fullscreen.
+        shown_fullscreen: bool,
+    },
+    /// The window is shown maximized (a compositor usually gives a window
+    /// back its maximized state on leaving fullscreen), where a size is not
+    /// honoured: un-maximizing is asked for, and once shown so the window
+    /// is given this size.
+    Unmaximizing {
+        /// Inner width, physical pixels.
+        width: u32,
+        /// Inner height, physical pixels.
+        height: u32,
+    },
+}
+
+/// Follow a resize of the window: the compositor's answer to a request
+/// resizes the window, so what `awaiting` still owes is finished (the
+/// chosen size for a window shown windowed again after fullscreen, and
+/// un-maximized first when shown maximized).
+///
+/// Returns the size the drawing surface follows: the window's size now,
+/// not the resize's, since a size asked for here may take at once with no
+/// resize of its own (Wayland). Lines for the log go to `log`.
+pub fn follow_resize(
+    awaiting: &mut Awaiting,
+    surface: &mut dyn WindowSizeSurface,
+    switcher: &mut dyn DisplayModeSwitcher,
+    log: &mut Vec<String>,
+) -> (u32, u32) {
+    settle(awaiting, surface, switcher, true, log);
+    surface.size()
+}
+
+/// Finish what `awaiting` still owes from what the window reports now;
+/// `answered` says the window was resized since the last request, so the
+/// compositor has answered something.
+fn settle(
+    awaiting: &mut Awaiting,
+    surface: &mut dyn WindowSizeSurface,
+    switcher: &mut dyn DisplayModeSwitcher,
+    answered: bool,
+    log: &mut Vec<String>,
+) {
+    let fullscreen = switcher.is_fullscreen();
+    match *awaiting {
+        Awaiting::Nothing => {}
+        // A fullscreen the compositor never shows (refused) stays awaited;
+        // nothing depends on it, and a later fullscreen ends it.
+        Awaiting::Fullscreen => {
+            if fullscreen {
+                *awaiting = Awaiting::Nothing;
+            }
+        }
+        Awaiting::Windowed {
+            width,
+            height,
+            shown_fullscreen,
+        } => {
+            if fullscreen {
+                *awaiting = Awaiting::Windowed {
+                    width,
+                    height,
+                    shown_fullscreen: true,
+                };
+            } else if shown_fullscreen {
+                give_size(awaiting, surface, width, height, log);
+            } else if answered {
+                *awaiting = Awaiting::Nothing;
+            }
+        }
+        Awaiting::Unmaximizing { width, height } => {
+            if !surface.is_maximized() {
+                give_size(awaiting, surface, width, height, log);
+            } else if answered {
+                *awaiting = Awaiting::Nothing;
+                log.push(format!(
+                    "display: resolution {width}x{height} not applied — the window stays maximized"
+                ));
+            }
+        }
+    }
+}
+
+/// Give a window shown windowed the chosen size under a compositor: a
+/// maximized window is un-maximized first and given the size once shown
+/// so. The log names the size only once the window has it (a compositor
+/// may keep a tiled window's size).
+fn give_size(
+    awaiting: &mut Awaiting,
+    surface: &mut dyn WindowSizeSurface,
+    width: u32,
+    height: u32,
+    log: &mut Vec<String>,
+) {
+    if surface.is_maximized() {
+        surface.restore();
+        *awaiting = Awaiting::Unmaximizing { width, height };
+        return;
+    }
+    *awaiting = Awaiting::Nothing;
+    let was = surface.size();
+    if was == (width, height) {
+        return;
+    }
+    surface.set_size(width, height);
+    let (ow, oh) = was;
+    log.push(if surface.size() == (width, height) {
+        format!("display: resolution {width}x{height} (window was {ow}x{oh})")
+    } else {
+        format!(
+            "display: resolution {width}x{height} not applied — the compositor keeps the window at {ow}x{oh}"
+        )
+    });
+}
+
 /// Apply `display`'s fullscreen and resolution; `is_offered` says whether
 /// a fullscreen mode is one the monitor offers (for a mode switch; under a
-/// compositor the size is not used). Lines for the log go to
-/// `log`. Returns whether the window is fullscreen afterwards.
+/// compositor the size is not used). `awaiting` is what earlier requests
+/// to a compositor still wait for, kept by the window between calls. Lines
+/// for the log go to `log`. Returns whether the window is fullscreen
+/// afterwards.
 pub fn apply_display(
     display: &DisplaySettings,
     surface: &mut dyn WindowSizeSurface,
     switcher: &mut dyn DisplayModeSwitcher,
+    awaiting: &mut Awaiting,
     is_offered: impl Fn(&str) -> bool,
     log: &mut Vec<String>,
 ) -> bool {
     let resolution = parse_resolution(&display.resolution);
-    if display.fullscreen && switcher.kind() == FullscreenKind::Compositor {
-        // The compositor shows the window at the monitor's own mode, so
-        // the chosen size has no effect and is not checked.
-        if switcher.is_fullscreen() {
-            return true;
-        }
-        let (w, h) = resolution.unwrap_or_else(|| surface.size());
-        if let Err(error) = switcher.try_enter_fullscreen(w, h) {
-            log.push(format!(
-                "display: fullscreen failed ({error}) — window state unchanged"
-            ));
-        }
+    if switcher.kind() == FullscreenKind::Compositor {
+        apply_compositor(display, resolution, surface, switcher, awaiting, log);
         return switcher.is_fullscreen();
     }
     if display.fullscreen {
@@ -147,6 +284,17 @@ pub fn apply_display(
         }
         return switcher.is_fullscreen();
     }
+    resize_windowed(resolution, surface, log);
+    switcher.is_fullscreen()
+}
+
+/// A windowed pick: the window takes the chosen size, restored first when
+/// maximized.
+fn resize_windowed(
+    resolution: Option<(u32, u32)>,
+    surface: &mut dyn WindowSizeSurface,
+    log: &mut Vec<String>,
+) {
     if let Some((w, h)) = resolution
         && surface.size() != (w, h)
     {
@@ -159,7 +307,91 @@ pub fn apply_display(
         ));
         surface.set_size(w, h);
     }
-    switcher.is_fullscreen()
+}
+
+/// [`apply_display`] under a compositor. Its fullscreen is at the
+/// monitor's own mode, so the chosen size is not checked for it. Requests
+/// are sent at once: the compositor takes them in order, so the last one
+/// decides the window's state whatever it has answered so far.
+fn apply_compositor(
+    display: &DisplaySettings,
+    resolution: Option<(u32, u32)>,
+    surface: &mut dyn WindowSizeSurface,
+    switcher: &mut dyn DisplayModeSwitcher,
+    awaiting: &mut Awaiting,
+    log: &mut Vec<String>,
+) {
+    // Settle what the window reports already.
+    settle(awaiting, surface, switcher, false, log);
+    let (w, h) = resolution.unwrap_or_else(|| surface.size());
+    if display.fullscreen {
+        if *awaiting == Awaiting::Nothing && switcher.is_fullscreen() {
+            return;
+        }
+        // Asked again even when a fullscreen is still unanswered (the
+        // compositor may have refused it); a leave still unanswered is
+        // overtaken.
+        match switcher.try_enter_fullscreen(w, h) {
+            Ok(()) => *awaiting = Awaiting::Fullscreen,
+            Err(error) => log.push(format!(
+                "display: fullscreen failed ({error}) — window state unchanged"
+            )),
+        }
+        return;
+    }
+    match *awaiting {
+        // Not shown fullscreen yet: the leave goes now, after the
+        // fullscreen request, and the window, still windowed, takes the
+        // size at once.
+        Awaiting::Fullscreen => match switcher.try_leave_fullscreen(w, h) {
+            Ok(()) => {
+                // A maximized window gets the size after the leave.
+                if resolution.is_some() && !surface.is_maximized() {
+                    give_size(awaiting, surface, w, h, log);
+                }
+                *awaiting = Awaiting::Windowed {
+                    width: w,
+                    height: h,
+                    shown_fullscreen: false,
+                };
+            }
+            Err(error) => log.push(format!("display: leaving fullscreen failed ({error})")),
+        },
+        // A leave or an un-maximize is asked for already; the size it ends
+        // at changes.
+        Awaiting::Windowed {
+            shown_fullscreen, ..
+        } => {
+            *awaiting = Awaiting::Windowed {
+                width: w,
+                height: h,
+                shown_fullscreen,
+            };
+        }
+        Awaiting::Unmaximizing { .. } => {
+            *awaiting = Awaiting::Unmaximizing {
+                width: w,
+                height: h,
+            };
+        }
+        Awaiting::Nothing if switcher.is_fullscreen() => {
+            match switcher.try_leave_fullscreen(w, h) {
+                Ok(()) => {
+                    *awaiting = Awaiting::Windowed {
+                        width: w,
+                        height: h,
+                        shown_fullscreen: true,
+                    };
+                }
+                Err(error) => log.push(format!("display: leaving fullscreen failed ({error})")),
+            }
+        }
+        Awaiting::Nothing => {
+            if resolution.is_some() {
+                give_size(awaiting, surface, w, h, log);
+            }
+        }
+    }
 }
 
 /// The monitor a fullscreen request goes to: the window's own, else the
@@ -260,17 +492,21 @@ impl DisplayModeSwitcher for WinitDisplay<'_> {
     }
 
     fn try_leave_fullscreen(&mut self, width: u32, height: u32) -> Result<(), String> {
-        if self.0.fullscreen().is_none() {
+        let kind = self.kind();
+        // A compositor may not have shown an asked-for fullscreen yet, so
+        // the leave is sent whatever the window reports.
+        if kind == FullscreenKind::ModeSwitch && self.0.fullscreen().is_none() {
             return Ok(());
         }
-        let kind = self.kind();
         self.0.set_fullscreen(None);
         // Under a compositor the window stays fullscreen until it answers,
-        // so this size request is not honoured there: the window goes back
-        // to its size from before fullscreen.
-        let _ = self
-            .0
-            .request_inner_size(winit::dpi::PhysicalSize::new(width, height));
+        // and a size asked for meanwhile is dropped: the size follows the
+        // answer (`follow_resize`).
+        if kind == FullscreenKind::ModeSwitch {
+            let _ = self
+                .0
+                .request_inner_size(winit::dpi::PhysicalSize::new(width, height));
+        }
         if !request_took(kind, false, self.0.fullscreen().is_some()) {
             return Err("the window is still fullscreen".into());
         }
@@ -285,10 +521,17 @@ mod tests {
 
     use super::*;
 
+    /// The window. A size asked for takes at once (as on Wayland, with no
+    /// resize of its own), except on a maximized window or one whose size
+    /// the compositor keeps (tiled), where it is dropped.
     #[derive(Default)]
     struct Surface {
         size: (u32, u32),
         maximized: bool,
+        /// The compositor keeps the window's size (tiled).
+        keeps_size: bool,
+        /// Un-maximizing waits for the compositor's answer.
+        restore_answered_later: bool,
         writes: usize,
         restores: usize,
     }
@@ -299,14 +542,18 @@ mod tests {
         }
         fn set_size(&mut self, width: u32, height: u32) {
             self.writes += 1;
-            self.size = (width, height);
+            if !self.maximized && !self.keeps_size {
+                self.size = (width, height);
+            }
         }
         fn is_maximized(&self) -> bool {
             self.maximized
         }
         fn restore(&mut self) {
             self.restores += 1;
-            self.maximized = false;
+            if !self.restore_answered_later {
+                self.maximized = false;
+            }
         }
     }
 
@@ -371,7 +618,14 @@ mod tests {
         switcher: &mut Switcher,
         offered: impl Fn(&str) -> bool,
     ) -> bool {
-        apply_display(d, surface, switcher, offered, &mut Vec::new())
+        apply_display(
+            d,
+            surface,
+            switcher,
+            &mut Awaiting::Nothing,
+            offered,
+            &mut Vec::new(),
+        )
     }
 
     #[test]
@@ -579,5 +833,324 @@ mod tests {
         assert!(w.calls.is_empty());
         assert_eq!(s.writes, 1);
         assert_eq!(s.size, (1600, 900));
+    }
+
+    /// A compositor that answers requests only when told to, oldest first,
+    /// as a Wayland compositor does some time after the request.
+    #[derive(Default)]
+    struct LateCompositor {
+        shown_fullscreen: bool,
+        unanswered: Vec<bool>,
+        calls: Vec<String>,
+        /// A window shown windowed again gets its maximized state back.
+        restores_maximized: bool,
+    }
+
+    impl LateCompositor {
+        /// The compositor answers the oldest request; a window shown
+        /// windowed again gets the compositor's own size for it.
+        fn answer(&mut self, surface: &mut Surface) {
+            if self.unanswered.is_empty() {
+                return;
+            }
+            self.shown_fullscreen = self.unanswered.remove(0);
+            if self.shown_fullscreen {
+                surface.size = (2560, 1440);
+            } else if self.restores_maximized {
+                surface.size = (2560, 1380);
+                surface.maximized = true;
+            } else {
+                surface.size = (1280, 720);
+            }
+        }
+    }
+
+    impl DisplayModeSwitcher for LateCompositor {
+        fn kind(&self) -> FullscreenKind {
+            FullscreenKind::Compositor
+        }
+        fn is_fullscreen(&self) -> bool {
+            self.shown_fullscreen
+        }
+        fn current_fullscreen_mode(&self) -> Option<(u32, u32)> {
+            self.shown_fullscreen.then_some((2560, 1440))
+        }
+        fn try_enter_fullscreen(&mut self, w: u32, h: u32) -> Result<(), String> {
+            self.calls.push(format!("enter:{w}x{h}"));
+            self.unanswered.push(true);
+            Ok(())
+        }
+        fn try_leave_fullscreen(&mut self, w: u32, h: u32) -> Result<(), String> {
+            self.calls.push(format!("leave:{w}x{h}"));
+            self.unanswered.push(false);
+            Ok(())
+        }
+    }
+
+    fn apply_late(
+        d: &DisplaySettings,
+        surface: &mut Surface,
+        compositor: &mut LateCompositor,
+        awaiting: &mut Awaiting,
+    ) -> bool {
+        apply_display(d, surface, compositor, awaiting, |_| false, &mut Vec::new())
+    }
+
+    /// A resize: returns the size the drawing surface follows.
+    fn follow(
+        awaiting: &mut Awaiting,
+        surface: &mut Surface,
+        compositor: &mut LateCompositor,
+    ) -> (u32, u32) {
+        follow_resize(awaiting, surface, compositor, &mut Vec::new())
+    }
+
+    fn fullscreen_window() -> (Surface, LateCompositor) {
+        (
+            Surface {
+                size: (2560, 1440),
+                ..Surface::default()
+            },
+            LateCompositor {
+                shown_fullscreen: true,
+                ..LateCompositor::default()
+            },
+        )
+    }
+
+    /// The size asked for while still shown fullscreen would be dropped,
+    /// so it is given once the compositor shows the window windowed; a
+    /// later resize by the player is left alone.
+    #[test]
+    fn leaving_compositor_fullscreen_gives_the_chosen_size_once_shown_windowed() {
+        let (mut s, mut c) = fullscreen_window();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        assert_eq!(c.calls, ["leave:1600x900"]);
+        assert_eq!(s.writes, 0, "no size while still shown fullscreen");
+        assert_eq!(
+            aw,
+            Awaiting::Windowed {
+                width: 1600,
+                height: 900,
+                shown_fullscreen: true,
+            }
+        );
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(s.writes, 0, "the compositor has not answered");
+        c.answer(&mut s);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!((s.writes, s.size), (1, (1600, 900)));
+        assert_eq!(aw, Awaiting::Nothing);
+        s.size = (1700, 1000);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(s.writes, 1, "the player's own resize stays");
+    }
+
+    /// The resize that shows the window windowed carries the compositor's
+    /// size, and the chosen size, asked for while following it, takes at
+    /// once with no resize of its own: the drawing surface follows the
+    /// window's size afterwards, not the resize's.
+    #[test]
+    fn the_drawing_surface_follows_the_size_given_on_leaving() {
+        let (mut s, mut c) = fullscreen_window();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        c.answer(&mut s);
+        let resized_to = s.size;
+        let surface = follow(&mut aw, &mut s, &mut c);
+        assert_eq!(resized_to, (1280, 720));
+        assert_eq!(surface, (1600, 900));
+        assert_eq!(surface, s.size);
+    }
+
+    /// A compositor that gives the window back its maximized state on
+    /// leaving: the size would be dropped there, so the window is
+    /// un-maximized first and given the size once shown so.
+    #[test]
+    fn leaving_compositor_fullscreen_into_maximized_unmaximizes_first() {
+        let (mut s, mut c) = fullscreen_window();
+        c.restores_maximized = true;
+        s.restore_answered_later = true;
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        c.answer(&mut s);
+        let mut log = Vec::new();
+        follow_resize(&mut aw, &mut s, &mut c, &mut log);
+        assert_eq!((s.restores, s.writes), (1, 0));
+        assert_eq!(
+            aw,
+            Awaiting::Unmaximizing {
+                width: 1600,
+                height: 900
+            }
+        );
+        assert!(log.is_empty(), "nothing applied yet: {log:?}");
+        // The compositor shows the window un-maximized.
+        s.maximized = false;
+        let surface = follow_resize(&mut aw, &mut s, &mut c, &mut log);
+        assert_eq!((s.writes, surface), (1, (1600, 900)));
+        assert_eq!(aw, Awaiting::Nothing);
+        assert_eq!(log, ["display: resolution 1600x900 (window was 2560x1380)"]);
+    }
+
+    /// A window the compositor keeps maximized (or tiled) is not given the
+    /// size, and the log does not say it was.
+    #[test]
+    fn a_size_the_compositor_does_not_take_is_not_logged_as_applied() {
+        let (mut s, mut c) = fullscreen_window();
+        c.restores_maximized = true;
+        s.restore_answered_later = true;
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        c.answer(&mut s);
+        let mut log = Vec::new();
+        follow_resize(&mut aw, &mut s, &mut c, &mut log);
+        // The compositor answers, still maximized.
+        follow_resize(&mut aw, &mut s, &mut c, &mut log);
+        assert_eq!(aw, Awaiting::Nothing);
+        assert_eq!(
+            log,
+            ["display: resolution 1600x900 not applied — the window stays maximized"]
+        );
+
+        let (mut s, mut c) = fullscreen_window();
+        s.keeps_size = true;
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        c.answer(&mut s);
+        let mut log = Vec::new();
+        let surface = follow_resize(&mut aw, &mut s, &mut c, &mut log);
+        assert_eq!(surface, (1280, 720));
+        assert_eq!(
+            log,
+            [
+                "display: resolution 1600x900 not applied — the compositor keeps the window at 1280x720"
+            ]
+        );
+    }
+
+    /// Fullscreen turned off before the compositor showed it: the leave is
+    /// asked for at once (the compositor takes requests in order), the
+    /// window, still windowed, takes the size at once, and gets it again
+    /// once shown windowed after the fullscreen.
+    #[test]
+    fn compositor_fullscreen_turned_off_before_it_is_shown_ends_windowed() {
+        let mut s = Surface {
+            size: (1280, 720),
+            ..Surface::default()
+        };
+        let mut c = LateCompositor::default();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(true, "1280x720"), &mut s, &mut c, &mut aw);
+        assert_eq!(aw, Awaiting::Fullscreen);
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        assert_eq!(c.calls, ["enter:1280x720", "leave:1600x900"]);
+        assert_eq!((s.writes, s.size), (1, (1600, 900)));
+        c.answer(&mut s);
+        follow(&mut aw, &mut s, &mut c);
+        assert!(c.shown_fullscreen);
+        c.answer(&mut s);
+        let surface = follow(&mut aw, &mut s, &mut c);
+        assert!(!c.shown_fullscreen);
+        assert_eq!(surface, (1600, 900));
+        assert_eq!(aw, Awaiting::Nothing);
+        assert!(c.unanswered.is_empty());
+    }
+
+    /// Fullscreen turned on again before the compositor answered the leave:
+    /// the last request decides, and the window ends fullscreen without a
+    /// size written.
+    #[test]
+    fn compositor_fullscreen_turned_on_before_the_leave_is_shown_ends_fullscreen() {
+        let (mut s, mut c) = fullscreen_window();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        apply_late(&display(true, "1600x900"), &mut s, &mut c, &mut aw);
+        assert_eq!(c.calls, ["leave:1600x900", "enter:1600x900"]);
+        assert_eq!(aw, Awaiting::Fullscreen);
+        c.answer(&mut s);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(aw, Awaiting::Fullscreen, "shown windowed for a moment");
+        c.answer(&mut s);
+        follow(&mut aw, &mut s, &mut c);
+        assert!(c.shown_fullscreen);
+        assert_eq!(aw, Awaiting::Nothing);
+        assert_eq!(s.writes, 0);
+    }
+
+    /// A second windowed pick while the leave is unanswered changes the
+    /// size the window ends at, without a second leave.
+    #[test]
+    fn a_windowed_pick_during_a_compositor_leave_changes_its_size() {
+        let (mut s, mut c) = fullscreen_window();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        apply_late(&display(false, "1920x1080"), &mut s, &mut c, &mut aw);
+        assert_eq!(c.calls, ["leave:1600x900"]);
+        c.answer(&mut s);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(s.size, (1920, 1080));
+    }
+
+    /// A compositor that never shows the window fullscreen (it refused, or
+    /// answered both requests at once): the window is windowed at the size,
+    /// the next resize ends the wait, and neither a later resize by the
+    /// player nor a fullscreen the player gives the window through the
+    /// compositor is undone. Turning fullscreen on again asks again.
+    #[test]
+    fn a_refused_compositor_fullscreen_leaves_nothing_waiting() {
+        let mut s = Surface {
+            size: (1280, 720),
+            ..Surface::default()
+        };
+        let mut c = LateCompositor::default();
+        let mut aw = Awaiting::Nothing;
+        apply_late(&display(true, "1280x720"), &mut s, &mut c, &mut aw);
+        c.unanswered.clear();
+        apply_late(&display(false, "1600x900"), &mut s, &mut c, &mut aw);
+        assert_eq!(s.size, (1600, 900));
+        assert!(!c.shown_fullscreen);
+        // The compositor answers the leave (nothing to leave).
+        c.answer(&mut s);
+        s.size = (1600, 900);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(aw, Awaiting::Nothing);
+        s.size = (1700, 1000);
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(s.size, (1700, 1000), "the player's resize stays");
+        c.shown_fullscreen = true;
+        follow(&mut aw, &mut s, &mut c);
+        assert_eq!(c.calls, ["enter:1280x720", "leave:1600x900"], "not undone");
+        c.shown_fullscreen = false;
+        apply_late(&display(true, "1600x900"), &mut s, &mut c, &mut aw);
+        assert_eq!(c.calls.last().map(String::as_str), Some("enter:1600x900"));
+        assert_eq!(aw, Awaiting::Fullscreen);
+    }
+
+    /// A mode switch is done when the request returns: nothing is awaited.
+    #[test]
+    fn a_mode_switch_awaits_nothing() {
+        let (mut s, mut w) = (Surface::default(), Switcher::default());
+        let mut aw = Awaiting::Nothing;
+        apply_display(
+            &display(true, "1920x1080"),
+            &mut s,
+            &mut w,
+            &mut aw,
+            |_| true,
+            &mut Vec::new(),
+        );
+        assert_eq!(aw, Awaiting::Nothing);
+        apply_display(
+            &display(false, "1600x900"),
+            &mut s,
+            &mut w,
+            &mut aw,
+            |_| true,
+            &mut Vec::new(),
+        );
+        assert_eq!(aw, Awaiting::Nothing);
+        assert_eq!(w.calls, ["enter:1920x1080", "leave:1600x900"]);
     }
 }

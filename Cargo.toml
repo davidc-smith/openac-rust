@@ -50,6 +50,13 @@ glam = { version = "0.34.1", default-features = false, features = ["std"] }
 # Windowing and GPU (ac-render). Features are chosen so nothing in the graph compiles C or C++;
 # keep it that way when changing them.
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+# Keeping the screen awake while fullscreen on Linux (ac-render): the Wayland idle-inhibit protocol
+# on the window's own connection, and the X11 screen saver through the Xlib loader. All three are
+# winit's own crates, already in the graph with these features; nothing is linked (libwayland and
+# libX11 are opened at run time).
+wayland-client = { version = "0.31.15", features = ["system", "dlopen"] }
+wayland-protocols = { version = "0.32.13", default-features = false, features = ["client", "unstable"] }
+x11-dl = "2.21.0"
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "vulkan", "wgsl"] }
 # Plain-data casts for GPU uploads (ac-render), pure Rust; already in the graph through wgpu.
 bytemuck = { version = "1.25", features = ["derive"] }
