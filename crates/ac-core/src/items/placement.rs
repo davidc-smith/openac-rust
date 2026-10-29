@@ -279,6 +279,27 @@ pub fn will_item_fit_in_container(
     occupied < capacity
 }
 
+/// How many item slots `container_id` has free: its item capacity less the
+/// plain items in it (packs take container slots). -1, unbounded, stays
+/// -1; an overfull container comes out negative. The hover over a pack's
+/// icon reads only this: any value but 0 takes a plain item.
+#[must_use]
+pub fn empty_item_slots(objects: &ClientObjectTable, container_id: u32) -> i32 {
+    let Some(container) = objects.get(container_id) else {
+        return 0;
+    };
+    let capacity = container.items_capacity;
+    if capacity == -1 {
+        return capacity;
+    }
+    let items = objects
+        .get_contents(container_id)
+        .iter()
+        .filter(|&&id| !is_container_id(objects, id))
+        .count();
+    capacity.saturating_sub(i32::try_from(items).unwrap_or(i32::MAX))
+}
+
 /// The container to ask the server for when `item_id` goes into the
 /// inventory: the named `target_id` if it fits, else the root (the main
 /// pack), else the first of the root's packs with room, in slot order.
@@ -650,6 +671,25 @@ mod tests {
             choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true),
             Ok(SIDE_PACK_B)
         );
+    }
+
+    #[test]
+    fn empty_item_slots_count_plain_items_only() {
+        let mut w = player_with_packs(3, 2);
+        add_loose(&mut w, 0x7000_0100, PLAYER);
+        assert_eq!(
+            empty_item_slots(&w.t, PLAYER),
+            2,
+            "the packs take no item slot"
+        );
+        add_loose(&mut w, 0x7000_0101, SIDE_PACK_A);
+        add_loose(&mut w, 0x7000_0102, SIDE_PACK_A);
+        assert_eq!(empty_item_slots(&w.t, SIDE_PACK_A), 0);
+        add_loose(&mut w, 0x7000_0103, SIDE_PACK_A);
+        assert_eq!(empty_item_slots(&w.t, SIDE_PACK_A), -1, "overfull");
+        w.t.get_mut(SIDE_PACK_B).expect("present").items_capacity = -1;
+        assert_eq!(empty_item_slots(&w.t, SIDE_PACK_B), -1, "unbounded");
+        assert_eq!(empty_item_slots(&w.t, 0x7FFF_0000), 0, "unknown");
     }
 
     #[test]

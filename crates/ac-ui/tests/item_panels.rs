@@ -1670,6 +1670,31 @@ fn a_drop_on_a_full_main_pack_goes_to_the_first_side_pack_with_room() {
 }
 
 #[test]
+fn a_grid_drop_that_falls_through_to_a_side_pack_asks_for_the_grid_slot() {
+    // The full main pack's grid holds A and E; B dropped on E (slot 1) or
+    // on A (slot 0) goes to the side pack 0xC with the slot the grid
+    // named, not its top.
+    let mut o = Objects::new();
+    o.player(2, 7);
+    o.contained(0xA, PLAYER, 0, ItemType::MISC);
+    o.contained(0xE, PLAYER, 1, ItemType::MISC);
+    o.bag(0xC, 2, 5);
+    o.bag(0xD, 3, 5);
+    o.contained(0xB, 0xD, 0, ItemType::MISC);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let g = inv.grid;
+    for (cell, slot) in [(1, 1), (0, 0)] {
+        let out = drop_on(&mut inv, g, cell, payload(0xB), &view);
+        assert_dbg_eq!(
+            moves(&out),
+            vec![(0xBu32, ObjectRef::Guid(0xC), slot, 0u32)]
+        );
+    }
+}
+
+#[test]
 fn a_drop_when_every_pack_is_full_says_the_backpack_is_full_and_sends_nothing() {
     let mut o = Objects::new();
     o.player(1, 7);
@@ -1798,6 +1823,26 @@ fn an_own_stack_dropped_on_the_full_main_pack_icon_stays_in_its_full_side_pack()
         vec![(0xBu32, ObjectRef::Guid(0xC), 0i32, 0u32)]
     );
     assert!(notices(&out).is_empty());
+}
+
+#[test]
+fn over_the_icon_of_its_own_full_pack_a_whole_stack_is_refused() {
+    // The icon answers by the pack's free item slots alone: the stack
+    // already inside does not make the full pack take it.
+    let o = own_stack_in_a_full_side_pack();
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let c = inv.containers;
+    assert_eq!(inv.slot(c, 0).object_id, 0xC);
+    assert_eq!(
+        drag_over(&mut inv, c, 0, payload(0xB), &view),
+        DragAcceptance::Reject
+    );
+    assert_eq!(
+        drag_over(&mut inv, c, 1, payload(0xB), &view),
+        DragAcceptance::Accept
+    );
 }
 
 #[test]

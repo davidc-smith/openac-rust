@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use ac_core::items::placement::{
-    choose_container, evaluate_container_placement, item_list_drop_placement,
+    choose_container, empty_item_slots, evaluate_container_placement, item_list_drop_placement,
     placement_rejection_text,
 };
 use ac_core::items::{
@@ -576,20 +576,24 @@ impl InventoryController {
         let target_item = slot(ui, cell).map_or(0, |s| s.object_id);
         let (legality, source_is_bag, destination) =
             self.evaluate_drop(list, target_item, p.obj_id, view);
-        // Over a pack's own icon the answer is that pack's; anywhere else a
-        // full pack is no refusal while the drop has somewhere to go, found
-        // by the same search the drop runs.
-        let over_a_pack_icon = !source_is_bag && Some(list) != self.contents_grid;
-        if over_a_pack_icon
-            && legality.is_none()
-            && Some(list) == self.container_list
-            && view.get(target_item).is_some_and(|t| t.items_capacity == 0)
-        {
-            return DragAcceptance::Reject;
+        // Over a pack's own icon (a side pack or the main pack) the answer
+        // is that pack's free item slots alone: none refuses, even for a
+        // stack already inside it, and even though letting go there still
+        // finds the item a place in another pack. Something in the side
+        // column that carries nothing, a focus for one, has none.
+        let over_a_pack_icon = !source_is_bag
+            && (Some(list) == self.container_list || Some(list) == self.top_container);
+        if over_a_pack_icon {
+            return if target_item != 0 && empty_item_slots(view.objects, target_item) != 0 {
+                DragAcceptance::Accept
+            } else {
+                DragAcceptance::Reject
+            };
         }
+        // Anywhere else a full pack is no refusal while the drop has
+        // somewhere to go, found by the same search the drop runs.
         let mut legality = legality;
         if is_capacity_rejection(legality)
-            && !over_a_pack_icon
             && choose_container(
                 view.objects,
                 p.obj_id,
@@ -771,7 +775,7 @@ impl InventoryController {
         let source_is_bag = dragged.is_some_and(is_bag);
         let (split, whole_stack) = self.moving_amount(item, view);
         let mut container;
-        let mut placement: Option<i32>;
+        let placement: Option<i32>;
         if Some(list) == self.contents_grid {
             container = self.open_container(view.player);
             // Lands left of the hovered item, wherever it came from: this
@@ -816,9 +820,10 @@ impl InventoryController {
         } else {
             return;
         }
+        // The pack the search found takes the item at the slot this drop
+        // named: the grid's drop slot, or the top for a pack's icon.
         if fallthrough != 0 {
             container = fallthrough;
-            placement = Some(0);
         }
         let Some(placement) = placement else {
             return; // the item is already there
