@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use ac_core::world::{StaticBuilding, StaticObject, StaticPlacement, place_landblock_statics};
 use ac_dat::objects::{
-    Animation, EnvCell, Environment, GfxObj, LandBlock, LandBlockInfo, MotionTable, Region, Scene,
-    Setup,
+    Animation, EnvCell, Environment, GfxObj, GfxObjDegradeInfo, GfxObjFlags, LandBlock,
+    LandBlockInfo, MotionTable, Region, Scene, Setup,
 };
 use ac_dat::{CachedDats, DatCollection, DatError, DatObject};
 use ac_motion::Frame;
@@ -33,7 +33,7 @@ use crate::shadow::ShadowShape;
 use crate::shadow_builder::{self, PartRef};
 use crate::shadow_registry::{RegistrationSite, ShadowObjectRegistry};
 use crate::terrain::TerrainSurface;
-use crate::world::{BldPortalInfo, BuildingPhysics, CollisionWorld, Placement};
+use crate::world::{BldPortalInfo, BuildingPhysics, CollisionWorld, GfxObjPhysics, Placement};
 
 /// Placement id of a setup's resting pose.
 const PLACEMENT_RESTING: u32 = 0x65;
@@ -247,7 +247,7 @@ fn model_parts<D: DatSource>(
     dats: &D,
     world: &mut CollisionWorld,
     model_id: u32,
-    keep: impl Fn(&CollisionWorld, u32) -> bool,
+    keep: impl Fn(&CollisionWorld, u32) -> Result<bool, ContentError>,
 ) -> Result<Vec<PartRef>, ContentError> {
     let parts = match model_id >> 24 {
         0x01 => vec![PartRef {
@@ -276,11 +276,73 @@ fn model_parts<D: DatSource>(
                 id: part.gfx_obj_id,
                 error,
             })?;
-        if keep(world, part.gfx_obj_id) {
+        if keep(world, part.gfx_obj_id)? {
             kept.push(part);
         }
     }
     Ok(kept)
+}
+
+/// The parts an object placed inside a cell registers, as the landblock's
+/// interior statics are read: every part except an editor-only marker
+/// without a collision tree (a marker draws nothing, but its collision
+/// still stands, as the invisible ledges and walls of some dungeons do).
+/// A part without a collision tree is kept: the object then collides with
+/// its setup's cylinders or spheres. `None` when the object is dropped: no
+/// part is kept and it has no light and no default script of its own; a
+/// GfxObj placement that is a marker without collision is dropped too.
+fn interior_parts<D: DatSource>(
+    dats: &D,
+    world: &mut CollisionWorld,
+    model_id: u32,
+) -> Result<Option<Vec<PartRef>>, ContentError> {
+    let (lights, has_default_script) = match model_id >> 24 {
+        0x02 => match dats.object::<Setup>(model_id)? {
+            Some(setup) => (
+                !setup.lights.is_empty(),
+                setup.default_script != 0 || setup.default_script_table != 0,
+            ),
+            None => (false, false),
+        },
+        _ => (false, false),
+    };
+    let parts = model_parts(dats, world, model_id, |w, gfx| {
+        keeps_interior_part(dats, w, gfx)
+    })?;
+    Ok((!parts.is_empty() || lights || has_default_script).then_some(parts))
+}
+
+/// Whether an interior part is kept: never an editor-only marker, unless
+/// it has a collision tree.
+fn keeps_interior_part<D: DatSource>(
+    dats: &D,
+    world: &CollisionWorld,
+    gfx_obj_id: u32,
+) -> Result<bool, ContentError> {
+    if world
+        .gfx_obj(gfx_obj_id)
+        .is_some_and(GfxObjPhysics::has_physics)
+    {
+        return Ok(true);
+    }
+    Ok(!is_editor_marker(dats, gfx_obj_id)?)
+}
+
+/// An editor-only placement marker: a model whose closest level of detail
+/// is meant for distance 0 only and whose ladder has an empty level, so
+/// the game never draws it at any real distance.
+fn is_editor_marker<D: DatSource>(dats: &D, gfx_obj_id: u32) -> Result<bool, ContentError> {
+    let Some(gfx) = dats.object::<GfxObj>(gfx_obj_id)? else {
+        return Ok(false);
+    };
+    if !gfx.flags.contains(GfxObjFlags::HAS_DID_DEGRADE) || gfx.did_degrade == 0 {
+        return Ok(false);
+    }
+    let Some(info) = dats.object::<GfxObjDegradeInfo>(gfx.did_degrade)? else {
+        return Ok(false);
+    };
+    Ok(info.degrades.first().is_some_and(|d| d.max_dist == 0.0)
+        && info.degrades.iter().any(|d| d.id == 0))
 }
 
 fn placed_statics(
@@ -373,12 +435,9 @@ pub fn publish_landblock<D: DatSource>(
                 &mut publication,
             )?;
             for stab in &env_cell.static_objects {
-                let parts = model_parts(dats, world, stab.id, |w, gfx| {
-                    w.gfx_obj(gfx).is_some_and(|p| p.has_physics())
-                })?;
-                if parts.is_empty() {
+                let Some(parts) = interior_parts(dats, world, stab.id)? else {
                     continue;
-                }
+                };
                 if interior_counter > INTERIOR_ID_MAX_COUNTER {
                     return Err(ContentError::TooManyStatics(format!(
                         "landblock ({landblock_x:02X},{landblock_y:02X}) exceeds the \
@@ -452,7 +511,7 @@ pub fn publish_landblock<D: DatSource>(
                 let parts = if placed.is_building_shell {
                     Vec::new()
                 } else {
-                    model_parts(dats, world, placed.model_id, |_, _| true)?
+                    model_parts(dats, world, placed.model_id, |_, _| Ok(true))?
                 };
                 let [w, x, y, z] = placed.orientation;
                 statics.push(StaticEntity {
@@ -482,7 +541,7 @@ pub fn publish_landblock<D: DatSource>(
         };
         let mut scenery_counter = 0u32;
         for spawn in spawns {
-            let parts = model_parts(dats, world, spawn.object_id, |_, _| true)?;
+            let parts = model_parts(dats, world, spawn.object_id, |_, _| Ok(true))?;
             if parts.is_empty() {
                 continue;
             }
