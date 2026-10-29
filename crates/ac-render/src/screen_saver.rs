@@ -12,9 +12,10 @@
 //! What holds the screen uses the window's own display connection, so it is
 //! let go while that connection is open: when the window closes, or when
 //! the event loop ends ([`ScreenSaver::release`]). An X11 hold keeps the
-//! window, and with it the connection, alive; a Wayland one cannot, so it
-//! is left alone (not destroyed) when dropped during a panic, as the event
-//! loop's connection may already be closed then.
+//! window, and with it the connection, alive. On Wayland the event loop and
+//! each of its windows keep the connection open until the last of them is
+//! dropped; a Wayland hold is still left alone (not destroyed) when dropped
+//! during a panic, since the order of that unwinding is not ours to rely on.
 
 use std::sync::Arc;
 
@@ -188,11 +189,12 @@ mod linux {
                 (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(surface)) => {
                     if self.wayland.is_none() {
                         // SAFETY: the display is the window's own connection,
-                        // open now (the event loop is running). It is closed
-                        // only when the loop ends: the manager is dropped
-                        // before that (`ScreenSaver::release` on the loop's
-                        // end, or with the window), and is left alone when
-                        // dropped during a panic.
+                        // open now (the event loop is running). It stays open
+                        // while the event loop or any of its windows is alive;
+                        // the manager is dropped before both
+                        // (`ScreenSaver::release` on the loop's end, or with
+                        // the window), and is left alone when dropped during
+                        // a panic.
                         self.wayland = Some(unsafe { wayland::Manager::new(display.display) }?);
                     }
                     let manager = self.wayland.as_mut().ok_or("no idle-inhibit manager")?;
