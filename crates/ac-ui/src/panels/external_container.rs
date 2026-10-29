@@ -589,14 +589,18 @@ impl ExternalContainerController {
                     l.defer_layout();
                     l.flush(ui);
                 });
-                for (i, _) in guids.iter().enumerate() {
-                    let s = ItemSlot {
+                for (i, &guid) in guids.iter().enumerate() {
+                    let mut s = ItemSlot {
                         slot_index: i32::try_from(i).unwrap_or(i32::MAX),
-                        source_kind: ItemDragSource::Ground,
                         drag_accept_sprite: DEFAULT_DRAG_ACCEPT_SPRITE,
                         drag_reject_sprite: DEFAULT_DRAG_REJECT_SPRITE,
                         ..ItemSlot::default()
                     };
+                    // Filled before it joins the list: the list trims empty
+                    // cells past its visible width when it lays out, and an
+                    // unfilled cell would count as one.
+                    fill_slot(&mut s, view.get(guid), view, icons);
+                    s.source_kind = ItemDragSource::Ground;
                     let cell = ui.insert(slot_element(), s);
                     ui.with::<ItemList, _>(list, |l, ui| l.add_item(ui, list, cell));
                 }
