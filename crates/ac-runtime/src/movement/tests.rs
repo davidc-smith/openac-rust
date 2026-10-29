@@ -3568,6 +3568,120 @@ fn two_loot_items_dropped_on_one_spot_stay_piled_on_it() {
     }
 }
 
+/// Where the world (and a window) has `guid`, height included.
+fn shown_at_3d(rig: &Rig, guid: u32) -> Option<Vec3> {
+    rig.world
+        .snapshot()
+        .objects
+        .iter()
+        .find(|o| o.guid == guid)
+        .and_then(|o| o.position)
+        .map(|p| Vec3::new(p.origin.x, p.origin.y, p.origin.z))
+}
+
+/// A gem token (its real setup, 0x02000520: one 0.1 m sphere 0.073 m up,
+/// step down 0.09 m) the server creates 1 m above flat ground, with no
+/// velocity, as a respawned token can arrive: its state (0x414: ethereal,
+/// ignore collisions, gravity) gives it gravity and its placement leaves it
+/// touching nothing (the step down reaches 0.09 m). The game's create
+/// enters it with placement | slide and makes it active, and every update
+/// pulls a body with gravity that does not rest on walkable ground (OpenAC
+/// steps every object's body, `RuntimeOrdinaryPhysicsUpdater.TryBegin`),
+/// so it falls and lies on the ground. Left where the placement put it, it
+/// hung 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn an_item_created_in_the_air_with_gravity_falls_to_the_ground() {
+    const TOKEN: u32 = 0x7000_0D51;
+    const TOKEN_SETUP: u32 = 0x0200_0520;
+    let mut rig = Rig::entered();
+    let ground = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    let mut aloft = ground;
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(TOKEN_SETUP);
+    physics.state = 0x0000_0414;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: TOKEN,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    let entered = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("entered at {entered:.3} (ground z {:.3})", ground.origin.z);
+    // A fall of 1 m takes 0.45 s; two seconds of frames land it.
+    rig.frames(120);
+    let landed = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 2 s at {landed:.3}");
+    let height = landed.z - ground.origin.z;
+    assert!(
+        (0.0..0.05).contains(&height),
+        "it lies on the ground: {height:.3} m above it"
+    );
+    assert!(
+        Vec2::new(landed.x, landed.y).distance(Vec2::new(aloft.origin.x, aloft.origin.y)) < 0.01,
+        "it fell straight down: {landed}"
+    );
+    let rows = rig.world.object(TOKEN).unwrap().key().local_id;
+    let rows = rig.movement.engine.shadows.capture_entries_for(rows);
+    let row = rows.first().unwrap();
+    let row_z = (row.position - row.rotation * row.local_position).z;
+    assert!(
+        (row_z - landed.z).abs() < 0.01,
+        "its rows lie with it: {row_z:.3}"
+    );
+    // It stays there.
+    rig.frames(60);
+    let still = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(still.distance(landed) < 0.001, "it rests: {still}");
+}
+
+/// An object without gravity (a sign hung on a wall: state 0) created in
+/// the air stays there: nothing accelerates it.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn an_item_created_in_the_air_without_gravity_stays_there() {
+    const SIGN: u32 = 0x7000_0D52;
+    let mut rig = Rig::entered();
+    let mut aloft = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(0x0200_0520);
+    physics.state = 0;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: SIGN,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    rig.frames(120);
+    let at = shown_at_3d(&rig, SIGN).unwrap();
+    assert!(
+        (at.z - aloft.origin.z).abs() < 0.001,
+        "it stays where it was put: {at}"
+    );
+}
+
 /// A missile the server creates where another object stands enters the
 /// world clear of it: a projectile's create routes as every other
 /// (OpenAC `ClassifyCreate`: `ProjectileAuthoritative`, `InitialCreateFlags`),
