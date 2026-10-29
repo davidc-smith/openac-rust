@@ -374,3 +374,58 @@ fn a_character_dropped_onto_the_invisible_ledge_comes_to_rest_on_it() {
     assert!(r.ok);
     assert!((r.position.z - reported.z).abs() <= 0.05, "{}", r.position);
 }
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_walker_cannot_pass_through_an_interior_statue_that_collides_by_its_sphere() {
+    // Interior cell 0xD5990125 holds placement 0x02000398 at
+    // (177, 182.398, 374.005): a 5.7 m statue whose one part (0x01000F3D)
+    // has no collision tree, so it collides through its setup's one sphere
+    // (radius 0.944 m, centre 0.944 m up). A character walking north from
+    // (177.323, 178.856) meets that sphere about 1.3 m short of the statue's
+    // centre; the room itself runs on to y = 186.5.
+    const ROOM: u32 = 0xD599_0125;
+    const STATUE: Vec3 = Vec3::new(177.0, 182.398, 374.005);
+    let start = Vec3::new(177.323, 178.856, 374.005);
+    let d = dats();
+    let mut engine = PhysicsEngine::new();
+    engine.attach_world(CollisionWorld::new());
+    publish_landblock(&mut engine, &d, &height_table(&d), 0xD599_FFFF, Vec3::ZERO)
+        .expect("landblock publishes")
+        .expect("landblock exists");
+    let h = human(&d);
+    let mut at = start;
+    let mut cell_id = ROOM;
+    for _ in 0..20 {
+        let to = Vec3::new(at.x, at.y + 0.25, at.z);
+        let mut body = ac_physics::PhysicsBody::new();
+        body.set_position(at);
+        let r = engine.resolve_with_transition(
+            &ResolveRequest {
+                current_pos: at,
+                target_pos: to,
+                cell_id,
+                sphere_radius: h.spheres[0].radius,
+                sphere_height: h.height,
+                step_up_height: h.step_up,
+                step_down_height: h.step_down,
+                is_on_ground: true,
+                mover_flags: ObjectInfoState(
+                    ObjectInfoState::IS_PLAYER | ObjectInfoState::EDGE_SLIDE,
+                ),
+                moving_entity_id: 0x000D_5991,
+                sphere_list: h.spheres.clone(),
+                ..ResolveRequest::default()
+            },
+            Some(&mut body),
+        );
+        at = r.position;
+        cell_id = r.cell_id;
+    }
+    println!("walk north from {start} stopped at {at} in {cell_id:#010X}");
+    assert!(at.y > start.y + 1.0, "the walk got going: {at}");
+    assert!(
+        (STATUE.y - 1.6..STATUE.y - 1.0).contains(&at.y),
+        "the statue's sphere stops the walk short of it: {at}"
+    );
+}
