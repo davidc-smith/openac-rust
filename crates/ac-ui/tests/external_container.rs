@@ -319,6 +319,40 @@ fn the_player_keeps_its_capacity_without_the_openable_flag() {
     assert_eq!(s.num_cells(PACKS), 2);
 }
 
+/// OpenAC `Corpse_getsOneCellPerUnitOfCapacity_andTheItemStripScrolls`: a
+/// corpse sends its capacities like any container (the servers send 120
+/// items and 10 packs): the item strip gets 120 cells and scrolls along
+/// them, the pack strip 10.
+#[test]
+fn a_corpse_gets_one_cell_per_unit_of_capacity_and_the_item_strip_scrolls() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::OPENABLE | PublicWeenieFlags::CORPSE;
+    s.objects.add(plain_item(ITEM));
+    s.open_with(CHEST, 120, 10, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 120);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+    assert_eq!(s.slot(CONTENTS, 119).object_id, 0);
+    assert_eq!(s.num_cells(PACKS), 10);
+
+    let list = s.ids[&CONTENTS];
+    let visible = |s: &Strip, i: usize| s.host.root.element(s.cell(CONTENTS, i)).unwrap().visible;
+    let scroll = |s: &Strip| s.host.root.widget::<ItemList>(list).unwrap().scroll;
+    assert_eq!(scroll(&s).content_height, 120 * 32);
+    assert_eq!(scroll(&s).view_height, 784);
+    assert!(visible(&s, 0));
+    assert!(!visible(&s, 119));
+
+    s.host.root.with::<ItemList, _>(list, |l, ui| {
+        l.scroll_item_into_view(ui, list, 119);
+        l.layout_cells(ui, list);
+    });
+    assert_eq!(scroll(&s).scroll_y(), 120 * 32 - 784);
+    assert!(visible(&s, 119));
+    let last = s.cell(CONTENTS, 119);
+    assert_eq!(s.host.root.element(last).unwrap().left, 784.0 - 32.0);
+    assert!(!visible(&s, 0));
+}
+
 /// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
 /// means no limit: the strips fill the window.
 #[test]
