@@ -396,6 +396,34 @@ fn selecting_a_monster_streams_its_health_and_its_death_lets_it_go() {
     assert!(!f.gameplay.deaths().is_dead(MONSTER));
 }
 
+// OpenAC `SelectionState.Reset`: leaving the world is a selection change
+// (`SessionReset`) raised even with nothing selected, so whatever follows
+// the selection lets the session's go.
+#[test]
+fn leaving_the_world_reports_the_selection_reset() {
+    let mut f = Fixture::in_the_field();
+    f.run(GameplayCommand::Select(ObjectRef::Guid(MONSTER)));
+    let _ = f.events();
+    f.gameplay.left_world(&mut f.world);
+    assert_eq!(f.gameplay.selection().selected(), None);
+    assert_eq!(
+        f.events(),
+        [GameplayEvent::Selection {
+            selected: None,
+            name: None
+        }]
+    );
+    f.gameplay.left_world(&mut f.world);
+    assert_eq!(
+        f.events(),
+        [GameplayEvent::Selection {
+            selected: None,
+            name: None
+        }],
+        "with nothing selected too"
+    );
+}
+
 // OpenAC v0.1.25 `RuntimeCreatureDeathStateTests`: a
 // death leaves with the incarnation that died.
 #[test]

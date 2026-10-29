@@ -762,6 +762,46 @@ fn a_selected_items_mana_query_goes_out_and_its_answer_fills_the_strips_bar() {
 
 #[test]
 #[ignore = "needs the retail dat files"]
+fn the_examination_follows_a_selection_changed_away_and_back_in_one_frame() {
+    // OpenAC `AppraisalUiController.HandleSelectionChanged` runs on every
+    // selection change: away and back before the window's next frame
+    // examines both, in order, though the frame ends on the first again.
+    use ac_runtime::inventory::{ItemCommand, ObjectRef};
+    let size = (1280, 720);
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = scene();
+    interface(&mut scene, InterfaceState::default());
+    let view = *scene.player_view().unwrap();
+    scene.apply(PresentationEvent::Player(PlayerView {
+        selected: Some(SWORD),
+        ..view
+    }));
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::Selection(
+        Some(SWORD),
+    )));
+    ui.feed(&mut scene);
+    ui.host_mut().root.show_window(EXAMINATION_WINDOW);
+    ui.host_mut().pump();
+    let _ = ui.drain();
+    for selected in [Some(DRUDGE), Some(SWORD)] {
+        scene.apply(PresentationEvent::Interface(InterfaceEvent::Selection(
+            selected,
+        )));
+    }
+    ui.feed(&mut scene);
+    let appraised: Vec<u32> = ui
+        .drain()
+        .into_iter()
+        .filter_map(|c| match c {
+            SessionCommand::Item(ItemCommand::Appraise(ObjectRef::Guid(g))) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(appraised, [DRUDGE, SWORD]);
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
 fn the_spell_bar_cannot_cast_a_targeted_spell_without_a_fitting_target() {
     // OpenAC `SpellcastingUiController.ComputeSpellCastState` over
     // `RuntimeSpellCastState.EvaluateCastGate`, in the window: the cast
@@ -2220,6 +2260,51 @@ fn the_chat_entry_keys_focus_and_release_the_chat_entry() {
     assert_eq!(ui.host().root.keyboard_focus(), Some(field));
     assert!(ui.handle_input_action(InputAction::EnterChatMode));
     assert_eq!(ui.host().root.keyboard_focus(), Some(field));
+}
+
+/// Enter bound as a click to Enter Chat Mode (a keyboard click fires as
+/// the key goes down): the gameplay input hands the chat window the key,
+/// the entry takes the focus, and the same keystroke, still down, does not
+/// reach the entry (it would send the empty line and give the focus up).
+#[test]
+#[ignore = "needs the retail dat files"]
+fn enter_bound_as_a_click_focuses_the_chat_entry_without_reaching_it() {
+    use ac_render::gameplay_input::{DeviceState, GameplayInput, GameplayOutput};
+    use ac_ui::input::{ActivationType, Binding, InputAction, KeyBindings, KeyChord};
+    let mut bindings = KeyBindings::retail_defaults();
+    let enter = KeyChord::key(Key::Enter, Modifiers::NONE);
+    let press = bindings.find(enter, ActivationType::Press).unwrap();
+    assert!(bindings.remove(&press));
+    bindings.add(Binding::new(enter, InputAction::EnterChatMode).activation(ActivationType::Click));
+    let mut input = GameplayInput::new(bindings);
+    let mut out = Vec::new();
+    input.key(
+        Key::Enter,
+        true,
+        &DeviceState::default(),
+        None,
+        1.0,
+        &mut out,
+    );
+    let [GameplayOutput::ChatEntry(action, key)] = out[..] else {
+        panic!("{out:?}");
+    };
+    assert_eq!(key, Some(Key::Enter));
+
+    let mut ui = WindowUi::build(dats(), (1280, 720)).expect("the UI builds");
+    let mut scene = scene();
+    ui.feed(&mut scene);
+    ui.drain();
+    let field = {
+        let root = &ui.host().root;
+        let window = root.window(CHAT_WINDOW).unwrap().frame;
+        root.find_descendant(window, chat::INPUT_ID).unwrap()
+    };
+    assert!(ui.chat_entry_key(action, key));
+    assert_eq!(ui.host().root.keyboard_focus(), Some(field));
+    ui.host_mut().root.on_key_down(Key::Enter, Modifiers::NONE);
+    assert_eq!(ui.host().root.keyboard_focus(), Some(field));
+    assert!(ui.drain().is_empty(), "the keystroke sent nothing");
 }
 
 /// OpenAC `InteractionRetainedUiComposition`: the interface's system

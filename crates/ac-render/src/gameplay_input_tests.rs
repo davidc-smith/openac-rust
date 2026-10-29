@@ -283,6 +283,68 @@ fn a_key_the_player_binds_to_the_fly_camera_toggles_it() {
     assert_eq!(r.take(), [GameplayOutput::ToggleFly]);
 }
 
+/// OpenAC `RetailUiRuntime.HandleInputAction` hands the physical chord to
+/// the chat entry keys whatever the activation: a keyboard click fires as
+/// the key goes down, so a chat key bound as a click carries its key too
+/// (the entry it focuses ignores that key until it is let go).
+#[test]
+fn a_chat_entry_key_bound_as_a_click_carries_its_key() {
+    let mut bindings = KeyBindings::retail_defaults();
+    let enter = ac_ui::input::KeyChord::key(Key::Enter, Modifiers::NONE);
+    let press = bindings
+        .find(enter, ActivationType::Press)
+        .expect("the retail key map binds Enter");
+    assert!(bindings.remove(&press));
+    bindings.add(
+        ac_ui::input::Binding::new(enter, InputAction::EnterChatMode)
+            .activation(ActivationType::Click),
+    );
+    let mut r = Rig::new();
+    r.input = GameplayInput::new(bindings);
+    r.key(Key::Enter, true);
+    assert_eq!(
+        r.take(),
+        [GameplayOutput::ChatEntry(
+            InputAction::EnterChatMode,
+            Some(Key::Enter)
+        )]
+    );
+    r.key(Key::Enter, false);
+    assert!(r.take().is_empty());
+}
+
+/// OpenAC `GameplayInputActionRouter.Route`: a press, a double click and a
+/// click all go on to the interface, the character options and the
+/// selection; a player may bind examine, a panel or use to a click.
+#[test]
+fn an_action_bound_to_a_click_reaches_the_interface_and_the_session() {
+    use ac_runtime::inventory::ItemCommand as I;
+    let mut bindings = KeyBindings::retail_defaults();
+    for (key, action) in [
+        (Key::F13, InputAction::SelectionExamine),
+        (Key::F14, InputAction::ToggleInventoryPanel),
+        (Key::F15, InputAction::UseSelected),
+    ] {
+        bindings.add(
+            ac_ui::input::Binding::new(ac_ui::input::KeyChord::key(key, Modifiers::NONE), action)
+                .activation(ActivationType::Click),
+        );
+    }
+    let mut r = Rig::new();
+    r.input = GameplayInput::new(bindings);
+    r.tap(Key::F13);
+    r.tap(Key::F14);
+    r.tap(Key::F15);
+    assert_eq!(
+        r.take(),
+        [
+            GameplayOutput::Interface(InputAction::SelectionExamine),
+            GameplayOutput::Interface(InputAction::ToggleInventoryPanel),
+            GameplayOutput::Item(I::UseSelected),
+        ]
+    );
+}
+
 #[test]
 fn the_camera_settings_drive_the_held_keys_and_the_mouse() {
     // OpenAC `RuntimeSettingsTargets.ApplyCameraTurning`: the adjustment

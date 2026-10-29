@@ -889,12 +889,6 @@ impl WindowUi {
             }
         }
         self.follow_side_by_side_vitals();
-        // The examination window follows the selection while it shows.
-        let selection = self.player_view.and_then(|v| v.selected);
-        self.host
-            .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
-                c.follow_selection(ui, selection);
-            });
         let selected = self.player_view.and_then(|v| v.selected).map(|guid| {
             let name = scene
                 .object_by_guid(guid)
@@ -915,6 +909,17 @@ impl WindowUi {
         }
         for event in scene.take_interface() {
             self.facts.apply(event);
+        }
+        // The examination window follows every selection change while it
+        // shows, in order, not only the selection this frame ends on.
+        let changes = std::mem::take(&mut self.facts.selection_changes);
+        if !changes.is_empty() {
+            self.host
+                .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
+                    for &selected in &changes {
+                        c.follow_selection(ui, selected);
+                    }
+                });
         }
         let fellowship = self.facts.social.as_ref().map(|s| &s.fellowship);
         let radar = radar_scene(scene, self.player_view.as_ref(), fellowship);

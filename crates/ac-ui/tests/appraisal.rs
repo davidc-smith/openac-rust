@@ -663,7 +663,6 @@ fn the_examination_follows_the_selection_while_it_shows() {
     assert!(follow(&mut w, Some(0x5000_0010)).is_empty());
     assert!(follow(&mut w, Some(0x5000_0011)).is_empty(), "hidden");
     show_examination(&mut w, true);
-    assert!(follow(&mut w, Some(0x5000_0011)).is_empty(), "no change");
     assert_dbg_eq!(
         follow(&mut w, Some(0x5000_0012)),
         [PanelOutput::Session(SessionCommand::Item(
@@ -673,6 +672,37 @@ fn the_examination_follows_the_selection_while_it_shows() {
     assert_dbg_eq!(follow(&mut w, None), [PanelOutput::CloseExamination]);
     show_examination(&mut w, false);
     assert!(follow(&mut w, Some(0x5000_0013)).is_empty(), "hidden");
+}
+
+// OpenAC `AppraisalUiController.HandleSelectionChanged` runs on every
+// change, so changes the window hears together are each followed: away
+// and back examines both, in order; cleared and back closes the window,
+// and the change after the close finds it hidden.
+#[test]
+fn every_selection_change_is_followed_in_order() {
+    let appraise = |guid| {
+        PanelOutput::Session(SessionCommand::Item(ItemCommand::Appraise(
+            ObjectRef::Guid(guid),
+        )))
+    };
+    let mut w = window();
+    show_examination(&mut w, true);
+    let changes = |w: &mut Window, changes: &[Option<u32>]| {
+        w.with(|c, ui| {
+            for &selected in changes {
+                c.follow_selection(ui, selected);
+            }
+        });
+        panel_outputs(&mut w.host)
+    };
+    assert_dbg_eq!(
+        changes(&mut w, &[Some(0x5000_0012), Some(0x5000_0011)]),
+        [appraise(0x5000_0012), appraise(0x5000_0011)]
+    );
+    assert_dbg_eq!(
+        changes(&mut w, &[None, Some(0x5000_0011)]),
+        [PanelOutput::CloseExamination]
+    );
 }
 
 // OpenAC `AppraisalUiController.HandleInputAction`: the examine key closes
