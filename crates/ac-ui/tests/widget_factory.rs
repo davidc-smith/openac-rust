@@ -623,7 +623,7 @@ fn a_scrollbar_class_makes_a_scrollbar() {
 }
 
 #[test]
-fn a_horizontal_bar_uses_its_direct_track_and_thumb_children() {
+fn a_horizontal_bar_uses_its_direct_fill_and_thumb_children() {
     const TRACK: u32 = 0x0600_4CF6;
     const THUMB: u32 = 0x0600_5DC3;
     let mut info = el(11, 90.0, 14.0);
@@ -636,7 +636,7 @@ fn a_horizontal_bar_uses_its_direct_track_and_thumb_children() {
     let (ui, id) = create(&info);
     let bar = ui.widget::<Scrollbar>(id).unwrap();
     assert!(bar.horizontal);
-    assert_eq!(bar.track_sprite, TRACK);
+    assert_eq!((bar.track_sprite, bar.thumb_fill_sprite), (0, TRACK));
     assert_eq!(bar.thumb_sprite, THUMB);
     assert_eq!((bar.up_sprite, bar.down_sprite), (0, 0));
 }
@@ -836,7 +836,7 @@ fn a_horizontal_bar_keeps_its_nested_power_meter_fill() {
     let (ui, id) = create(&info);
     let bar = ui.widget::<Scrollbar>(id).unwrap();
     assert!(bar.horizontal);
-    assert_eq!(bar.track_sprite, 0x0600_1919);
+    assert_eq!(bar.thumb_fill_sprite, 0x0600_1919);
     assert_eq!(bar.thumb_sprite, 0x0600_1923);
     assert_eq!(bar.scalar_fill_sprite, 0x0600_1200);
     assert_eq!(bar.scalar_range_sprite, 0x0600_715E);
@@ -1380,7 +1380,7 @@ mod real_dats {
         let bar = layout.find(0x1000_01A4).unwrap();
         let bar = ui.widget::<Scrollbar>(bar).unwrap();
         assert!(bar.horizontal);
-        assert_eq!(bar.track_sprite, 0x0600_4CF6);
+        assert_eq!(bar.thumb_fill_sprite, 0x0600_4CF6);
         assert_eq!(bar.thumb_sprite, 0x0600_5DC3);
     }
 
@@ -1554,12 +1554,12 @@ mod dormant_real_dats {
     }
 }
 
-/// A character-creation attribute slider draws another track while its
-/// attribute is locked: the bar's state picks the track art. OpenAC
+/// A character-creation attribute slider fills in another colour while its
+/// attribute is locked: the bar's state picks the fill art. OpenAC
 /// `DatWidgetFactoryScrollbarTests.
-/// HorizontalBar_TrackFollowsTheBarsStateWhenTheTrackAuthorsArtPerState`.
+/// HorizontalBar_FillFollowsTheBarsStateWhenTheFillAuthorsArtPerState`.
 #[test]
-fn a_scalar_bars_track_follows_the_bar_state_when_it_authors_art_per_state() {
+fn a_scalar_bars_fill_follows_the_bar_state_when_it_authors_art_per_state() {
     const UNLOCKED: u32 = 0x1000_0018;
     const LOCKED: u32 = 0x1000_0019;
     let mut bar = el(11, 291.0, 39.0);
@@ -1588,7 +1588,7 @@ fn a_scalar_bars_track_follows_the_bar_state_when_it_authors_art_per_state() {
     bar.children = vec![thumb, track];
 
     let (mut ui, id) = create(&bar);
-    let sprite = |ui: &UiRoot| ui.widget::<Scrollbar>(id).unwrap().track_sprite;
+    let sprite = |ui: &UiRoot| ui.widget::<Scrollbar>(id).unwrap().thumb_fill_sprite;
     assert_eq!(sprite(&ui), 0x0600_4D39);
     assert!(ui.set_retail_state(id, LOCKED));
     assert_eq!(sprite(&ui), 0x0600_4D3A);
@@ -1596,4 +1596,115 @@ fn a_scalar_bars_track_follows_the_bar_state_when_it_authors_art_per_state() {
     assert_eq!(sprite(&ui), 0x0600_4D39);
     assert!(!ui.set_retail_state(id, 0x1000_0099));
     assert_eq!(sprite(&ui), 0x0600_4D39);
+}
+
+#[derive(Debug)]
+struct FillSizes(Vec<(u32, (u32, u32))>);
+
+impl ac_ui::draw::SpriteSizes for FillSizes {
+    fn sprite_size(&self, file: u32) -> Option<(u32, u32)> {
+        self.0.iter().find(|(f, _)| *f == file).map(|(_, s)| *s)
+    }
+}
+
+/// The left edge and width of every quad `ui` draws with image `file`.
+fn drawn_spans(ui: &mut UiRoot, sizes: &FillSizes, file: u32) -> Vec<(f32, f32)> {
+    let list = ui.draw((1600.0, 1200.0), sizes);
+    list.commands()
+        .filter_map(|c| match c {
+            ac_ui::draw::DrawCmd::Sprite { texture, quad, .. }
+                if *texture == ac_ui::draw::TextureRef::Surface(file) =>
+            {
+                Some((quad.x, quad.w))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The character-creation attribute slider (layout 0x2100004C, element
+/// 0x100002EA): its child 4 is not a track but a fill from the bar's start
+/// to the jewel's centre, so locking colours the bar up to the jewel and
+/// no further. 291 wide, jewel 37: at half the fill is 127 + 18 pixels.
+/// Research note "scrollbar fill up to the thumb"; OpenAC
+/// `DatWidgetFactoryScrollbarTests.HorizontalBar_Child4FillsOnlyUpToTheThumbsCentre`.
+#[test]
+fn a_scalar_bars_child_4_fills_only_up_to_the_thumbs_centre_in_either_state() {
+    const UNLOCKED: u32 = 0x1000_0018;
+    const LOCKED: u32 = 0x1000_0019;
+    const TAN: u32 = 0x0600_4D39;
+    const ORANGE: u32 = 0x0600_4D3A;
+    const JEWEL: u32 = 0x0600_4D34;
+    let mut bar = el(11, 291.0, 39.0);
+    bar.default_state_id = UNLOCKED;
+    for (id, name) in [(UNLOCKED, "Unlocked"), (LOCKED, "Locked")] {
+        let mut s = StateInfo::named(id, name);
+        s.pass_to_children = true;
+        bar.set_state(id, s);
+    }
+    let mut thumb = el(1, 37.0, 39.0);
+    thumb.id = 1;
+    let mut thumb_state = StateInfo::named(DIRECT_STATE_ID, "");
+    thumb_state.image = Some(media(JEWEL));
+    thumb.set_state(DIRECT_STATE_ID, thumb_state);
+    let mut fill = el(3, 100.0, 39.0);
+    fill.id = 4;
+    fill.default_state_id = UNLOCKED;
+    for (id, name, file) in [(UNLOCKED, "Unlocked", TAN), (LOCKED, "Locked", ORANGE)] {
+        let mut s = StateInfo::named(id, name);
+        s.image = Some(media(file));
+        fill.set_state(id, s);
+    }
+    bar.children = vec![thumb, fill];
+    let sizes = FillSizes(vec![(TAN, (7, 39)), (ORANGE, (7, 39)), (JEWEL, (37, 39))]);
+
+    let (mut ui, id) = create(&bar);
+    for (position, width) in [(0.0, 18.0), (0.5, 145.0), (1.0, 272.0)] {
+        ui.widget_mut::<Scrollbar>(id)
+            .unwrap()
+            .set_scalar_position(position);
+        assert_eq!(drawn_spans(&mut ui, &sizes, TAN), [(0.0, width)]);
+    }
+    ui.widget_mut::<Scrollbar>(id)
+        .unwrap()
+        .set_scalar_position(0.5);
+    assert!(ui.set_retail_state(id, LOCKED));
+    assert_eq!(drawn_spans(&mut ui, &sizes, ORANGE), [(0.0, 145.0)]);
+    assert!(drawn_spans(&mut ui, &sizes, TAN).is_empty());
+    assert!(ui.set_retail_state(id, UNLOCKED));
+    assert_eq!(drawn_spans(&mut ui, &sizes, TAN), [(0.0, 145.0)]);
+}
+
+/// A bar with art of its own keeps it as the full-width track and still
+/// draws its child 4 up to the thumb's centre (the combat power bar,
+/// layout 0x21000007: 707 wide, thumb 12, child 4 authored 0 by 0). OpenAC
+/// `DatWidgetFactoryScrollbarTests.HorizontalBar_WithItsOwnTrack_StillFillsItsChild4ToTheThumb`.
+#[test]
+fn a_scalar_bar_with_its_own_track_still_fills_its_child_4_to_the_thumb() {
+    const TRACK: u32 = 0x0600_74CA;
+    const FILL: u32 = 0x0600_1919;
+    const THUMB: u32 = 0x0600_1923;
+    let mut bar = el(11, 707.0, 14.0);
+    let mut bar_state = StateInfo::named(DIRECT_STATE_ID, "");
+    bar_state.image = Some(media(TRACK));
+    bar.set_state(DIRECT_STATE_ID, bar_state);
+    let mut thumb = el(1, 12.0, 14.0);
+    thumb.id = 1;
+    let mut thumb_state = StateInfo::named(DIRECT_STATE_ID, "");
+    thumb_state.image = Some(media(THUMB));
+    thumb.set_state(DIRECT_STATE_ID, thumb_state);
+    let mut fill = el(3, 0.0, 0.0);
+    fill.id = 4;
+    let mut fill_state = StateInfo::named(DIRECT_STATE_ID, "");
+    fill_state.image = Some(media(FILL));
+    fill.set_state(DIRECT_STATE_ID, fill_state);
+    bar.children = vec![thumb, fill];
+    let sizes = FillSizes(vec![(TRACK, (60, 13)), (FILL, (60, 13)), (THUMB, (12, 14))]);
+
+    let (mut ui, id) = create(&bar);
+    ui.widget_mut::<Scrollbar>(id)
+        .unwrap()
+        .set_scalar_position(0.5);
+    assert_eq!(drawn_spans(&mut ui, &sizes, TRACK), [(0.0, 707.0)]);
+    assert_eq!(drawn_spans(&mut ui, &sizes, FILL), [(0.0, 353.0)]);
 }
