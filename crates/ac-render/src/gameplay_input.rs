@@ -862,18 +862,18 @@ impl Router {
             return;
         }
 
-        // From here a press, a double click and a click (a key pressed
-        // and let go alone) are routed alike (OpenAC
-        // `GameplayInputActionRouter.Route`).
+        // From here a press, a double click and a click are routed alike
+        // (OpenAC `GameplayInputActionRouter.Route`).
         //
-        // The chat entry keys carry the key that pressed them (OpenAC
-        // `RetailUiRuntime.HandleInputAction` hands the dispatcher's
-        // physical chord to `EnterChatMode` and `ToggleChatEntry`); a click
-        // fires once the key is up, so there is no key to wait out.
+        // The chat entry keys carry the key that pressed them, whatever
+        // the activation (OpenAC `RetailUiRuntime.HandleInputAction` hands
+        // the dispatcher's physical chord to `EnterChatMode` and
+        // `ToggleChatEntry`): a keyboard click fires as the key goes down,
+        // so the key is still held and must type nothing into the entry it
+        // focused. A mouse button is no key to wait out.
         if matches!(action, A::EnterChatMode | A::ToggleChatEntry) {
             let key = d
                 .current_physical_chord()
-                .filter(|_| activation == ActivationType::Press)
                 .and_then(|chord| match chord.key {
                     ac_ui::input::InputKey::Key(key) if chord.device == 0 => Some(key),
                     _ => None,

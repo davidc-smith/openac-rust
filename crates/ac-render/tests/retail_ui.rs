@@ -2262,6 +2262,51 @@ fn the_chat_entry_keys_focus_and_release_the_chat_entry() {
     assert_eq!(ui.host().root.keyboard_focus(), Some(field));
 }
 
+/// Enter bound as a click to Enter Chat Mode (a keyboard click fires as
+/// the key goes down): the gameplay input hands the chat window the key,
+/// the entry takes the focus, and the same keystroke, still down, does not
+/// reach the entry (it would send the empty line and give the focus up).
+#[test]
+#[ignore = "needs the retail dat files"]
+fn enter_bound_as_a_click_focuses_the_chat_entry_without_reaching_it() {
+    use ac_render::gameplay_input::{DeviceState, GameplayInput, GameplayOutput};
+    use ac_ui::input::{ActivationType, Binding, InputAction, KeyBindings, KeyChord};
+    let mut bindings = KeyBindings::retail_defaults();
+    let enter = KeyChord::key(Key::Enter, Modifiers::NONE);
+    let press = bindings.find(enter, ActivationType::Press).unwrap();
+    assert!(bindings.remove(&press));
+    bindings.add(Binding::new(enter, InputAction::EnterChatMode).activation(ActivationType::Click));
+    let mut input = GameplayInput::new(bindings);
+    let mut out = Vec::new();
+    input.key(
+        Key::Enter,
+        true,
+        &DeviceState::default(),
+        None,
+        1.0,
+        &mut out,
+    );
+    let [GameplayOutput::ChatEntry(action, key)] = out[..] else {
+        panic!("{out:?}");
+    };
+    assert_eq!(key, Some(Key::Enter));
+
+    let mut ui = WindowUi::build(dats(), (1280, 720)).expect("the UI builds");
+    let mut scene = scene();
+    ui.feed(&mut scene);
+    ui.drain();
+    let field = {
+        let root = &ui.host().root;
+        let window = root.window(CHAT_WINDOW).unwrap().frame;
+        root.find_descendant(window, chat::INPUT_ID).unwrap()
+    };
+    assert!(ui.chat_entry_key(action, key));
+    assert_eq!(ui.host().root.keyboard_focus(), Some(field));
+    ui.host_mut().root.on_key_down(Key::Enter, Modifiers::NONE);
+    assert_eq!(ui.host().root.keyboard_focus(), Some(field));
+    assert!(ui.drain().is_empty(), "the keystroke sent nothing");
+}
+
 /// OpenAC `InteractionRetainedUiComposition`: the interface's system
 /// messages (`DisplaySystemMessage`) are the session's client-local text
 /// (`Communication.AddText(text, ClientLocal)`), so they outlive the window
