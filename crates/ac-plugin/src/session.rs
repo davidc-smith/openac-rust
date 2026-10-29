@@ -568,7 +568,7 @@ impl PluginSession {
             api_version: API_CURRENT.to_string(),
             client_version: self.options.host_version.to_string(),
         }
-        .to_bytes();
+        .to_bytes_at(manifest.api_version);
         match self.invoke(index, api, |instance, handler| {
             instance.enable(&start, handler)
         }) {

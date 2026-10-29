@@ -161,6 +161,8 @@ fn a_hooks_item_types_reach_both_records_and_older_plugins_get_the_records_they_
         };
         let older = ask(Import::ItemsOwned, v1_1, &[]);
         assert_ne!(older, ask(Import::ItemsOwned, API_CURRENT, &[]));
+        assert_eq!(older, items.to_bytes_at(v1_1));
+        assert_eq!(ask(Import::ItemsOwned, API_CURRENT, &[]), items.to_bytes());
         // Each record is one `u32` shorter, and reads as API 1.1's.
         assert_eq!(older.len() + 2 * 4, items.to_bytes().len());
         assert!(Vec::<InventoryItem>::from_bytes(&older).is_err());
