@@ -528,3 +528,19 @@ fn a_stall_of_the_whole_session_does_not_let_go_of_what_was_drawn_before_it() {
     }
     assert_eq!(f.count(), 0);
 }
+
+// AReasonIsReportedOncePerFileAndReason.
+#[test]
+fn a_reason_is_reported_once_per_file_and_reason() {
+    let mut f = Fixture::new();
+    f.ui.report_file("acme.hello", "icons/missing.png", "does not exist");
+    f.ui.report_file("acme.hello", r"icons\missing.png", "does not exist");
+    f.ui.report_file("acme.hello", "icons/missing.png", "could not be read");
+    let reports = f.reports();
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(
+        reports[0].contains("acme.hello/icons/missing.png"),
+        "{reports:?}"
+    );
+    assert!(reports[0].contains("does not exist"), "{reports:?}");
+}

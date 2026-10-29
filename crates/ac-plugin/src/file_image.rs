@@ -8,10 +8,12 @@
 //! here panics or throws: every refusal is a reason, and the caller draws
 //! nothing in its place.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use ac_plugin_ui::DecodedImage;
+use ac_plugin_ui::{DecodedImage, FileImage, FileImageLoader, FileImageRead, FileImageResult};
 
 /// The largest image file, bytes (1 MiB).
 pub const MAXIMUM_BYTES: usize = 1024 * 1024;
@@ -301,3 +303,121 @@ pub fn load_image(full_path: &Path) -> Result<DecodedImage, String> {
 
 #[cfg(test)]
 mod tests;
+
+/// Which version of the file at `full_path` is on disk now: its length and
+/// the time it was last written, the same for the same content.
+///
+/// # Errors
+/// The file cannot be looked at.
+pub fn version_of(full_path: &Path) -> std::io::Result<String> {
+    let metadata = std::fs::metadata(full_path)?;
+    let written = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    Ok(format!("{}:{written}", metadata.len()))
+}
+
+/// One read of an image file, as the loader runs it.
+pub type FileImageJob = Box<dyn FnOnce() -> FileImageResult + Send>;
+
+/// Runs a read and hands back where its result will land.
+pub type FileImageRunner = Box<dyn Fn(FileImageJob) -> FileImageRead + Send + Sync>;
+
+/// Reads the image files plugin markup names away from the session's
+/// thread: resolving the path, reading the file, decoding it and building
+/// its smaller levels all happen on a worker, so a large image does not
+/// hold up the session that first draws it. Windows that ask for the same
+/// file while it is being read share the one read. Nothing is kept once
+/// read: the result is held, counted and given back through the plugin's
+/// own image table.
+pub struct PluginFileImageLoader {
+    run: FileImageRunner,
+    reading: Mutex<HashMap<(PathBuf, String), FileImageRead>>,
+}
+
+impl std::fmt::Debug for PluginFileImageLoader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginFileImageLoader")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for PluginFileImageLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PluginFileImageLoader {
+    /// A loader that reads each file on a worker thread of its own.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::with_runner(Box::new(|job| {
+            let read = FileImageRead::pending();
+            let done = read.clone();
+            let started = std::thread::Builder::new()
+                .name("plugin file image".to_owned())
+                .spawn(move || done.finish(job()));
+            if let Err(e) = started {
+                read.finish(Err(format!("could not be read: {e}")));
+            }
+            read
+        }))
+    }
+
+    /// A loader whose reads `run` runs (a test runs them where it likes).
+    #[must_use]
+    pub fn with_runner(run: FileImageRunner) -> Self {
+        Self {
+            run,
+            reading: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn read(directory: &Path, path: &str) -> FileImageResult {
+        let full_path = resolve_image_path(directory, path)?;
+        // Read before the content, so a file written while it is read is at
+        // worst read again by the next window, never kept as current.
+        let version = version_of(&full_path).map_err(|e| format!("could not be read: {e}"))?;
+        let image = load_image(&full_path)?;
+        Ok(Arc::new(FileImage {
+            path: path.to_owned(),
+            version,
+            levels: ac_plugin_ui::mips::build(image.rgba, image.width, image.height),
+            full_path: Some(full_path),
+        }))
+    }
+}
+
+impl FileImageLoader for PluginFileImageLoader {
+    fn load(&self, directory: &Path, path: &str) -> FileImageRead {
+        // One spelling per file, so its read, and the image it makes, are
+        // shared by every spelling.
+        let path = normalize(path);
+        let key = (directory.to_path_buf(), path.clone());
+        let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        // Only a read still under way is shared: one that has finished may
+        // be of a version of the file that has since changed.
+        reading.retain(|_, read| !read.is_finished());
+        if let Some(read) = reading.get(&key) {
+            return read.clone();
+        }
+        let directory = directory.to_path_buf();
+        let read = (self.run)(Box::new(move || Self::read(&directory, &path)));
+        if !read.is_finished() {
+            reading.insert(key, read.clone());
+        }
+        read
+    }
+
+    fn is_current(&self, image: &FileImage) -> bool {
+        image
+            .full_path
+            .as_deref()
+            .is_none_or(|full| version_of(full).is_ok_and(|v| v == image.version))
+    }
+}
+
+#[cfg(test)]
+mod loader_tests;

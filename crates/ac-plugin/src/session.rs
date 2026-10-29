@@ -552,6 +552,8 @@ impl PluginSession {
         // mounts); a reload reads it again.
         if let Some(ui) = api.plugin_ui() {
             ui.set_file_icon(&manifest.id, crate::icon::load_icon(&directory));
+            // Where the file icons of the windows it registers are read.
+            ui.set_plugin_folder(&manifest.id, Some(directory.clone()));
         }
         self.plugins.insert(
             index,
