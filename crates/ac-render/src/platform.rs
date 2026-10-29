@@ -141,6 +141,29 @@ pub(crate) fn apply<T>(
     }
 }
 
+/// The windowing system a window actually runs on (an automatic choice
+/// is only known once the window exists).
+pub(crate) fn window_protocol(window: &winit::window::Window) -> DisplayProtocol {
+    use winit::raw_window_handle::HasWindowHandle;
+    window
+        .window_handle()
+        .map_or(DisplayProtocol::Automatic, |h| {
+            protocol_of_handle(&h.as_raw())
+        })
+}
+
+/// The windowing system of a native window handle.
+fn protocol_of_handle(handle: &winit::raw_window_handle::RawWindowHandle) -> DisplayProtocol {
+    use winit::raw_window_handle::RawWindowHandle;
+    match handle {
+        RawWindowHandle::Wayland(_) => DisplayProtocol::Wayland,
+        RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_) => DisplayProtocol::X11,
+        RawWindowHandle::Win32(_) => DisplayProtocol::Windows,
+        RawWindowHandle::AppKit(_) => DisplayProtocol::Cocoa,
+        _ => DisplayProtocol::Automatic,
+    }
+}
+
 /// The operating system's localized name of a key by scan code (the low
 /// seven bits, and whether it is an extended key), for the key
 /// configuration screen when the dat names none (OpenAC
@@ -298,6 +321,29 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn a_window_handle_names_its_windowing_system() {
+        use std::ptr::NonNull;
+        use winit::raw_window_handle::{
+            RawWindowHandle, WaylandWindowHandle, XcbWindowHandle, XlibWindowHandle,
+        };
+        let surface = NonNull::<std::ffi::c_void>::dangling();
+        assert_eq!(
+            protocol_of_handle(&RawWindowHandle::Wayland(WaylandWindowHandle::new(surface))),
+            DisplayProtocol::Wayland
+        );
+        assert_eq!(
+            protocol_of_handle(&RawWindowHandle::Xlib(XlibWindowHandle::new(7))),
+            DisplayProtocol::X11
+        );
+        assert_eq!(
+            protocol_of_handle(&RawWindowHandle::Xcb(XcbWindowHandle::new(
+                std::num::NonZeroU32::new(7).unwrap()
+            ))),
+            DisplayProtocol::X11
+        );
     }
 
     /// A monitor Windows no longer knows (here a handle that never named

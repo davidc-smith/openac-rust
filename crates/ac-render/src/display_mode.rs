@@ -2,10 +2,51 @@
 //! switch to the chosen resolution (when the monitor offers it), leaving
 //! fullscreen restores a window of the chosen size, and a windowed pick
 //! resizes the window (restoring it first when maximized).
+//!
+//! On Wayland a client cannot switch the monitor's mode: fullscreen there
+//! asks the compositor to show the window over the whole monitor, which
+//! stays at its own mode, and the window takes the monitor's size.
 
 use winit::window::{Fullscreen, Window};
 
 use ac_host::settings::DisplaySettings;
+
+use crate::platform::DisplayProtocol;
+
+/// How the windowing system makes a window fullscreen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullscreenKind {
+    /// The monitor switches to the chosen mode and the window covers it
+    /// (Windows, X11). The switch has happened, or not, when the request
+    /// returns.
+    ModeSwitch,
+    /// The compositor shows the window over the whole monitor at the
+    /// monitor's own mode (Wayland). The compositor answers the request
+    /// later (the window is resized when it does), so a request counts as
+    /// made once it is sent.
+    Compositor,
+}
+
+/// The fullscreen a window on `protocol` gets.
+#[must_use]
+pub const fn fullscreen_kind(protocol: DisplayProtocol) -> FullscreenKind {
+    match protocol {
+        DisplayProtocol::Wayland => FullscreenKind::Compositor,
+        _ => FullscreenKind::ModeSwitch,
+    }
+}
+
+/// Whether a request to enter (`entering`) or leave fullscreen took, from
+/// whether the window reports itself fullscreen right after the request.
+/// A compositor answers later, so its window's report right after the
+/// request says nothing yet.
+#[must_use]
+pub const fn request_took(kind: FullscreenKind, entering: bool, reported_fullscreen: bool) -> bool {
+    match kind {
+        FullscreenKind::ModeSwitch => reported_fullscreen == entering,
+        FullscreenKind::Compositor => true,
+    }
+}
 
 /// The window's size and maximized state.
 pub trait WindowSizeSurface {
@@ -128,6 +169,12 @@ impl WindowSizeSurface for WinitDisplay<'_> {
     }
 }
 
+impl WinitDisplay<'_> {
+    fn kind(&self) -> FullscreenKind {
+        fullscreen_kind(crate::platform::window_protocol(self.0))
+    }
+}
+
 impl DisplayModeSwitcher for WinitDisplay<'_> {
     fn is_fullscreen(&self) -> bool {
         self.0.fullscreen().is_some()
@@ -139,11 +186,16 @@ impl DisplayModeSwitcher for WinitDisplay<'_> {
                 let s = mode.size();
                 Some((s.width, s.height))
             }
-            Fullscreen::Borderless(_) => None,
+            // The monitor keeps its own mode, and that is the window's size.
+            Fullscreen::Borderless(monitor) => {
+                let s = monitor.or_else(|| self.0.current_monitor())?.size();
+                Some((s.width, s.height))
+            }
         }
     }
 
     fn try_enter_fullscreen(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let kind = self.kind();
         let monitor = self
             .0
             .current_monitor()
@@ -158,8 +210,14 @@ impl DisplayModeSwitcher for WinitDisplay<'_> {
             })
             .max_by_key(winit::monitor::VideoModeHandle::refresh_rate_millihertz)
             .ok_or_else(|| format!("mode {width}x{height} is not in the monitor's mode list"))?;
-        self.0.set_fullscreen(Some(Fullscreen::Exclusive(mode)));
-        if self.0.fullscreen().is_none() {
+        // A compositor keeps the monitor at its own mode; the size is still
+        // checked against the monitor's list, as for a mode switch.
+        let request = match kind {
+            FullscreenKind::ModeSwitch => Fullscreen::Exclusive(mode),
+            FullscreenKind::Compositor => Fullscreen::Borderless(Some(monitor)),
+        };
+        self.0.set_fullscreen(Some(request));
+        if !request_took(kind, true, self.0.fullscreen().is_some()) {
             return Err("the mode switch did not take".into());
         }
         Ok(())
@@ -169,11 +227,15 @@ impl DisplayModeSwitcher for WinitDisplay<'_> {
         if self.0.fullscreen().is_none() {
             return Ok(());
         }
+        let kind = self.kind();
         self.0.set_fullscreen(None);
+        // Under a compositor the window stays fullscreen until it answers,
+        // so this size request is not honoured there: the window goes back
+        // to its size from before fullscreen.
         let _ = self
             .0
             .request_inner_size(winit::dpi::PhysicalSize::new(width, height));
-        if self.0.fullscreen().is_some() {
+        if !request_took(kind, false, self.0.fullscreen().is_some()) {
             return Err("the window is still fullscreen".into());
         }
         Ok(())
@@ -351,6 +413,44 @@ mod tests {
         apply(&display(false, "1600x900"), &mut s, &mut w, |_| true);
         assert_eq!(w.calls, ["leave:1600x900"]);
         assert_eq!(s.writes, 0, "leaving sets the size itself");
+    }
+
+    #[test]
+    fn wayland_fullscreen_is_the_compositors_and_the_rest_switch_modes() {
+        assert_eq!(
+            fullscreen_kind(DisplayProtocol::Wayland),
+            FullscreenKind::Compositor
+        );
+        for protocol in [
+            DisplayProtocol::Windows,
+            DisplayProtocol::X11,
+            DisplayProtocol::Cocoa,
+            DisplayProtocol::Automatic,
+        ] {
+            assert_eq!(
+                fullscreen_kind(protocol),
+                FullscreenKind::ModeSwitch,
+                "{protocol:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mode_switch_took_only_when_the_window_reports_it() {
+        let k = FullscreenKind::ModeSwitch;
+        assert!(request_took(k, true, true));
+        assert!(!request_took(k, true, false));
+        assert!(request_took(k, false, false));
+        assert!(!request_took(k, false, true));
+    }
+
+    /// The window reports its old state until the compositor answers, so
+    /// an unanswered request is not a failure.
+    #[test]
+    fn a_compositor_request_took_before_the_compositor_answers() {
+        let k = FullscreenKind::Compositor;
+        assert!(request_took(k, true, false));
+        assert!(request_took(k, false, true));
     }
 
     #[test]
