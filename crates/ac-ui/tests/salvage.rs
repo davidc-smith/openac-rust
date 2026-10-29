@@ -627,3 +627,31 @@ fn a_frame_keeps_the_cells_and_refreshes_what_they_draw() {
     assert_eq!(h.cell(0), before);
     assert_ne!(h.slot(0).icon, icon_before);
 }
+
+/// More staged items than the row shows at once (10 cells fit): every
+/// staged item keeps its cell, and the next update leaves the cells alone.
+#[test]
+fn more_staged_items_than_fit_keep_a_cell_each_across_updates() {
+    let mut h = harness();
+    let items: Vec<u32> = (1..=14).collect();
+    for &id in &items {
+        h.item(id, 60, 0, PLAYER);
+        assert!(h.add(id));
+    }
+    let list = h.ids[&salvage::ITEM_LIST_ID];
+    let cells = |h: &Harness| {
+        h.host
+            .root
+            .widget::<ItemList>(list)
+            .unwrap()
+            .cells()
+            .to_vec()
+    };
+    let first = cells(&h);
+    assert_eq!(first.len(), items.len());
+    for (i, &id) in items.iter().enumerate() {
+        assert_eq!(h.slot(i).object_id, id);
+    }
+    h.update();
+    assert_eq!(cells(&h), first);
+}
