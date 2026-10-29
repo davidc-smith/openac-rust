@@ -587,3 +587,29 @@ mod real_dats {
         assert!(c.take_errors().is_empty());
     }
 }
+
+/// More loose items than the row shows at once (24 cells fit): every item
+/// keeps its cell, and the next update leaves the cells alone, so a press
+/// on one is not lost to a rebuild.
+#[test]
+fn a_container_with_more_items_than_fit_keeps_a_cell_per_item_across_updates() {
+    let mut s = strip();
+    let items: Vec<u32> = (0..30).map(|i| ITEM + i).collect();
+    s.open(CHEST, &items);
+    let list = s.ids[&CONTENTS];
+    let cells = |s: &Strip| {
+        s.host
+            .root
+            .widget::<ItemList>(list)
+            .unwrap()
+            .cells()
+            .to_vec()
+    };
+    let first = cells(&s);
+    assert_eq!(first.len(), items.len());
+    for (i, &g) in items.iter().enumerate() {
+        assert_eq!(s.slot(CONTENTS, i).object_id, g);
+    }
+    s.update();
+    assert_eq!(cells(&s), first);
+}
