@@ -786,11 +786,14 @@ impl Movement {
         }
     }
 
-    /// Stop everything at once (the Escape key while moving): autorun, the
-    /// held keys, the scripted moves and the body's own motion.
+    /// Stop everything at once (the Escape key while moving): autorun, a
+    /// plugin's held keys, the scripted moves and the body's own motion.
+    /// The keys the player holds stay held, as for the stop key: a forward
+    /// key still down moves again only once pressed again (the controller
+    /// acts on key changes).
     pub fn stop_completely(&mut self, world: &World) {
         self.auto_run = false;
-        self.keys = MovementKeys::default();
+        self.intent = None;
         self.input.scripted_mut().stop();
         self.with_controller(world, |c, env| c.stop_completely(env));
     }

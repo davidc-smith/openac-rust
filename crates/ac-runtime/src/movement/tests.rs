@@ -588,6 +588,40 @@ fn escape_ends_a_charged_jump_and_stops_a_moving_body() {
     assert!((end - mid).truncate().length() < 0.05, "stopped");
 }
 
+/// The Escape key keeps the keys the player holds (OpenAC
+/// `RuntimeLocalPlayerMovementState.Execute(StopCompletely)` ends autorun
+/// and a plugin's held keys only; its window reads the keyboard every
+/// frame): a forward key still down after Escape does not start the run
+/// again when another key changes, and moves again only once pressed again.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn escape_keeps_the_held_keys_held() {
+    let mut rig = Rig::entered();
+    let forward = MovementKeys {
+        forward: true,
+        ..MovementKeys::default()
+    };
+    rig.command(MovementCommand::Keys(forward));
+    rig.frames(30);
+    assert!(!rig.movement.is_standing_still());
+    rig.movement.stop_completely(&rig.world);
+    rig.frames(30);
+    // The window sends keys only when they change: the jump key goes down
+    // with the forward key still held.
+    rig.command(MovementCommand::Keys(MovementKeys {
+        jump: true,
+        ..forward
+    }));
+    rig.frames(30);
+    let (mid, _, _) = rig.body();
+    rig.frames(30);
+    let (end, _, _) = rig.body();
+    assert!(
+        (end - mid).truncate().length() < 0.05,
+        "the held forward key started the run again"
+    );
+}
+
 /// The stop key while the forward key is held (OpenAC
 /// `PlayerRunSidestepInstalledDatTests.TheStopKeyStopsARunWhileTheForwardKeyIsStillHeld`):
 /// the forward axis goes back to ready and stays there while the key is
