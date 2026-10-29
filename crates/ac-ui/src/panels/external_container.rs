@@ -13,7 +13,7 @@
 use ac_core::items::placement::{
     evaluate_container_placement, item_list_drop_placement, placement_rejection_text,
 };
-use ac_core::items::{ClientObject, PlacementRejection};
+use ac_core::items::{ClientObject, PlacementRejection, PublicWeenieFlags};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, PendingPlacement, REQUEST_BUSY};
 use ac_runtime::session::SessionCommand;
 
@@ -138,6 +138,11 @@ pub struct ExternalContainerController {
     projection: Option<PendingPlacement>,
     /// The placement last seen (its token; 0 for none).
     seen_placement: u64,
+    /// The containers whose items the strips show now, so an update keeps
+    /// the shown items of a full strip instead of letting an arrival push
+    /// one out.
+    packs_shown_for: u32,
+    contents_shown_for: u32,
     queue: Vec<(ElementId, ElementMessage)>,
     /// The lists were built for the container open now (false after they
     /// were emptied: the next fill builds all three).
@@ -174,6 +179,24 @@ fn configure_list(ui: &mut UiRoot, list: ElementId, cell: f32, horizontal: bool,
     });
 }
 
+/// A container's strip has one cell per unit of its capacity: the pack
+/// strip from its pack capacity, the item strip from its item capacity, so
+/// a house hook (item capacity 1) shows one cell. A container that is not
+/// openable (and is not the player) has capacity 0 and shows no cells. A
+/// negative capacity means no limit: the strip fills its width (`None`).
+fn slot_count(view: &ItemsView<'_>, container: u32, packs: bool) -> Option<usize> {
+    let c = view.get(container)?;
+    if !c.flags().contains(PublicWeenieFlags::OPENABLE) && container != view.player {
+        return Some(0);
+    }
+    let capacity = if packs {
+        c.containers_capacity
+    } else {
+        c.items_capacity
+    };
+    usize::try_from(capacity).ok()
+}
+
 fn cells(ui: &UiRoot, list: ElementId) -> Vec<ElementId> {
     ui.widget::<ItemList>(list)
         .map(|l| l.cells().to_vec())
@@ -184,7 +207,40 @@ fn slot_object(ui: &UiRoot, cell: ElementId) -> u32 {
     ui.widget::<ItemSlot>(cell).map_or(0, |s| s.object_id)
 }
 
-/// The list's cells show `guids` in order, empty cells after them.
+/// The guids a strip with `slots` cells shows, in their order. When there
+/// are more than its cells, an item it shows already (`current`, the strip
+/// as it stands for the same container) keeps its cell, so an item arriving
+/// in a full strip is not shown; the free cells go to the first of the
+/// others.
+fn shown(ui: &UiRoot, guids: &[u32], slots: Option<usize>, current: Option<ElementId>) -> Vec<u32> {
+    let Some(count) = slots.filter(|&c| guids.len() > c) else {
+        return guids.to_vec();
+    };
+    let mut keep: Vec<u32> = Vec::with_capacity(count);
+    if let Some(list) = current {
+        for cell in cells(ui, list) {
+            if keep.len() >= count {
+                break;
+            }
+            let id = slot_object(ui, cell);
+            if id != 0 && guids.contains(&id) && !keep.contains(&id) {
+                keep.push(id);
+            }
+        }
+    }
+    for &guid in guids {
+        if keep.len() >= count {
+            break;
+        }
+        if !keep.contains(&guid) {
+            keep.push(guid);
+        }
+    }
+    guids.iter().copied().filter(|g| keep.contains(g)).collect()
+}
+
+/// The list's cells show `guids` in order, empty cells after them (a list
+/// pads itself past its items, to its width or to its fixed cell count).
 fn matches(ui: &UiRoot, list: ElementId, guids: &[u32]) -> bool {
     let cells = cells(ui, list);
     if cells.len() < guids.len() {
@@ -247,6 +303,8 @@ impl ExternalContainerController {
             pending: Vec::new(),
             projection: None,
             seen_placement: 0,
+            packs_shown_for: 0,
+            contents_shown_for: 0,
             queue: Vec::new(),
             built: false,
         })
@@ -299,6 +357,8 @@ impl ExternalContainerController {
             } else {
                 self.open_container = facts.container;
                 self.built = false;
+                self.packs_shown_for = 0;
+                self.contents_shown_for = 0;
                 self.scroll_to_home(ui);
                 ui.show_window(&self.window);
             }
@@ -357,6 +417,8 @@ impl ExternalContainerController {
     }
 
     fn clear_lists(&mut self, ui: &mut UiRoot) {
+        self.packs_shown_for = 0;
+        self.contents_shown_for = 0;
         for list in [self.top, self.containers, self.contents] {
             ui.with::<ItemList, _>(list, |l, ui| l.flush(ui));
         }
@@ -592,27 +654,51 @@ impl ExternalContainerController {
                 loose.insert(at, pr.item_id);
                 pr.item_id
             });
+        let pack_cells = slot_count(view, root, true);
+        let item_cells = slot_count(view, self.open_container, false);
+        // A full strip keeps the items it shows already; each strip is
+        // compared below with what it shows, not with every item inside.
+        let packs = shown(
+            ui,
+            &packs,
+            pack_cells,
+            (self.packs_shown_for == root).then_some(self.containers),
+        );
+        let loose = shown(
+            ui,
+            &loose,
+            item_cells,
+            (self.contents_shown_for == self.open_container).then_some(self.contents),
+        );
+        self.packs_shown_for = root;
+        self.contents_shown_for = self.open_container;
+        let fixed =
+            |ui: &UiRoot, list| ui.widget::<ItemList>(list).and_then(|l| l.fixed_slot_count);
         // Flushing a list's cells cancels a press on one of them, so each
-        // list is rebuilt only when what it shows changed: opening a pack
-        // inside the container changes the contents row alone, and the
-        // pack cell pressed to open it stays to become a drag.
-        let rebuild: Vec<(ElementId, &[u32])> = [
-            (self.top, std::slice::from_ref(&root)),
-            (self.containers, packs.as_slice()),
-            (self.contents, loose.as_slice()),
+        // list is rebuilt only when what it shows changed or the cell count
+        // it gets now (from its container's capacity) differs from the one
+        // it has: opening a pack inside the container changes the contents
+        // row alone, and the pack cell pressed to open it stays to become a
+        // drag.
+        let rebuild: Vec<(ElementId, &[u32], Option<usize>)> = [
+            (self.top, std::slice::from_ref(&root), None),
+            (self.containers, packs.as_slice(), pack_cells),
+            (self.contents, loose.as_slice(), item_cells),
         ]
         .into_iter()
-        .filter(|&(list, guids)| {
+        .filter(|&(list, guids, count)| {
             !self.built
+                || fixed(ui, list) != count
                 || !matches(ui, list, guids)
                 || (list == self.top && cells(ui, list).len() != 1)
         })
         .collect();
         self.built = true;
-        for (list, guids) in rebuild {
+        for (list, guids, count) in rebuild {
             ui.with::<ItemList, _>(list, |l, ui| {
                 l.defer_layout();
                 l.flush(ui);
+                l.fixed_slot_count = count;
             });
             for (i, &guid) in guids.iter().enumerate() {
                 let mut s = ItemSlot {

@@ -14,7 +14,7 @@ mod common;
 
 use std::collections::HashMap;
 
-use ac_core::items::{ClientObject, ItemType, ItemUseable};
+use ac_core::items::{ClientObject, ItemType, ItemUseable, PublicWeenieFlags};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, PendingPlacement};
 use ac_runtime::session::SessionCommand;
 use ac_ui::ElementId;
@@ -49,6 +49,8 @@ struct Strip {
     facts: ExternalContainerFacts,
     can_make_request: bool,
     placement: Option<PendingPlacement>,
+    /// The public description bits the opened container carries.
+    container_flags: PublicWeenieFlags,
 }
 
 fn strip() -> Strip {
@@ -89,16 +91,30 @@ fn strip() -> Strip {
         facts: ExternalContainerFacts::default(),
         can_make_request: true,
         placement: None,
+        container_flags: PublicWeenieFlags::OPENABLE,
     }
 }
 
 impl Strip {
     /// The session opened `id` with these loose items in it.
     fn open(&mut self, id: u32, contents: &[u32]) {
+        self.open_with(id, 24, 0, contents);
+    }
+
+    /// The session opened `id`, with these capacities and loose items.
+    fn open_with(
+        &mut self,
+        id: u32,
+        items_capacity: i32,
+        containers_capacity: i32,
+        contents: &[u32],
+    ) {
         let mut chest = ClientObject::new(id);
         chest.item_type = ItemType::CONTAINER;
-        chest.items_capacity = 24;
+        chest.items_capacity = items_capacity;
+        chest.containers_capacity = containers_capacity;
         chest.useability = Some(ItemUseable::REMOTE);
+        chest.public_weenie_bitfield = Some(self.container_flags);
         self.objects.add(chest);
         for (i, &g) in contents.iter().enumerate() {
             if self.objects.t.get(g).is_none() {
@@ -155,6 +171,14 @@ impl Strip {
         let c = self.cell(list, i);
         self.host.root.fire_event(k, c, p.map(DragPayload::new));
         self.host.pump();
+    }
+
+    fn num_cells(&self, list: u32) -> usize {
+        self.host
+            .root
+            .widget::<ItemList>(self.ids[&list])
+            .unwrap()
+            .num_items()
     }
 
     fn outputs(&mut self) -> Vec<PanelOutput> {
@@ -237,6 +261,172 @@ fn an_open_container_shows_the_strip_and_fills_its_rows() {
     );
     assert!(bar.horizontal);
     assert_eq!(bar.track_sprite, 0x0600_4C7F);
+}
+
+/// OpenAC `Hook_showsOneItemCell_andNoPackCells`: a house hook holds one
+/// item, so it opens with one cell: the strips are sized from the
+/// container's capacities.
+#[test]
+fn a_hook_shows_one_item_cell_and_no_pack_cells() {
+    let mut s = strip();
+    s.open_with(CHEST, 1, 0, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, 0);
+    assert_eq!(s.num_cells(PACKS), 0);
+    s.open_with(CHEST, 1, 0, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+}
+
+/// OpenAC `ItemsPastTheCapacity_getNoCell_andCellsRefreshInPlace`: the
+/// strip never shows more items than the container holds: the items past
+/// its capacity get no cell, and the cells still refresh in place.
+#[test]
+fn items_past_the_capacity_get_no_cell_and_the_cells_refresh_in_place() {
+    let mut s = strip();
+    s.objects.add(plain_item(ITEM));
+    s.objects.add(plain_item(ITEM + 1));
+    s.open_with(CHEST, 1, 0, &[ITEM, ITEM + 1]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    let cell = s.cell(CONTENTS, 0);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+    s.objects.get_mut(ITEM).properties.ints.insert(1, 42);
+    s.update();
+    assert_eq!(s.cell(CONTENTS, 0), cell);
+}
+
+/// OpenAC `NotOpenableContainer_showsNoCells`: a container that is not
+/// openable has capacity 0 whatever it sends: no item cells and no pack
+/// cells, even with something inside.
+#[test]
+fn a_container_that_is_not_openable_shows_no_cells() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::NONE;
+    s.objects.add(plain_item(ITEM));
+    s.open_with(CHEST, 24, 7, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 0);
+    assert_eq!(s.num_cells(PACKS), 0);
+}
+
+/// OpenAC `ThePlayer_keepsItsCapacity_withoutTheOpenableFlag`: the player
+/// is the one container whose capacity holds without the openable flag.
+#[test]
+fn the_player_keeps_its_capacity_without_the_openable_flag() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::PLAYER;
+    s.open_with(PLAYER, 3, 2, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 3);
+    assert_eq!(s.num_cells(PACKS), 2);
+}
+
+/// OpenAC `Corpse_getsOneCellPerUnitOfCapacity_andTheItemStripScrolls`: a
+/// corpse sends its capacities like any container (the servers send 120
+/// items and 10 packs): the item strip gets 120 cells and scrolls along
+/// them, the pack strip 10.
+#[test]
+fn a_corpse_gets_one_cell_per_unit_of_capacity_and_the_item_strip_scrolls() {
+    let mut s = strip();
+    s.container_flags = PublicWeenieFlags::OPENABLE | PublicWeenieFlags::CORPSE;
+    s.objects.add(plain_item(ITEM));
+    s.open_with(CHEST, 120, 10, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 120);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+    assert_eq!(s.slot(CONTENTS, 119).object_id, 0);
+    assert_eq!(s.num_cells(PACKS), 10);
+
+    let list = s.ids[&CONTENTS];
+    let visible = |s: &Strip, i: usize| s.host.root.element(s.cell(CONTENTS, i)).unwrap().visible;
+    let scroll = |s: &Strip| s.host.root.widget::<ItemList>(list).unwrap().scroll;
+    assert_eq!(scroll(&s).content_height, 120 * 32);
+    assert_eq!(scroll(&s).view_height, 784);
+    assert!(visible(&s, 0));
+    assert!(!visible(&s, 119));
+
+    s.host.root.with::<ItemList, _>(list, |l, ui| {
+        l.scroll_item_into_view(ui, list, 119);
+        l.layout_cells(ui, list);
+    });
+    assert_eq!(scroll(&s).scroll_y(), 120 * 32 - 784);
+    assert!(visible(&s, 119));
+    let last = s.cell(CONTENTS, 119);
+    assert_eq!(s.host.root.element(last).unwrap().left, 784.0 - 32.0);
+    assert!(!visible(&s, 0));
+}
+
+/// OpenAC `ItemArrivingInAFullStrip_isNotShown_andTheShownItemStays`: an
+/// item arriving in a full strip gets no cell and does not push out an item
+/// already shown: from the server, or as a pending placement.
+#[test]
+fn an_item_arriving_in_a_full_strip_is_not_shown_and_the_shown_item_stays() {
+    let mut s = strip();
+    for g in [ITEM, ITEM + 1, ITEM + 2] {
+        s.objects.add(plain_item(g));
+    }
+    s.open_with(CHEST, 1, 0, &[ITEM]);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+
+    // The server puts another item in front.
+    let mut ev = Vec::new();
+    assert!(s.objects.t.apply_server_move(
+        ITEM + 1,
+        ac_core::items::ClientObjectPlacement::in_container(CHEST, 0),
+        None,
+        &mut ev,
+    ));
+    assert_eq!(s.objects.t.get_contents(CHEST).first(), Some(&(ITEM + 1)));
+    s.update();
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+
+    s.placement = Some(PendingPlacement {
+        token: 1,
+        item_id: ITEM + 2,
+        container_id: CHEST,
+        placement: 0,
+    });
+    s.update();
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+}
+
+/// OpenAC `OpeningAnotherEmptyPack_resizesTheItemStripToItsCapacity`:
+/// opening another pack that shows the same items (none) but holds a
+/// different number resizes the item strip to that pack's capacity.
+#[test]
+fn opening_another_empty_pack_resizes_the_item_strip_to_its_capacity() {
+    let mut s = strip();
+    let (big, small, unlimited) = (ITEM + 10, ITEM + 11, ITEM + 12);
+    for (id, capacity) in [(big, 24), (small, 10), (unlimited, -1)] {
+        let mut pack = ClientObject::new(id);
+        pack.item_type = ItemType::CONTAINER;
+        pack.items_capacity = capacity;
+        pack.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
+        s.objects.add(pack);
+    }
+    s.open_with(CHEST, 24, 3, &[big, small, unlimited]);
+    let press = |s: &mut Strip, i: usize| {
+        s.fire(PACKS, i, kind::MOUSE_DOWN, None);
+        s.update();
+    };
+
+    press(&mut s, 0);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    press(&mut s, 1);
+    assert_eq!(s.num_cells(CONTENTS), 10);
+    press(&mut s, 2);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    let list = s.host.root.widget::<ItemList>(s.ids[&CONTENTS]).unwrap();
+    assert_eq!(list.fixed_slot_count, None);
+}
+
+/// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
+/// means no limit: the strips fill the window.
+#[test]
+fn an_unlimited_container_fills_the_visible_width() {
+    let mut s = strip();
+    s.open_with(CHEST, -1, -1, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    assert_eq!(s.num_cells(PACKS), 18);
 }
 
 #[test]
@@ -451,8 +641,9 @@ fn a_pack_inside_the_container_opens_on_a_press_without_a_request() {
     let mut pack = ClientObject::new(0x7000_0200);
     pack.item_type = ItemType::CONTAINER;
     pack.items_capacity = 10;
+    pack.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
     s.objects.add(pack);
-    s.open(CHEST, &[0x7000_0200, ITEM]);
+    s.open_with(CHEST, 24, 7, &[0x7000_0200, ITEM]);
     s.objects
         .contained(0x7000_0201, 0x7000_0200, 0, ItemType::MISC);
     s.update();
@@ -558,6 +749,7 @@ mod real_dats {
         let mut chest = ClientObject::new(CHEST);
         chest.item_type = ItemType::CONTAINER;
         chest.items_capacity = 24;
+        chest.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
         objects.add(chest);
         objects.contained(ITEM, CHEST, 0, ItemType::MISC);
         let view = ItemsView::new(&objects.t, PLAYER);
@@ -590,14 +782,16 @@ mod real_dats {
 
 #[test]
 fn pressing_a_pack_inside_the_container_opens_it_and_the_same_press_drags_it() {
-    // Opening the pack changes the contents row alone: the pressed pack
-    // cell stays, so the press can still become a drag of it.
+    // Opening the pack changes the contents row alone (its items, and its
+    // cell count from 24 to the pack's 10): the pressed pack cell stays, so
+    // the press can still become a drag of it.
     let mut s = strip();
     let mut pack = ClientObject::new(0x7000_0200);
     pack.item_type = ItemType::CONTAINER;
     pack.items_capacity = 10;
+    pack.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
     s.objects.add(pack);
-    s.open(CHEST, &[0x7000_0200, ITEM]);
+    s.open_with(CHEST, 24, 7, &[0x7000_0200, ITEM]);
     s.objects
         .contained(0x7000_0201, 0x7000_0200, 0, ItemType::MISC);
     s.update();
@@ -612,6 +806,11 @@ fn pressing_a_pack_inside_the_container_opens_it_and_the_same_press_drags_it() {
     );
     assert_eq!(s.cell(PACKS, 0), pack_cell);
     assert_eq!(s.cell(TOP, 0), chest_cell);
+    assert_eq!(
+        s.num_cells(CONTENTS),
+        10,
+        "the contents row took the pack's capacity"
+    );
     s.host.mouse_move(78, 18);
     assert_eq!(s.host.root.drag_source(), Some(pack_cell));
     assert!(
@@ -627,11 +826,14 @@ fn pressing_a_pack_inside_the_container_opens_it_and_the_same_press_drags_it() {
 fn part_of_a_stack_already_in_the_full_chest_is_refused() {
     // Part of a stack needs a slot of its own, even beside the rest of it:
     // a split of a stack in a full chest has nowhere to go.
+    // The chest holds one item, so its strip has one cell: the drop is on
+    // the stack itself.
     let mut s = strip();
     let mut chest = ClientObject::new(CHEST);
     chest.item_type = ItemType::CONTAINER;
     chest.items_capacity = 1;
     chest.useability = Some(ItemUseable::REMOTE);
+    chest.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
     s.objects.add(chest);
     let mut item = ClientObject::new(ITEM);
     item.stack_size = 5;
@@ -662,27 +864,27 @@ fn part_of_a_stack_already_in_the_full_chest_is_refused() {
     }
     s.outputs();
     let p = ItemDragPayload::new(ITEM, ItemDragSource::Ground, 0);
-    s.fire(CONTENTS, 1, kind::DRAG_ENTER, Some(p.clone()));
+    s.fire(CONTENTS, 0, kind::DRAG_ENTER, Some(p.clone()));
     update_split(&mut s, &split);
     assert_eq!(
-        s.slot(CONTENTS, 1).drag_acceptance(),
+        s.slot(CONTENTS, 0).drag_acceptance(),
         DragAcceptance::Reject
     );
-    s.fire(CONTENTS, 1, kind::DROP_RELEASED, Some(p));
+    s.fire(CONTENTS, 0, kind::DROP_RELEASED, Some(p));
     update_split(&mut s, &split);
     let out = s.outputs();
     assert!(moves(&out).is_empty(), "{out:?}");
     assert_eq!(notices(&out).len(), 1, "{out:?}");
 }
 
-/// More loose items than the row shows at once (24 cells fit): every item
-/// keeps its cell, and the next update leaves the cells alone, so a press
-/// on one is not lost to a rebuild.
+/// More loose items than the row shows at once (24 cells fit) in a
+/// container with no limit: every item keeps its cell, and the next update
+/// leaves the cells alone, so a press on one is not lost to a rebuild.
 #[test]
 fn a_container_with_more_items_than_fit_keeps_a_cell_per_item_across_updates() {
     let mut s = strip();
     let items: Vec<u32> = (0..30).map(|i| ITEM + i).collect();
-    s.open(CHEST, &items);
+    s.open_with(CHEST, -1, 0, &items);
     let list = s.ids[&CONTENTS];
     let cells = |s: &Strip| {
         s.host
