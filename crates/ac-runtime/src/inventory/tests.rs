@@ -3077,3 +3077,69 @@ fn an_item_not_carried_is_said_even_when_the_tab_takes_nothing() {
     }));
     assert!(f.notices().is_empty());
 }
+
+#[test]
+fn a_game_board_in_the_world_begins_its_game_instead_of_being_used() {
+    // OpenAC ItemInteractionControllerTests
+    // .GameBoardInTheWorld_BeginsItsGameInsteadOfBeingUsed: someone else's
+    // board begins its game (the session joins it); the player's own board,
+    // anything else and an unknown object do not, and no use goes out.
+    const BOARD: u32 = 0x7A9B_4001;
+    const OWNED_BOARD: u32 = 0x50_000A33;
+    const MISC: u32 = 0x7A9B_4002;
+    let mut f = Fixture::new();
+    f.world.apply(&create(BOARD, "Chess Board", |d| {
+        d.item_type = ItemType::GAMEBOARD.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+    }));
+    f.world.apply(&create(OWNED_BOARD, "Chess Board", |d| {
+        d.item_type = ItemType::GAMEBOARD.bits();
+        d.container_id = Some(PLAYER);
+    }));
+    f.world.apply(&create(MISC, "Thing", |d| {
+        d.item_type = ItemType::MISC.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+    }));
+
+    assert!(f.run(ItemCommand::Use(guid(BOARD))));
+    assert_eq!(f.inventory.take_begun_games(), [BOARD]);
+    assert!(f.sent().is_empty());
+
+    f.now_ms += 10_000;
+    f.run(ItemCommand::Use(guid(OWNED_BOARD)));
+    f.now_ms += 10_000;
+    f.run(ItemCommand::Use(guid(MISC)));
+    f.now_ms += 10_000;
+    f.run(ItemCommand::Use(guid(0x7A9B_4003)));
+    assert!(f.inventory.take_begun_games().is_empty());
+
+    // A plugin's use of the board joins it the same way.
+    let mut f = Fixture::new();
+    f.world.apply(&create(BOARD, "Chess Board", |d| {
+        d.item_type = ItemType::GAMEBOARD.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+    }));
+    assert!(f.run(ItemCommand::UseWorldObject(guid(BOARD))));
+    assert_eq!(f.inventory.take_begun_games(), [BOARD]);
+    assert!(f.sent().is_empty());
+}
+
+#[test]
+fn a_game_board_used_while_a_request_is_pending_says_busy_and_begins_nothing() {
+    // OpenAC RuntimeItemInteraction.ActivateItem: the request gate comes
+    // before the board's primary use.
+    const BOARD: u32 = 0x7A9B_4001;
+    let mut f = Fixture::new();
+    f.world.apply(&create(BOARD, "Chess Board", |d| {
+        d.item_type = ItemType::GAMEBOARD.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+    }));
+    assert!(f.run(ItemCommand::Use(guid(NPC))));
+    f.sent();
+    f.notices();
+    f.now_ms += 10_000;
+    assert!(!f.run(ItemCommand::Use(guid(BOARD))));
+    assert!(f.inventory.take_begun_games().is_empty());
+    assert!(f.sent().is_empty());
+    assert_eq!(f.notices(), [Notice::Interface(REQUEST_BUSY.to_owned())]);
+}

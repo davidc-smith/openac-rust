@@ -1498,7 +1498,30 @@ impl SessionState {
         };
         let sent = self.inventory.execute(item, &mut ctx);
         self.inventory.observe(&mut ctx);
+        self.begin_games(outbox, active, clocks);
         sent
+    }
+
+    /// The game boards the item owner was asked to use begin their games
+    /// here, so a session with no window joins as one with a window does;
+    /// a window then shows the game.
+    fn begin_games(&mut self, outbox: &mut Outbox, active: bool, clocks: Clocks) {
+        for board in self.inventory.take_begun_games() {
+            let teleporting =
+                self.transit.is_teleport_active() || self.transit.has_pending_teleport_start();
+            let mut ctx = GameplayContext {
+                world: &mut self.world,
+                outbox: &mut *outbox,
+                options: &self.options,
+                active,
+                clocks,
+                body: Some(&mut self.movement),
+                teleporting,
+                opened_corpses: Some(self.inventory.external_containers()),
+            };
+            self.gameplay.begin_game(board, &mut ctx);
+            self.host_events.push(HostEvent::BeginGame(board));
+        }
     }
 
     /// `/status`: the session's generation, where it is in its life, and

@@ -860,6 +860,12 @@ impl Inventory {
         if primary == interaction::ItemPrimaryUseResult::PlaceInBackpack {
             return self.place_world_item_in_backpack(object, ctx);
         }
+        // A game board out in the world is used by joining its game, the
+        // same as when a person clicks it.
+        if primary == interaction::ItemPrimaryUseResult::BeginGame {
+            self.begun_games.push(object);
+            return true;
+        }
         self.request_use_for(object, false, ctx)
     }
 
@@ -1403,6 +1409,10 @@ impl Inventory {
                 K::OpenSalvage => {
                     self.events
                         .push(InventoryEvent::OpenSalvage(action.object_id));
+                    acted = true;
+                }
+                K::BeginGame => {
+                    self.begun_games.push(action.object_id);
                     acted = true;
                 }
                 K::ConfirmPlayerKillerSwitch
