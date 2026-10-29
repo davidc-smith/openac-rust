@@ -72,9 +72,12 @@ pub struct Scrollbar {
     pub tooltip_text: Option<String>,
     /// Track image.
     pub track_sprite: u32,
-    /// Track art per bar state, for a bar whose track authors an image for
-    /// each state (an attribute slider draws another track while locked).
-    pub track_sprites_by_state: Vec<(u32, u32)>,
+    /// The fill a horizontal bar draws from its start to the thumb's centre
+    /// (0: none). It ends under the thumb, never past it.
+    pub thumb_fill_sprite: u32,
+    /// The fill's art per bar state, for a fill that authors an image for
+    /// each state (an attribute slider fills in another colour while locked).
+    pub thumb_fill_sprites_by_state: Vec<(u32, u32)>,
     /// Thumb image (middle of a composited thumb).
     pub thumb_sprite: u32,
     /// Thumb top cap.
@@ -150,7 +153,8 @@ impl Default for Scrollbar {
             scalar_fill_from_right: false,
             tooltip_text: None,
             track_sprite: 0,
-            track_sprites_by_state: Vec::new(),
+            thumb_fill_sprite: 0,
+            thumb_fill_sprites_by_state: Vec::new(),
             thumb_sprite: 0,
             thumb_top_sprite: 0,
             thumb_bot_sprite: 0,
@@ -212,6 +216,14 @@ pub fn scalar_fill_rect(
         },
         visible,
     )
+}
+
+/// How far the fill before a horizontal thumb reaches: from the bar's start
+/// to the thumb's centre, in whole pixels (the thumb's left edge truncated,
+/// plus half its width rounded down).
+#[must_use]
+pub fn thumb_fill_width(thumb_x: f32, thumb_width: f32) -> f32 {
+    (thumb_x as i32 + thumb_width as i32 / 2).max(0) as f32
 }
 
 fn axis_extent(authored: f32, axis_length: f32) -> f32 {
@@ -568,6 +580,18 @@ impl Scrollbar {
     fn draw_scalar(&self, w: f32, h: f32, rc: &mut RenderContext<'_>) {
         Self::draw_tiled(rc, self.track_sprite, 0.0, 0.0, w, h);
         if self.horizontal {
+            let thumb_w = self.scalar_thumb_extent(w);
+            let x = (w - thumb_w).max(0.0) * self.scalar_position;
+            // The fill under the thumb's left half: it ends at the thumb's
+            // centre, so what lies past the thumb never takes its colour.
+            Self::draw_tiled(
+                rc,
+                self.thumb_fill_sprite,
+                0.0,
+                0.0,
+                thumb_fill_width(x, thumb_w),
+                h,
+            );
             let (range_left, range_width) = self.scalar_range_rect(w, h);
             if self.scalar_range_sprite != 0 {
                 Self::draw_tiled(
@@ -579,7 +603,6 @@ impl Scrollbar {
                     h,
                 );
             }
-            let thumb_w = self.scalar_thumb_extent(w);
             if let Some(fill) = self.scalar_fill
                 && self.scalar_fill_sprite != 0
                 && let Some((tw, th)) = rc.sprite_size(self.scalar_fill_sprite)
@@ -598,7 +621,6 @@ impl Scrollbar {
                     );
                 }
             }
-            let x = (w - thumb_w).max(0.0) * self.scalar_position;
             Self::draw_sprite(rc, self.active_thumb_sprite(), x, 0.0, thumb_w, h);
         } else {
             let thumb_h = self.scalar_thumb_extent(h);
@@ -847,17 +869,17 @@ impl Widget for Scrollbar {
         true
     }
 
-    /// Entering a state shows that state's track art; false when the
-    /// track authors none for it.
+    /// Entering a state shows that state's fill art; false when the fill
+    /// authors none for it.
     fn set_retail_state(&mut self, _ui: &mut UiRoot, _me: ElementId, state: u32) -> bool {
         let Some(&(_, sprite)) = self
-            .track_sprites_by_state
+            .thumb_fill_sprites_by_state
             .iter()
             .find(|(s, _)| *s == state)
         else {
             return false;
         };
-        self.track_sprite = sprite;
+        self.thumb_fill_sprite = sprite;
         true
     }
 

@@ -1420,13 +1420,13 @@ fn the_heritage_profession_and_town_pages_drive_the_owner() {
     // the lock and its slider show their authored Locked art.
     const UNLOCKED: u32 = 0x1000_0018;
     const LOCKED: u32 = 0x1000_0019;
-    let track = |w: &Wizard| {
+    let fill = |w: &Wizard| {
         w.h.ui
             .widget::<ac_ui::widgets::Scrollbar>(slider)
-            .map(|s| s.track_sprite)
+            .map(|s| s.thumb_fill_sprite)
     };
     assert_eq!(w.h.ui.retail_state(lock), Some(LOCKED));
-    assert_eq!(track(&w), Some(0x0600_4D3A));
+    assert_eq!(fill(&w), Some(0x0600_4D3A));
     assert_eq!(
         w.click(lock),
         [CreationCommand::SetAttributeLock(
@@ -1435,7 +1435,7 @@ fn the_heritage_profession_and_town_pages_drive_the_owner() {
         )]
     );
     assert_eq!(w.h.ui.retail_state(lock), Some(UNLOCKED));
-    assert_eq!(track(&w), Some(0x0600_4D39));
+    assert_eq!(fill(&w), Some(0x0600_4D39));
 
     w.click(w.shell(chargen::TAB_IDS[4]));
     let yaraq = w
