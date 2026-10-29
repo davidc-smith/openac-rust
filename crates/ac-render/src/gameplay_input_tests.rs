@@ -283,6 +283,39 @@ fn a_key_the_player_binds_to_the_fly_camera_toggles_it() {
     assert_eq!(r.take(), [GameplayOutput::ToggleFly]);
 }
 
+/// OpenAC `GameplayInputActionRouter.Route`: a press, a double click and a
+/// click (a key pressed and let go alone) all go on to the interface, the
+/// character options and the selection; a player may bind examine, a
+/// panel or use to a click.
+#[test]
+fn an_action_bound_to_a_click_reaches_the_interface_and_the_session() {
+    use ac_runtime::inventory::ItemCommand as I;
+    let mut bindings = KeyBindings::retail_defaults();
+    for (key, action) in [
+        (Key::F13, InputAction::SelectionExamine),
+        (Key::F14, InputAction::ToggleInventoryPanel),
+        (Key::F15, InputAction::UseSelected),
+    ] {
+        bindings.add(
+            ac_ui::input::Binding::new(ac_ui::input::KeyChord::key(key, Modifiers::NONE), action)
+                .activation(ActivationType::Click),
+        );
+    }
+    let mut r = Rig::new();
+    r.input = GameplayInput::new(bindings);
+    r.tap(Key::F13);
+    r.tap(Key::F14);
+    r.tap(Key::F15);
+    assert_eq!(
+        r.take(),
+        [
+            GameplayOutput::Interface(InputAction::SelectionExamine),
+            GameplayOutput::Interface(InputAction::ToggleInventoryPanel),
+            GameplayOutput::Item(I::UseSelected),
+        ]
+    );
+}
+
 #[test]
 fn the_camera_settings_drive_the_held_keys_and_the_mouse() {
     // OpenAC `RuntimeSettingsTargets.ApplyCameraTurning`: the adjustment

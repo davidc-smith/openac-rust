@@ -862,14 +862,18 @@ impl Router {
             return;
         }
 
+        // From here a press, a double click and a click (a key pressed
+        // and let go alone) are routed alike (OpenAC
+        // `GameplayInputActionRouter.Route`).
+        //
         // The chat entry keys carry the key that pressed them (OpenAC
         // `RetailUiRuntime.HandleInputAction` hands the dispatcher's
-        // physical chord to `EnterChatMode` and `ToggleChatEntry`).
-        if activation == ActivationType::Press
-            && matches!(action, A::EnterChatMode | A::ToggleChatEntry)
-        {
+        // physical chord to `EnterChatMode` and `ToggleChatEntry`); a click
+        // fires once the key is up, so there is no key to wait out.
+        if matches!(action, A::EnterChatMode | A::ToggleChatEntry) {
             let key = d
                 .current_physical_chord()
+                .filter(|_| activation == ActivationType::Press)
                 .and_then(|chord| match chord.key {
                     ac_ui::input::InputKey::Key(key) if chord.device == 0 => Some(key),
                     _ => None,
@@ -879,16 +883,14 @@ impl Router {
         }
 
         // The interface's actions (OpenAC `RetailUiRuntime.HandleInputAction`).
-        if activation == ActivationType::Press && crate::ui::status::is_interface_action(action) {
+        if crate::ui::status::is_interface_action(action) {
             frame.out.push(GameplayOutput::Interface(action));
             return;
         }
 
         // A character-option key flips its option (OpenAC
         // `HandleCharacterOptionAction`).
-        if activation == ActivationType::Press
-            && let Some(option) = ac_ui::input::identity::character_option_id(action)
-        {
+        if let Some(option) = ac_ui::input::identity::character_option_id(action) {
             frame
                 .out
                 .push(GameplayOutput::ToggleCharacterOption(option));
@@ -897,9 +899,7 @@ impl Router {
 
         // Selection, the combat toggle and log out go to the session (OpenAC:
         // selection before movement, the commands last; none overlap).
-        if activation == ActivationType::Press
-            && let Some(output) = session_output(action)
-        {
+        if let Some(output) = session_output(action) {
             frame.out.push(output);
             return;
         }
