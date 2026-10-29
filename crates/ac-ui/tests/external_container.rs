@@ -588,9 +588,6 @@ mod real_dats {
     }
 }
 
-/// More loose items than the row shows at once (24 cells fit): every item
-/// keeps its cell, and the next update leaves the cells alone, so a press
-/// on one is not lost to a rebuild.
 #[test]
 fn pressing_a_pack_inside_the_container_opens_it_and_the_same_press_drags_it() {
     // Opening the pack changes the contents row alone: the pressed pack
@@ -678,6 +675,9 @@ fn part_of_a_stack_already_in_the_full_chest_is_refused() {
     assert_eq!(notices(&out).len(), 1, "{out:?}");
 }
 
+/// More loose items than the row shows at once (24 cells fit): every item
+/// keeps its cell, and the next update leaves the cells alone, so a press
+/// on one is not lost to a rebuild.
 #[test]
 fn a_container_with_more_items_than_fit_keeps_a_cell_per_item_across_updates() {
     let mut s = strip();
