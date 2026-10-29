@@ -95,9 +95,21 @@ fn strip() -> Strip {
 impl Strip {
     /// The session opened `id` with these loose items in it.
     fn open(&mut self, id: u32, contents: &[u32]) {
+        self.open_with(id, 24, 0, contents);
+    }
+
+    /// The session opened `id`, with these capacities and loose items.
+    fn open_with(
+        &mut self,
+        id: u32,
+        items_capacity: i32,
+        containers_capacity: i32,
+        contents: &[u32],
+    ) {
         let mut chest = ClientObject::new(id);
         chest.item_type = ItemType::CONTAINER;
-        chest.items_capacity = 24;
+        chest.items_capacity = items_capacity;
+        chest.containers_capacity = containers_capacity;
         chest.useability = Some(ItemUseable::REMOTE);
         self.objects.add(chest);
         for (i, &g) in contents.iter().enumerate() {
@@ -155,6 +167,14 @@ impl Strip {
         let c = self.cell(list, i);
         self.host.root.fire_event(k, c, p.map(DragPayload::new));
         self.host.pump();
+    }
+
+    fn num_cells(&self, list: u32) -> usize {
+        self.host
+            .root
+            .widget::<ItemList>(self.ids[&list])
+            .unwrap()
+            .num_items()
     }
 
     fn outputs(&mut self) -> Vec<PanelOutput> {
@@ -237,6 +257,31 @@ fn an_open_container_shows_the_strip_and_fills_its_rows() {
     );
     assert!(bar.horizontal);
     assert_eq!(bar.track_sprite, 0x0600_4C7F);
+}
+
+/// OpenAC `Hook_showsOneItemCell_andNoPackCells`: a house hook holds one
+/// item, so it opens with one cell: the strips are sized from the
+/// container's capacities.
+#[test]
+fn a_hook_shows_one_item_cell_and_no_pack_cells() {
+    let mut s = strip();
+    s.open_with(CHEST, 1, 0, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, 0);
+    assert_eq!(s.num_cells(PACKS), 0);
+    s.open_with(CHEST, 1, 0, &[ITEM]);
+    assert_eq!(s.num_cells(CONTENTS), 1);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+}
+
+/// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
+/// means no limit: the strips fill the window.
+#[test]
+fn an_unlimited_container_fills_the_visible_width() {
+    let mut s = strip();
+    s.open_with(CHEST, -1, -1, &[]);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    assert_eq!(s.num_cells(PACKS), 18);
 }
 
 #[test]

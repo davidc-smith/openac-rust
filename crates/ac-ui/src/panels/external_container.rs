@@ -171,6 +171,13 @@ fn configure_list(ui: &mut UiRoot, list: ElementId, cell: f32, horizontal: bool,
     });
 }
 
+/// A container's strip has one cell per unit of its capacity, so a house
+/// hook (capacity 1) shows one cell. A negative capacity means no limit:
+/// the strip fills its width (`None`).
+fn slot_count(capacity: Option<i32>) -> Option<usize> {
+    capacity.and_then(|c| usize::try_from(c).ok())
+}
+
 fn cells(ui: &UiRoot, list: ElementId) -> Vec<ElementId> {
     ui.widget::<ItemList>(list)
         .map(|l| l.cells().to_vec())
@@ -580,14 +587,17 @@ impl ExternalContainerController {
             && matches(ui, self.containers, &packs)
             && matches(ui, self.contents, &loose);
         if !same {
-            for (list, guids) in [
-                (self.top, std::slice::from_ref(&root)),
-                (self.containers, packs.as_slice()),
-                (self.contents, loose.as_slice()),
+            let pack_cells = slot_count(view.get(root).map(|c| c.containers_capacity));
+            let item_cells = slot_count(view.get(self.open_container).map(|c| c.items_capacity));
+            for (list, guids, fixed) in [
+                (self.top, std::slice::from_ref(&root), None),
+                (self.containers, packs.as_slice(), pack_cells),
+                (self.contents, loose.as_slice(), item_cells),
             ] {
                 ui.with::<ItemList, _>(list, |l, ui| {
                     l.defer_layout();
                     l.flush(ui);
+                    l.fixed_slot_count = fixed;
                 });
                 for (i, &guid) in guids.iter().enumerate() {
                     let mut s = ItemSlot {
