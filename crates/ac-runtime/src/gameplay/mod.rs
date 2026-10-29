@@ -1155,7 +1155,14 @@ impl Gameplay {
         let _ = world;
         self.cast.reset();
         self.attack.reset_session();
-        self.selection.reset();
+        // The reset is a selection change like any other, even with
+        // nothing selected: whatever follows the selection (an open
+        // examination window) lets the session's go.
+        let reset = self.selection.reset();
+        self.events.push(GameplayEvent::Selection {
+            selected: reset.selected,
+            name: None,
+        });
         self.combat.clear();
         self.mode.reset();
         self.target = CombatTargetState::default();
