@@ -250,6 +250,8 @@ pub(crate) struct AttachedWindow {
     brightness: Option<crate::gamma::BrightnessPass>,
     /// The retail UI: its panels, fed from the scene.
     ui: Option<WindowUi>,
+    /// What a fullscreen request to the compositor still waits for.
+    fullscreen_awaiting: crate::display_mode::Awaiting,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -358,6 +360,7 @@ impl AttachedWindow {
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
         let mut display_lines = Vec::new();
+        let mut fullscreen_awaiting = crate::display_mode::Awaiting::Nothing;
         if options.fullscreen {
             let display = ac_host::settings::DisplaySettings {
                 fullscreen: true,
@@ -368,6 +371,7 @@ impl AttachedWindow {
                 &display,
                 &mut crate::display_mode::WinitDisplay(&window),
                 &mut crate::display_mode::WinitDisplay(&window),
+                &mut fullscreen_awaiting,
                 |m| offered.iter().any(|o| o == m),
                 &mut display_lines,
             );
@@ -544,6 +548,7 @@ impl AttachedWindow {
             ui_renderer,
             brightness: None,
             ui,
+            fullscreen_awaiting,
             surface,
             device,
             queue,
@@ -864,6 +869,8 @@ impl AttachedWindow {
             self.reported_minimized = minimized;
             self.send_session(SessionCommand::WindowMinimized(minimized));
         }
+        // A compositor's answer to a fullscreen request resizes the window.
+        self.follow_fullscreen();
         if self.apply_size(size) {
             self.window.request_redraw();
         }
@@ -1733,7 +1740,21 @@ impl AttachedWindow {
             display,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
+            &mut self.fullscreen_awaiting,
             |m| offered.iter().any(|o| o == m),
+            &mut lines,
+        );
+        self.notices.extend(lines);
+    }
+
+    /// Follow the window's fullscreen state as reported now: finish what a
+    /// request to the compositor still owes.
+    fn follow_fullscreen(&mut self) {
+        let mut lines = Vec::new();
+        crate::display_mode::follow_compositor(
+            &mut self.fullscreen_awaiting,
+            &mut crate::display_mode::WinitDisplay(&self.window),
+            &mut crate::display_mode::WinitDisplay(&self.window),
             &mut lines,
         );
         self.notices.extend(lines);
