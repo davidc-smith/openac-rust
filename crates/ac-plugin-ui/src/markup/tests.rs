@@ -977,22 +977,28 @@ fn icons_take_one_source_and_literals_or_bindings() {
     };
     assert_eq!(
         icon(0),
-        IconSource {
+        IconSource::Id {
             kind: IconKind::Did,
             id: UintSource::Literal(0x0600_1234)
         }
     );
-    assert_eq!(icon(1).kind, IconKind::Spell);
+    assert_eq!(icon(1).kind(), IconKind::Spell);
     assert_eq!(doc.nodes[1].rect.w, 16.0);
     assert_eq!(doc.nodes[1].rect.h, 32.0);
-    assert_eq!(icon(2).id, UintSource::Bound("ItemId".into()));
-    assert_eq!(icon(3).id, UintSource::Literal(4660));
+    assert!(matches!(icon(2), IconSource::Id { id: UintSource::Bound(n), .. } if n == "ItemId"));
+    assert!(matches!(
+        icon(3),
+        IconSource::Id {
+            id: UintSource::Literal(4660),
+            ..
+        }
+    ));
     let Element::Button { icon, .. } = &doc.nodes[4].element else {
         panic!()
     };
     assert_eq!(
         *icon,
-        Some(IconSource {
+        Some(IconSource::Id {
             kind: IconKind::Spell,
             id: UintSource::Literal(0x1234)
         })
@@ -1000,15 +1006,15 @@ fn icons_take_one_source_and_literals_or_bindings() {
     for (xml, message) in [
         (
             "<panel><icon/></panel>",
-            "<icon> requires exactly one of did/spell/item",
+            "<icon> requires exactly one of did/spell/item/file",
         ),
         (
             "<panel><icon did=\"1\" spell=\"2\"/></panel>",
-            "<icon> requires exactly one of did/spell/item",
+            "<icon> requires exactly one of did/spell/item/file",
         ),
         (
             "<panel><icon did=\"1\" iconkind=\"did\"/></panel>",
-            "iconkind applies to button, tab and list; icon derives its kind from did/spell/item",
+            "iconkind applies to button, tab and list; icon derives its kind from did/spell/item/file",
         ),
         (
             "<panel><icon did=\"0xZZ\"/></panel>",
@@ -1020,7 +1026,7 @@ fn icons_take_one_source_and_literals_or_bindings() {
         ),
         (
             "<panel><button icon=\"1\" iconkind=\"thing\"/></panel>",
-            "iconkind must be did, spell, or item (got \"thing\")",
+            "iconkind must be did, spell, item, or file (got \"thing\")",
         ),
         (
             "<panel><button icon=\"-1\"/></panel>",
@@ -1058,14 +1064,14 @@ fn a_tab_takes_the_same_icon_attributes_as_a_button() {
     };
     assert_eq!(
         icon(0),
-        Some(IconSource {
+        Some(IconSource::Id {
             kind: IconKind::Did,
             id: UintSource::Literal(0x0600_1E37)
         })
     );
     assert_eq!(
         icon(1),
-        Some(IconSource {
+        Some(IconSource::Id {
             kind: IconKind::Spell,
             id: UintSource::Bound("SpellId".into())
         })
@@ -1074,7 +1080,7 @@ fn a_tab_takes_the_same_icon_attributes_as_a_button() {
     for (xml, message) in [
         (
             "<panel><tab selected=\"{Selected}\" icon=\"1\" iconkind=\"thing\"/></panel>",
-            "iconkind must be did, spell, or item (got \"thing\")",
+            "iconkind must be did, spell, item, or file (got \"thing\")",
         ),
         (
             "<panel><tab selected=\"{Selected}\" icon=\"{Nope}\"/></panel>",
@@ -1317,4 +1323,176 @@ fn a_button_column_names_what_is_wrong_with_it() {
         let e = error(&found_xml(column), &s);
         assert!(e.contains(needle), "{needle:?} not in {e:?}");
     }
+}
+
+// ── File icons (OpenAC PR #271's MarkupFileIconTests, the build-time half) ──
+
+fn file_schema() -> BindingSchema {
+    schema(
+        "FileBinding",
+        &[
+            ("IconPath", K::Text),
+            ("NotAPath", K::Uint),
+            ("Rows", K::TextList),
+            ("RowIcons", K::TextList),
+            ("RowIds", K::UintList),
+            ("ClickIcon", K::IntAction),
+            ("Selected", K::Int),
+            ("TabOn", K::Bool),
+        ],
+    )
+}
+
+fn only(body: &str) -> Element {
+    let doc = parse(&format!("<panel>{body}</panel>"), &file_schema()).unwrap();
+    doc.nodes[0].element.clone()
+}
+
+// Icon_FileLiteral_ResolvesThePathThroughTheResolver (the path it names).
+#[test]
+fn icon_file_literal_names_its_path() {
+    let Element::Icon { icon } = only("<icon x=\"0\" y=\"0\" file=\"icons/sword.png\"/>") else {
+        panic!()
+    };
+    assert_eq!(
+        icon,
+        IconSource::File(PathSource::Literal("icons/sword.png".into()))
+    );
+    assert_eq!(icon.kind(), IconKind::File);
+}
+
+// Icon_FileBinding_ReadsTheStringPropertyEachDraw and
+// Icon_FileBindingWithNoPath_DrawsNothingWithoutAsking.
+#[test]
+fn icon_file_binding_reads_the_string_property_each_draw() {
+    let Element::Icon { icon } = only("<icon x=\"0\" y=\"0\" file=\"{IconPath}\"/>") else {
+        panic!()
+    };
+    let IconSource::File(path) = icon else {
+        panic!("{icon:?}")
+    };
+    assert_eq!(path, PathSource::Bound("IconPath".into()));
+    let read = |v: UiValue| path.read(&values(&[("IconPath", v)]));
+    assert_eq!(
+        read(UiValue::Text("icons/bound.png".into())).as_deref(),
+        Some("icons/bound.png")
+    );
+    assert_eq!(
+        read(UiValue::Text("icons/other.jpg".into())).as_deref(),
+        Some("icons/other.jpg")
+    );
+    for blank in ["", "   "] {
+        assert_eq!(read(UiValue::Text(blank.into())), None);
+    }
+    assert_eq!(path.read(&values(&[])), None);
+}
+
+// Icon_FileWithAnotherSource_ThrowsNamingFile.
+#[test]
+fn icon_file_with_another_source_is_refused_naming_file() {
+    let e = error(
+        "<panel><icon x=\"0\" y=\"0\" did=\"7735\" file=\"icons/a.png\"/></panel>",
+        &file_schema(),
+    );
+    assert!(e.contains("did/spell/item/file"), "{e}");
+}
+
+// Icon_FileBindingToAMissingOrNonStringProperty_ThrowsAtBuild.
+#[test]
+fn icon_file_binding_to_a_missing_or_non_string_property_is_refused() {
+    for expression in ["{Typo}", "{NotAPath}"] {
+        let e = error(
+            &format!("<panel><icon x=\"0\" y=\"0\" file=\"{expression}\"/></panel>"),
+            &file_schema(),
+        );
+        assert!(e.contains("string property"), "{expression}: {e}");
+    }
+}
+
+// ButtonIcon_KindFile_ResolvesTheIconAsAPath.
+#[test]
+fn button_icon_kind_file_is_a_path() {
+    let Element::Button { icon, .. } = only(
+        "<button x=\"0\" y=\"0\" w=\"60\" h=\"20\" text=\"Go\" icon=\"{IconPath}\" iconkind=\"file\"/>",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        icon,
+        Some(IconSource::File(PathSource::Bound("IconPath".into())))
+    );
+}
+
+// TabIcon_KindFile_ResolvesTheIconAsAPath.
+#[test]
+fn tab_icon_kind_file_is_a_path() {
+    let Element::Tab { icon, .. } = only(
+        "<tab x=\"0\" y=\"0\" w=\"60\" h=\"20\" text=\"Notes\" selected=\"{TabOn}\" icon=\"icons/notes.png\" iconkind=\"file\"/>",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        icon,
+        Some(IconSource::File(PathSource::Literal(
+            "icons/notes.png".into()
+        )))
+    );
+}
+
+// List_KindFile_GivesEachDistinctPathOneIdAndResolvesItBack (the binding).
+#[test]
+fn list_kind_file_binds_a_string_list_of_paths() {
+    let Element::List { body, .. } = only(
+        "<list x=\"0\" y=\"0\" w=\"100\" h=\"60\" selected=\"{Selected}\" items=\"{Rows}\" icons=\"{RowIcons}\" iconkind=\"file\"/>",
+    ) else {
+        panic!()
+    };
+    let ListBody::Single { icons, .. } = body else {
+        panic!()
+    };
+    assert_eq!(icons, Some(("RowIcons".into(), IconKind::File)));
+}
+
+// List_KindFile_NeedsAStringList.
+#[test]
+fn list_kind_file_needs_a_string_list() {
+    let e = error(
+        "<panel><list x=\"0\" y=\"0\" w=\"100\" h=\"60\" selected=\"{Selected}\" items=\"{Rows}\" icons=\"{RowIds}\" iconkind=\"file\"/></panel>",
+        &file_schema(),
+    );
+    assert!(e.contains("IEnumerable<string>"), "{e}");
+}
+
+// Column_KindFile_ResolvesEachRowsPath (the binding).
+#[test]
+fn column_kind_file_binds_a_string_list_of_paths() {
+    let Element::List { body, .. } = only(
+        "<list x=\"0\" y=\"0\" w=\"100\" h=\"60\" selected=\"{Selected}\">\
+           <column type=\"icon\" width=\"20\" iconkind=\"file\" values=\"{RowIcons}\" onclick=\"{ClickIcon}\"/>\
+         </list>",
+    ) else {
+        panic!()
+    };
+    let ListBody::Columns(columns) = body else {
+        panic!()
+    };
+    assert!(matches!(&columns[0].kind,
+        ColumnKind::Icon { values, kind: IconKind::File, .. } if values == "RowIcons"));
+    let e = error(
+        "<panel><list x=\"0\" y=\"0\" w=\"100\" h=\"60\" selected=\"{Selected}\">\
+           <column type=\"icon\" width=\"20\" iconkind=\"file\" values=\"{RowIds}\" onclick=\"{ClickIcon}\"/>\
+         </list></panel>",
+        &file_schema(),
+    );
+    assert!(e.contains("IEnumerable<string>"), "{e}");
+}
+
+// IconKind_Unknown_NamesFileAmongTheChoices.
+#[test]
+fn an_unknown_icon_kind_names_file_among_the_choices() {
+    let e = error(
+        "<panel><button x=\"0\" y=\"0\" w=\"60\" h=\"20\" text=\"Go\" icon=\"1\" iconkind=\"png\"/></panel>",
+        &file_schema(),
+    );
+    assert!(e.contains("did, spell, item, or file"), "{e}");
 }

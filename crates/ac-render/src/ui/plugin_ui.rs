@@ -99,6 +99,9 @@ pub struct PluginWindowUi {
     /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
     /// was made from: a reloaded plugin's new file uploads again.
     file_icons: HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    /// The file icons each plugin window draws, as the session was last
+    /// told them.
+    files_shown: HashMap<u32, Vec<String>>,
     synced: Option<u64>,
     reported: Option<(u16, u16)>,
     /// The key map's chords as last told to the session, with the
@@ -251,11 +254,43 @@ impl MarkupIcons for NoMarkupIcons {
 }
 
 /// The window's art, its icon composer and the objects it knows, as the
-/// images plugin markup names.
+/// images plugin markup names; and the file icons the session holds for
+/// the plugin window being synced, with the paths it drew.
 struct WindowIcons<'a> {
     content: &'a DatContent,
     icons: &'a mut IconComposer,
     objects: &'a ac_core::items::ClientObjectTable,
+    view: &'a ac_plugin_ui::PluginUiView,
+    images: &'a super::icons::RuntimeImages,
+    textures: &'a mut HashMap<(String, u32), Icon>,
+    /// The plugin window being synced.
+    panel: u32,
+    /// The file paths it drew.
+    files: Vec<String>,
+}
+
+/// A plugin's own image (its pixels, or a file its markup draws) as a
+/// texture of this window, uploaded the first time it is drawn; none for
+/// the client's art, which plugins name by id.
+fn own_image(
+    images: &super::icons::RuntimeImages,
+    image: &ac_plugin_ui::ImageView,
+) -> Option<Icon> {
+    let size = (image.width as f32, image.height as f32);
+    match &image.source {
+        ImageSource::Rgba(pixels) => {
+            let rgba = Rgba::new(image.width, image.height, pixels.as_ref().clone());
+            Some((images.uploader().upload(&rgba), size.0, size.1))
+        }
+        ImageSource::File(file) => {
+            let top = file.levels.first()?;
+            let rgba = Rgba::new(top.width, top.height, top.rgba.clone());
+            Some((images.uploader().upload(&rgba), size.0, size.1))
+        }
+        ImageSource::ClientArt(_) | ImageSource::SpellIcon { .. } | ImageSource::ObjectIcon(_) => {
+            None
+        }
+    }
 }
 
 fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
@@ -315,6 +350,20 @@ impl MarkupIcons for WindowIcons<'_> {
                 o.effects,
             )
             .map(|t| (t, ICON_SIZE, ICON_SIZE))
+    }
+
+    fn file(&mut self, path: &str) -> Option<Icon> {
+        if !self.files.iter().any(|p| p == path) {
+            self.files.push(path.to_owned());
+        }
+        let image = self.view.file_icon(self.panel, path)?;
+        let key = (image.owner.clone(), image.handle);
+        if let Some(icon) = self.textures.get(&key) {
+            return Some(*icon);
+        }
+        let icon = own_image(self.images, image)?;
+        self.textures.insert(key, icon);
+        Some(icon)
     }
 }
 
@@ -636,6 +685,7 @@ impl WindowUi {
             .collect();
         for (id, name) in gone {
             self.plugins.panels.remove(&id);
+            self.plugins.files_shown.remove(&id);
             let frame = self.host.root.window(&name).map(|w| w.frame);
             self.host.root.unregister_window(&name);
             self.host.pump();
@@ -705,18 +755,49 @@ impl WindowUi {
             content,
             icons,
             objects: &facts.objects,
+            view: &facts.plugin_ui,
+            images,
+            textures: &mut plugins.images,
+            panel: 0,
+            files: Vec::new(),
         };
         let theme = plugins.theme;
         for panel in &facts.plugin_ui.panels {
             let Some(name) = plugins.panels.get(&panel.id) else {
                 continue;
             };
+            markup_icons.panel = panel.id;
+            markup_icons.files.clear();
             let noticed = host.with_controller::<PluginPanelController, _>(name, |c, ui| {
+                // A sync at the revision the window already shows reads
+                // nothing again, so what it draws stays as it was.
+                let fresh = c.synced_revision() != Some(revision);
                 c.sync(ui, panel, revision, &mut markup_icons, theme);
-                c.take_notices()
+                (fresh, c.take_notices())
             });
-            for notice in noticed.into_iter().flatten() {
+            let Some((fresh, noticed)) = noticed else {
+                continue;
+            };
+            for notice in noticed {
                 notices.push(format!("ui: plugin window {name}: {notice}"));
+            }
+            // The session holds the file icons the window draws (none while
+            // it is hidden): told when they change.
+            if fresh {
+                let mut drawn = if panel.shown() {
+                    std::mem::take(&mut markup_icons.files)
+                } else {
+                    Vec::new()
+                };
+                drawn.sort();
+                let told = plugins.files_shown.get(&panel.id);
+                if told.map_or(!drawn.is_empty(), |t| *t != drawn) {
+                    plugins.files_shown.insert(panel.id, drawn.clone());
+                    plugins.outbox.borrow_mut().push(UiInput::FileIconsShown {
+                        panel: panel.id,
+                        paths: drawn,
+                    });
+                }
             }
         }
         if plugins.shelf {
@@ -821,7 +902,6 @@ impl WindowUi {
         plugins
             .images
             .retain(|key, _| view.images.contains_key(key));
-        let mut uploader = images.uploader();
         let mut image = |owner: &str, handle: u32| -> Option<Icon> {
             let key = (owner.to_owned(), handle);
             if let Some(icon) = plugins.images.get(&key) {
@@ -843,19 +923,7 @@ impl WindowUi {
                         )
                         .map(|t| (t, ICON_SIZE, ICON_SIZE))
                 }),
-                ImageSource::Rgba(pixels) => {
-                    let rgba = Rgba::new(source.width, source.height, pixels.as_ref().clone());
-                    Some((
-                        uploader.upload(&rgba),
-                        source.width as f32,
-                        source.height as f32,
-                    ))
-                }
-                ImageSource::File(file) => {
-                    let top = file.levels.first()?;
-                    let rgba = Rgba::new(top.width, top.height, top.rgba.clone());
-                    Some((uploader.upload(&rgba), top.width as f32, top.height as f32))
-                }
+                ImageSource::Rgba(_) | ImageSource::File(_) => own_image(images, source),
             }?;
             plugins.images.insert(key, icon);
             Some(icon)

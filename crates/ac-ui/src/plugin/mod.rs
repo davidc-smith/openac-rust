@@ -54,7 +54,8 @@ pub use widgets::{
 pub type PluginOutbox = Rc<RefCell<Vec<UiInput>>>;
 
 /// Resolves the images markup names: dat images, spell icons and live
-/// object icons (the window's art and icon composer).
+/// object icons (the window's art and icon composer), and the image files
+/// plugins ship.
 pub trait MarkupIcons {
     /// A render surface (a full id).
     fn surface(&mut self, id: u32) -> Option<Icon>;
@@ -62,6 +63,11 @@ pub trait MarkupIcons {
     fn spell(&mut self, spell: u32) -> Option<Icon>;
     /// A live object's composed icon.
     fn item(&mut self, object: u32) -> Option<Icon>;
+    /// A PNG or JPEG the plugin ships, by its path in the plugin's folder
+    /// (as the markup gives it); nothing where no plugin folder is served.
+    fn file(&mut self, _path: &str) -> Option<Icon> {
+        None
+    }
 }
 
 /// The player's choice of look for plugin windows that opt in
@@ -191,11 +197,43 @@ fn icon(icons: &mut dyn MarkupIcons, kind: IconKind, id: u32) -> Option<Icon> {
         IconKind::Did => icons.surface(normalize_icon(id)),
         IconKind::Spell => icons.spell(id),
         IconKind::Item => icons.item(id),
+        // A file icon names a path, never an id.
+        IconKind::File => None,
     }
 }
 
+/// A file icon's path: a null or blank one draws nothing, without asking.
+fn file_icon(icons: &mut dyn MarkupIcons, path: &str) -> Option<Icon> {
+    if path.trim().is_empty() {
+        return None;
+    }
+    icons.file(path)
+}
+
 fn icon_of(icons: &mut dyn MarkupIcons, source: &IconSource, values: &dyn Values) -> Option<Icon> {
-    icon(icons, source.kind, source.id.read(values))
+    match source {
+        IconSource::Id { kind, id } => icon(icons, *kind, id.read(values)),
+        IconSource::File(path) => file_icon(icons, &path.read(values)?),
+    }
+}
+
+/// A list's row icons: ids, or paths for file icons.
+fn row_icons(
+    icons: &mut dyn MarkupIcons,
+    values: &dyn Values,
+    name: &str,
+    kind: IconKind,
+) -> Vec<Option<Icon>> {
+    if kind == IconKind::File {
+        return texts(values, name)
+            .iter()
+            .map(|path| file_icon(icons, path))
+            .collect();
+    }
+    uints(values, name)
+        .into_iter()
+        .map(|id| icon(icons, kind, id))
+        .collect()
 }
 
 /// One plugin window built from its markup: its frame and an element per
@@ -672,6 +710,14 @@ impl PluginPanelController {
     #[must_use]
     pub fn geometry_revision(&self) -> i32 {
         self.document.panel.geometry_revision
+    }
+
+    /// The session revision the window's elements were last shown at
+    /// (none before its first sync): a [`Self::sync`] at another revision
+    /// reads every element, and its icons, again.
+    #[must_use]
+    pub fn synced_revision(&self) -> Option<u64> {
+        self.synced
     }
 
     /// What the build ignored, one line each.
@@ -1399,12 +1445,9 @@ fn list_rows(
                 .enumerate()
                 .map(|(i, s)| vec![Cell::Text(s.clone(), row_color(&colors, i))])
                 .collect();
-            let resolved = row_icons.as_ref().map(|(name, kind)| {
-                uints(values, name)
-                    .into_iter()
-                    .map(|id| icon(icons, *kind, id))
-                    .collect()
-            });
+            let resolved = row_icons
+                .as_ref()
+                .map(|(name, kind)| self::row_icons(icons, values, name, *kind));
             let count = rows.len();
             (rows, vec![count], resolved)
         }
@@ -1429,9 +1472,9 @@ fn list_rows(
                     }
                     ColumnKind::Icon {
                         values: name, kind, ..
-                    } => uints(values, name)
+                    } => row_icons(icons, values, name, *kind)
                         .into_iter()
-                        .map(|id| Cell::Icon(icon(icons, *kind, id)))
+                        .map(Cell::Icon)
                         .collect(),
                     ColumnKind::Button { items, .. } => {
                         texts(values, items).into_iter().map(Cell::Button).collect()
@@ -1693,6 +1736,8 @@ impl crate::tree::Widget for MarkupField {
     }
 }
 
+#[cfg(test)]
+mod file_icon_tests;
 #[cfg(test)]
 mod flex_tests;
 #[cfg(test)]
