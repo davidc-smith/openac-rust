@@ -372,6 +372,11 @@ fn commit_placement(
     let previous_on_walkable = body.on_walkable();
     body.orientation = orientation;
     body.snap_to_cell(result.cell_id, result.position, result.cell_local_position);
+    if result.forced_into_cell {
+        // Forced into its cell: the frame and the cell only; it keeps the
+        // contact it had.
+        return;
+    }
     body.contact_plane_valid = result.in_contact;
     body.contact_plane = result.contact_plane;
     body.contact_plane_cell_id = result.contact_plane_cell_id;
@@ -1863,6 +1868,7 @@ impl Movement {
             self.remotes
                 .get(&key.local_id)
                 .map(|r| r.driver.obj.cell_id)
+                .or_else(|| self.ordinaries.get(&key.local_id).map(|o| o.cell_id))
         };
         let route = classify_accepted_position(&AcceptedPositionRouteRequest {
             authority,
@@ -1919,72 +1925,18 @@ impl Movement {
             }
             return;
         }
-        if self.ordinaries.contains_key(&key.local_id) {
-            // An ordinary body is put where the server says and moves on
-            // from there: a set-position route puts it down with a
-            // placement, which says what it touches there (contact,
-            // walkable ground) and so whether gravity pulls it; one that
-            // finds no spot leaves it where it was.
-            let origin = self
-                .residency
-                .is_resident(accepted.cell_id)
-                .then(|| self.residency.origin_of(accepted.cell_id))
-                .flatten();
-            match origin {
-                Some(origin) => {
-                    let sets_position = matches!(
-                        route.disposition,
-                        route::PositionDispositionRoute::SetPosition
-                            | route::PositionDispositionRoute::SetPositionSimple
-                    );
-                    let placed = if sets_position {
-                        self.placement_request(
-                            world,
-                            guid,
-                            key.local_id,
-                            &accepted,
-                            remote::wire_orientation(&accepted),
-                            route.set_position_flags.0,
-                            0,
-                        )
-                        .map(|(request, ..)| self.engine.set_position(&request, None))
-                    } else {
-                        None
-                    };
-                    let placed_origin = placed
-                        .as_ref()
-                        .filter(|p| p.is_committed())
-                        .and_then(|p| self.residency.origin_of(p.cell_id));
-                    if let Some(body) = self.ordinaries.get_mut(&key.local_id) {
-                        match (&placed, placed_origin) {
-                            (Some(placed), Some(placed_origin)) => {
-                                commit_placement(&mut body.body, placed, placed.orientation);
-                                ac_physics::obj_update::commit_set_position_post_ground(
-                                    &mut body.body,
-                                );
-                                body.cell_id = placed.cell_id;
-                                world.set_live_position(guid, body.live_position(placed_origin));
-                            }
-                            (Some(_), None) => {}
-                            (None, _) => {
-                                body.place(&accepted, origin);
-                                world.set_live_position(guid, body.live_position(origin));
-                            }
-                        }
-                    }
-                }
-                None => {
-                    self.ordinaries.remove(&key.local_id);
-                    world.clear_live_position(guid);
-                }
+        if let Some(ordinary) = self.ordinaries.remove(&key.local_id) {
+            // An object moving by its own physics that the server sends a
+            // position for: its body becomes the body the server's
+            // positions drive, as it is, and the position routes for it
+            // as for every other body (catch up to a near one on the
+            // ground, re-place it at a far one or a teleport, where the
+            // placement says what it touches; ignore one sent while it was
+            // off the ground).
+            if let Some(content) = self.content.clone() {
+                let body = RemoteBody::from_ordinary(object, &content, ordinary, now.as_secs_f64());
+                self.remotes.insert(key.local_id, body);
             }
-            self.register_collision(world, guid);
-            // Its rows stand where the body is.
-            if let Some(body) = self.ordinaries.get(&key.local_id) {
-                let at = (body.body.position(), body.body.orientation, body.cell_id);
-                self.follow_rows(key.local_id, at);
-            }
-            return;
         }
         if !self.remotes.contains_key(&key.local_id) {
             if self.resting.contains_key(&key.local_id) {

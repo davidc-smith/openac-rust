@@ -767,6 +767,7 @@ impl PhysicsEngine {
                 } else {
                     PhysicsShadowCommitAction::None
                 },
+                forced_into_cell: true,
                 ..PhysicsSetPositionResult::default()
             };
         }
@@ -893,6 +894,7 @@ impl PhysicsEngine {
             },
             collided_object_ids: ci.collide_object_guids.clone(),
             queried_cell_ids: Vec::new(),
+            forced_into_cell: false,
         }
     }
 

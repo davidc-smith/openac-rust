@@ -239,6 +239,10 @@ pub struct PhysicsSetPositionResult {
     pub collided_object_ids: Vec<u32>,
     /// Every cell the placement looked at.
     pub queried_cell_ids: Vec<u32>,
+    /// Forced into its cell (a hook, a storage chest, a corpse): only the
+    /// frame and the cell were set; the contact fields say nothing, and
+    /// the body keeps the contact it had.
+    pub forced_into_cell: bool,
 }
 
 impl PhysicsSetPositionResult {

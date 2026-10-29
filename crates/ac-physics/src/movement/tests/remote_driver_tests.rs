@@ -447,3 +447,41 @@ fn an_unknown_movement_type_runs_the_head_but_not_the_type_zero_tail() {
     assert_eq!(d.obj.interp.interpreted_state.forward_command, 0x4100_0003);
     assert_eq!(d.obj.position.get_sticky_object_id(), 0);
 }
+
+/// A placement forced into its cell (a hook, a storage chest, a corpse)
+/// sets only the body's frame and cell; the body keeps the contact it had
+/// on the ground. Taking the placement's empty contact fields, it lost it
+/// and gravity pulled it out of the cell it was forced into.
+#[test]
+fn a_placement_forced_into_its_cell_keeps_the_bodys_contact() {
+    let token = ObjectToken {
+        id: 0x7000_0001,
+        incarnation: 1,
+    };
+    let mut driver = RemoteMotionDriver::new(
+        token,
+        0xA9B4_0001,
+        Vec3::new(10.0, 10.0, 50.0),
+        Quat::IDENTITY,
+    );
+    driver.obj.body.contact_plane_valid = true;
+    assert!(driver.obj.body.in_contact() && driver.obj.body.on_walkable());
+    let placed = crate::PhysicsSetPositionResult {
+        residence: crate::PhysicsResidenceDisposition::Committed,
+        position: Vec3::new(12.0, 10.0, 51.0),
+        orientation: Quat::IDENTITY,
+        cell_id: 0xA9B4_0002,
+        cell_local_position: Vec3::new(12.0, 10.0, 51.0),
+        forced_into_cell: true,
+        ..crate::PhysicsSetPositionResult::default()
+    };
+    assert!(driver.commit_placement(&NoTargets, &placed, 1.0));
+    assert_eq!(driver.obj.body.position(), placed.position);
+    assert_eq!(driver.obj.cell_id, placed.cell_id);
+    assert!(driver.obj.body.in_contact(), "keeps its contact");
+    assert!(driver.obj.body.on_walkable(), "keeps its walkable ground");
+    assert!(
+        driver.obj.body.contact_plane_valid,
+        "keeps its contact plane"
+    );
+}

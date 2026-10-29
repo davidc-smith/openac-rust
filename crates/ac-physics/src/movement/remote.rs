@@ -1138,6 +1138,16 @@ impl RemoteMotionDriver {
         let previous_on_walkable = body.on_walkable();
         body.orientation = placed.orientation;
         body.snap_to_cell(placed.cell_id, placed.position, placed.cell_local_position);
+        if placed.forced_into_cell {
+            // Forced into its cell: the frame and the cell only; the body
+            // keeps the contact it had.
+            self.obj.cell_id = placed.cell_id;
+            self.last_server_pos = placed.position;
+            self.last_server_pos_time = now;
+            self.last_shadow_sync_pos = placed.position;
+            self.last_shadow_sync_orientation = placed.orientation;
+            return true;
+        }
         body.contact_plane_valid = placed.in_contact;
         body.contact_plane = placed.contact_plane;
         body.contact_plane_cell_id = placed.contact_plane_cell_id;
