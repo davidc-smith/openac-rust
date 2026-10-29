@@ -595,6 +595,7 @@ impl InventoryController {
                 view.player,
                 destination,
                 view.player,
+                self.moving_amount(p.obj_id, view).1,
             )
             .is_ok()
         {
@@ -650,11 +651,26 @@ impl InventoryController {
                 0,
             );
         }
+        let whole_stack = self.moving_amount(item, view).1;
         (
-            evaluate_container_placement(view.objects, item, destination, view.player).err(),
+            evaluate_container_placement(view.objects, item, destination, view.player, whole_stack)
+                .err(),
             source_is_bag,
             destination,
         )
+    }
+
+    /// How much of `item` a drag moves, and whether that is the whole
+    /// stack: the selected stack's split quantity splits it, wherever it
+    /// comes from; the whole of it is a pickup when it comes from the
+    /// ground. Part of a stack needs a slot of its own, even in the pack
+    /// that holds the rest.
+    fn moving_amount(&self, item: u32, view: &ItemsView<'_>) -> (u32, bool) {
+        let full = view
+            .get(item)
+            .map_or(1, |d| d.stack_size.max(1).unsigned_abs());
+        let split = view.split_size(item, full, self.selection.get());
+        (split, split >= full)
     }
 
     fn notice(ui: &mut UiRoot, view: &ItemsView<'_>, r: PlacementRejection, item: u32, dest: u32) {
@@ -695,7 +711,15 @@ impl InventoryController {
             } else {
                 destination
             };
-            match choose_container(view.objects, item, root, destination, view.player) {
+            let whole_stack = self.moving_amount(item, view).1;
+            match choose_container(
+                view.objects,
+                item,
+                root,
+                destination,
+                view.player,
+                whole_stack,
+            ) {
                 Ok(c) => fallthrough = c,
                 Err(no_room) => {
                     // Nothing has room: the notice names where it looked.
@@ -703,8 +727,14 @@ impl InventoryController {
                     return;
                 }
             }
-            legality =
-                evaluate_container_placement(view.objects, item, fallthrough, view.player).err();
+            legality = evaluate_container_placement(
+                view.objects,
+                item,
+                fallthrough,
+                view.player,
+                whole_stack,
+            )
+            .err();
             destination = fallthrough;
         }
         if let Some(r) = legality {
@@ -740,11 +770,7 @@ impl InventoryController {
         }
         let dragged = view.get(item);
         let source_is_bag = dragged.is_some_and(is_bag);
-        // The selected stack's split quantity splits it, wherever it comes
-        // from; the whole of it is a pickup when it comes from the ground.
-        let full = dragged.map_or(1, |d| d.stack_size.max(1).unsigned_abs());
-        let split = view.split_size(item, full, self.selection.get());
-        let whole_stack = split >= full;
+        let (split, whole_stack) = self.moving_amount(item, view);
         let mut container;
         let mut placement: Option<i32>;
         if Some(list) == self.contents_grid {
@@ -783,11 +809,9 @@ impl InventoryController {
                 if target_item == 0 || target_item == item {
                     return;
                 }
+                // A full pack was a capacity refusal, answered by the
+                // search above; one that takes it here has room.
                 container = target_item;
-                if fallthrough == 0 && is_container_full(view, container) {
-                    // The refusal already showed over the pack.
-                    return;
-                }
                 placement = Some(0);
             }
         } else {
@@ -1242,11 +1266,6 @@ fn list_drop_placement(
         i32::MAX
     };
     item_list_drop_placement(drop_index, listed.len(), source, whole_stack)
-}
-
-fn is_container_full(view: &ItemsView<'_>, container: u32) -> bool {
-    let cap = view.get(container).map_or(0, |o| o.items_capacity);
-    cap > 0 && count_loose_contents(view, container) >= cap as usize
 }
 
 /// An item cell's container fullness meter (every item cell, the toolbar's

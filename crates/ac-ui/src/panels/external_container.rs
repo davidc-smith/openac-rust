@@ -437,7 +437,7 @@ impl ExternalContainerController {
         if is_container(view.get(item)) {
             return Some(PlacementRejection::ContainerCapacityFull);
         }
-        evaluate_container_placement(view.objects, item, self.open_container, 0).err()
+        evaluate_container_placement(view.objects, item, self.open_container, 0, true).err()
     }
 
     fn drag_over(

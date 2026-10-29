@@ -63,12 +63,14 @@ fn is_container_id(objects: &ClientObjectTable, id: u32) -> bool {
 /// that is the player or a known container not being traded, and not the
 /// item or inside it; for a hook, a house with an owner and an item that
 /// fits the hook; and a free slot of the right kind unless the item is
-/// already directly inside (a reorder).
+/// already directly inside (a reorder). A plain item already inside counts
+/// only when `whole_stack` moves: part of a stack needs a slot of its own.
 pub fn evaluate_container_placement(
     objects: &ClientObjectTable,
     item_id: u32,
     destination_id: u32,
     player_id: u32,
+    whole_stack: bool,
 ) -> Result<(), PlacementRejection> {
     let item = match objects.get(item_id) {
         Some(item) if item_id != 0 => item,
@@ -127,10 +129,9 @@ pub fn evaluate_container_placement(
                 .is_some_and(|child| is_container(child) == moving_container)
         })
         .count();
-    if !already_directly_contained
-        && capacity > 0
-        && occupied >= usize::try_from(capacity).unwrap_or(usize::MAX)
-    {
+    // Part of a stack takes a slot of its own, even beside the rest of it.
+    let reorder = already_directly_contained && (moving_container || whole_stack);
+    if !reorder && capacity > 0 && occupied >= usize::try_from(capacity).unwrap_or(usize::MAX) {
         return Err(if moving_container {
             PlacementRejection::ContainerCapacityFull
         } else {
@@ -216,16 +217,18 @@ pub fn placement_rejection_text(
 
 /// Whether `container_id` can take `item_id`: the container must be the
 /// player or in the player's inventory, not a spell focus and not being
-/// traded. A plain item needs a free item slot (a capacity of 0 or -1 is
-/// unbounded, and an item already inside fits); a pack needs a free
-/// container slot (-1 is unbounded, 0 means none). An undescribed player
-/// object fits anything.
+/// traded. A plain item needs a free item slot (-1 is unbounded, 0 means
+/// none, as a capacity the description left out); one already inside fits
+/// only when `whole_stack` moves, since part of a stack needs a slot of its
+/// own. A pack needs a free container slot (-1 is unbounded, 0 means none;
+/// one already inside fits). An undescribed player object fits anything.
 #[must_use]
 pub fn will_item_fit_in_container(
     objects: &ClientObjectTable,
     item_id: u32,
     container_id: u32,
     player_id: u32,
+    whole_stack: bool,
 ) -> bool {
     if container_id == 0 || item_id == container_id {
         return false;
@@ -250,14 +253,15 @@ pub fn will_item_fit_in_container(
         }
         container.containers_capacity
     } else {
-        if container.items_capacity <= 0 {
+        if container.items_capacity == -1 {
             return true;
         }
         container.items_capacity
     };
+    let inside_counts = moving_container || whole_stack;
     let mut occupied = 0;
     for &id in contents {
-        if id == item_id {
+        if id == item_id && inside_counts {
             return true;
         }
         if is_container_id(objects, id) == moving_container {
@@ -271,18 +275,21 @@ pub fn will_item_fit_in_container(
 /// inventory: the named `target_id` if it fits, else the root (the main
 /// pack), else the first of the root's packs with room, in slot order.
 /// When nothing has room the error is the capacity refusal, whose notice
-/// names the root.
+/// names the root. `whole_stack` is false when only part of a stack moves.
 pub fn choose_container(
     objects: &ClientObjectTable,
     item_id: u32,
     root_id: u32,
     target_id: u32,
     player_id: u32,
+    whole_stack: bool,
 ) -> Result<u32, PlacementRejection> {
-    if target_id != 0 && will_item_fit_in_container(objects, item_id, target_id, player_id) {
+    let fits =
+        |container| will_item_fit_in_container(objects, item_id, container, player_id, whole_stack);
+    if target_id != 0 && fits(target_id) {
         return Ok(target_id);
     }
-    if root_id != 0 && will_item_fit_in_container(objects, item_id, root_id, player_id) {
+    if root_id != 0 && fits(root_id) {
         return Ok(root_id);
     }
     if root_id != 0 {
@@ -293,10 +300,7 @@ pub fn choose_container(
             .filter(|contained| is_container(contained))
             .collect();
         packs.sort_by_key(|pack| pack.container_slot);
-        if let Some(pack) = packs
-            .iter()
-            .find(|pack| will_item_fit_in_container(objects, item_id, pack.object_id(), player_id))
-        {
+        if let Some(pack) = packs.iter().find(|pack| fits(pack.object_id())) {
             return Ok(pack.object_id());
         }
     }
@@ -444,11 +448,11 @@ mod tests {
         w.add(ClientObject::new(3));
 
         assert_eq!(
-            evaluate_container_placement(&w.t, 3, PLAYER, PLAYER),
+            evaluate_container_placement(&w.t, 3, PLAYER, PLAYER, true),
             Err(PlacementRejection::ItemCapacityFull)
         );
         assert_eq!(
-            evaluate_container_placement(&w.t, 2, PLAYER, PLAYER),
+            evaluate_container_placement(&w.t, 2, PLAYER, PLAYER, true),
             Ok(())
         );
     }
@@ -463,12 +467,12 @@ mod tests {
         }
         w.mv(11, 10, 0);
         assert_eq!(
-            evaluate_container_placement(&w.t, 10, 11, PLAYER),
+            evaluate_container_placement(&w.t, 10, 11, PLAYER, true),
             Err(PlacementRejection::RecursiveContainment)
         );
         w.t.get_mut(10).expect("present").trade_state = 1;
         assert_eq!(
-            evaluate_container_placement(&w.t, 10, PLAYER, PLAYER),
+            evaluate_container_placement(&w.t, 10, PLAYER, PLAYER, true),
             Err(PlacementRejection::SourceBeingTraded)
         );
     }
@@ -502,7 +506,10 @@ mod tests {
         ] {
             let mut w = hooked_house(hook_type, u32::MAX, Some(HOUSE_OWNER));
             w.add(sword());
-            assert_eq!(evaluate_container_placement(&w.t, 3, 2, PLAYER), expected);
+            assert_eq!(
+                evaluate_container_placement(&w.t, 3, 2, PLAYER, true),
+                expected
+            );
         }
     }
 
@@ -511,7 +518,7 @@ mod tests {
         let mut w = hooked_house(WALL_HOOK, u32::MAX, Some(HOUSE_OWNER));
         w.add(object(3, "Coat", ItemType::ARMOR));
         assert_eq!(
-            evaluate_container_placement(&w.t, 3, 2, PLAYER),
+            evaluate_container_placement(&w.t, 3, 2, PLAYER, true),
             Err(PlacementRejection::WrongHookType)
         );
     }
@@ -521,7 +528,7 @@ mod tests {
         let mut w = hooked_house(WALL_HOOK, ItemType::ARMOR.bits(), Some(HOUSE_OWNER));
         w.add(sword());
         assert_eq!(
-            evaluate_container_placement(&w.t, 3, 2, PLAYER),
+            evaluate_container_placement(&w.t, 3, 2, PLAYER, true),
             Err(PlacementRejection::WrongHookType)
         );
     }
@@ -532,7 +539,7 @@ mod tests {
             let mut w = hooked_house(WALL_HOOK, u32::MAX, owner);
             w.add(sword());
             assert_eq!(
-                evaluate_container_placement(&w.t, 3, 2, PLAYER),
+                evaluate_container_placement(&w.t, 3, 2, PLAYER, true),
                 Err(PlacementRejection::HookHouseNotOwned),
                 "{owner:?}"
             );
@@ -619,7 +626,7 @@ mod tests {
         let mut w = player_with_packs(3, 2);
         let loot = world_item(&mut w);
         assert_eq!(
-            choose_container(&w.t, loot, PLAYER, SIDE_PACK_B, PLAYER),
+            choose_container(&w.t, loot, PLAYER, SIDE_PACK_B, PLAYER, true),
             Ok(SIDE_PACK_B)
         );
     }
@@ -632,7 +639,7 @@ mod tests {
         add_loose(&mut w, 0x7000_0102, SIDE_PACK_A);
         let loot = world_item(&mut w);
         assert_eq!(
-            choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER),
+            choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true),
             Ok(SIDE_PACK_B)
         );
     }
@@ -651,7 +658,7 @@ mod tests {
         w.mv(0x6000_0020, PLAYER, 2);
         let loot = world_item(&mut w);
         assert_eq!(
-            choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER),
+            choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true),
             Err(PlacementRejection::ItemCapacityFull)
         );
     }
@@ -660,7 +667,10 @@ mod tests {
     fn no_target_named_tries_the_main_pack_first() {
         let mut w = player_with_packs(3, 2);
         let loot = world_item(&mut w);
-        assert_eq!(choose_container(&w.t, loot, PLAYER, 0, PLAYER), Ok(PLAYER));
+        assert_eq!(
+            choose_container(&w.t, loot, PLAYER, 0, PLAYER, true),
+            Ok(PLAYER)
+        );
     }
 
     #[test]
@@ -672,7 +682,7 @@ mod tests {
         add_loose(&mut w, 0x7000_0103, SIDE_PACK_B);
         add_loose(&mut w, 0x7000_0104, SIDE_PACK_B);
         let loot = world_item(&mut w);
-        let refusal = choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER);
+        let refusal = choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true);
         assert_eq!(refusal, Err(PlacementRejection::ItemCapacityFull));
         assert_eq!(
             placement_rejection_text(
@@ -692,7 +702,7 @@ mod tests {
         pack.items_capacity = 4;
         w.add(pack);
         assert_eq!(
-            choose_container(&w.t, 0x6000_0020, PLAYER, PLAYER, PLAYER),
+            choose_container(&w.t, 0x6000_0020, PLAYER, PLAYER, PLAYER, true),
             Err(PlacementRejection::ContainerCapacityFull)
         );
         let expected = format!(
@@ -714,7 +724,58 @@ mod tests {
     fn an_item_already_in_the_container_fits_even_when_it_is_full() {
         let mut w = player_with_packs(1, 2);
         let inside = add_loose(&mut w, 0x7000_0100, PLAYER);
-        assert!(will_item_fit_in_container(&w.t, inside, PLAYER, PLAYER));
+        assert!(will_item_fit_in_container(
+            &w.t, inside, PLAYER, PLAYER, true
+        ));
+    }
+
+    #[test]
+    fn part_of_a_stack_already_in_a_full_pack_needs_a_slot_of_its_own() {
+        // Only the whole stack counts as already fitting where it is.
+        let mut w = player_with_packs(1, 2);
+        let inside = add_loose(&mut w, 0x7000_0100, PLAYER);
+        assert!(will_item_fit_in_container(
+            &w.t, inside, PLAYER, PLAYER, true
+        ));
+        assert!(!will_item_fit_in_container(
+            &w.t, inside, PLAYER, PLAYER, false
+        ));
+        assert_eq!(
+            evaluate_container_placement(&w.t, inside, PLAYER, PLAYER, true),
+            Ok(())
+        );
+        assert_eq!(
+            evaluate_container_placement(&w.t, inside, PLAYER, PLAYER, false),
+            Err(PlacementRejection::ItemCapacityFull)
+        );
+        assert_eq!(
+            choose_container(&w.t, inside, PLAYER, PLAYER, PLAYER, false),
+            Ok(SIDE_PACK_A)
+        );
+    }
+
+    #[test]
+    fn an_item_capacity_of_zero_has_no_room() {
+        // Only -1 is unbounded; a pack that carries no item slots is
+        // passed over by the search.
+        let mut w = player_with_packs(1, 2);
+        add_loose(&mut w, 0x7000_0100, PLAYER);
+        let mut none = object(SIDE_PACK_A, "Pack A", ItemType::CONTAINER);
+        none.items_capacity = 0;
+        w.add(none);
+        w.mv(SIDE_PACK_A, PLAYER, 0);
+        let loot = world_item(&mut w);
+        assert!(!will_item_fit_in_container(
+            &w.t,
+            loot,
+            SIDE_PACK_A,
+            PLAYER,
+            true
+        ));
+        assert_eq!(
+            choose_container(&w.t, loot, PLAYER, PLAYER, PLAYER, true),
+            Ok(SIDE_PACK_B)
+        );
     }
 
     #[test]
@@ -724,7 +785,7 @@ mod tests {
             add_loose(&mut w, 0x7000_0200 + i, PLAYER);
         }
         let loot = world_item(&mut w);
-        assert!(will_item_fit_in_container(&w.t, loot, PLAYER, PLAYER));
+        assert!(will_item_fit_in_container(&w.t, loot, PLAYER, PLAYER, true));
     }
 
     #[test]
@@ -734,6 +795,12 @@ mod tests {
         chest.items_capacity = 10;
         w.add(chest);
         let loot = world_item(&mut w);
-        assert!(!will_item_fit_in_container(&w.t, loot, 0x6000_0030, PLAYER));
+        assert!(!will_item_fit_in_container(
+            &w.t,
+            loot,
+            0x6000_0030,
+            PLAYER,
+            true
+        ));
     }
 }

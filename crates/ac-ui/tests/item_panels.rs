@@ -1733,6 +1733,12 @@ fn a_drop_on_the_full_main_pack_icon_goes_into_the_first_side_pack_with_room() {
     inv.update(&view);
     let top = inv.top;
     assert_eq!(inv.slot(top, 0).object_id, PLAYER);
+    // Held over the icon the answer is the main pack's own: it has no
+    // free slot, so the refusal shows although letting go finds room.
+    assert_eq!(
+        drag_over(&mut inv, top, 0, ground.clone(), &view),
+        DragAcceptance::Reject
+    );
     let out = drop_on(&mut inv, top, 0, ground, &view);
     assert_dbg_eq!(
         sessions(&out),
@@ -1763,6 +1769,89 @@ fn a_drop_on_a_full_side_pack_icon_says_that_pack_is_full_and_sends_nothing() {
         notices(&out),
         vec!["The Pack C is completely full!".to_owned()]
     );
+}
+
+/// The player's own stack 0xB of 10 in the side pack 0xC (room for one,
+/// so full), the main pack full with 0xA, and the empty side pack 0xD.
+fn own_stack_in_a_full_side_pack() -> Objects {
+    let mut o = Objects::new();
+    o.player(1, 7);
+    o.contained(0xA, PLAYER, 0, ItemType::MISC);
+    o.bag(0xC, 1, 1);
+    o.bag(0xD, 2, 2);
+    stack(&mut o, 0xB, 0xC, 0, 10, 273);
+    o
+}
+
+#[test]
+fn an_own_stack_dropped_on_the_full_main_pack_icon_stays_in_its_full_side_pack() {
+    // The whole stack counts as fitting in the pack that already holds
+    // it, so the search stops there: it moves to the top of that pack.
+    let o = own_stack_in_a_full_side_pack();
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let top = inv.top;
+    let out = drop_on(&mut inv, top, 0, payload(0xB), &view);
+    assert_dbg_eq!(
+        moves(&out),
+        vec![(0xBu32, ObjectRef::Guid(0xC), 0i32, 0u32)]
+    );
+    assert!(notices(&out).is_empty());
+}
+
+#[test]
+fn part_of_an_own_stack_dropped_on_the_full_main_pack_icon_goes_to_a_pack_with_room() {
+    // Part of a stack needs a slot of its own, even in the pack holding
+    // the rest: the full side pack is passed over for the next one.
+    let o = own_stack_in_a_full_side_pack();
+    let mut split = StackSplitQuantity::new();
+    split.reset(10, Some(4));
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView {
+        selected: Some(0xB),
+        split: Some(&split),
+        ..ItemsView::new(&o.t, PLAYER)
+    };
+    inv.update(&view);
+    let top = inv.top;
+    let out = drop_on(&mut inv, top, 0, payload(0xB), &view);
+    assert_dbg_eq!(
+        moves(&out),
+        vec![(0xBu32, ObjectRef::Guid(0xD), 0i32, 4u32)]
+    );
+    assert!(notices(&out).is_empty());
+}
+
+#[test]
+fn a_stack_in_the_full_main_pack_dropped_on_its_icon_moves_whole_or_splits_elsewhere() {
+    let mut o = Objects::new();
+    o.player(1, 7);
+    stack(&mut o, 0xB, PLAYER, 0, 10, 273);
+    o.bag(0xC, 1, 2);
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let view = ItemsView::new(&o.t, PLAYER);
+    inv.update(&view);
+    let top = inv.top;
+    // The whole stack already fits where it is: it moves to the top.
+    let out = drop_on(&mut inv, top, 0, payload(0xB), &view);
+    assert_dbg_eq!(moves(&out), vec![(0xBu32, ObjectRef::Player, 0i32, 0u32)]);
+    assert!(notices(&out).is_empty());
+    // Part of it needs a free slot: the first side pack with room.
+    let mut split = StackSplitQuantity::new();
+    split.reset(10, Some(4));
+    let view = ItemsView {
+        selected: Some(0xB),
+        split: Some(&split),
+        ..ItemsView::new(&o.t, PLAYER)
+    };
+    inv.update(&view);
+    let out = drop_on(&mut inv, top, 0, payload(0xB), &view);
+    assert_dbg_eq!(
+        moves(&out),
+        vec![(0xBu32, ObjectRef::Guid(0xC), 0i32, 4u32)]
+    );
+    assert!(notices(&out).is_empty());
 }
 
 #[test]

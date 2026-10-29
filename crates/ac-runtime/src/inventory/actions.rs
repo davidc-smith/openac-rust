@@ -1425,7 +1425,8 @@ impl Inventory {
             return false;
         }
         let target = self.preferred_backpack_container(main_pack, ctx);
-        let chosen = placement::choose_container(ctx.world.items(), item_id, root, target, root);
+        let chosen =
+            placement::choose_container(ctx.world.items(), item_id, root, target, root, true);
         if let Some(merge) = self.plan_auto_merge(item_id, ctx) {
             // The joined stack's pack is where the quantity is shown
             // waiting (the main pack when that pack is not known).
