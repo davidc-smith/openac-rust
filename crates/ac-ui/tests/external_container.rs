@@ -353,6 +353,36 @@ fn a_corpse_gets_one_cell_per_unit_of_capacity_and_the_item_strip_scrolls() {
     assert!(!visible(&s, 0));
 }
 
+/// OpenAC `OpeningAnotherEmptyPack_resizesTheItemStripToItsCapacity`:
+/// opening another pack that shows the same items (none) but holds a
+/// different number resizes the item strip to that pack's capacity.
+#[test]
+fn opening_another_empty_pack_resizes_the_item_strip_to_its_capacity() {
+    let mut s = strip();
+    let (big, small, unlimited) = (ITEM + 10, ITEM + 11, ITEM + 12);
+    for (id, capacity) in [(big, 24), (small, 10), (unlimited, -1)] {
+        let mut pack = ClientObject::new(id);
+        pack.item_type = ItemType::CONTAINER;
+        pack.items_capacity = capacity;
+        pack.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE);
+        s.objects.add(pack);
+    }
+    s.open_with(CHEST, 24, 3, &[big, small, unlimited]);
+    let press = |s: &mut Strip, i: usize| {
+        s.fire(PACKS, i, kind::MOUSE_DOWN, None);
+        s.update();
+    };
+
+    press(&mut s, 0);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    press(&mut s, 1);
+    assert_eq!(s.num_cells(CONTENTS), 10);
+    press(&mut s, 2);
+    assert_eq!(s.num_cells(CONTENTS), 24);
+    let list = s.host.root.widget::<ItemList>(s.ids[&CONTENTS]).unwrap();
+    assert_eq!(list.fixed_slot_count, None);
+}
+
 /// OpenAC `UnlimitedContainer_fillsTheVisibleWidth`: a negative capacity
 /// means no limit: the strips fill the window.
 #[test]

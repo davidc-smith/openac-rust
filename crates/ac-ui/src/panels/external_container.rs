@@ -603,13 +603,19 @@ impl ExternalContainerController {
                 loose.insert(at, pr.item_id);
                 pr.item_id
             });
-        let same = matches(ui, self.top, &[root])
+        let pack_cells = slot_count(view, root, true);
+        let item_cells = slot_count(view, self.open_container, false);
+        let fixed =
+            |ui: &UiRoot, list| ui.widget::<ItemList>(list).and_then(|l| l.fixed_slot_count);
+        // A strip whose cell count changed (another container opened, or its
+        // capacity changed) is rebuilt.
+        let same = fixed(ui, self.containers) == pack_cells
+            && fixed(ui, self.contents) == item_cells
+            && matches(ui, self.top, &[root])
             && cells(ui, self.top).len() == 1
             && matches(ui, self.containers, shown(ui, self.containers, &packs))
             && matches(ui, self.contents, shown(ui, self.contents, &loose));
         if !same {
-            let pack_cells = slot_count(view, root, true);
-            let item_cells = slot_count(view, self.open_container, false);
             for (list, guids, fixed) in [
                 (self.top, std::slice::from_ref(&root), None),
                 (self.containers, packs.as_slice(), pack_cells),
