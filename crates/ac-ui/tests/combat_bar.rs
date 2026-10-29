@@ -67,8 +67,9 @@ fn bar() -> Bar {
     }
     let mut e = Element::at(13.0, 14.0, 507.0, 14.0);
     e.dat_element_id = cb::POWER_CONTROL_ID;
+    // As the importer builds it: a plain horizontal bar, which the
+    // controller makes a value slider.
     let mut slider = Scrollbar::default();
-    slider.scalar = true;
     slider.horizontal = true;
     ids.insert(cb::POWER_CONTROL_ID, ui.add(root, e, slider));
     add_std_text(ui, &mut ids, root, cb::SPEED_LABEL_ID);
@@ -112,6 +113,27 @@ impl Bar {
 
     fn fire(&mut self, id: u32, k: i32) {
         self.host.root.fire_event(k, self.ids[&id], None);
+        self.host.pump();
+    }
+
+    /// The mouse pressed on `id` at `from_x` (element coordinates), moved
+    /// to `to_x` and released: the widget itself reports what it does.
+    fn drag(&mut self, id: u32, from_x: i32, to_x: i32) {
+        let e = self.ids[&id];
+        for (k, x) in [
+            (kind::MOUSE_DOWN, from_x),
+            (kind::MOUSE_MOVE, to_x),
+            (kind::MOUSE_UP, to_x),
+        ] {
+            let event = ac_ui::event::UiEvent {
+                kind: k,
+                data1: x,
+                data2: 7,
+                target: Some(e),
+                ..ac_ui::event::UiEvent::default()
+            };
+            self.host.root.send_event(e, &event);
+        }
         self.host.pump();
     }
 
@@ -251,6 +273,31 @@ fn the_power_slider_sets_the_attack_power() {
 }
 
 #[test]
+fn dragging_the_power_slider_sets_the_attack_power() {
+    let mut b = bar();
+    b.update(&view(CombatMode::MELEE));
+    b.sessions();
+    // Grab the thumb (16 wide, at half power on the 507-wide bar) and drag
+    // it past the bar's far end: full power.
+    b.drag(cb::POWER_CONTROL_ID, 253, 600);
+    let powers: Vec<f32> = b
+        .sessions()
+        .into_iter()
+        .filter_map(|c| match c {
+            SessionCommand::Gameplay(GameplayCommand::SetAttackPower(p)) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(powers.last(), Some(&1.0), "{powers:?}");
+    let s = b
+        .host
+        .root
+        .widget::<Scrollbar>(b.ids[&cb::POWER_CONTROL_ID])
+        .unwrap();
+    assert_eq!(s.scalar_position(), 1.0);
+}
+
+#[test]
 fn the_power_labels_keep_their_retail_alignment() {
     let b = bar();
     let speed = b
@@ -346,6 +393,8 @@ mod real_dats {
         let repeat = layout.find(cb::REPEAT_ATTACKS_ID).unwrap();
         assert!(ui.widget::<Button>(repeat).unwrap().toggle_behavior);
         let mut bar = CombatBarController::bind(ui, &layout, labels).expect("binds");
+        // The bound power control is a value slider (a drag reports it).
+        assert!(ui.widget::<Scrollbar>(power).unwrap().scalar);
         assert_eq!(bar.update(ui, &view(CombatMode::MELEE)), Some(true));
         let high = layout.find(cb::HIGH_BUTTON_ID).unwrap();
         assert_eq!(

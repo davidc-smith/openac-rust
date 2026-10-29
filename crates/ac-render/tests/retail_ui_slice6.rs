@@ -174,7 +174,7 @@ const LOOT: u32 = 0x8000_0101;
 
 /// The session's facts with a corpse open (holding one item) or not.
 fn corpse_facts(scene: &mut Scene, open: bool, in_range: bool) {
-    use ac_core::items::{ClientObject, ItemType};
+    use ac_core::items::{ClientObject, ItemType, PublicWeenieFlags};
     use ac_runtime::session::interface::{InterfaceEvent, InterfaceState, ItemsUpdate};
     let mut player = ClientObject::new(PLAYER);
     player.name = "+Horan".to_owned();
@@ -183,6 +183,8 @@ fn corpse_facts(scene: &mut Scene, open: bool, in_range: bool) {
     corpse.name = "Corpse of Drudge".to_owned();
     corpse.item_type = ItemType::CONTAINER;
     corpse.items_capacity = 120;
+    corpse.containers_capacity = 10;
+    corpse.public_weenie_bitfield = Some(PublicWeenieFlags::OPENABLE | PublicWeenieFlags::CORPSE);
     let mut loot = ClientObject::new(LOOT);
     loot.name = "Drudge Charm".to_owned();
     loot.item_type = ItemType::JEWELRY;
@@ -421,6 +423,7 @@ fn player_at_arwic(scene: &mut Scene) {
             radar: RadarFacts::default(),
             motion: None,
             effects: ac_runtime::world::EffectFacts::default(),
+            step_blend: None,
         }],
     }));
     scene.apply(PresentationEvent::Interface(InterfaceEvent::State(
@@ -961,4 +964,96 @@ fn an_item_dragged_from_the_inventory_is_staged_for_salvage() {
         })
         .unwrap();
     assert_eq!(staged, [RING]);
+}
+
+/// OpenAC `MiniGameUiControllerTests` through the window: a used board
+/// shows the Game Center, the game the session sends is drawn from the
+/// player's side with the indicator lit, a click on a piece then a square
+/// asks the session for the move, and a game that ends with no result
+/// hides the window.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_used_board_shows_the_game_center_and_plays_through_the_session() {
+    use ac_core::chess::{ChessBoard, ChessSquare, ChessTeam};
+    use ac_render::ui::indicator_panels::{INDICATORS_WINDOW, MINI_GAME_WINDOW};
+    use ac_runtime::gameplay::{ChessCommand, ChessStage, ChessView, GameplayCommand};
+    use ac_runtime::session::SessionCommand;
+    use ac_runtime::session::interface::InterfaceEvent;
+    use ac_ui::draw::TextureRef;
+    use ac_ui::event::kind;
+    use ac_ui::panels::indicators::MINI_GAME_BUTTON_ID;
+    use ac_ui::panels::mini_game::MiniGameController;
+    use ac_ui::widgets::DatElement;
+    const BOARD: u32 = 0x7A9B_4001;
+    let mut ui = WindowUi::build(dats(), (1280, 720)).expect("the UI builds");
+    assert!(ui.mounted().contains(&MINI_GAME_WINDOW));
+    assert!(!ui.host().root.is_window_visible(MINI_GAME_WINDOW));
+    let mut scene = Scene::default();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::BeginGame(
+        BOARD,
+    )));
+    ui.feed(&mut scene);
+    assert!(ui.host().root.is_window_visible(MINI_GAME_WINDOW));
+
+    let mut view = ChessView {
+        revision: 1,
+        stage: ChessStage::MyTurn,
+        board_guid: BOARD,
+        team: Some(ChessTeam::White),
+        offering_stalemate: false,
+        games_ended: 0,
+        board: ChessBoard::standard(),
+    };
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::Chess(
+        Box::new(view.clone()),
+    )));
+    ui.feed(&mut scene);
+    let indicator_state = |ui: &WindowUi| {
+        let root = &ui.host().root;
+        let frame = root.window(INDICATORS_WINDOW).unwrap().frame;
+        let button = root.find_descendant(frame, MINI_GAME_BUTTON_ID).unwrap();
+        root.retail_state(button)
+    };
+    assert_eq!(indicator_state(&ui), Some(states::NORMAL));
+    let squares = ui
+        .host_mut()
+        .with_controller::<MiniGameController, _>(MINI_GAME_WINDOW, |c, _| c.squares().to_vec())
+        .unwrap();
+    assert_eq!(squares.len(), 64);
+    let image = |ui: &WindowUi, i: usize| {
+        ui.host()
+            .root
+            .widget::<DatElement>(squares[i])
+            .unwrap()
+            .runtime_image
+    };
+    // e1, the white king, along the bottom.
+    assert_eq!(image(&ui, 60), Some(Some(TextureRef::Surface(0x0600_4D02))));
+
+    for square in [squares[52], squares[36]] {
+        ui.host_mut().root.fire_event(kind::CLICK, square, None);
+        ui.host_mut().pump();
+        ui.feed(&mut scene);
+    }
+    let sent = ui.drain();
+    assert!(
+        sent.iter().any(|c| matches!(
+            c,
+            SessionCommand::Gameplay(GameplayCommand::Chess(ChessCommand::Move { from, to }))
+                if *from == ChessSquare::new(4, 1) && *to == ChessSquare::new(4, 3)
+        )),
+        "{sent:?}"
+    );
+
+    view.revision = 2;
+    view.stage = ChessStage::NotPlaying;
+    view.board_guid = 0;
+    view.team = None;
+    view.games_ended = 1;
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::Chess(
+        Box::new(view),
+    )));
+    ui.feed(&mut scene);
+    assert!(!ui.host().root.is_window_visible(MINI_GAME_WINDOW));
+    assert_eq!(indicator_state(&ui), Some(states::GHOSTED));
 }

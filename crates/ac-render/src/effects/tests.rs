@@ -236,6 +236,7 @@ fn view(local_id: u32, guid: u32, setup_id: u32) -> ObjectView {
         radar: RadarFacts::default(),
         motion: None,
         effects: EffectFacts::default(),
+        step_blend: None,
     }
 }
 

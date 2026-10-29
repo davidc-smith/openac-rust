@@ -767,6 +767,7 @@ impl PhysicsEngine {
                 } else {
                     PhysicsShadowCommitAction::None
                 },
+                forced_into_cell: true,
                 ..PhysicsSetPositionResult::default()
             };
         }
@@ -893,6 +894,7 @@ impl PhysicsEngine {
             },
             collided_object_ids: ci.collide_object_guids.clone(),
             queried_cell_ids: Vec::new(),
+            forced_into_cell: false,
         }
     }
 
@@ -914,6 +916,10 @@ impl PhysicsEngine {
         oi.step_down = true;
         oi.self_entity_id = request.moving_entity_id;
         oi.mover_physics_state = body.as_ref().map_or(PhysicsState::NONE, |b| b.state);
+        // Every move of a body takes its ethereal bit from the body's own
+        // state, as a placement does: an ethereal mover passes through
+        // objects that are not static.
+        oi.ethereal = oi.mover_physics_state.contains(PhysicsState::ETHEREAL);
         oi.target_id = request.designated_target_id;
         oi.state.insert(request.mover_flags.0);
         if oi.mover_physics_state.contains(PhysicsState::MISSILE) {

@@ -258,6 +258,16 @@ game_action_types! {
     MODIFY_ALLEGIANCE_GUEST_PERMISSION = 0x0267,
     /// Give or take allegiance storage access.
     MODIFY_ALLEGIANCE_STORAGE_PERMISSION = 0x0268,
+    /// Sit at a game board (chess).
+    GAME_JOIN = 0x0269,
+    /// Resign the game.
+    GAME_QUIT = 0x026A,
+    /// Move a piece.
+    GAME_MOVE = 0x026B,
+    /// Give up the turn.
+    GAME_MOVE_PASS = 0x026D,
+    /// Offer or withdraw a draw.
+    GAME_STALEMATE = 0x026E,
     /// List houses for sale.
     LIST_AVAILABLE_HOUSES = 0x0270,
     /// Answer a confirmation dialog.

@@ -431,6 +431,70 @@ fn an_emote_key_plays_its_motion_and_the_server_hears_it() {
     );
 }
 
+/// The body moves in fixed steps (30 a second) while a window redraws 60
+/// times a second or more, on its own clock: the window draws the
+/// character, and its camera follows it, between the last two steps by the
+/// time since the last one ended at its own frame's time, so it moves on
+/// every frame, between the session's passes too, instead of holding still
+/// one frame and jumping the next. What it blends comes in the object's
+/// view, in the body's cell; the view's place, like the world's (gameplay,
+/// plugins, the server), is the body on its step.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_window_draws_the_running_character_between_its_steps() {
+    let mut rig = Rig::entered();
+    rig.command(run(2.0));
+    rig.frames(30);
+    let origin = |v: Vector3| Vec3::new(v.x, v.y, v.z);
+    let mut between = 0;
+    for _ in 0..10 {
+        rig.frames(1);
+        let c = rig.movement.controller().unwrap();
+        let (body, smoothed) = (c.position(), c.render_position());
+        let steps = c.render_steps();
+        let outbound = super::outbound::wire_position(&c.try_get_outbound_position().unwrap());
+        let live = rig
+            .world
+            .object(PLAYER)
+            .unwrap()
+            .position()
+            .copied()
+            .unwrap();
+        assert_eq!(live, outbound, "the world keeps the body on its step");
+        let view = rig
+            .world
+            .snapshot()
+            .objects
+            .into_iter()
+            .find(|o| o.guid == PLAYER)
+            .unwrap();
+        assert_eq!(view.position, Some(live), "the view's place is the step");
+        let blend = view.step_blend.expect("the view carries the blend");
+        // At this pass's time the blend is the physics' smoothed place.
+        let now = origin(blend.origin_at(rig.now)) - origin(live.origin);
+        assert!(
+            (now - (smoothed - body)).length() < 1e-4,
+            "drawn {now} from the body, smoothed {}",
+            smoothed - body
+        );
+        // A frame 8 ms later, before the next pass: further along, as the
+        // physics would place it with that much more time carried.
+        let later = Duration::from_millis(8);
+        let alpha = ((steps.pending_seconds + later.as_secs_f64()) / f64::from(steps.step_seconds))
+            .clamp(0.0, 1.0) as f32;
+        let expected = steps.previous.lerp(steps.current, alpha) - body;
+        let drawn = origin(blend.origin_at(rig.now + later)) - origin(live.origin);
+        assert!(
+            (drawn - expected).length() < 1e-4,
+            "drawn {drawn} from the body 8 ms on, expected {expected}"
+        );
+        if (smoothed - body).length() > 0.01 {
+            between += 1;
+        }
+    }
+    assert!(between > 0, "running, the drawn place trails the step");
+}
+
 #[test]
 #[ignore = "needs the retail dat files"]
 fn held_keys_walk_and_letting_go_stops() {
@@ -522,6 +586,40 @@ fn escape_ends_a_charged_jump_and_stops_a_moving_body() {
     let (end, _, _) = rig.body();
     assert!(rig.movement.is_standing_still());
     assert!((end - mid).truncate().length() < 0.05, "stopped");
+}
+
+/// The Escape key keeps the keys the player holds (OpenAC
+/// `RuntimeLocalPlayerMovementState.Execute(StopCompletely)` ends autorun
+/// and a plugin's held keys only; its window reads the keyboard every
+/// frame): a forward key still down after Escape does not start the run
+/// again when another key changes, and moves again only once pressed again.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn escape_keeps_the_held_keys_held() {
+    let mut rig = Rig::entered();
+    let forward = MovementKeys {
+        forward: true,
+        ..MovementKeys::default()
+    };
+    rig.command(MovementCommand::Keys(forward));
+    rig.frames(30);
+    assert!(!rig.movement.is_standing_still());
+    rig.movement.stop_completely(&rig.world);
+    rig.frames(30);
+    // The window sends keys only when they change: the jump key goes down
+    // with the forward key still held.
+    rig.command(MovementCommand::Keys(MovementKeys {
+        jump: true,
+        ..forward
+    }));
+    rig.frames(30);
+    let (mid, _, _) = rig.body();
+    rig.frames(30);
+    let (end, _, _) = rig.body();
+    assert!(
+        (end - mid).truncate().length() < 0.05,
+        "the held forward key started the run again"
+    );
 }
 
 /// The stop key while the forward key is held (OpenAC
@@ -3515,6 +3613,258 @@ fn two_loot_items_dropped_on_one_spot_stay_piled_on_it() {
     }
 }
 
+/// Where the world (and a window) has `guid`, height included.
+fn shown_at_3d(rig: &Rig, guid: u32) -> Option<Vec3> {
+    rig.world
+        .snapshot()
+        .objects
+        .iter()
+        .find(|o| o.guid == guid)
+        .and_then(|o| o.position)
+        .map(|p| Vec3::new(p.origin.x, p.origin.y, p.origin.z))
+}
+
+/// A gem token (its real setup, 0x02000520: one 0.1 m sphere 0.073 m up,
+/// step down 0.09 m) the server creates 1 m above flat ground, with no
+/// velocity, as a respawned token can arrive: its state (0x414: ethereal,
+/// ignore collisions, gravity) gives it gravity and its placement leaves it
+/// touching nothing (the step down reaches 0.09 m). The game's create
+/// enters it with placement | slide and makes it active, and every update
+/// pulls a body with gravity that does not rest on walkable ground (OpenAC
+/// steps every object's body, `RuntimeOrdinaryPhysicsUpdater.TryBegin`),
+/// so it falls and lies on the ground. Left where the placement put it, it
+/// hung 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn an_item_created_in_the_air_with_gravity_falls_to_the_ground() {
+    const TOKEN: u32 = 0x7000_0D51;
+    const TOKEN_SETUP: u32 = 0x0200_0520;
+    let mut rig = Rig::entered();
+    let ground = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    let mut aloft = ground;
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(TOKEN_SETUP);
+    physics.state = 0x0000_0414;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: TOKEN,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    let entered = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("entered at {entered:.3} (ground z {:.3})", ground.origin.z);
+    // A fall of 1 m takes 0.45 s; two seconds of frames land it.
+    rig.frames(120);
+    let landed = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 2 s at {landed:.3}");
+    let height = landed.z - ground.origin.z;
+    assert!(
+        (0.0..0.05).contains(&height),
+        "it lies on the ground: {height:.3} m above it"
+    );
+    assert!(
+        Vec2::new(landed.x, landed.y).distance(Vec2::new(aloft.origin.x, aloft.origin.y)) < 0.01,
+        "it fell straight down: {landed}"
+    );
+    let rows = rig.world.object(TOKEN).unwrap().key().local_id;
+    let rows = rig.movement.engine.shadows.capture_entries_for(rows);
+    let row = rows.first().unwrap();
+    let row_z = (row.position - row.rotation * row.local_position).z;
+    assert!(
+        (row_z - landed.z).abs() < 0.01,
+        "its rows lie with it: {row_z:.3}"
+    );
+    // It stays there.
+    rig.frames(60);
+    let still = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(still.distance(landed) < 0.001, "it rests: {still}");
+}
+
+/// A gem token (setup 0x02000520, state 0x414: gravity) created 1 m above
+/// flat ground, left two seconds to fall and land. With the rig, the
+/// ground position under it and the spot it was created at.
+fn landed_token(guid: u32) -> (Rig, Position, Position) {
+    let mut rig = Rig::entered();
+    let ground = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    let mut aloft = ground;
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(0x0200_0520);
+    physics.state = 0x0000_0414;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    rig.frames(120);
+    let landed = shown_at_3d(&rig, guid).unwrap();
+    assert!(landed.z - ground.origin.z < 0.05, "it landed: {landed}");
+    (rig, ground, aloft)
+}
+
+/// The server's position for `guid`, sent off the ground (no grounded
+/// flag), with its position, teleport and force-position sequences.
+fn airborne_position_update(rig: &mut Rig, guid: u32, position: Position, stamps: (u16, u16, u16)) {
+    let (position_sequence, teleport_sequence, force_position_sequence) = stamps;
+    apply(
+        rig,
+        &Inbound::UpdatePosition(ac_proto::UpdatePosition {
+            guid,
+            flags: 0,
+            position,
+            velocity: None,
+            placement_id: None,
+            instance_sequence: 1,
+            position_sequence,
+            teleport_sequence,
+            force_position_sequence,
+        }),
+    );
+}
+
+/// The landed token is teleported back to the spot 1 m up it was created
+/// at: a teleport puts the server's position down with a placement, and
+/// the placement says what the body touches there: nothing, so gravity
+/// pulls it again and it falls back to the ground. Snapped there keeping
+/// the contact it had on the ground, it hung 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_landed_item_teleported_back_into_the_air_falls_again() {
+    const TOKEN: u32 = 0x7000_0D53;
+    let (mut rig, ground, aloft) = landed_token(TOKEN);
+    position_update(&mut rig, TOKEN, aloft, (2, 1, 0));
+    let put_back = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("put back at {put_back:.3}");
+    assert!(
+        (put_back.z - aloft.origin.z).abs() < 0.01,
+        "placed at the server's position: {put_back}"
+    );
+    rig.frames(120);
+    let fallen = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 2 s at {fallen:.3}");
+    let height = fallen.z - ground.origin.z;
+    assert!(
+        (0.0..0.05).contains(&height),
+        "it fell back to the ground: {height:.3} m above it"
+    );
+}
+
+/// A position for the landed token sent while the server has it off the
+/// ground (no grounded flag) and no teleport changes nothing: the body
+/// stays where it lies. Put where the server said, it hung 1 m up.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_position_sent_off_the_ground_leaves_a_landed_item_where_it_lies() {
+    const TOKEN: u32 = 0x7000_0D54;
+    let (mut rig, _, aloft) = landed_token(TOKEN);
+    let landed = shown_at_3d(&rig, TOKEN).unwrap();
+    airborne_position_update(&mut rig, TOKEN, aloft, (2, 0, 0));
+    assert!(
+        shown_at_3d(&rig, TOKEN).unwrap().distance(landed) < 0.001,
+        "it lies where it was"
+    );
+    rig.frames(60);
+    let still = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(
+        still.distance(landed) < 0.001,
+        "it still lies there: {still}"
+    );
+}
+
+/// A grounded position near the character for the landed token, 1 m up:
+/// the body is not put there at once; it is caught up to from where it
+/// lies, as every body catches up to a near position. Walking on the
+/// ground it cannot rise to it, so the catch-up stalls, and a stalled
+/// catch-up re-places the body at the server's position with a placement
+/// that says what it touches there: nothing, so it falls back and lies on
+/// the ground again. Put up there at once with the contact it had, it hung
+/// 1 m in the air.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_near_grounded_position_for_a_landed_item_is_caught_up_to_not_snapped() {
+    const TOKEN: u32 = 0x7000_0D55;
+    let (mut rig, ground, aloft) = landed_token(TOKEN);
+    position_update(&mut rig, TOKEN, aloft, (2, 0, 0));
+    let at_once = shown_at_3d(&rig, TOKEN).unwrap();
+    assert!(
+        at_once.z - ground.origin.z < 0.05,
+        "not put up there at once: {at_once}"
+    );
+    let mut highest = at_once.z;
+    for _ in 0..180 {
+        rig.frames(1);
+        highest = highest.max(shown_at_3d(&rig, TOKEN).unwrap().z);
+    }
+    assert!(
+        (highest - aloft.origin.z).abs() < 0.01,
+        "the stalled catch-up put it at the server's position: {highest:.3}"
+    );
+    let lies = shown_at_3d(&rig, TOKEN).unwrap();
+    println!("after 3 s at {lies:.3}");
+    assert!(
+        (0.0..0.05).contains(&(lies.z - ground.origin.z)),
+        "it fell back to the ground: {lies}"
+    );
+}
+
+/// An object without gravity (a sign hung on a wall: state 0) created in
+/// the air stays there: nothing accelerates it.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn an_item_created_in_the_air_without_gravity_stays_there() {
+    const SIGN: u32 = 0x7000_0D52;
+    let mut rig = Rig::entered();
+    let mut aloft = ground_position(&rig, 0xA9B4_0000, SPOT.0 + 3.0, SPOT.1);
+    aloft.origin.z += 1.0;
+    let mut physics = crate::world::tests::physics(
+        PhysicsTimestamps {
+            instance: 1,
+            position: 1,
+            ..PhysicsTimestamps::default()
+        },
+        Some(aloft),
+    );
+    physics.setup_id = Some(0x0200_0520);
+    physics.state = 0;
+    apply(
+        &mut rig,
+        &Inbound::CreateObject(Box::new(CreateObject {
+            guid: SIGN,
+            model: ModelData::default(),
+            physics,
+            weenie: None,
+        })),
+    );
+    rig.frames(120);
+    let at = shown_at_3d(&rig, SIGN).unwrap();
+    assert!(
+        (at.z - aloft.origin.z).abs() < 0.001,
+        "it stays where it was put: {at}"
+    );
+}
+
 /// A missile the server creates where another object stands enters the
 /// world clear of it: a projectile's create routes as every other
 /// (OpenAC `ClassifyCreate`: `ProjectileAuthoritative`, `InitialCreateFlags`),
@@ -3875,4 +4225,30 @@ fn bodies_in_a_neighbouring_landblock_are_seen_where_they_are() {
         );
         assert!(off.length() < 0.05, "{guid:#X} seen where it is: {off}");
     }
+}
+
+/// A placement forced into its cell (a hook, a storage chest, a corpse)
+/// commits only the frame and the cell to the body; it keeps the contact it
+/// had. Taking the placement's empty contact fields, it lost its contact
+/// and gravity pulled it out of the cell it was forced into.
+#[test]
+fn a_placement_forced_into_its_cell_keeps_the_contact_the_body_had() {
+    let mut body = ac_physics::PhysicsBody::default();
+    body.transient_state
+        .insert(ac_physics::TransientState::CONTACT | ac_physics::TransientState::ON_WALKABLE);
+    body.contact_plane_valid = true;
+    let placed = ac_physics::PhysicsSetPositionResult {
+        residence: ac_physics::PhysicsResidenceDisposition::Committed,
+        position: Vec3::new(12.0, 10.0, 51.0),
+        orientation: Quat::IDENTITY,
+        cell_id: 0xA9B4_0002,
+        cell_local_position: Vec3::new(12.0, 10.0, 51.0),
+        forced_into_cell: true,
+        ..ac_physics::PhysicsSetPositionResult::default()
+    };
+    commit_placement(&mut body, &placed, Quat::IDENTITY);
+    assert_eq!(body.position(), placed.position);
+    assert!(body.in_contact(), "keeps its contact");
+    assert!(body.on_walkable(), "keeps its walkable ground");
+    assert!(body.contact_plane_valid, "keeps its contact plane");
 }

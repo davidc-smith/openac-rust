@@ -1257,3 +1257,23 @@ fn named_control_lookups_skip_repeat_rows_but_find_the_controls_after_them() {
     assert!(!ui.set_control_label("edwards.tank", "Status View", "row", "x"));
     assert!(ui.control_exists("edwards.tank", "Status View", "after"));
 }
+
+// OpenAC's image handles only ever increase. A plugin reloaded within one
+// window's frame (its old images removed and its new ones added in the
+// same batch of changes) must not get its first handle again, or a window
+// keeping textures by plugin and handle would draw the old pixels.
+#[test]
+fn a_reloaded_plugin_never_gets_a_handle_again_so_a_window_draws_its_new_image() {
+    let mut ui = PluginUi::new();
+    let mut view = PluginUiView::new();
+    let (old, ..) = ui.image_rgba("edwards.tank", "art", 1, 1, vec![1, 2, 3, 4]);
+    view.apply_all(ui.take_changes());
+    ui.release("edwards.tank");
+    let (new, ..) = ui.image_rgba("edwards.tank", "art", 1, 1, vec![9, 9, 9, 9]);
+    assert_ne!(new, 0);
+    assert!(new > old, "{new} after {old}");
+    view.apply_all(ui.take_changes());
+    assert!(view.image("edwards.tank", old).is_none());
+    let image = view.image("edwards.tank", new).unwrap();
+    assert!(matches!(&image.source, ImageSource::Rgba(p) if p.as_slice() == [9, 9, 9, 9]));
+}

@@ -229,6 +229,9 @@ pub enum IconKind {
     Spell,
     /// A live object's composed icon.
     Item,
+    /// A PNG or JPEG the plugin ships, by its path in the plugin's folder
+    /// (a string, or a string list for a list's rows).
+    File,
 }
 
 /// Turns a bare image index into the full render-surface id: below
@@ -244,13 +247,55 @@ pub const fn normalize_icon(id_or_index: u32) -> u32 {
     }
 }
 
-/// An icon: its kind and its id.
+/// A file icon's path: written in the markup or a declared string
+/// binding, relative to the plugin's install folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IconSource {
-    /// What the id names.
-    pub kind: IconKind,
-    /// The id.
-    pub id: UintSource,
+pub enum PathSource {
+    /// A path written in the markup.
+    Literal(String),
+    /// A declared string binding.
+    Bound(String),
+}
+
+impl PathSource {
+    /// The path now; none while unset or blank (which draws nothing).
+    #[must_use]
+    pub fn read(&self, values: &dyn Values) -> Option<String> {
+        let path = match self {
+            Self::Literal(path) => path.clone(),
+            Self::Bound(name) => match values.value(name) {
+                Some(UiValue::Text(path)) => path.clone(),
+                _ => return None,
+            },
+        };
+        (!path.trim().is_empty()).then_some(path)
+    }
+}
+
+/// An icon: a dat image, spell or object by its id, or an image file the
+/// plugin ships by its path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IconSource {
+    /// An id and what it names.
+    Id {
+        /// What the id names.
+        kind: IconKind,
+        /// The id.
+        id: UintSource,
+    },
+    /// A PNG or JPEG in the plugin's folder.
+    File(PathSource),
+}
+
+impl IconSource {
+    /// What it names.
+    #[must_use]
+    pub fn kind(&self) -> IconKind {
+        match self {
+            Self::Id { kind, .. } => *kind,
+            Self::File(_) => IconKind::File,
+        }
+    }
 }
 
 /// One column of a `list`.
@@ -429,7 +474,8 @@ pub enum ColumnKind {
     },
     /// An icon per row.
     Icon {
-        /// The rows' icon ids (a uint-list binding).
+        /// The rows' icon ids (a uint-list binding; for file icons a
+        /// string list of paths).
         values: String,
         /// What the ids name.
         kind: IconKind,
@@ -462,7 +508,8 @@ pub enum ListBody {
         items: String,
         /// Per-row colours (a uint-list binding).
         colors: Option<String>,
-        /// Per-row icons (a uint-list binding) and their kind.
+        /// Per-row icons (a uint-list binding; for file icons a string list
+        /// of paths) and their kind.
         icons: Option<(String, IconKind)>,
     },
     /// `<column>` children.
@@ -1196,8 +1243,9 @@ fn validate_icon_kind(kind: Option<&str>, context: &str) -> Result<IconKind, Mar
         "did" => Ok(IconKind::Did),
         "spell" => Ok(IconKind::Spell),
         "item" => Ok(IconKind::Item),
+        "file" => Ok(IconKind::File),
         other => err(format!(
-            "{context} must be did, spell, or item (got \"{other}\")"
+            "{context} must be did, spell, item, or file (got \"{other}\")"
         )),
     }
 }
@@ -1274,8 +1322,13 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let kind = validate_icon_kind(attr(el, "iconkind"), "iconkind")?;
+        if kind == IconKind::File {
+            return self
+                .path_literal_or_binding(icon, context)
+                .map(|path| Some(IconSource::File(path)));
+        }
         let id = self.uint_literal_or_binding(icon, context)?;
-        Ok(Some(IconSource { kind, id }))
+        Ok(Some(IconSource::Id { kind, id }))
     }
 
     fn action_message(
@@ -1427,6 +1480,26 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(inner(a).to_owned())
+    }
+
+    /// A file path written literally or bound to a string property. Like
+    /// every other binding, a missing property or one of another type is
+    /// refused at build; a blank path at draw time draws nothing.
+    fn path_literal_or_binding(
+        &self,
+        expression: &str,
+        context: &str,
+    ) -> Result<PathSource, MarkupError> {
+        if !is_binding(expression) {
+            return Ok(PathSource::Literal(expression.to_owned()));
+        }
+        if self.kind(inner(expression)) != Some(BindingKind::Text) {
+            return err(format!(
+                "{expression} did not resolve to a string property on {} ({context})",
+                self.type_name()
+            ));
+        }
+        Ok(PathSource::Bound(inner(expression).to_owned()))
     }
 
     /// `BindUintLiteralOrBinding`.
@@ -2425,25 +2498,38 @@ impl<'a> Parser<'a> {
             "icon" => {
                 if attr(el, "iconkind").is_some() {
                     return err(
-                        "iconkind applies to button, tab and list; icon derives its kind from did/spell/item",
+                        "iconkind applies to button, tab and list; icon derives its kind from did/spell/item/file",
                     );
                 }
                 let did = attr(el, "did");
                 let spell = attr(el, "spell");
                 let item = attr(el, "item");
+                let file = attr(el, "file");
                 let sources = usize::from(did.is_some())
                     + usize::from(spell.is_some())
-                    + usize::from(item.is_some());
+                    + usize::from(item.is_some())
+                    + usize::from(file.is_some());
                 if sources != 1 {
-                    return err("<icon> requires exactly one of did/spell/item");
+                    return err("<icon> requires exactly one of did/spell/item/file");
                 }
-                let (kind, name, expression) = match (did, spell, item) {
-                    (Some(e), _, _) => (IconKind::Did, "did", e),
-                    (_, Some(e), _) => (IconKind::Spell, "spell", e),
-                    (_, _, Some(e)) => (IconKind::Item, "item", e),
+                let icon = match (did, spell, item, file) {
+                    (_, _, _, Some(path)) => {
+                        IconSource::File(self.path_literal_or_binding(path, "icon file")?)
+                    }
+                    (Some(e), ..) => IconSource::Id {
+                        kind: IconKind::Did,
+                        id: self.uint_literal_or_binding(e, "icon did")?,
+                    },
+                    (_, Some(e), ..) => IconSource::Id {
+                        kind: IconKind::Spell,
+                        id: self.uint_literal_or_binding(e, "icon spell")?,
+                    },
+                    (_, _, Some(e), _) => IconSource::Id {
+                        kind: IconKind::Item,
+                        id: self.uint_literal_or_binding(e, "icon item")?,
+                    },
                     _ => unreachable!("exactly one source was checked above"),
                 };
-                let id = self.uint_literal_or_binding(expression, &format!("icon {name}"))?;
                 let common = self.common(el)?;
                 let rect = Rect {
                     x: f(el, "x"),
@@ -2451,14 +2537,7 @@ impl<'a> Parser<'a> {
                     w: f_or(el, "w", 32.0),
                     h: f_or(el, "h", 32.0),
                 };
-                return Ok(self.push(
-                    Element::Icon {
-                        icon: IconSource { kind, id },
-                    },
-                    common,
-                    rect,
-                    parent,
-                ));
+                return Ok(self.push(Element::Icon { icon }, common, rect, parent));
             }
             "tab" => {
                 let onclick = self.handler(
@@ -2685,8 +2764,13 @@ impl<'a> Parser<'a> {
                         None => None,
                         Some(icons) => {
                             let kind = validate_icon_kind(attr(el, "iconkind"), "iconkind")?;
-                            self.uint_list(Some(icons), "list icons")?
-                                .map(|name| (name, kind))
+                            if kind == IconKind::File {
+                                // Paths, one per row.
+                                Some((self.string_list(Some(icons), "list icons")?, kind))
+                            } else {
+                                self.uint_list(Some(icons), "list icons")?
+                                    .map(|name| (name, kind))
+                            }
                         }
                     };
                     ListBody::Single {
@@ -2913,13 +2997,20 @@ impl<'a> Parser<'a> {
             }
             Some("icon") => {
                 let values_context = context("icon", "values");
+                let kind = validate_icon_kind(attr(el, "iconkind"), &context("icon", "iconkind"))?;
                 let values = match attr(el, "values").filter(|a| !a.trim().is_empty()) {
+                    None if kind == IconKind::File => {
+                        return err(format!("{values_context} is required"));
+                    }
                     None => return err(format!("{values_context} must be a uint-list binding")),
+                    // Paths, one per row.
+                    Some(v) if kind == IconKind::File => {
+                        self.string_list(Some(v), &values_context)?
+                    }
                     Some(v) => self
                         .uint_list(Some(v), &values_context)?
                         .unwrap_or_default(),
                 };
-                let kind = validate_icon_kind(attr(el, "iconkind"), &context("icon", "iconkind"))?;
                 let onclick =
                     self.required_int_action(attr(el, "onclick"), &context("icon", "onclick"))?;
                 ColumnKind::Icon {

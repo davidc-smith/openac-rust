@@ -750,6 +750,7 @@ mod tests {
             radar: RadarFacts::default(),
             motion: None,
             effects: EffectFacts::default(),
+            step_blend: None,
         }
     }
 

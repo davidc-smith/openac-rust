@@ -330,15 +330,6 @@ impl OrdinaryBody {
         self.body.calc_acceleration();
     }
 
-    /// Put the body where the server says.
-    pub fn place(&mut self, accepted: &Position, origin: Vec3) {
-        let local = Vec3::new(accepted.origin.x, accepted.origin.y, accepted.origin.z);
-        self.body
-            .snap_to_cell(accepted.cell_id, local + origin, local);
-        self.body.orientation = wire_orientation(accepted);
-        self.cell_id = accepted.cell_id;
-    }
-
     /// Where the body is, as the wire carries positions, given the corner
     /// of its landblock.
     #[must_use]

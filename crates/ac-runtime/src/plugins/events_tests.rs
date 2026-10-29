@@ -574,3 +574,57 @@ fn a_plugin_hears_the_open_corpse_close_when_it_leaves_the_world() {
         0
     );
 }
+
+// OpenAC `SelectionState.Reset` on leaving the world: the window hears the
+// reset (its examination window closes) and the plugins hear the
+// selection go, from what was selected to nothing.
+#[test]
+fn leaving_the_world_tells_the_window_and_the_plugins_the_selection_went() {
+    use crate::gameplay::{GameplayCommand, GameplayEvent};
+    use crate::inventory::ObjectRef;
+    use crate::session::SessionCommand;
+    const DRUDGE: u32 = 0x8000_0D01;
+    let clocks = super::tests::CLOCKS;
+    let mut state = in_world();
+    let mut outbox = Outbox::new();
+    state.apply(
+        &described(DRUDGE, 1, "Drudge", 0x10, 0, None),
+        &mut outbox,
+        true,
+        clocks,
+    );
+    let _ = events::follow(&mut state, true, true);
+    state.command(
+        SessionCommand::Gameplay(GameplayCommand::Select(ObjectRef::Guid(DRUDGE))),
+        &mut outbox,
+        true,
+        clocks,
+    );
+    let selected = |events: &[Event]| -> Vec<(Option<u32>, Option<u32>)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::SelectionChanged(c) => Some((c.previous, c.selected)),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        selected(&events::follow(&mut state, true, true)),
+        [(None, Some(DRUDGE))]
+    );
+    let _ = state.drain_host_events();
+    state.left_world(0);
+    let told = state.drain_host_events();
+    assert!(
+        told.iter().any(|e| matches!(
+            e,
+            HostEvent::Gameplay(g) if **g == GameplayEvent::Selection { selected: None, name: None }
+        )),
+        "{told:?}"
+    );
+    assert_eq!(
+        selected(&events::follow(&mut state, false, false)),
+        [(Some(DRUDGE), None)]
+    );
+}

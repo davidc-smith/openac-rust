@@ -250,6 +250,11 @@ pub(crate) struct AttachedWindow {
     brightness: Option<crate::gamma::BrightnessPass>,
     /// The retail UI: its panels, fed from the scene.
     ui: Option<WindowUi>,
+    /// Keeps the screen awake while the window is fullscreen (let go
+    /// before the window closes).
+    screen_saver: crate::screen_saver::ScreenSaver,
+    /// What a fullscreen request to the compositor still waits for.
+    fullscreen_awaiting: crate::display_mode::Awaiting,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -355,8 +360,10 @@ impl AttachedWindow {
             .with_title(spec.title.clone())
             .with_inner_size(PhysicalSize::new(spec.width, spec.height));
         let window = Arc::new(event_loop.create_window(attributes)?);
-        // Fullscreen is a mode switch to the chosen resolution, as later.
+        // Fullscreen is a mode switch to the chosen resolution, as later
+        // (on Wayland the compositor's fullscreen at the monitor's mode).
         let mut display_lines = Vec::new();
+        let mut fullscreen_awaiting = crate::display_mode::Awaiting::Nothing;
         if options.fullscreen {
             let display = ac_host::settings::DisplaySettings {
                 fullscreen: true,
@@ -367,10 +374,13 @@ impl AttachedWindow {
                 &display,
                 &mut crate::display_mode::WinitDisplay(&window),
                 &mut crate::display_mode::WinitDisplay(&window),
+                &mut fullscreen_awaiting,
                 |m| offered.iter().any(|o| o == m),
                 &mut display_lines,
             );
         }
+        let mut screen_saver = crate::screen_saver::ScreenSaver::default();
+        screen_saver.follow(&window, &mut display_lines);
         let surface = instance.create_surface(Arc::clone(&window))?;
 
         let (adapter, mut summary) = choose_adapter(instance, &surface, options)?;
@@ -543,6 +553,8 @@ impl AttachedWindow {
             ui_renderer,
             brightness: None,
             ui,
+            screen_saver,
+            fullscreen_awaiting,
             surface,
             device,
             queue,
@@ -863,7 +875,24 @@ impl AttachedWindow {
             self.reported_minimized = minimized;
             self.send_session(SessionCommand::WindowMinimized(minimized));
         }
+        // A compositor's answer to a fullscreen request resizes the window.
+        // The drawing surface follows the window's size afterwards: a size
+        // asked for while following may take at once, with no resize of
+        // its own (Wayland).
+        let size = self.follow_fullscreen();
         if self.apply_size(size) {
+            self.window.request_redraw();
+        }
+    }
+
+    /// Rebuilds the drawing surface when the window's size is no longer
+    /// the surface's: a size asked for can take at once with no resize of
+    /// its own (Wayland).
+    fn follow_window_size(&mut self) {
+        let size = self.window.inner_size();
+        if (size.width, size.height) != (self.config.width, self.config.height)
+            && self.apply_size(size)
+        {
             self.window.request_redraw();
         }
     }
@@ -897,11 +926,13 @@ impl AttachedWindow {
         self.screenshots.take_results()
     }
 
-    /// Take what the session sent since the last frame.
-    fn pump_scene(&mut self) {
+    /// Take what the session sent since the last frame, and place what
+    /// moves between the session's physics steps at the frame's time `now`.
+    fn pump_scene(&mut self, now: Instant) {
         let token = self.profiler.begin(FrameStage::Update);
         if let Some(scene) = self.scene.as_mut() {
             scene.pump();
+            scene.scene_mut().present_at(now);
         }
         if let Some(icon) = self.world.as_mut().and_then(WorldRenderer::take_icon) {
             set_icon(&self.window, &icon);
@@ -941,7 +972,7 @@ impl AttachedWindow {
         if let Some(line) = self.profiler.frame_boundary(now) {
             report.profile = Some(line);
         }
-        self.pump_scene();
+        self.pump_scene(now);
         let input = FrameInput {
             delta_seconds: delta,
             width: if self.minimized() {
@@ -1730,10 +1761,35 @@ impl AttachedWindow {
             display,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
+            &mut self.fullscreen_awaiting,
             |m| offered.iter().any(|o| o == m),
             &mut lines,
         );
+        self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
+        self.follow_window_size();
+    }
+
+    /// Follow a resize of the window: finish what a request to the
+    /// compositor still owes, and keep the screen awake while fullscreen.
+    /// Returns the window's size afterwards.
+    fn follow_fullscreen(&mut self) -> PhysicalSize<u32> {
+        let mut lines = Vec::new();
+        let (width, height) = crate::display_mode::follow_resize(
+            &mut self.fullscreen_awaiting,
+            &mut crate::display_mode::WinitDisplay(&self.window),
+            &mut crate::display_mode::WinitDisplay(&self.window),
+            &mut lines,
+        );
+        self.screen_saver.follow(&self.window, &mut lines);
+        self.notices.extend(lines);
+        PhysicalSize::new(width, height)
+    }
+
+    /// The event loop is ending: let go of the screen while the window's
+    /// display connection is still open.
+    pub(crate) fn release_screen(&mut self) {
+        self.screen_saver.release();
     }
 
     /// Ctrl+F3 (or `/dumpnearby`): log what stands near the player.

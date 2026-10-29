@@ -133,6 +133,10 @@ pub const KIT: u32 = 0x5000_0040;
 pub const KIT_ICON_UNDERLAY: u32 = 0x0600_5B0C;
 pub const KIT_ICON_OVERLAY: u32 = 0x0600_6C0B;
 pub const KIT_COVERAGE: u32 = 0x0000_0400;
+/// Test data only: a real kit is not a hook and carries no hook bits.
+/// The bits are copied whatever the item is, so the kit carries them to
+/// check that they reach both records on both clients.
+pub const KIT_HOOK_ITEM_TYPES: u32 = 0x0000_0080;
 /// A side pack, carried, with room for four things.
 pub const SIDE_PACK: u32 = 0x5000_0041;
 /// A tinkering tool, which is what a salvage request needs.
@@ -211,6 +215,8 @@ pub fn carried_items() -> Vec<Vec<u8>> {
         icon_underlay_id: Some(KIT_ICON_UNDERLAY),
         icon_overlay_id: Some(KIT_ICON_OVERLAY),
         priority: Some(KIT_COVERAGE),
+        // Test data only (see `KIT_HOOK_ITEM_TYPES`).
+        hook_item_types: Some(KIT_HOOK_ITEM_TYPES),
         plural_name: Some("Healing Kits".into()),
         ..carried(KIT, "Healing Kit", USEABLE_CONTAINED, PLAYER)
     };

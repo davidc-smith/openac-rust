@@ -1163,11 +1163,11 @@ fn build_scrollbar(info: &ElementInfo) -> Scrollbar {
         if let Some(t) = scalar_thumb {
             apply_thumb_slices(&mut bar, &slices_by(&t.children, true));
         }
-        if bar.track_sprite == 0
-            && let Some(track) = info.children.iter().find(|c| c.id == 4)
-        {
-            bar.track_sprite = default_image(track);
-            bar.track_sprites_by_state = state_images(track);
+        // Child 4 is no track: it is the fill from the bar's start to the
+        // thumb's centre, and takes the bar's state art.
+        if let Some(fill) = info.children.iter().find(|c| c.id == 4) {
+            bar.thumb_fill_sprite = default_image(fill);
+            bar.thumb_fill_sprites_by_state = state_images(fill);
         }
         let meter = info.children.iter().find(|c| c.kind == class::METER);
         let fill = meter.and_then(|m| {

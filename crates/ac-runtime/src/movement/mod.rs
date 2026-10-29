@@ -66,7 +66,7 @@ use route::{
 };
 
 use crate::session::Outbox;
-use crate::world::{MotionView, ObjectKey, World, WorldChange, WorldObject};
+use crate::world::{MotionView, ObjectKey, StepBlend, World, WorldChange, WorldObject};
 
 /// The run skill id.
 const SKILL_RUN: u32 = 24;
@@ -343,6 +343,24 @@ fn placement_class(
     }
 }
 
+/// Whether an object with physics `state` that its placement put down as
+/// `placed` accelerates from there with no velocity of its own: gravity
+/// pulls a body that has gravity unless it rests on walkable ground (in
+/// contact, the ground walkable, and not sledding), the body's own
+/// acceleration rule.
+fn falls_after_placement(state: u32, placed: &ac_physics::PhysicsSetPositionResult) -> bool {
+    let mut body = ac_physics::PhysicsBody::default();
+    body.state = ac_physics::PhysicsState::from(state);
+    body.transient_state
+        .set(ac_physics::TransientState::CONTACT, placed.in_contact);
+    body.transient_state.set(
+        ac_physics::TransientState::ON_WALKABLE,
+        placed.in_contact && placed.on_walkable,
+    );
+    body.calc_acceleration();
+    body.acceleration != Vec3::ZERO
+}
+
 /// Commit a placement's result to a body as the set-position commit does
 /// (OpenAC `RuntimeSetPositionState` dormant commit): orientation, cell
 /// frame, the contact plane the placement found, then the contact bits.
@@ -354,6 +372,11 @@ fn commit_placement(
     let previous_on_walkable = body.on_walkable();
     body.orientation = orientation;
     body.snap_to_cell(result.cell_id, result.position, result.cell_local_position);
+    if result.forced_into_cell {
+        // Forced into its cell: the frame and the cell only; it keeps the
+        // contact it had.
+        return;
+    }
     body.contact_plane_valid = result.in_contact;
     body.contact_plane = result.contact_plane;
     body.contact_plane_cell_id = result.contact_plane_cell_id;
@@ -763,11 +786,14 @@ impl Movement {
         }
     }
 
-    /// Stop everything at once (the Escape key while moving): autorun, the
-    /// held keys, the scripted moves and the body's own motion.
+    /// Stop everything at once (the Escape key while moving): autorun, a
+    /// plugin's held keys, the scripted moves and the body's own motion.
+    /// The keys the player holds stay held, as for the stop key: a forward
+    /// key still down moves again only once pressed again (the controller
+    /// acts on key changes).
     pub fn stop_completely(&mut self, world: &World) {
         self.auto_run = false;
-        self.keys = MovementKeys::default();
+        self.intent = None;
         self.input.scripted_mut().stop();
         self.with_controller(world, |c, env| c.stop_completely(env));
     }
@@ -1229,8 +1255,10 @@ impl Movement {
 
     /// An object the runtime neither animates nor flies gets a body of its
     /// own once it has a velocity or spin to move by (`force`: a velocity
-    /// update just arrived), starting where it entered the world; at rest
-    /// it stays where it entered.
+    /// update just arrived), or once its placement leaves it where gravity
+    /// pulls it (it has gravity and does not rest on walkable ground),
+    /// starting where it entered the world; at rest it stays where it
+    /// entered.
     fn bind_ordinary(&mut self, world: &mut World, guid: u32, now: Duration, force: bool) -> bool {
         let placed = match self.entry_placement(world, guid) {
             entry::Entry::Placed(placed) => Some(placed),
@@ -1260,10 +1288,11 @@ impl Movement {
         let moving = |v: Option<ac_proto::Vector3>| {
             v.is_some_and(|v| v.x != 0.0 || v.y != 0.0 || v.z != 0.0)
         };
-        if object.movement().is_some()
-            || physics.state & PhysicsState::MISSILE.bits() != 0
-            || (!force && !moving(physics.velocity) && !moving(physics.omega))
-        {
+        if object.movement().is_some() || physics.state & PhysicsState::MISSILE.bits() != 0 {
+            return false;
+        }
+        let still = !force && !moving(physics.velocity) && !moving(physics.omega);
+        if still && !placed.is_some_and(|p| falls_after_placement(physics.state, p)) {
             return false;
         }
         let Some(accepted) = object.accepted_position() else {
@@ -1436,6 +1465,8 @@ impl Movement {
         else {
             return false;
         };
+        body.driver.placement_class =
+            placement_class(world.item(guid), content.storage_weenie_class());
         let described = object
             .movement()
             .map(|data| self.remote_update(world, &content, data, accepted.cell_id));
@@ -1842,6 +1873,7 @@ impl Movement {
             self.remotes
                 .get(&key.local_id)
                 .map(|r| r.driver.obj.cell_id)
+                .or_else(|| self.ordinaries.get(&key.local_id).map(|o| o.cell_id))
         };
         let route = classify_accepted_position(&AcceptedPositionRouteRequest {
             authority,
@@ -1898,28 +1930,21 @@ impl Movement {
             }
             return;
         }
-        if self.ordinaries.contains_key(&key.local_id) {
-            // An ordinary body is put where the server says and moves on
-            // from there.
-            let origin = self
-                .residency
-                .is_resident(accepted.cell_id)
-                .then(|| self.residency.origin_of(accepted.cell_id))
-                .flatten();
-            match origin {
-                Some(origin) => {
-                    if let Some(body) = self.ordinaries.get_mut(&key.local_id) {
-                        body.place(&accepted, origin);
-                        world.set_live_position(guid, body.live_position(origin));
-                    }
-                }
-                None => {
-                    self.ordinaries.remove(&key.local_id);
-                    world.clear_live_position(guid);
-                }
+        if let Some(ordinary) = self.ordinaries.remove(&key.local_id) {
+            // An object moving by its own physics that the server sends a
+            // position for: its body becomes the body the server's
+            // positions drive, as it is, and the position routes for it
+            // as for every other body (catch up to a near one on the
+            // ground, re-place it at a far one or a teleport, where the
+            // placement says what it touches; ignore one sent while it was
+            // off the ground).
+            if let Some(content) = self.content.clone() {
+                let mut body =
+                    RemoteBody::from_ordinary(object, &content, ordinary, now.as_secs_f64());
+                body.driver.placement_class =
+                    placement_class(world.item(guid), content.storage_weenie_class());
+                self.remotes.insert(key.local_id, body);
             }
-            self.register_collision(world, guid);
-            return;
         }
         if !self.remotes.contains_key(&key.local_id) {
             if self.resting.contains_key(&key.local_id) {
@@ -2484,7 +2509,38 @@ impl Movement {
             return;
         };
         if let Some(p) = player.controller.try_get_outbound_position() {
-            world.set_live_position(player.guid, outbound::wire_position(&p));
+            let wire = outbound::wire_position(&p);
+            world.set_live_position(player.guid, wire);
+            // A window draws the body (and aims its camera) between its
+            // last two steps at its own frame's time, in the body's cell
+            // with the body's facing; the cell frame and the world differ
+            // by a constant offset, so each step's place is the body's cell
+            // origin moved by the step's offset from the body. The last
+            // step ended the carried time before this pass, on the session
+            // clock the window reads too.
+            let c = &player.controller;
+            let steps = c.render_steps();
+            let body = c.position();
+            let in_cell = |at: Vec3| {
+                let o = at - body;
+                ac_proto::Vector3 {
+                    x: wire.origin.x + o.x,
+                    y: wire.origin.y + o.y,
+                    z: wire.origin.z + o.z,
+                }
+            };
+            let pending = Duration::try_from_secs_f64(steps.pending_seconds.max(0.0))
+                .unwrap_or(Duration::ZERO);
+            let blend = StepBlend {
+                previous: in_cell(steps.previous),
+                current: in_cell(steps.current),
+                step_at: self
+                    .last_frame
+                    .unwrap_or(Duration::ZERO)
+                    .saturating_sub(pending),
+                step_seconds: steps.step_seconds,
+            };
+            world.set_step_blend(player.guid, blend);
         }
         world.set_live_motion(
             player.guid,

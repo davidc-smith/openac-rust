@@ -344,9 +344,11 @@ mod tests {
         assert_eq!(Event::StatusTextReceived(String::new()).since(), v(1, 1));
         assert_eq!(Event::LoginComplete.since(), v(1, 0));
         assert_eq!(Event::ContainerOpened(1).since(), v(1, 0));
-        // API 1.0's events leave it out; 1.1's are all of them.
+        // API 1.0's events leave it out; 1.1 has every kind, and 1.2 adds
+        // a field to the world object an object change carries.
         assert_ne!(Event::shape_at(v(1, 0)), Event::SHAPE);
-        assert_eq!(Event::shape_at(v(1, 1)), Event::SHAPE);
+        assert_ne!(Event::shape_at(v(1, 1)), Event::shape_at(v(1, 0)));
+        assert_ne!(Event::shape_at(v(1, 1)), Event::SHAPE);
         assert_eq!(Event::shape_at(crate::API_CURRENT), Event::SHAPE);
     }
 }

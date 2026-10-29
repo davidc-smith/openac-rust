@@ -702,6 +702,9 @@ pub enum ImageSource {
     ObjectIcon(u32),
     /// The plugin's own pixels, 8-bit RGBA rows from the top.
     Rgba(Arc<Vec<u8>>),
+    /// An image file the plugin ships, which its markup draws, with its
+    /// smaller levels (sampled smoothly, never repeated).
+    File(Arc<crate::file_images::FileImage>),
 }
 
 /// One image a plugin holds, as a window resolves it.
@@ -794,6 +797,16 @@ pub enum UiChange {
     CanvasReleasePointer(u32),
     /// A plugin took hold of an image.
     ImageAdded(Box<ImageView>),
+    /// A plugin window's file icon: the image the session holds for
+    /// the path the window draws (`handle` 0: none, or no more).
+    FileIcon {
+        /// The window.
+        panel: u32,
+        /// The path as the markup gives it.
+        path: String,
+        /// The image, by the plugin's handle.
+        handle: u32,
+    },
     /// A plugin let go of an image for good.
     ImageRemoved {
         /// The plugin.
@@ -913,6 +926,17 @@ pub enum UiInput {
     },
     /// The plugin theme the player saved (sent at attach) or just picked.
     Theme(crate::theme::ThemeKind),
+    /// The file icons a plugin window draws now: those of the elements it
+    /// draws (none in a hidden window, a closed tab's page or a list row
+    /// scrolled away),
+    /// sent when they change: the session holds each while it is drawn and
+    /// lets go of one not drawn for a few seconds.
+    FileIconsShown {
+        /// The window.
+        panel: u32,
+        /// The paths, as its markup gives them.
+        paths: Vec<String>,
+    },
     /// The player answered a dialog (the button's index).
     DialogAnswered {
         /// The dialog.

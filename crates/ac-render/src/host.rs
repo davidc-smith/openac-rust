@@ -683,6 +683,14 @@ impl ApplicationHandler<HostCommand> for HostApp {
         // Windows open on command, not at startup.
     }
 
+    /// A window still open when the loop ends outlives the loop's display
+    /// connection: what holds the screen awake goes now, while it is open.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_mut() {
+            window.release_screen();
+        }
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: HostCommand) {
         self.close_if_device_lost(event_loop);
         let input = match command {

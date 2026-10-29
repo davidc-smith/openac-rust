@@ -225,6 +225,7 @@ pub fn session_command(output: &PanelOutput) -> Option<SessionCommand> {
         | PanelOutput::ResetSplitQuantity { .. }
         | PanelOutput::Confirm { .. }
         | PanelOutput::ConfirmEither { .. }
+        | PanelOutput::ChessResignAnswered(_)
         | PanelOutput::FavoriteSpell(_)
         | PanelOutput::ExamineSpell(_)
         | PanelOutput::CloseExamination
@@ -458,6 +459,10 @@ impl UiTextureSource for DatSurfaces<'_> {
         ac_dat::texture::decode(&surface, palette.as_ref(), DecodeOptions::default())
             .ok()
             .map(UiPixels::Rgba)
+    }
+
+    fn released(&mut self) -> Vec<TextureRef> {
+        self.images.take_released()
     }
 }
 
@@ -889,12 +894,6 @@ impl WindowUi {
             }
         }
         self.follow_side_by_side_vitals();
-        // The examination window follows the selection while it shows.
-        let selection = self.player_view.and_then(|v| v.selected);
-        self.host
-            .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
-                c.follow_selection(ui, selection);
-            });
         let selected = self.player_view.and_then(|v| v.selected).map(|guid| {
             let name = scene
                 .object_by_guid(guid)
@@ -915,6 +914,17 @@ impl WindowUi {
         }
         for event in scene.take_interface() {
             self.facts.apply(event);
+        }
+        // The examination window follows every selection change while it
+        // shows, in order, not only the selection this frame ends on.
+        let changes = std::mem::take(&mut self.facts.selection_changes);
+        if !changes.is_empty() {
+            self.host
+                .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
+                    for &selected in &changes {
+                        c.follow_selection(ui, selected);
+                    }
+                });
         }
         let fellowship = self.facts.social.as_ref().map(|s| &s.fellowship);
         let radar = radar_scene(scene, self.player_view.as_ref(), fellowship);
@@ -953,6 +963,7 @@ impl WindowUi {
             ..Default::default()
         });
         self.update_indicator_panels(link);
+        self.update_mini_game();
     }
 
     /// The panels' views from the window's copy of the facts, and each
@@ -1201,8 +1212,13 @@ impl WindowUi {
         self.tick_examination(dt);
         self.tick_keyboard_dialogs();
         self.tick_tooltips(dt, now_ms);
-        self.host
-            .draw((size.0 as f32, size.1 as f32), &self.content)
+        let list = self
+            .host
+            .draw((size.0 as f32, size.1 as f32), &self.content);
+        // What the plugin windows drew of their file icons goes to the
+        // session, which holds those and lets go of the rest.
+        self.report_drawn_file_icons();
+        list
     }
 
     /// The textures the UI names: dat surfaces and composed icons.
@@ -1425,6 +1441,9 @@ impl WindowUi {
                     });
             }
             PanelOutput::ExamineSpell(spell) => self.examine_spell(spell),
+            PanelOutput::ChessResignAnswered(confirmed) => {
+                self.chess_resign_answered(confirmed, commands);
+            }
             PanelOutput::Confirm { message, on_yes } => {
                 self.ask(message, DialogAction::Panel(*on_yes))
             }

@@ -22,6 +22,7 @@ pub mod classifiers;
 pub mod commands;
 pub mod discovery;
 pub mod engine;
+pub mod file_image;
 #[cfg(feature = "test-fixtures")]
 pub mod fixtures;
 mod host_calls;

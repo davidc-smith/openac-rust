@@ -49,6 +49,12 @@ pub struct ItemList {
     pub horizontal_scroll: bool,
     /// Keep empty cells filling the visible part of a single row.
     pub fill_visible_empty_slots: bool,
+    /// When set, the list holds exactly this many cells, whatever its
+    /// width, in place of [`ItemList::fill_visible_empty_slots`]: it pads
+    /// with empty cells, and drops the last cells past the count even when
+    /// they hold an item, so a container never shows more items than it
+    /// can hold.
+    pub fixed_slot_count: Option<usize>,
     /// Makes those empty cells (default: [`ItemCell`]).
     pub empty_slot_factory: Option<CellFactory>,
     /// Drops of non-item payloads are reported as
@@ -80,6 +86,7 @@ impl Default for ItemList {
             single_row: false,
             horizontal_scroll: false,
             fill_visible_empty_slots: false,
+            fixed_slot_count: None,
             empty_slot_factory: None,
             accepts_catalog_drops: false,
         }
@@ -243,10 +250,14 @@ impl ItemList {
     }
 
     fn update_empty_slots(&mut self, ui: &mut UiRoot, me: ElementId, width: f32) {
-        if !self.fill_visible_empty_slots || !self.single_row || self.cell_width <= 0.0 {
+        if self.fixed_slot_count.is_none()
+            && (!self.fill_visible_empty_slots || !self.single_row || self.cell_width <= 0.0)
+        {
             return;
         }
-        let visible = (width / self.cell_width).floor().max(0.0) as usize;
+        let visible = self
+            .fixed_slot_count
+            .unwrap_or_else(|| (width / self.cell_width).floor().max(0.0) as usize);
         while self.cells.len() < visible {
             let cell = match self.empty_slot_factory.as_mut() {
                 Some(f) => f(ui),
@@ -256,7 +267,9 @@ impl ItemList {
         }
         while self.cells.len() > visible {
             let last = *self.cells.last().expect("non-empty");
-            if !ui.widget_dyn(last).is_some_and(|w| w.is_empty_slot()) {
+            if self.fixed_slot_count.is_none()
+                && !ui.widget_dyn(last).is_some_and(|w| w.is_empty_slot())
+            {
                 break;
             }
             self.cells.pop();
@@ -269,6 +282,9 @@ impl ItemList {
         let Some((width, height)) = ui.element(me).map(|e| (e.width, e.height)) else {
             return;
         };
+        // A fixed cell count holds whatever the cell size; the width only
+        // decides how many cells fill the strip without one.
+        self.update_empty_slots(ui, me, width);
         if self.cell_width <= 0.0 {
             if let Some(&c) = self.cells.first() {
                 if let Some(e) = ui.element_mut(c) {
@@ -278,7 +294,6 @@ impl ItemList {
             }
             return;
         }
-        self.update_empty_slots(ui, me, width);
         let cols = if self.single_row {
             self.cells.len().max(1)
         } else {

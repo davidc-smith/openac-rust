@@ -104,11 +104,13 @@ fn an_items_icon_layers_reach_a_plugin_on_both_clients() {
         transcript.record_id("kit.underlay", kit.icon_underlay_id);
         transcript.record_id("kit.overlay", kit.icon_overlay_id);
         transcript.record_id("kit.coverage", kit.coverage_mask);
+        transcript.record_id("kit.hookItemTypes", kit.hook_item_types);
         transcript.record("kit.plural", &kit.plural_name);
         assert_eq!(kit.icon_underlay_id, world::KIT_ICON_UNDERLAY);
         assert_eq!(kit.icon_overlay_id, world::KIT_ICON_OVERLAY);
         assert_eq!(kit.coverage_mask, world::KIT_COVERAGE);
         assert_eq!(kit.plural_name, "Healing Kits");
+        assert_eq!(kit.hook_item_types, world::KIT_HOOK_ITEM_TYPES);
 
         // The same bits on the world-object record, before any appraisal.
         let object = arm
@@ -116,7 +118,9 @@ fn an_items_icon_layers_reach_a_plugin_on_both_clients() {
             .expect("the kit is known");
         transcript.record_id("kit.worldCoverage", object.coverage_mask);
         assert!(!object.has_appraisal_data);
+        transcript.record_id("kit.worldHookItemTypes", object.hook_item_types);
         assert_eq!(object.coverage_mask, world::KIT_COVERAGE);
+        assert_eq!(object.hook_item_types, world::KIT_HOOK_ITEM_TYPES);
     });
 }
 

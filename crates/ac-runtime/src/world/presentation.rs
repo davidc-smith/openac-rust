@@ -165,6 +165,68 @@ pub fn motion_line(state: &InboundInterpretedState) -> String {
     line
 }
 
+/// What a window needs to draw a body the session's physics moves in fixed
+/// steps (the local player: 30 steps a second) at its own frame's time:
+/// the places of the last two steps and when the last one ended. The
+/// window blends between them by the time since then, as the physics does
+/// for its own smoothed place, so the character and the camera move on
+/// every frame however the frames and the session's passes fall.
+///
+/// Both places are origins in the cell of the object's position, so a step
+/// across a landblock edge blends straight; a jump of the body (a teleport
+/// or a forced place) leaves both the same, so nothing blends across it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct StepBlend {
+    /// Where the step before the last one left the body.
+    pub previous: Vector3,
+    /// Where the last step left the body.
+    pub current: Vector3,
+    /// When the last step ended, on the session clock.
+    pub step_at: std::time::Duration,
+    /// How long that step was, seconds.
+    pub step_seconds: f32,
+}
+
+impl StepBlend {
+    /// The place to draw at `now` (session clock): from `previous` toward
+    /// `current` by the share of a step elapsed since the last one ended,
+    /// held at `current` once a whole step has passed.
+    #[must_use]
+    pub fn origin_at(&self, now: std::time::Duration) -> Vector3 {
+        let elapsed = now.saturating_sub(self.step_at).as_secs_f64();
+        let alpha = if self.step_seconds > 0.0 {
+            ((elapsed / f64::from(self.step_seconds)) as f32).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let (a, b) = (self.previous, self.current);
+        Vector3 {
+            x: a.x + (b.x - a.x) * alpha,
+            y: a.y + (b.y - a.y) * alpha,
+            z: a.z + (b.z - a.z) * alpha,
+        }
+    }
+
+    /// Whether `other` draws differently: a place moved by a millimetre;
+    /// or, while either blends between two places, the step's end moved by
+    /// a microsecond (below that it is rounding in the summed frame times,
+    /// not a new step) or the step's length changed. A body standing still
+    /// draws the same whenever its steps end.
+    #[must_use]
+    pub fn differs(&self, other: &Self) -> bool {
+        let far = |a: Vector3, b: Vector3| {
+            (a.x - b.x).powi(2) + (a.y - b.y).powi(2) + (a.z - b.z).powi(2) > 1e-6
+        };
+        if far(self.previous, other.previous) || far(self.current, other.current) {
+            return true;
+        }
+        let blends = far(self.previous, self.current) || far(other.previous, other.current);
+        blends
+            && (self.step_at.abs_diff(other.step_at) > std::time::Duration::from_micros(1)
+                || self.step_seconds.to_bits() != other.step_seconds.to_bits())
+    }
+}
+
 /// How a simulated body moves, as the chase camera reads it (it heads
 /// along the slope the body moves on).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -219,9 +281,16 @@ pub struct ObjectView {
     pub name: Option<String>,
     /// Model setup (dat id), if any.
     pub setup_id: Option<u32>,
-    /// Where it is; `None` while held or in a container, or while it is not
-    /// in the world (its entry found no clear spot, so it is not drawn).
+    /// Where it is (for the local player, the body on its last physics
+    /// step; a window draws it at [`step_blend`](Self::step_blend) at its
+    /// frame's time); `None` while held or in a container, or while it is
+    /// not in the world (its entry found no clear spot, so it is not
+    /// drawn).
     pub position: Option<Position>,
+    /// For a body the session's physics moves in fixed steps (the local
+    /// player), what to blend to draw it between them, its places origins
+    /// in the cell of [`position`](Self::position).
+    pub step_blend: Option<StepBlend>,
     /// The parent holding it, if any.
     pub parent: Option<PhysicsAttachment>,
     /// Placement frame index, if any.
@@ -264,6 +333,11 @@ impl ObjectView {
                 None
             } else {
                 object.position().copied()
+            },
+            step_blend: if object.entry_refused() {
+                None
+            } else {
+                object.step_blend().copied()
             },
             parent: physics.parent,
             placement: physics.animation_frame,

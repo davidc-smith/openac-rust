@@ -1286,6 +1286,10 @@ pub fn event_lines(event: &HostEvent, session: Option<&str>) -> Vec<String> {
             &format!("salvage panel opens on 0x{tool:08X}"),
             session,
         )],
+        HostEvent::BeginGame(board) => vec![notice(
+            &format!("game window opens on board 0x{board:08X}"),
+            session,
+        )],
         HostEvent::Vendor(Some(view)) => vendor_lines(view, session),
         HostEvent::Trade(view) => {
             let names = |items: &[u32]| {

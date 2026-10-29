@@ -22,7 +22,7 @@ use super::runner::HostEvent;
 use super::state::SessionState;
 use crate::character::CharacterOptions;
 use crate::communication::{ClientConfirmation, JournalView, TrackedContract};
-use crate::gameplay::{BookView, FellowshipView, HouseView, TitleState};
+use crate::gameplay::{BookView, ChessView, FellowshipView, HouseView, TitleState};
 use crate::inventory::{
     AppraisalView, HousePurchaseView, InteractionMode, PendingPlacement, TradeView, VendorView,
     VendorViewReason,
@@ -60,6 +60,10 @@ pub enum InterfaceEvent {
     Journal(Box<JournalView>),
     /// A salvaging tool was used: the salvage panel opens on it.
     OpenSalvage(u32),
+    /// The chess game as it stands (after the snapshot and each change).
+    Chess(Box<ChessView>),
+    /// Someone else's game board was used: the game window shows.
+    BeginGame(u32),
     /// A pack the player carries was used: the inventory window shows and
     /// opens on it (the main pack when it is the player).
     OpenContainedContainer(u32),
@@ -75,6 +79,9 @@ pub enum InterfaceEvent {
     /// The chat entry and the reply targets as they stand (after the
     /// snapshot and each change).
     ChatEntry(Box<ChatEntryView>),
+    /// The selection changed (each change once, in order): what follows
+    /// every change, not only the selection a frame ends on, reads these.
+    Selection(Option<u32>),
 }
 
 /// What the chat window shows of the one chat entry every front end types
@@ -513,6 +520,7 @@ pub(crate) struct InterfaceFeed {
     social: Option<SocialKey>,
     contracts: Option<u64>,
     book: Option<u64>,
+    chess: Option<u64>,
     house: Option<u64>,
     house_purchase: Option<u64>,
     journal: Option<u64>,
@@ -612,6 +620,11 @@ impl InterfaceFeed {
             self.book = Some(book.revision());
             events.push(InterfaceEvent::Book(Box::new(book.view())));
         }
+        let chess = state.gameplay.chess();
+        if self.chess != Some(chess.revision()) {
+            self.chess = Some(chess.revision());
+            events.push(InterfaceEvent::Chess(Box::new(chess.view())));
+        }
         let house = state.gameplay.house();
         if self.house != Some(house.revision()) {
             self.house = Some(house.revision());
@@ -644,11 +657,18 @@ impl InterfaceFeed {
             HostEvent::Appraisal(view) => Some(InterfaceEvent::Appraisal(view.clone())),
             HostEvent::Trade(view) => Some(InterfaceEvent::Trade(Box::new(view.clone()))),
             HostEvent::OpenSalvage(tool) => Some(InterfaceEvent::OpenSalvage(*tool)),
+            HostEvent::BeginGame(board) => Some(InterfaceEvent::BeginGame(*board)),
             HostEvent::OpenContainedContainer(pack) => {
                 Some(InterfaceEvent::OpenContainedContainer(*pack))
             }
             HostEvent::Vendor(view) => Some(InterfaceEvent::Vendor(view.clone())),
             HostEvent::ItemMana(change) => Some(InterfaceEvent::ItemMana(*change)),
+            HostEvent::Gameplay(event) => match **event {
+                crate::gameplay::GameplayEvent::Selection { selected, .. } => {
+                    Some(InterfaceEvent::Selection(selected))
+                }
+                _ => None,
+            },
             _ => None,
         }));
         events
@@ -850,6 +870,42 @@ mod tests {
         assert!(
             matches!(&again[..], [InterfaceEvent::Social(s)] if s.options.options1() == 4),
             "{again:?}"
+        );
+    }
+
+    /// OpenAC's examination window hears every selection change: a window
+    /// hears each change the pass made, in order, not only the selection
+    /// it ends on.
+    #[test]
+    fn a_window_hears_every_selection_change_in_order() {
+        use crate::communication::CommunicationPaths;
+        use crate::gameplay::GameplayEvent;
+        let mut state = SessionState::new(CommunicationPaths::default());
+        state.world.set_player(0x5000_000B);
+        let mut feed = InterfaceFeed::default();
+        let _ = feed.snapshot(&state, true);
+        let selection = |selected| {
+            HostEvent::Gameplay(Box::new(GameplayEvent::Selection {
+                selected,
+                name: None,
+            }))
+        };
+        let passed = feed.follow(
+            &state,
+            true,
+            &[
+                selection(Some(0x8000_0002)),
+                selection(Some(0x8000_0001)),
+                selection(None),
+            ],
+        );
+        assert_eq!(
+            passed,
+            [
+                InterfaceEvent::Selection(Some(0x8000_0002)),
+                InterfaceEvent::Selection(Some(0x8000_0001)),
+                InterfaceEvent::Selection(None),
+            ]
         );
     }
 
