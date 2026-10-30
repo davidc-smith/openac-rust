@@ -19,7 +19,8 @@ use ac_dat::objects::{BspNode, GfxObj, Setup};
 use ac_host::settings::{MarkupControlKey, SettingsStore};
 use ac_plugin_ui::control_state::{ControlKey, ControlStateFile, ControlStateStore};
 use ac_plugin_ui::{
-    ClientWindow, ClientWindowAction, ImageSource, MapPoint, PanelView, ThemeKind, UiInput,
+    ClientWindow, ClientWindowAction, ImageSource, MapPoint, MarkerAnchor, PanelView, ThemeKind,
+    UiInput, WorldIconEntry,
 };
 use ac_proto::Quaternion;
 use ac_runtime::session::SessionCommand;
@@ -29,7 +30,7 @@ use ac_ui::draw::{Color, SpriteSizes, TextureRef};
 use ac_ui::font::{DEFAULT_FONT_ID, UiFont};
 use ac_ui::icons::{IconComposer, IconSource, Rgba};
 use ac_ui::import::LayoutSource;
-use ac_ui::overlay::{WorldLabel, WorldLabelAnchor};
+use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::CanvasLayer;
 use ac_ui::plugin::fold::SharedControlState;
@@ -84,6 +85,13 @@ pub fn client_window_name(window: ClientWindow) -> &'static str {
     }
 }
 
+/// A plugin's icon placed this frame: which of the merged icons, and where.
+#[derive(Debug, Clone, Copy)]
+struct PlacedIcon {
+    entry: usize,
+    anchor: WorldIconAnchor,
+}
+
 /// What the window keeps of the plugins' UI.
 #[derive(Debug, Default)]
 pub struct PluginWindowUi {
@@ -129,6 +137,9 @@ pub struct PluginWindowUi {
     pub(super) anchors: HashMap<u32, WorldLabelAnchor>,
     world_lines: Vec<PlacedLine>,
     world_triangles: Vec<PlacedTriangle>,
+    /// This frame's icons: none while the portal view hides the world.
+    world_icons: Vec<PlacedIcon>,
+    icon_entries: Arc<Vec<WorldIconEntry>>,
     samples: Vec<ProjectileDebugSample>,
     projectile_set: Option<(u64, Instant)>,
     setup_shapes: HashMap<u32, Option<SetupShape>>,
@@ -170,6 +181,21 @@ impl ControlStateFile for ControlStateSettings {
 }
 
 impl PluginWindowUi {
+    /// Where `guid`'s markers hang this frame, kept once per frame.
+    fn keep_anchor(
+        &mut self,
+        world: &WorldRenderer,
+        scene: &Scene,
+        dats: &DatCollection,
+        guid: u32,
+    ) {
+        if !self.anchors.contains_key(&guid)
+            && let Some(anchor) = label_anchor(world, scene, dats, &mut self.setup_shapes, guid)
+        {
+            self.anchors.insert(guid, anchor);
+        }
+    }
+
     /// The store, made on first use (values last the session until a
     /// settings file is given).
     fn control_state(&mut self) -> SharedControlState {
@@ -953,6 +979,32 @@ impl WindowUi {
                 &plugins.outbox,
             );
         }
+        let shown: Vec<WorldIcon> = plugins
+            .world_icons
+            .iter()
+            .filter_map(|placed| {
+                let entry = plugins.icon_entries.get(placed.entry)?;
+                let icon = &entry.icon;
+                Some(WorldIcon {
+                    anchor: placed.anchor,
+                    image: image(&entry.owner, icon.image),
+                    size: icon.size,
+                    tint: rgba_color(icon.tint_rgba),
+                    border: icon.border_rgba.map(rgba_color),
+                    max_range: icon.max_range,
+                })
+            })
+            .collect();
+        if let Some(overlay) = status.overlays.icons_mut() {
+            let anchors = &plugins.anchors;
+            overlay.tick(
+                &mut host.root,
+                &shown,
+                &|id| anchors.get(&id).copied(),
+                &plugins.labels,
+                camera.as_ref(),
+            );
+        }
         let (sets, _) = &view.projectile;
         if plugins.projectile_set.is_none_or(|(seen, _)| seen != *sets) {
             plugins.projectile_set = Some((*sets, now));
@@ -978,9 +1030,9 @@ impl WindowUi {
         &self.plugins.world_triangles
     }
 
-    /// The plugins' labels, lines, triangles and projectile markers placed
-    /// in the drawing frame from the world as last drawn (none without a
-    /// world).
+    /// The plugins' labels, lines, triangles, icons and projectile markers
+    /// placed in the drawing frame from the world as last drawn (none
+    /// without a world).
     pub(crate) fn set_plugin_world(
         &mut self,
         world: Option<&WorldRenderer>,
@@ -993,6 +1045,7 @@ impl WindowUi {
         plugins.anchors.clear();
         plugins.world_lines.clear();
         plugins.world_triangles.clear();
+        plugins.world_icons.clear();
         plugins.samples.clear();
         let (Some(world), Some(scene)) = (world, scene) else {
             return;
@@ -1008,17 +1061,7 @@ impl WindowUi {
                 max_range: label.max_range,
                 outline: label.outline,
             });
-            if !plugins.anchors.contains_key(&label.object_id)
-                && let Some(anchor) = label_anchor(
-                    world,
-                    scene,
-                    &dats,
-                    &mut plugins.setup_shapes,
-                    label.object_id,
-                )
-            {
-                plugins.anchors.insert(label.object_id, anchor);
-            }
+            plugins.keep_anchor(world, scene, &dats, label.object_id);
         }
         for line in view.lines.iter() {
             if let (Some(from), Some(to)) = (
@@ -1043,6 +1086,25 @@ impl WindowUi {
                     corners: [a, b, c],
                     colors: triangle.colors_rgba.map(rgba_unit),
                 });
+            }
+        }
+        plugins.icon_entries = Arc::clone(&view.icons);
+        if !world.portal_hides_world() {
+            for (entry, icon) in view.icons.iter().enumerate() {
+                let anchor = match icon.icon.anchor {
+                    MarkerAnchor::None => continue,
+                    MarkerAnchor::Object(id) => {
+                        plugins.keep_anchor(world, scene, &dats, id);
+                        WorldIconAnchor::Object(id)
+                    }
+                    MarkerAnchor::Position { point, .. } => {
+                        let Some(point) = map_point_in_frame(world, point) else {
+                            continue;
+                        };
+                        WorldIconAnchor::Point(point)
+                    }
+                };
+                plugins.world_icons.push(PlacedIcon { entry, anchor });
             }
         }
         for sample in view.projectile.1.iter() {
@@ -1196,13 +1258,19 @@ impl WindowUi {
     }
 }
 
-/// A map point in the drawing frame: its landblock placed by the world's
-/// floating origin.
 /// `0xRRGGBBAA` as red, green, blue and alpha in 0..1.
 fn rgba_unit(rgba: u32) -> [f32; 4] {
     rgba.to_be_bytes().map(|channel| f32::from(channel) / 255.0)
 }
 
+/// `0xRRGGBBAA` as a colour.
+fn rgba_color(rgba: u32) -> Color {
+    let [r, g, b, a] = rgba_unit(rgba);
+    Color::rgba(r, g, b, a)
+}
+
+/// A map point in the drawing frame: its landblock placed by the world's
+/// floating origin.
 fn map_point_in_frame(world: &WorldRenderer, point: MapPoint) -> Option<Vec3> {
     let (x, y, lx, ly, z) = point.to_landblock()?;
     let cell = (u32::from(x) << 24) | (u32::from(y) << 16) | 1;
