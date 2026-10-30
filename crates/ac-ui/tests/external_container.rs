@@ -629,7 +629,11 @@ fn a_pack_is_refused_over_the_contents_and_shortcuts_are_ignored() {
         s.slot(CONTENTS, 0).drag_acceptance(),
         DragAcceptance::Accept
     );
-    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+    for source in [
+        ItemDragSource::ShortcutBar,
+        ItemDragSource::Salvage,
+        ItemDragSource::Vendor,
+    ] {
         let alias = ItemDragPayload::new(ITEM, source, 0);
         s.fire(CONTENTS, 0, kind::DRAG_ENTER, Some(alias));
         s.update();

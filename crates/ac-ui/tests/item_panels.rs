@@ -1657,8 +1657,12 @@ fn over_a_full_pack_icon_the_drag_is_refused_but_the_grid_accepts() {
         drag_over(&mut inv, g, 3, payload(0xA), &view),
         DragAcceptance::Accept
     );
-    // An alias (a shortcut, or a salvage window cell) gets no answer.
-    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+    // An alias (a shortcut, or a salvage, vendor or house window cell) gets no answer.
+    for source in [
+        ItemDragSource::ShortcutBar,
+        ItemDragSource::Salvage,
+        ItemDragSource::Vendor,
+    ] {
         let alias = ItemDragPayload::new(0xA, source, 0);
         assert_eq!(
             drag_over(&mut inv, g, 3, alias, &view),
@@ -2488,7 +2492,11 @@ fn a_drag_over_a_slot_is_taken_only_for_a_valid_location_and_never_for_an_alias(
         d.slot(SHIELD_SLOT).drag_acceptance(),
         DragAcceptance::Reject
     );
-    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+    for source in [
+        ItemDragSource::ShortcutBar,
+        ItemDragSource::Salvage,
+        ItemDragSource::Vendor,
+    ] {
         let alias = ItemDragPayload::new(0xC01, source, 2);
         d.fire(HEAD_SLOT, kind::DRAG_ENTER, Some(alias.clone()));
         d.update(&view);
@@ -2885,8 +2893,12 @@ fn a_drop_on_the_figure_wears_a_wearable_item_and_refuses_anything_else() {
     d.mask_event(kind::DRAG_OVER, HEAD_X, Some(helm));
     d.update(&view);
     assert_eq!(d.acceptance(), DragAcceptance::None);
-    // An alias (a shortcut, or a salvage window cell) never wields.
-    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+    // An alias (a shortcut, or a salvage, vendor or house window cell) never wields.
+    for source in [
+        ItemDragSource::ShortcutBar,
+        ItemDragSource::Salvage,
+        ItemDragSource::Vendor,
+    ] {
         let alias = ItemDragPayload::new(0xC12, source, 2);
         d.mask_event(kind::DRAG_ENTER, HEAD_X, Some(alias.clone()));
         d.update(&view);
