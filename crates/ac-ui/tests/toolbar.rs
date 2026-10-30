@@ -431,9 +431,13 @@ fn a_drop_on_the_backpack_button_hands_the_session_the_item_to_put_away() {
             SessionCommand::Item(ItemCommand::DropOnBackpack(ObjectRef::Guid(0x7000_5001))),
         ]
     );
-    // An alias (a shortcut, or a salvage window cell) stays neutral and
+    // An alias (a shortcut, or a salvage, vendor or house window cell) stays neutral and
     // moves nothing.
-    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+    for source in [
+        ItemDragSource::ShortcutBar,
+        ItemDragSource::Salvage,
+        ItemDragSource::Vendor,
+    ] {
         let alias = ItemDragPayload::new(0x5001, source, 2);
         b.host.root.fire_event(
             kind::DRAG_ENTER,
@@ -761,20 +765,26 @@ fn a_fresh_item_on_an_occupied_slot_pushes_the_old_one_to_the_first_empty_on_the
     );
 }
 
-/// A salvage window cell is an alias the bar refuses: it makes no
-/// shortcut.
+/// A salvage, vendor or house window cell is an alias the bar refuses: it
+/// makes no shortcut.
 #[test]
-fn a_salvage_window_drag_makes_no_shortcut() {
-    let mut o = Objects::new();
-    item(&mut o, 0x5001);
-    let mut b = bar(&[], None);
-    b.update(&ItemsView::new(&o.t, PLAYER));
-    b.outputs();
-    let p = ItemDragPayload::new(0x5001, ItemDragSource::Salvage, 0);
-    b.fire(2, kind::DRAG_ENTER, Some(p.clone()));
-    assert_eq!(b.slot(2).drag_acceptance(), DragAcceptance::None);
-    b.fire(2, kind::DROP_RELEASED, Some(p));
-    assert!(shortcut_changes(&b.outputs()).is_empty());
+fn a_salvage_or_vendor_window_drag_makes_no_shortcut() {
+    for source in [ItemDragSource::Salvage, ItemDragSource::Vendor] {
+        let mut o = Objects::new();
+        item(&mut o, 0x5001);
+        let mut b = bar(&[], None);
+        b.update(&ItemsView::new(&o.t, PLAYER));
+        b.outputs();
+        let p = ItemDragPayload::new(0x5001, source, 0);
+        b.fire(2, kind::DRAG_ENTER, Some(p.clone()));
+        assert_eq!(
+            b.slot(2).drag_acceptance(),
+            DragAcceptance::None,
+            "{source:?}"
+        );
+        b.fire(2, kind::DROP_RELEASED, Some(p));
+        assert!(shortcut_changes(&b.outputs()).is_empty(), "{source:?}");
+    }
 }
 
 #[test]
