@@ -2,7 +2,9 @@
 //! keeps them exactly as the client does.
 
 use openac_plugin::testing::FakeHost;
-use openac_plugin::ui::{Image, MapPoint, MarkerAnchor, world_icon};
+use openac_plugin::ui::{
+    Image, MapPoint, MarkerAnchor, ground_arc, ground_disc, ground_ring, world_icon,
+};
 
 const ART: Image = Image {
     handle: 7,
@@ -60,4 +62,38 @@ fn a_plugin_hangs_icons_in_layers_it_owns() {
         host.with_host(|h| { second.set_icons(h, &[world_icon(MarkerAnchor::Object(1), ART)]) })
     );
     assert_eq!(host.ui.merged_icons().len(), 1);
+}
+
+#[test]
+fn a_plugin_lays_shapes_on_the_ground_in_its_layers() {
+    let mut host = FakeHost::new("example.markers");
+    let target = MarkerAnchor::Object(0x8000_0001);
+    let layer = host.with_host(|h| {
+        let layer = h.create_marker_layer();
+        let mut wedge = ground_arc(target.clone(), 8.0, -30.0, 60.0, true, 0xFF00_0060);
+        wedge.faces_object = true;
+        let shapes = [
+            ground_ring(target.clone(), 2.0, 0.2, 0x00FF_0080),
+            ground_disc(target.clone(), 5.0, 0x0000_FF40),
+            ground_arc(target.clone(), 3.0, 0.0, 90.0, false, 0xFFFF_0080),
+            wedge,
+        ];
+        assert!(layer.set_shapes(h, &shapes));
+        layer
+    });
+    let shown = host.ui.merged_shapes();
+    assert_eq!(shown.len(), 4);
+    assert_eq!(shown[0].width, 0.2);
+    assert_eq!(shown[0].sweep_degrees, 360.0);
+    assert_eq!(shown[1].color_rgba, 0x0000_FF40);
+    assert!(shown[1].filled);
+    assert_eq!(shown[2].width, 0.15);
+    assert!(shown[3].faces_object);
+    assert_eq!(shown[3].width, 0.0);
+
+    let many = vec![ground_disc(target, 1.0, 0xFFFF_FFFF); 257];
+    assert!(!host.with_host(|h| layer.set_shapes(h, &many)));
+    assert_eq!(host.ui.merged_shapes().len(), 4);
+    assert!(host.with_host(|h| layer.remove(h)));
+    assert!(host.ui.merged_shapes().is_empty());
 }

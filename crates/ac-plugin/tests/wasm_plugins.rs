@@ -1660,6 +1660,7 @@ fn uidemo_keeps_its_ui_in_the_session_with_or_without_a_window() {
         icons[0].icon.anchor,
         ac_plugin_ui::MarkerAnchor::Object(0x5000_000B)
     );
+    assert_eq!(api.ui.merged_shapes().len(), 1);
 
     // The player's input reaches the plugin with its next pump.
     api.ui.input(UiInput::Action {

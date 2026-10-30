@@ -202,7 +202,7 @@ mod tests {
     /// commit; when an existing record changed shape (not only a new
     /// import, event or `since`-marked field), say in the commit message
     /// which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0xbe6b_7896_a137_8d77;
+    const PUBLISHED: u64 = 0x25b8_dc0c_64f6_4d6b;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -271,6 +271,7 @@ mod tests {
             Import::UiTrianglesRemove,
             Import::UiMarkersCreate,
             Import::UiMarkersSetIcons,
+            Import::UiMarkersSetShapes,
             Import::UiMarkersRemove,
         ];
         let section = PluginLayout::parse(&section_at(v1_2)).unwrap();

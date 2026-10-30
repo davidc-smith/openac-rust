@@ -473,6 +473,7 @@ impl Transport for FakeHost {
             | Import::UiTrianglesRemove
             | Import::UiMarkersCreate
             | Import::UiMarkersSetIcons
+            | Import::UiMarkersSetShapes
             | Import::UiMarkersRemove
             | Import::UiProjectileDebug
             | Import::UiInputActionsListen => self.ui_call(import, bytes),
