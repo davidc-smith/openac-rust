@@ -128,7 +128,8 @@ points (pixels, except on macOS).
 Walls and hills do not hide them: like labels, they are drawn after the world,
 under the labels' text. An object's icons sit in rows of eight above its head
 and its labels, in the order given; an icon at a position is centred on it.
-Each fades over the last fifth of its range. The portal view hides them.
+Each fades over the last fifth of its range. The portal view hides icons and
+labels alike.
 
 *Ground shapes* (`MarkerLayer::set_shapes`, `ui::ground_ring`,
 `ui::ground_disc`, `ui::ground_arc`) lie on the ground around their anchor,
