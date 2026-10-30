@@ -112,10 +112,20 @@ pub fn bystander(guid: u32, x: f32) -> Object {
 /// dead one, a hidden one and a harmless bystander (OpenAC
 /// `ParityWorld.Stage`).
 pub fn stage(arm: &mut Arm) {
-    let hidden = Object {
+    // OpenAC stands the hidden one a metre out on the walking line. Here it
+    // stands three metres north of that: a hidden creature still collides
+    // (retail ignores only an ethereal one), and on this slope a walk that
+    // brushes it can be pinned against it (the step down lands the body in
+    // its sphere and the placement check refuses the move, as retail's
+    // does). Whether a walk brushes it depends on the frame timing, so the
+    // walk scenarios re-planned on a loaded machine and not on the other arm.
+    let mut hidden = Object {
         physics_state: HIDDEN,
         ..monster(HIDDEN_MONSTER, PLAYER_X + 1.0)
     };
+    if let Some((_, _, y, _)) = hidden.position.as_mut() {
+        *y += 3.0;
+    }
     arm.say_grounded(&hidden);
     arm.say_grounded(&monster(DEAD_MONSTER, PLAYER_X + 2.0));
     arm.server
