@@ -921,6 +921,17 @@ impl PluginUi {
         true
     }
 
+    /// Takes every plugin's labels down (OpenAC `ClearWorldLabelsOn`): the
+    /// character left the world, and with it the objects the labels sat on.
+    /// The plugins stay and show labels again on the next stay.
+    pub fn clear_labels(&mut self) {
+        if self.labels.is_empty() {
+            return;
+        }
+        self.labels.clear();
+        self.changes.push(UiChange::Labels(self.merged_labels()));
+    }
+
     /// Every plugin's labels, in the order the plugins first showed some.
     #[must_use]
     pub fn merged_labels(&self) -> Arc<Vec<WorldLabel>> {
