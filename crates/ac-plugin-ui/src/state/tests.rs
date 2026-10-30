@@ -784,6 +784,161 @@ fn the_icon_cap_counts_a_plugins_other_layers_and_only_its_own() {
     assert!(ui.set_icons("edwards.tank", a, vec![one; MAXIMUM_ICONS - 1]));
 }
 
+fn ring(radius: f32, width: f32) -> crate::model::GroundShape {
+    crate::model::GroundShape {
+        anchor: crate::model::MarkerAnchor::Object(5),
+        kind: crate::model::GroundShapeKind::Ring,
+        radius,
+        width,
+        start_degrees: 40.0,
+        sweep_degrees: 90.0,
+        filled: true,
+        faces_object: true,
+        color_rgba: 0xFF00_0080,
+    }
+}
+
+// OpenAC `InvalidShapesAreDroppedAndTheRestShown` and
+// `RingsAndDiscsBecomeFullTurnsFromNorthAndFilledShapesLoseTheirWidth`.
+#[test]
+fn a_ring_or_disc_is_a_full_turn_and_unusable_shapes_are_dropped() {
+    use crate::model::{GroundShape, GroundShapeKind, MarkerAnchor};
+    let mut ui = PluginUi::new();
+    let layer = ui.create_marker_layer("edwards.tank");
+    let good = ring(2.0, 0.5);
+    let disc = GroundShape {
+        kind: GroundShapeKind::Disc,
+        width: f32::NAN,
+        ..good
+    };
+    let arc = GroundShape {
+        kind: GroundShapeKind::Arc,
+        filled: false,
+        ..good
+    };
+    let wedge = GroundShape {
+        kind: GroundShapeKind::Arc,
+        width: f32::NAN,
+        ..good
+    };
+    let given = vec![
+        good,
+        disc,
+        arc,
+        wedge,
+        GroundShape {
+            kind: GroundShapeKind::None,
+            ..good
+        },
+        GroundShape {
+            anchor: MarkerAnchor::None,
+            ..good
+        },
+        ring(0.05, 0.01),
+        ring(101.0, 1.0),
+        ring(f32::NAN, 1.0),
+        ring(2.0, 0.0),
+        ring(2.0, 2.5),
+        GroundShape {
+            sweep_degrees: 0.0,
+            ..arc
+        },
+        GroundShape {
+            sweep_degrees: 361.0,
+            ..arc
+        },
+        GroundShape {
+            start_degrees: f32::NAN,
+            ..arc
+        },
+        GroundShape { width: 0.0, ..arc },
+    ];
+    assert!(ui.set_shapes("edwards.tank", layer, given));
+    let shapes = ui.merged_shapes();
+    assert_eq!(shapes.len(), 4);
+    let (r, d, a, w) = (shapes[0], shapes[1], shapes[2], shapes[3]);
+    assert_eq!((r.start_degrees, r.sweep_degrees), (0.0, 360.0));
+    assert!(!r.filled && !r.faces_object);
+    assert_eq!(
+        (d.width, d.start_degrees, d.sweep_degrees),
+        (0.0, 0.0, 360.0)
+    );
+    assert!(d.filled && !d.faces_object);
+    assert_eq!(
+        (a.start_degrees, a.sweep_degrees, a.width),
+        (40.0, 90.0, 0.5)
+    );
+    assert!(!a.filled && a.faces_object);
+    assert_eq!(w.width, 0.0);
+    assert!(w.filled);
+}
+
+// OpenAC `TheLimitsThemselvesAreAccepted`.
+#[test]
+fn a_shapes_limits_themselves_are_accepted() {
+    use crate::model::{GroundShape, GroundShapeKind};
+    let mut ui = PluginUi::new();
+    let layer = ui.create_marker_layer("edwards.tank");
+    let arc = GroundShape {
+        kind: GroundShapeKind::Arc,
+        filled: false,
+        sweep_degrees: 360.0,
+        ..ring(MAXIMUM_SHAPE_RADIUS, MAXIMUM_SHAPE_RADIUS)
+    };
+    let given = vec![
+        arc,
+        ring(MINIMUM_SHAPE_RADIUS, MINIMUM_SHAPE_RADIUS),
+        ring(MAXIMUM_SHAPE_RADIUS, MAXIMUM_SHAPE_RADIUS),
+    ];
+    assert!(ui.set_shapes("edwards.tank", layer, given));
+    assert_eq!(ui.merged_shapes().len(), 3);
+}
+
+// OpenAC `SettingShapesLeavesTheLayersIconsAloneAndTheOtherWayRound`.
+#[test]
+fn setting_one_kind_of_marker_leaves_the_other_alone() {
+    use crate::model::MarkerAnchor;
+    let mut ui = PluginUi::new();
+    let layer = ui.create_marker_layer("edwards.tank");
+    assert!(ui.set_icons("edwards.tank", layer, vec![icon(MarkerAnchor::Object(5))]));
+    assert!(ui.set_shapes("edwards.tank", layer, vec![ring(2.0, 0.5)]));
+    assert!(ui.set_shapes("edwards.tank", layer, vec![]));
+    assert_eq!(ui.merged_icons().len(), 1);
+    assert!(ui.set_shapes("edwards.tank", layer, vec![ring(2.0, 0.5)]));
+    assert!(ui.set_icons("edwards.tank", layer, vec![]));
+    assert_eq!(ui.merged_shapes().len(), 1);
+}
+
+// OpenAC `IconsAndShapesAreCappedApart`.
+#[test]
+fn the_shape_cap_counts_a_plugins_other_layers_apart_from_its_icons() {
+    use crate::model::MarkerAnchor;
+    let mut ui = PluginUi::new();
+    let a = ui.create_marker_layer("edwards.tank");
+    let b = ui.create_marker_layer("edwards.tank");
+    let one = ring(2.0, 0.5);
+    assert!(ui.set_icons(
+        "edwards.tank",
+        a,
+        vec![icon(MarkerAnchor::Object(1)); MAXIMUM_ICONS]
+    ));
+    assert!(ui.set_shapes("edwards.tank", a, vec![one; MAXIMUM_SHAPES - 1]));
+    assert!(ui.set_shapes("edwards.tank", b, vec![one]));
+    assert!(!ui.set_shapes("edwards.tank", b, vec![one; 2]));
+    assert_eq!(ui.merged_shapes().len(), MAXIMUM_SHAPES);
+    assert!(!ui.set_shapes("another.plugin", b, vec![one]));
+    assert!(
+        ui.snapshot()
+            .iter()
+            .any(|c| matches!(c, UiChange::Shapes(s) if s.len() == MAXIMUM_SHAPES))
+    );
+    ui.clear_markers();
+    assert!(ui.merged_shapes().is_empty());
+    assert!(ui.set_shapes("edwards.tank", a, vec![one]));
+    assert!(ui.remove_marker_layer("edwards.tank", a));
+    assert!(ui.merged_shapes().is_empty());
+}
+
 // OpenAC `ClearingEmptiesEveryLayerButTheLayersStayUsable`.
 #[test]
 fn clearing_markers_empties_the_layers_and_they_stay_usable() {
@@ -796,7 +951,7 @@ fn clearing_markers_empties_the_layers_and_they_stay_usable() {
     assert!(ui.merged_icons().is_empty());
     assert!(matches!(
         ui.take_changes().as_slice(),
-        [UiChange::Icons(i)] if i.is_empty()
+        [UiChange::Icons(i), UiChange::Shapes(s)] if i.is_empty() && s.is_empty()
     ));
     ui.clear_markers();
     assert!(ui.take_changes().is_empty());
