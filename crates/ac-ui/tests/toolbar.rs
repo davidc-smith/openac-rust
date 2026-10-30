@@ -787,16 +787,106 @@ fn a_drop_keeps_the_raw_shortcut_fields_and_an_empty_target_only_places() {
 #[test]
 fn a_fresh_item_on_an_occupied_slot_pushes_the_old_one_to_the_first_empty_on_the_right() {
     let mut o = Objects::new();
+    o.player(102, 7);
     item(&mut o, 0x5001);
     item(&mut o, 0x5002);
+    o.mv(0x5001, PLAYER, 0);
+    o.mv(0x5002, PLAYER, 1);
     let mut b = bar(&[entry(2, 0x5002), entry(3, 0x5003)], None);
-    b.update(&ItemsView::new(&o.t, PLAYER));
+    let view = ItemsView::new(&o.t, PLAYER);
+    b.update(&view);
     b.outputs();
     let p = ItemDragPayload::new(0x5001, ItemDragSource::Inventory, 40);
     b.fire(2, kind::DROP_RELEASED, Some(p));
+    b.update(&view);
+    let out = b.outputs();
     assert_eq!(
-        shortcut_changes(&b.outputs()),
+        shortcut_changes(&out),
         vec!["remove 2", "add 2 0x5001", "add 4 0x5002"]
+    );
+    // The player's own item asks for no pickup.
+    assert!(sessions(&out).is_empty());
+}
+
+/// The bar with `occupant` in slot 4, after a drop of `dropped` (with
+/// `setup` applied to it, lying on the ground) on slot 4: the shortcut
+/// changes and the session commands.
+fn drop_from_the_ground_on_slot_4(
+    occupant: Option<u32>,
+    setup: impl FnOnce(&mut ClientObject),
+    open_vendor: u32,
+) -> (Vec<String>, Vec<SessionCommand>) {
+    const LOOT: u32 = 0x7000_5001;
+    let mut o = Objects::new();
+    o.player(102, 7);
+    item(&mut o, 0x5002);
+    o.mv(0x5002, PLAYER, 0);
+    let mut loot = ClientObject::new(LOOT);
+    loot.item_type = ItemType::MISC;
+    loot.icon_id = 0x0600_0777;
+    setup(&mut loot);
+    o.add(loot);
+    let shortcuts: Vec<ShortcutEntry> = occupant.map(|id| entry(4, id)).into_iter().collect();
+    let mut b = bar(&shortcuts, None);
+    let view = ItemsView {
+        open_vendor,
+        ..ItemsView::new(&o.t, PLAYER)
+    };
+    b.update(&view);
+    b.outputs();
+    let p = ItemDragPayload::new(LOOT, ItemDragSource::Ground, 0);
+    b.fire(4, kind::DRAG_ENTER, Some(p.clone()));
+    b.fire(4, kind::DROP_RELEASED, Some(p));
+    b.update(&view);
+    let out = b.outputs();
+    (shortcut_changes(&out), sessions(&out))
+}
+
+#[test]
+fn an_item_dropped_from_the_ground_on_a_slot_is_picked_up_and_the_session_gives_it_the_shortcut() {
+    // GitHub #45: a ground item dropped on the hotbar put a shortcut to an
+    // object lying on the ground and picked nothing up. It is picked up
+    // into the preferred pack first; the shortcut follows the pickup.
+    let pickup = vec![SessionCommand::Item(ItemCommand::PickUpToShortcut {
+        item: ObjectRef::Guid(0x7000_5001),
+        slot: 4,
+    })];
+    let (changes, sent) = drop_from_the_ground_on_slot_4(None, |_| {}, 0);
+    assert!(changes.is_empty(), "{changes:?}");
+    assert_dbg_eq!(sent, pickup);
+    // An occupied slot makes way to the first empty slot on its right.
+    let (changes, sent) = drop_from_the_ground_on_slot_4(Some(0x5002), |_| {}, 0);
+    assert_eq!(changes, vec!["remove 4", "add 5 0x5002"]);
+    assert_dbg_eq!(sent, pickup);
+}
+
+#[test]
+fn a_stuck_object_a_creature_or_a_vendors_item_dropped_on_a_slot_gets_no_shortcut() {
+    // The slot's shortcut still makes way, as the game does before it
+    // judges the dropped object; nothing is picked up or added.
+    let stuck = |o: &mut ClientObject| {
+        o.public_weenie_bitfield = Some(ac_core::items::PublicWeenieFlags::STUCK);
+    };
+    let creature = |o: &mut ClientObject| o.item_type = ItemType::CREATURE;
+    const VENDOR: u32 = 0x7000_9000;
+    let (changes, sent) = drop_from_the_ground_on_slot_4(None, stuck, 0);
+    assert!(
+        changes.is_empty() && sent.is_empty(),
+        "{changes:?} {sent:?}"
+    );
+    let (changes, sent) = drop_from_the_ground_on_slot_4(Some(0x5002), stuck, 0);
+    assert_eq!(changes, vec!["remove 4", "add 5 0x5002"]);
+    assert!(sent.is_empty());
+    let (changes, sent) = drop_from_the_ground_on_slot_4(None, creature, 0);
+    assert!(
+        changes.is_empty() && sent.is_empty(),
+        "{changes:?} {sent:?}"
+    );
+    let in_shop = |o: &mut ClientObject| o.container_id = VENDOR;
+    let (changes, sent) = drop_from_the_ground_on_slot_4(None, in_shop, VENDOR);
+    assert!(
+        changes.is_empty() && sent.is_empty(),
+        "{changes:?} {sent:?}"
     );
 }
 

@@ -258,6 +258,10 @@ impl Inventory {
             }
             C::AddShortcut(entry) => self.add_shortcut(*entry, ctx),
             C::RemoveShortcut(slot) => self.remove_shortcut(*slot, ctx),
+            C::PickUpToShortcut { item, slot } => {
+                let item = resolve!(item);
+                self.pick_up_to_shortcut(item, *slot, ctx)
+            }
             C::EnterUseMode => {
                 self.mode = InteractionMode::Use;
                 true
@@ -1156,6 +1160,40 @@ impl Inventory {
         ctx.send(|seq| build_add_shortcut(seq, &shortcut));
         self.shortcuts.set(entry);
         true
+    }
+
+    /// A loose item dropped on the toolbar's `slot`: it is picked up into
+    /// the preferred pack as the use key picks it up, and once that request
+    /// has gone out it gets the shortcut in `slot` (any other shortcut to it
+    /// is taken off first). When the pickup does not go out (no room, a
+    /// request already in flight) the bar is left as it is.
+    pub(super) fn pick_up_to_shortcut(
+        &mut self,
+        item_id: u32,
+        slot: i32,
+        ctx: &mut ItemContext<'_>,
+    ) -> bool {
+        let on_bar = usize::try_from(slot).is_ok_and(|i| i < SHORTCUT_SLOTS);
+        if item_id == 0 || !on_bar || ctx.world.item(item_id).is_none() {
+            return false;
+        }
+        let acted = self.place_world_item_in_backpack(item_id, ctx);
+        if self.backpack_placement != Some(BackpackPlacement::Sent) {
+            return acted;
+        }
+        if let Some(existing) =
+            (0..SHORTCUT_SLOTS as i32).find(|&s| self.shortcuts.get(s) == item_id)
+        {
+            self.remove_shortcut(existing, ctx);
+        }
+        self.add_shortcut(
+            ShortcutEntry {
+                index: slot,
+                object_id: item_id,
+                spell_id: 0,
+            },
+            ctx,
+        )
     }
 
     /// Take the shortcut in `slot` off the bar.
