@@ -171,6 +171,9 @@ macro_rules! import_table {
             /// Replace a marker layer's icons.
             UiMarkersSetIcons = ui_markers_set_icons($crate::ui::IconSet) -> bool,
                 permission: None, window: false, since: (1, 3);
+            /// Replace a marker layer's ground shapes.
+            UiMarkersSetShapes = ui_markers_set_shapes($crate::ui::ShapeSet) -> bool,
+                permission: None, window: false, since: (1, 3);
             /// Remove a marker layer and its markers.
             UiMarkersRemove = ui_markers_remove(u32) -> bool,
                 permission: None, window: false, since: (1, 3);
