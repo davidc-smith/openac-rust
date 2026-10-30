@@ -95,6 +95,21 @@ bindings, and hears its buttons as `Event::Ui`. The window's state lives in
 the session, so a game window that attaches later shows it as it stands, and
 a session without a window answers the same.
 
+**World drawing.** A plugin can put labels over objects
+(`Host::show_labels`), and lines (`Host::create_line_layer`) and filled
+triangles (`Host::create_triangle_layer`, API 1.3) in the world, at
+`MapPoint` positions. Lines and triangles live in layers the plugin owns:
+setting a layer replaces its contents, and removing it, or unloading the
+plugin, takes them down. A triangle is flat between its three corners and see-through by its
+colour's alpha (`0xRRGGBBAA`, one per corner, blended across the face). It
+is drawn from both sides and unlit. Walls and hills in front of it hide it,
+but overlapping triangles blend rather than hide each other. It does not
+follow the ground, so lift one meant to lie on it by about 0.1 m. The
+client draws what is within 250 m of the camera and in view, nearest first
+when a frame holds more than about twelve thousand. A layer keeps at most
+65,536 triangles; send a few thousand at a time, a few times a second, not
+every frame.
+
 ## Testing natively
 
 On a native target the SDK has `testing::FakeHost`, which answers every
