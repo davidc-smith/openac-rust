@@ -64,13 +64,14 @@ use std::collections::BTreeMap;
 pub use ac_plugin_abi::ui::{
     ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, PaintCmd,
     PointerEvent, ProjectileSample, Rect, RowAction, RowStep, TypedBindingDecl, TypedBindingKind,
-    TypedValue, UiAction, UiEvent, UiValue, WorldLabel, WorldLine,
+    TypedValue, UiAction, UiEvent, UiValue, WorldLabel, WorldLine, WorldTriangle,
 };
 use ac_plugin_abi::ui::{
     CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
     ControlVisible, DialogRequest, EncodedImage, ImageInfo, ItemRow, ItemTypeDecl, ItemValue,
     LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
-    PanelValues, RgbaImage, TextSize, TypedPanelRegistration, TypedPanelValues, ViewShow,
+    PanelValues, RgbaImage, TextSize, TriangleSet, TypedPanelRegistration, TypedPanelValues,
+    ViewShow,
 };
 use ac_plugin_abi::{Import, Wire};
 
@@ -754,6 +755,50 @@ impl LineLayer {
     }
 }
 
+/// A layer of filled world triangles (API 1.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TriangleLayer {
+    id: u32,
+}
+
+impl TriangleLayer {
+    /// Replaces the layer's triangles (the first 65,536 are kept). Meant
+    /// for sets of up to a few thousand replaced a few times a second, not
+    /// every frame.
+    pub fn set_triangles(self, host: &mut Host<'_>, triangles: &[WorldTriangle]) -> bool {
+        let request = TriangleSet {
+            layer: self.id,
+            triangles: triangles.to_vec(),
+        }
+        .to_bytes();
+        let reply = ui_call!(host, UiTrianglesSet, ui_triangles_set, &request);
+        decode(Import::UiTrianglesSet, &reply)
+    }
+
+    /// Removes the layer and its triangles.
+    pub fn remove(self, host: &mut Host<'_>) -> bool {
+        let request = self.id.to_bytes();
+        let reply = ui_call!(host, UiTrianglesRemove, ui_triangles_remove, &request);
+        decode(Import::UiTrianglesRemove, &reply)
+    }
+}
+
+/// A triangle between `a`, `b` and `c` filled in one colour,
+/// `0xRRGGBBAA` (its alpha is how opaque the fill is). Give
+/// [`WorldTriangle::color_b`] and [`WorldTriangle::color_c`] their own
+/// colours to blend across the face.
+#[must_use]
+pub fn triangle(a: MapPoint, b: MapPoint, c: MapPoint, rgba: u32) -> WorldTriangle {
+    WorldTriangle {
+        a,
+        b,
+        c,
+        color_a: rgba,
+        color_b: rgba,
+        color_c: rgba,
+    }
+}
+
 /// A label over `object` saying `text`: white, outlined, on the first
 /// line, shown up to 60 m away (OpenAC `PluginWorldLabel`'s defaults).
 #[must_use]
@@ -1055,6 +1100,14 @@ impl Host<'_> {
         let reply = ui_call!(self, UiLinesCreate, ui_lines_create, &[]);
         LineLayer {
             id: decode(Import::UiLinesCreate, &reply),
+        }
+    }
+
+    /// A new, empty world-triangle layer (API 1.3).
+    pub fn create_triangle_layer(&mut self) -> TriangleLayer {
+        let reply = ui_call!(self, UiTrianglesCreate, ui_triangles_create, &[]);
+        TriangleLayer {
+            id: decode(Import::UiTrianglesCreate, &reply),
         }
     }
 
