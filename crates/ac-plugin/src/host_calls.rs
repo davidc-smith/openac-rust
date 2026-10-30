@@ -284,6 +284,9 @@ pub(crate) fn handle_import(
         | Import::UiTrianglesCreate
         | Import::UiTrianglesSet
         | Import::UiTrianglesRemove
+        | Import::UiMarkersCreate
+        | Import::UiMarkersSetIcons
+        | Import::UiMarkersRemove
         | Import::UiProjectileDebug
         | Import::UiHotkeyRegister
         | Import::UiHotkeyUnregister
