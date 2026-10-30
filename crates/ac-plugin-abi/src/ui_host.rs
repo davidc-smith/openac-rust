@@ -9,7 +9,8 @@ use crate::ui::{
     self as abi, ActionValue, BindingKind, CanvasChange, CanvasPaint, CanvasRegistration,
     CanvasSet, CanvasState, ClientWindowRequest, ControlLabel, ControlRef, ControlVisible,
     EncodedImage, HotkeyRebind, HotkeyRegistration, HotkeyState, ImageInfo, KeyChord, LineSet,
-    PanelRegistration, PanelValues, PointerEvent, RgbaImage, TextSize, UiAction, UiValue, ViewShow,
+    PanelRegistration, PanelValues, PointerEvent, RgbaImage, TextSize, TriangleSet, UiAction,
+    UiValue, ViewShow,
 };
 use crate::{DecodeError, Event, Import, Wire};
 use ac_plugin_ui::{
@@ -603,6 +604,23 @@ pub fn handle(
         Import::UiLinesRemove => {
             let layer = u32::from_bytes(request).map_err(bad)?;
             state.remove_line_layer(id, layer).to_bytes()
+        }
+        Import::UiTrianglesCreate => state.create_triangle_layer(id).to_bytes(),
+        Import::UiTrianglesSet => {
+            let r = TriangleSet::from_bytes(request).map_err(bad)?;
+            let triangles = r
+                .triangles
+                .into_iter()
+                .map(|t| ui::WorldTriangle {
+                    corners: [point(t.a), point(t.b), point(t.c)],
+                    colors_rgba: [t.color_a, t.color_b, t.color_c],
+                })
+                .collect();
+            state.set_triangles(id, r.layer, triangles).to_bytes()
+        }
+        Import::UiTrianglesRemove => {
+            let layer = u32::from_bytes(request).map_err(bad)?;
+            state.remove_triangle_layer(id, layer).to_bytes()
         }
         Import::UiProjectileDebug => {
             let samples = Vec::<abi::ProjectileSample>::from_bytes(request).map_err(bad)?;
