@@ -29,8 +29,8 @@ F1 has to be settled with Erik before any ABI change.
 
 | ID | Foundation | What it is | Unlocks | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| F1 | ABI versioning policy | Agree with Erik how fork features land: as API 1.3 upstream, or behind a capability query. New fields go at the end of records with `since (1, 3)`. | Every ABI item | S | Not started | Decision, not code |
-| F2 | Translucent world pass | A second pipeline next to `world_line_pipeline`: alpha blend, depth test, no depth write, no culling, RGBA per vertex. Same world pass as the lines. | W1, W3, W4 | M | Not started | `ac-render/src/renderer/pipelines.rs`, `renderer.rs:3690` |
+| F1 | ABI versioning policy | Asked Erik on 2026-10-30, follow-up sent the same day. The ABI cannot hold an import newer than `API_CURRENT` (the SDK writes every import, which must equal `section_at(API_CURRENT)`), so a PR that adds to the API raises the version itself. Proposal: the first API-adding PR after a release raises it, later ones before the next release reuse it. | Every ABI item | S | In progress | Waiting on Erik. W1 raised the API to 1.3 on its branch |
+| F2 | Translucent world pass | A second pipeline next to `world_line_pipeline`: alpha blend, depth test, no depth write, no culling, RGBA per vertex. Same world pass as the lines. | W1, W3, W4 | M | Done (on `main`) | Built with W1 on `feat/world-triangles`; GPU test in `ac-render/src/renderer/world_triangles.rs` |
 | F3 | Anti-aliased UI shapes | A triangle-list `DrawCmd` with a colour per vertex and a 1 px soft edge, plus rounded rects, shadows and gradients built on it. | P1, P2, P9, all decks | M | Not started | `ac-ui/src/draw.rs`, `ac-render/src/ui/gpu.rs` |
 | F4 | Fonts | A bundled SemiBold weight, plus a plugin font API (bundled Noto Sans at any size and weight, or the plugin's own TTF/OTF). | P1, P7, P8, P13, decks | M-L | Not started | `ac-ui/src/font.rs`, `bundled_font.rs` |
 | F5 | SVG icons | Decide between adding resvg/tiny-skia and shipping PNGs. The installer and `plugincheck` must accept `.svg` if we add it. | P3, decks | S-M | Not started | Decks use about 15 SVGs from `assets/hud` |
@@ -44,10 +44,10 @@ None of those has an import in `ac-plugin-abi/src/table.rs`.
 
 | ID | Feature (C# merge) | Rust today | What porting involves | Size | Needs | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W1 | Filled see-through triangles (`47b0dad8`, colour per corner from `1bdde7b1`) | Missing | `WorldTriangle` record and `ui_triangles_create/set/remove` imports. Owner layers in `ac-plugin-ui/src/state.rs` (copy what lines do), a `TriangleLayer` in the SDK, and a draw after `draw_world_lines`. Up to 65,536 per layer. | M | F1, F2 | Not started | Top priority |
+| W1 | Filled see-through triangles (`47b0dad8`, colour per corner from `1bdde7b1`) | Done | `ui_triangles_create/set/remove` (API 1.3), `TriangleLayer` in the SDK, per-plugin layers in `PluginUi`, range/view/budget planning in `ac-render/src/world_triangles.rs`. Live-checked 2026-10-30 with a test plugin on the Mac. | M | F1, F2 | Done (on `main`) | Branch `feat/world-triangles` (5 commits, `c41b42a`); PR waits for F1 |
 | W2 | World icons over objects and positions (`a7535b82`) | Missing | Marker-layer ABI (object or position anchor), and an icon layer next to `WorldLabelLayer` in `ac-ui/src/overlay.rs`. Reuses plugin image textures and `map_point_in_frame`. | M | F1 | Not started | Ship as one marker ABI with W3 |
 | W3 | Ground shapes: rings, discs, arcs (`4ea41e8e`) | Missing | Port the about 160-line tessellator. Each vertex follows the ground, as `world_lines.rs` already does. Object anchors and `FacesObject` use the object's heading. | M (S after W1) | F2, W2 | Not started | |
-| W4 | Shape culling, budget, terrain cache (`9c4248b2`) | Missing | View culling with `ac-render/src/frustum.rs`, nearest first within a budget, and a sampler cache over `ac-physics/src/engine.rs:452`. | S | W1, W3 | Not started | Build into W1 and W3 |
+| W4 | Shape culling, budget, terrain cache (`9c4248b2`) | Partial | Triangles already cull by range and view and keep a nearest-first budget (W1). Left: the same for ground shapes (W3) and a sampler cache over `ac-physics/src/engine.rs:452`. | S | W3 | Not started | |
 | W5 | World labels cleared at logoff (`6a64b022`) | Missing | `PluginUi::clear_labels`, called from `SessionState::left_world`; plugins keep running and show labels again next stay. Markers (W2, W3) must clear the same way. | S | — | Done (on `main`) | Branch `fix/world-labels-logoff` (`084bb15`); PR waits for F1 answer. No ABI change, so it could go up now |
 | W6 | Read any landblock's terrain (`c44d8f45`) | Missing | `world::LandblockTerrain` record and a `terrain_landblock(u32)` import built from `TerrainSurface::from_landblock` (`ac-physics/src/dat.rs:141`). Least-recently-used cache. `sample()` in the SDK. | S-M | F1 | Not started | |
 | W7 | Indoor cell doorways (`f6000588`) | Missing | `doorways` field on `IndoorCell` (`ac-plugin-abi/src/world.rs:647`), filled from EnvCell portals in `ac-nav/src/indoor.rs`. | S | F1 | Not started | |
@@ -135,6 +135,7 @@ Bugs found while porting that are not C# fork work.
 | ID | Fix | What to do | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | M1 | Plugin peer socket path too long on macOS | macOS caps Unix socket paths at 104 bytes. `endpoint_for` (`ac-runtime/src/plugins/peer_transport.rs:123`) puts the socket at `<cache>/plugin-peers/openac-peer-<24 hex>`, 113 bytes for the live client on this Mac and 131 in the tests. Use a short socket folder when the path would be too long; the hash already names the directory and user. | S | Not started | Live peers probably fail on Mac; the 10 `peers` host-parity tests fail on Mac unless `TMPDIR=/tmp/`. Linux CI never sees it (108-byte limit, short `/tmp`) |
+| M2 | Load-sensitive host-parity tests | `ac-runtime --test host_parity` fails about 1 run in 3 on this Mac under the full parallel run (`a_walk_is_reported_to_a_plugin_on_both_clients`, `two_uses_in_a_row_are_refused_the_same_on_both_clients`): the windowed arm sends an extra timed position update (`0xF753`). Happens on untouched `upstream-main` too. Each passes alone. | S-M | Not started | Rerun a failed check before suspecting a change |
 
 ## Nothing to port
 
