@@ -19,8 +19,8 @@ upstream does not have.
   branch from `upstream-main`, open the upstream PR from that branch, and merge the same branch
   into `main`. Never cut a PR branch from `main`, or our local-only commits ride along.
 - **Local-only changes** (tooling, notes, ignore rules): commit on `main`.
-- Large features (the Modern HUD decks) go upstream as several reviewable PRs, each its own branch
-  off `upstream-main`.
+- Work that builds on itself goes upstream as one PR of logically ordered commits, each building and
+  passing on its own (Erik's request). Separate features (each Modern HUD deck, say) are separate PRs.
 
 ## Syncing upstream
 

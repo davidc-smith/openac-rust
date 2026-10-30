@@ -4,10 +4,9 @@ As of 2026-10-30.
 
 ## Summary
 
-45 features and fixes still need porting to openac-rust, on top of 6 shared
-foundations and 6 live checks. The biggest are the filled world triangles, the
-modern theme and dock, plugin fonts and canvas shapes, and all six Modern HUD
-decks. About 30 more are already in Rust (Erik ported them from upstream),
+39 features and fixes still need porting to openac-rust, on top of 5 shared
+foundations and 6 live checks. The biggest are the modern theme and dock, plugin
+fonts and canvas shapes, and all six Modern HUD decks. About 30 more are already in Rust (Erik ported them from upstream),
 don't apply, or are dropped.
 
 - **Source:** davidc-smith/OpenAC `main` at `5e7d7404`, 1,092 non-merge
@@ -17,6 +16,9 @@ don't apply, or are dropped.
   is off by default.
 - **Dropped:** Rynth (RynthCore host, RynthAi/Chat/Nav/Lua, its maps and
   panels) and the Gateway branding and launcher split.
+- **Upstream PRs:** Erik asked on 2026-10-30 for work that builds on itself to
+  go up as one PR of logically ordered commits, not as stacked PRs. Each commit
+  builds and passes on its own.
 - **How to use this file:** update the Status column as work moves (Not
   started, In progress, In review, Done, Blocked) and put the PR link in Notes.
   Sizes are S (under a day), M (a few days) and L (a week or more). The IDs
@@ -29,7 +31,7 @@ F1 has to be settled with Erik before any ABI change.
 
 | ID | Foundation | What it is | Unlocks | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| F1 | ABI versioning policy | Asked Erik on 2026-10-30, follow-up sent the same day. The ABI cannot hold an import newer than `API_CURRENT` (the SDK writes every import, which must equal `section_at(API_CURRENT)`), so a PR that adds to the API raises the version itself. Proposal: the first API-adding PR after a release raises it, later ones before the next release reuse it. | Every ABI item | S | In progress | Waiting on Erik. W1 raised the API to 1.3 on its branch |
+| F1 | ABI versioning policy | Asked Erik on 2026-10-30, follow-up sent the same day. The ABI cannot hold an import newer than `API_CURRENT` (the SDK writes every import, which must equal `section_at(API_CURRENT)`), so a PR that adds to the API raises the version itself. Proposal: the first API-adding PR after a release raises it, later ones before the next release reuse it. | Every ABI item | S | In progress | Waiting on Erik for the policy. The world drawing PR (`feat/world-markers`) takes the API from 1.2 to 1.3 once, for triangles and markers together, which is what the proposal says |
 | F2 | Translucent world pass | A second pipeline next to `world_line_pipeline`: alpha blend, depth test, no depth write, no culling, RGBA per vertex. Same world pass as the lines. | W1, W3, W4 | M | Done (on `main`) | Built with W1 on `feat/world-triangles`; GPU test in `ac-render/src/renderer/world_triangles.rs` |
 | F3 | Anti-aliased UI shapes | A triangle-list `DrawCmd` with a colour per vertex and a 1 px soft edge, plus rounded rects, shadows and gradients built on it. | P1, P2, P9, all decks | M | Not started | `ac-ui/src/draw.rs`, `ac-render/src/ui/gpu.rs` |
 | F4 | Fonts | A bundled SemiBold weight, plus a plugin font API (bundled Noto Sans at any size and weight, or the plugin's own TTF/OTF). | P1, P7, P8, P13, decks | M-L | Not started | `ac-ui/src/font.rs`, `bundled_font.rs` |
@@ -38,23 +40,24 @@ F1 has to be settled with Erik before any ABI change.
 
 ## World rendering and plugin world APIs
 
-The biggest gap is the filled world triangles. Rust has world labels and opaque
-lines, but no filled triangles, ground shapes, world icons or terrain reads.
-None of those has an import in `ac-plugin-abi/src/table.rs`.
+World drawing is done on `main`: labels, lines, filled triangles, icons and
+ground shapes. All of it goes up as one PR from `feat/world-markers`, not open
+yet. Still missing are terrain reads (W6) and the indoor and floorplan data
+(W7 to W9).
 
 | ID | Feature (C# merge) | Rust today | What porting involves | Size | Needs | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W1 | Filled see-through triangles (`47b0dad8`, colour per corner from `1bdde7b1`) | Done | `ui_triangles_create/set/remove` (API 1.3), `TriangleLayer` in the SDK, per-plugin layers in `PluginUi`, range/view/budget planning in `ac-render/src/world_triangles.rs`. Live-checked 2026-10-30 with a test plugin on the Mac. | M | F1, F2 | Done (on `main`) | Branch `feat/world-triangles` (5 commits, `c41b42a`); PR waits for F1 |
-| W2 | World icons over objects and positions (`a7535b82`) | Missing | Marker-layer ABI (object or position anchor), and an icon layer next to `WorldLabelLayer` in `ac-ui/src/overlay.rs`. Reuses plugin image textures and `map_point_in_frame`. | M | F1 | Not started | Ship as one marker ABI with W3 |
-| W3 | Ground shapes: rings, discs, arcs (`4ea41e8e`) | Missing | Port the about 160-line tessellator. Each vertex follows the ground, as `world_lines.rs` already does. Object anchors and `FacesObject` use the object's heading. | M (S after W1) | F2, W2 | Not started | |
-| W4 | Shape culling, budget, terrain cache (`9c4248b2`) | Partial | Triangles already cull by range and view and keep a nearest-first budget (W1). Left: the same for ground shapes (W3) and a sampler cache over `ac-physics/src/engine.rs:452`. | S | W3 | Not started | |
-| W5 | World labels cleared at logoff (`6a64b022`) | Missing | `PluginUi::clear_labels`, called from `SessionState::left_world`; plugins keep running and show labels again next stay. Markers (W2, W3) must clear the same way. | S | — | Done (on `main`) | Branch `fix/world-labels-logoff` (`084bb15`); PR waits for F1 answer. No ABI change, so it could go up now |
+| W1 | Filled see-through triangles (`47b0dad8`, colour per corner from `1bdde7b1`) | Done | `ui_triangles_create/set/remove` (API 1.3), `TriangleLayer` in the SDK, per-plugin layers in `PluginUi`, range/view/budget planning in `ac-render/src/world_triangles.rs`. Live-checked 2026-10-30 with a test plugin on the Mac. | M | F1, F2 | Done (on `main`) | Goes up in the `feat/world-markers` PR, which replaces `feat/world-triangles` |
+| W2 | World icons over objects and positions (`a7535b82`) | Done | `ui_markers_create/set_icons/remove` (API 1.3), `MarkerLayer` in the SDK, per-plugin layers in `PluginUi`, `WorldIconOverlay` in `ac-ui/src/overlay.rs`. Live-checked 2026-10-30 with a test plugin on the Mac. | M | F1 | Done (on `main`) | Branch `feat/world-markers`, PR not open yet |
+| W3 | Ground shapes: rings, discs, arcs (`4ea41e8e`) | Done | `ui_markers_set_shapes` (API 1.3), tessellator in `ac-render/src/world_shapes.rs`, drawn with the triangles' pipeline and buffer. Live-checked indoors and on flat land; following a slope is covered by unit tests only. | M (S after W1) | F2, W2 | Done (on `main`) | Branch `feat/world-markers`, PR not open yet |
+| W4 | Shape culling, budget, terrain cache (`9c4248b2`) | Done | Range, view and a nearest-first budget in `world_shapes::build`. No terrain cache: the C# one avoids scanning every landblock, and `sample_terrain_z` already looks up the point's landblock directly. | S | W3 | Done (on `main`) | Branch `feat/world-markers`, PR not open yet |
+| W5 | World labels cleared at logoff (`6a64b022`) | Missing | `PluginUi::clear_labels`, called from `SessionState::left_world`; plugins keep running and show labels again next stay. Markers (W2, W3) must clear the same way. | S | — | Done (on `main`) | Goes up in the `feat/world-markers` PR, because markers clear the same way |
 | W6 | Read any landblock's terrain (`c44d8f45`) | Missing | `world::LandblockTerrain` record and a `terrain_landblock(u32)` import built from `TerrainSurface::from_landblock` (`ac-physics/src/dat.rs:141`). Least-recently-used cache. `sample()` in the SDK. | S-M | F1 | Not started | |
 | W7 | Indoor cell doorways (`f6000588`) | Missing | `doorways` field on `IndoorCell` (`ac-plugin-abi/src/world.rs:647`), filled from EnvCell portals in `ac-nav/src/indoor.rs`. | S | F1 | Not started | |
 | W8 | Floorplan object floors: bridges, platforms (`a5db2384`) | Missing | `object_floors` on `DungeonCell`. In `ac-nav/src/floorplan.rs`, transform static-object physics polygons and keep the faces that point up. | M | F1 | Not started | |
 | W9 | Floor heights, doorway kinds, walls that reach the floor (`0c8b3b94`) | Missing | 3D `floors` per cell, a doorway `kind` and `sill`, and a filter that keeps only walls reaching the floor in `floorplan.rs`. About 300 lines of C#. Update the parity fixtures. | M | W7 | Not started | Fixes lintels closing doorways |
 | W10 | Extended level curve past 275 (`7b6641cb`) | Missing | Port `ExtendedLevelCurve.cs` (55 lines) into ac-runtime with an option that is off by default. Use it in the character panel and `to_next_level`. | S | — | Not started | ACECustom servers |
-| W11 | Plugin docs for world drawing (`a0f9330b`) | Partial | Add sections for world lines, labels, triangles, shapes, icons and terrain to `docs/plugin-development.md`. | S | W1-W6 | Not started | |
+| W11 | Plugin docs for world drawing (`a0f9330b`) | Done | Sections for world lines, labels, triangles, shapes and icons in `docs/plugin-development.md`. W6 adds its own when it comes. | S | W1-W5 | Done (on `main`) | Branch `feat/world-markers`, PR not open yet |
 
 ## Plugin UI, dock, themes and canvases
 
@@ -158,24 +161,26 @@ These are already in Rust, don't apply to Rust's design, or have been dropped.
 
 ## Suggested order
 
-Start with F1 and the filled triangles, then the dock and themes, then the
-decks. Each step depends only on the ones before it, and each phase can go
-upstream as its own set of PRs.
+World drawing is done, so next come the dock and themes, then the decks. Each
+step depends only on the ones before it. A chain of work that builds on itself
+goes up as one PR; independent items go up on their own. Two PRs that both add
+to the plugin ABI touch the same version and import table, so they conflict
+until one is merged.
 
 1. **Decide F1 with Erik:** how fork ABI additions are versioned.
-2. **World drawing:** F2, then W1 filled triangles (with W4 built in), W5
-   logoff fix, W6 terrain read.
+2. **World drawing (done on `main`):** F2, W1, W5, W2, W3, W4 and W11, one PR
+   from `feat/world-markers`. W6 terrain read follows on its own.
 3. **Small independent wins:** G1 portal margin, P5 dock gear, P14 expander
-   frame, P16 canvas resize, P15 screen size, W10 level curve. Each is S and
-   needs nothing new.
-4. **World markers:** W2 icons and W3 shapes as one marker ABI, then W11 docs.
-5. **UI foundations:** F3 shapes, F4 fonts, F5 SVG decision.
-6. **Look and dock:** P6 themes, P1 modern look, P2 dock pill, P3 and P4 dock
+   frame and W10 level curve need no ABI change. P16 canvas resize and P15
+   screen size add to the ABI, so they wait for the world drawing PR or share
+   its version.
+4. **UI foundations:** F3 shapes, F4 fonts, F5 SVG decision.
+5. **Look and dock:** P6 themes, P1 modern look, P2 dock pill, P3 and P4 dock
    icons, P7, P13.
-7. **Canvas painting:** P8 fonts, P9 shapes, P12 regions, P10 layers, P11
+6. **Canvas painting:** P8 fonts, P9 shapes, P12 regions, P10 layers, P11
    keyboard, P17 canvas in markup, P18 remembered position.
-8. **Navigation:** G2 walk corridor, then W7, W9, W8 floorplan work. Run the
+7. **Navigation:** G2 walk corridor, then W7, W9, W8 floorplan work. Run the
    G3 to G8 live checks alongside.
-9. **Modern HUD:** F6, then H5 Chat model (logic only), then H1 to H3 Command
+8. **Modern HUD:** F6, then H5 Chat model (logic only), then H1 to H3 Command
    and Spell, H4 Target, H6 to H9 Chat, H10 to H12 Gear, with H13 text size in
    each.
