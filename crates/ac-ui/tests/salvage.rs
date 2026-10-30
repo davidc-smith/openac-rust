@@ -637,9 +637,8 @@ fn a_drag_out_over_the_world_comes_from_the_salvage_window() {
     assert_eq!(released, [ItemDragSource::Salvage]);
 }
 
-/// Retail refuses an alias drop everywhere, the salvage window included
-/// (`gmSalvageUI::OnItemListDragOver`): a staged item dragged out and let
-/// go over the row again stays unstaged.
+/// An alias drop is refused everywhere, the salvage window included: a
+/// staged item dragged out and let go over the row again stays unstaged.
 #[test]
 fn a_staged_item_dropped_back_on_the_row_stays_unstaged() {
     let mut h = harness();
