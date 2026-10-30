@@ -11,7 +11,7 @@ don't apply, or are dropped.
 
 - **Source:** davidc-smith/OpenAC `main` at `5e7d7404`, 1,092 non-merge
   commits ahead of `upstream/main` since 2026-09-30.
-- **Target:** openac-rust at `5e906fe`, plugin API 1.2 (WASM plugins).
+- **Target:** openac-rust at `bd93209`, plugin API 1.2 (WASM plugins).
 - **Rules:** one client. Every non-retail feature sits behind an option that
   is off by default.
 - **Dropped:** Rynth (RynthCore host, RynthAi/Chat/Nav/Lua, its maps and
@@ -138,7 +138,7 @@ Bugs found while porting that are not C# fork work.
 | ID | Fix | What to do | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | M1 | Plugin peer socket path too long on macOS | macOS caps Unix socket paths at 104 bytes. `endpoint_for` (`ac-runtime/src/plugins/peer_transport.rs:123`) puts the socket at `<cache>/plugin-peers/openac-peer-<24 hex>`, 113 bytes for the live client on this Mac and 131 in the tests. Use a short socket folder when the path would be too long; the hash already names the directory and user. | S | Not started | Live peers probably fail on Mac; the 10 `peers` host-parity tests fail on Mac unless `TMPDIR=/tmp/`. Linux CI never sees it (108-byte limit, short `/tmp`) |
-| M2 | Load-sensitive host-parity tests | The walk scenarios re-planned on one arm (`Planning, Walking, Planning, Walking, Arrived`): the staged hidden monster stood a metre out on the walking line, and on that slope a walk that brushed it was pinned (the step down lands the body in its sphere and the placement check refuses the move). Retail does the same: a hidden creature still collides (`FindObjCollisions` skips only ethereal ones) and `CTransition::step_down` ignores creatures then refuses an overlapping placement. Whether a walk brushed it was frame timing. Harness fix: the hidden monster stands 3 m north, and the two corpse-walk scenarios leave the walking body's position updates (`0xF753`) out of the transcript. | S-M | Fix on branch | On `fix/host-parity-walk-flake` (off `upstream/main`), PR #42 open upstream; mark Done once it merges. Not a client bug; the client matches retail |
+| M2 | Load-sensitive host-parity tests | The walk scenarios re-planned on one arm (`Planning, Walking, Planning, Walking, Arrived`): the staged hidden monster stood a metre out on the walking line, and on that slope a walk that brushed it was pinned (the step down lands the body in its sphere and the placement check refuses the move). Retail does the same: a hidden creature still collides (`FindObjCollisions` skips only ethereal ones) and `CTransition::step_down` ignores creatures then refuses an overlapping placement. Whether a walk brushed it was frame timing. Harness fix: the hidden monster stands 3 m north, and the two corpse-walk scenarios leave the walking body's position updates (`0xF753`) out of the transcript. | S-M | Done | Merged upstream in #46 (PR #42). Not a client bug; the client matches retail |
 
 ## Nothing to port
 
