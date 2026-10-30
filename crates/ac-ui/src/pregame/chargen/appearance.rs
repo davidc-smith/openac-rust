@@ -75,6 +75,11 @@ pub const SWATCH_OVERLAY_IDS: [u32; 9] = [
     0x1000_031F,
     0x1000_0320,
 ];
+/// The skin spin's top under the mouth.
+pub const SKIN_TOP: f32 = 180.0;
+/// The skin spin's top in the nose's place, for a heritage without nose
+/// and mouth.
+pub const SKIN_TOP_WITHOUT_NOSE: f32 = 90.0;
 /// A spin's step-back arrow, the same id under every spin.
 pub const DECREMENT_ARROW_ID: u32 = 0x1000_030A;
 /// A spin's step-forward arrow.
@@ -658,8 +663,25 @@ impl AppearancePage {
                 ui.set_visible(spin, !hidden);
             }
         }
+        // The skin spin moves up into the hidden nose's place, and back
+        // below the mouth.
+        if let Some(skin) = self.spin(Part::Skin) {
+            let top = if hidden {
+                SKIN_TOP_WITHOUT_NOSE
+            } else {
+                SKIN_TOP
+            };
+            if let Some(e) = ui.element_mut(skin) {
+                e.left = 0.0;
+                e.top = top;
+            }
+            ui.reset_anchor_capture(skin);
+        }
         self.set_arrows_enabled(ui, Part::Eyes, !hidden);
-        if hidden {
+        // Only a part the heritage does not offer is let go: the eyes and
+        // skin spins stay picked (a Gearknight's trim and gear colours).
+        let offered = matches!(self.part, Part::Hair | Part::Eyes | Part::Skin);
+        if hidden && (self.choice == Choice::Clothes || !offered) {
             self.choice = Choice::Face;
             self.part = Part::Hair;
         }
