@@ -19,7 +19,9 @@ use super::{
     ClientArmorProfile, ClientObject, ClientWeaponProfile, EquipMask, HouseRestrictionRecord,
     ItemType, ObjectIdentity, PropertyBundle, PublicWeenieFlags, WeenieData, pk_status,
 };
-use crate::properties::{PropertyDataId, PropertyFloat, PropertyInstanceId, PropertyInt};
+use crate::properties::{
+    PropertyBool, PropertyDataId, PropertyFloat, PropertyInstanceId, PropertyInt,
+};
 
 /// One entry of a contents list: the object and its container type (0 an
 /// item, 1 a pack, 2 a spell focus).
@@ -1352,7 +1354,10 @@ impl ClientObjectTable {
         true
     }
 
-    /// Records one true/false property update.
+    /// Records one true/false property update. The UI-hidden one is also
+    /// the description's UI-hidden bit, which decides whether the object
+    /// can be picked, cycled to or shown on the radar, so it moves the bit
+    /// with it.
     pub fn update_bool_property(
         &mut self,
         item_id: u32,
@@ -1364,6 +1369,11 @@ impl ClientObjectTable {
             return false;
         };
         item.properties.bools.insert(property_id, value);
+        if PropertyBool(property_id) == PropertyBool::UI_HIDDEN {
+            let mut bitfield = item.public_weenie_bitfield.unwrap_or_default();
+            bitfield.set(PublicWeenieFlags::UI_HIDDEN, value);
+            item.public_weenie_bitfield = Some(bitfield);
+        }
         self.emit_updated(item_id, events);
         true
     }

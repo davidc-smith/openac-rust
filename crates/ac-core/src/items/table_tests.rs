@@ -568,6 +568,36 @@ fn update_int_property_player_killer_status_missing_bitfield_is_zero() {
 }
 
 #[test]
+fn update_bool_property_ui_hidden_sets_and_clears_the_public_bit() {
+    // The UI-hidden bool (24) moves the description's UI-hidden bit (0x80)
+    // and leaves the other bits alone: a hook the server makes visible can
+    // be picked again.
+    use crate::properties::PropertyBool;
+    let mut f = Fixture::new();
+    let mut hook = ClientObject::new(0x5000_00B5);
+    hook.public_weenie_bitfield = Some(PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN);
+    f.add(hook);
+    f.take();
+    assert!(f.t.update_bool_property(0x5000_00B5, PropertyBool::UI_HIDDEN.0, false, &mut f.ev));
+    assert_eq!(
+        f.get(0x5000_00B5).public_weenie_bitfield,
+        Some(PublicWeenieFlags::STUCK)
+    );
+    assert_eq!(count_updated(&f.take()), 1);
+    f.t.update_bool_property(0x5000_00B5, PropertyBool::UI_HIDDEN.0, true, &mut f.ev);
+    assert_eq!(
+        f.get(0x5000_00B5).public_weenie_bitfield,
+        Some(PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN)
+    );
+    // An unrelated bool leaves the bits.
+    f.t.update_bool_property(0x5000_00B5, PropertyBool::OPEN.0, true, &mut f.ev);
+    assert_eq!(
+        f.get(0x5000_00B5).public_weenie_bitfield,
+        Some(PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN)
+    );
+}
+
+#[test]
 fn ingest_and_live_properties_preserve_hook_identity() {
     let guid = 0x5000_00AE;
     let mut f = Fixture::new();

@@ -300,6 +300,36 @@ fn a_player_killer_update_rewrites_the_views_description_bits() {
 }
 
 #[test]
+fn a_hook_the_server_makes_visible_reaches_the_view_as_pickable() {
+    // A hook comes hidden from the UI (0x80); the UI-hidden bool turning
+    // false clears the bit in the view a window picks against, and the
+    // change stream carries it.
+    use ac_core::items::PublicWeenieFlags;
+    use ac_core::properties::PropertyBool;
+    let hidden = PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN;
+    let mut world = creature(Some(hidden.bits()));
+    world.apply(&Inbound::PublicUpdatePropertyBool(
+        ac_proto::PublicUpdatePropertyBool {
+            sequence: 0,
+            guid: CREATURE,
+            property: PropertyBool::UI_HIDDEN.0,
+            value: false,
+        },
+    ));
+    assert_eq!(
+        view_bitfield(&world, CREATURE),
+        PublicWeenieFlags::STUCK.bits()
+    );
+    let changes: Vec<_> = world.drain_changes().collect();
+    let deltas = world.deltas(&changes);
+    assert!(matches!(
+        deltas.as_slice(),
+        [ObjectDelta::Upsert(view)] if view.guid == CREATURE
+            && view.radar.public_weenie_bitfield == PublicWeenieFlags::STUCK.bits()
+    ));
+}
+
+#[test]
 fn an_unrelated_property_leaves_the_description_bits() {
     // ObjectUpdated_UnrelatedProperty_DoesNotRewriteSnapshot (UI effects, 18).
     let mut world = creature(Some(PLAYER_BIT));
