@@ -18,6 +18,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::audio::{PlayerPlace, WindowAudio};
@@ -32,12 +33,14 @@ use crate::gpu_timer::GpuTimer;
 use crate::input::InputState;
 use crate::lifetime::OrderedTeardown;
 use crate::pacing::DisplayPacing;
+use crate::platform::HostOs;
 use crate::portal_space::PortalCue;
 use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage, TitleFacts, format_title};
 use crate::renderer::{WorldRenderer, WorldSettings, WorldStats};
 use crate::scene::{SceneEffect, SceneSource};
 use crate::ui::input::{self as ui_input, Routed, WorldInput};
 use crate::ui::{UiBatch, UiRenderer, WindowUi};
+use crate::ui_scale::UiScale;
 use crate::{RenderError, WindowSpec};
 use ac_core::sky::EnvironmentEffect;
 use ac_runtime::session::SessionCommand;
@@ -134,27 +137,49 @@ struct OpenFrame {
     reconfigure_after: bool,
 }
 
+/// A size `monitor` reports in pixels (its own, one of its modes'), in
+/// the unit the window's size and the resolution picks are counted in
+/// (points on macOS, as OpenAC's window library lists modes there).
+fn in_window_unit(monitor: &MonitorHandle, pixels: (i32, i32)) -> (i32, i32) {
+    match crate::display_mode::size_unit(HostOs::current()) {
+        crate::display_mode::SizeUnit::Pixels => pixels,
+        unit @ crate::display_mode::SizeUnit::Points => {
+            let side = |p: i32| u32::try_from(p).unwrap_or(0);
+            let (w, h) =
+                unit.from_pixels((side(pixels.0), side(pixels.1)), || monitor.scale_factor());
+            (i32::try_from(w).unwrap_or(0), i32::try_from(h).unwrap_or(0))
+        }
+    }
+}
+
+/// `monitor`'s size, in the window's size unit.
+fn desktop_of(monitor: &MonitorHandle) -> Option<(i32, i32)> {
+    crate::platform::monitor_size(monitor).map(|size| in_window_unit(monitor, size))
+}
+
 /// The fullscreen modes offered for the monitor `window` is on: the
 /// monitor's curated modes, else the standard sizes (OpenAC
 /// `DisplayModeCatalog.Resolutions ?? AvailableResolutions`).
 fn fullscreen_modes_of(window: &Window) -> Vec<String> {
     use ac_ui::panels::options::resolutions::{AVAILABLE_RESOLUTIONS, curate};
     let monitor = window.current_monitor();
-    let size = |s: PhysicalSize<u32>| {
-        (
-            i32::try_from(s.width).unwrap_or(0),
-            i32::try_from(s.height).unwrap_or(0),
+    let size = |monitor: &MonitorHandle, s: PhysicalSize<u32>| {
+        in_window_unit(
+            monitor,
+            (
+                i32::try_from(s.width).unwrap_or(0),
+                i32::try_from(s.height).unwrap_or(0),
+            ),
         )
     };
     let curated = monitor
         .as_ref()
-        .and_then(crate::platform::monitor_size)
+        .and_then(desktop_of)
         .filter(|(w, h)| *w > 0 && *h > 0)
         .map(|desktop| {
             let modes: Vec<(i32, i32)> = monitor
                 .iter()
-                .flat_map(winit::monitor::MonitorHandle::video_modes)
-                .map(|m| size(m.size()))
+                .flat_map(|monitor| monitor.video_modes().map(|m| size(monitor, m.size())))
                 .collect();
             curate(&modes, desktop)
         })
@@ -172,16 +197,20 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
 /// The resolutions the display menu offers for the monitor `window` is on.
 fn resolution_choices_of(window: &Window) -> Vec<String> {
     let monitor = window.current_monitor();
-    let desktop = monitor.as_ref().and_then(crate::platform::monitor_size);
+    let desktop = monitor.as_ref().and_then(desktop_of);
     let modes: Vec<(i32, i32)> = monitor
         .iter()
-        .flat_map(winit::monitor::MonitorHandle::video_modes)
-        .map(|m| {
-            let s = m.size();
-            (
-                i32::try_from(s.width).unwrap_or(0),
-                i32::try_from(s.height).unwrap_or(0),
-            )
+        .flat_map(|monitor| {
+            monitor.video_modes().map(|m| {
+                let s = m.size();
+                in_window_unit(
+                    monitor,
+                    (
+                        i32::try_from(s.width).unwrap_or(0),
+                        i32::try_from(s.height).unwrap_or(0),
+                    ),
+                )
+            })
         })
         .collect();
     crate::ui::options::resolution_choices(&modes, desktop)
@@ -294,6 +323,8 @@ pub(crate) struct AttachedWindow {
     modifiers: ModifiersState,
     /// The last cursor position, for drags.
     cursor: Option<(f64, f64)>,
+    /// Framebuffer pixels per UI unit, as the window's monitor has it.
+    ui_scale: UiScale,
     /// Where this window publishes what a crash report wants.
     facts: SharedFacts,
     last_world: WorldOutcome,
@@ -356,9 +387,13 @@ impl AttachedWindow {
         options: &GraphicsOptions,
         settings: &ac_host::settings::PlayerSettings,
     ) -> Result<Self, RenderError> {
+        // The size picked is in points on macOS (the UI's unit there), in
+        // pixels elsewhere; the drawing surface follows in pixels.
         let attributes = Window::default_attributes()
             .with_title(spec.title.clone())
-            .with_inner_size(PhysicalSize::new(spec.width, spec.height));
+            .with_inner_size(
+                crate::display_mode::size_unit(HostOs::current()).request(spec.width, spec.height),
+            );
         let window = Arc::new(event_loop.create_window(attributes)?);
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
@@ -462,9 +497,15 @@ impl AttachedWindow {
         // The retail UI reads its layouts, fonts and art from the dats; a
         // window without dats draws no UI.
         let choices = resolution_choices_of(&window);
+        let ui_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
         let ui = world.and_then(|world| {
             let built = world.content.ui_dats().and_then(|dats| {
-                WindowUi::build_with(dats, (config.width, config.height), settings, choices)
+                WindowUi::build_with(
+                    dats,
+                    ui_scale.ui_size((config.width, config.height)),
+                    settings,
+                    choices,
+                )
             });
             match built {
                 Ok(mut ui) => {
@@ -583,6 +624,7 @@ impl AttachedWindow {
             gameplay_tick: None,
             modifiers: ModifiersState::empty(),
             cursor: None,
+            ui_scale,
             facts: options.facts.clone(),
             last_world: WorldOutcome::default(),
             frame_index: 0,
@@ -826,6 +868,8 @@ impl AttachedWindow {
 
     /// The window moved or changed scale: it may be on another monitor.
     pub(crate) fn monitor_changed(&mut self) {
+        // The UI follows on its next frame (its size comes from the scale).
+        self.ui_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
         let policy = self
             .pacing
             .set_monitor_refresh(monitor_refresh_hz(&self.window));
@@ -1775,7 +1819,9 @@ impl AttachedWindow {
     /// Returns the window's size afterwards.
     fn follow_fullscreen(&mut self) -> PhysicalSize<u32> {
         let mut lines = Vec::new();
-        let (width, height) = crate::display_mode::follow_resize(
+        // The window's size in its own unit (points on macOS); the
+        // drawing surface reads it again in pixels below.
+        let _ = crate::display_mode::follow_resize(
             &mut self.fullscreen_awaiting,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
@@ -1783,7 +1829,7 @@ impl AttachedWindow {
         );
         self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
-        PhysicalSize::new(width, height)
+        self.window.inner_size()
     }
 
     /// The event loop is ending: let go of the screen while the window's
@@ -2289,7 +2335,7 @@ impl AttachedWindow {
     /// world's.
     pub(crate) fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         let index = button_index(button);
-        let (x, y) = self.cursor_pixel();
+        let (x, y) = self.cursor_ui();
         let held: &[u16] = if pressed { &[index] } else { &[] };
         let flags = ui_input::mouse_flags(held, crate::ui::keys::ui_modifiers(self.modifiers));
         let mouse_look = self.cursor_held();
@@ -2468,7 +2514,7 @@ impl AttachedWindow {
         };
         let drops = ui.take_world_drops();
         for (payload, x, y) in drops {
-            let picked = self.pick_object(x as f32, y as f32);
+            let picked = self.pick_at_ui(x, y);
             let amount = self
                 .ui
                 .as_mut()
@@ -2492,9 +2538,7 @@ impl AttachedWindow {
             None => return,
         };
         for (x, y) in starts {
-            let hit = self
-                .pick_object(x as f32, y as f32)
-                .map_or(0, |(guid, _)| guid);
+            let hit = self.pick_at_ui(x, y).map_or(0, |(guid, _)| guid);
             if let Some(ui) = self.ui.as_mut() {
                 ui.begin_world_drag(hit);
             }
@@ -2528,9 +2572,19 @@ impl AttachedWindow {
         )
     }
 
-    /// The cursor as whole window pixels.
-    fn cursor_pixel(&self) -> (i32, i32) {
-        self.cursor.map_or((0, 0), |(x, y)| (x as i32, y as i32))
+    /// [`Self::pick_object`] at a position the UI reports in its own units
+    /// (points on macOS), which the world picks in pixels.
+    fn pick_at_ui(&mut self, x: i32, y: i32) -> Option<(u32, u32)> {
+        let (x, y) = self.ui_scale.window_point(x, y);
+        self.pick_object(x, y)
+    }
+
+    /// The cursor in whole UI units (the world picks in pixels).
+    fn cursor_ui(&self) -> (i32, i32) {
+        self.cursor.map_or((0, 0), |(x, y)| {
+            let (x, y) = self.ui_scale.ui_point(x, y);
+            (x as i32, y as i32)
+        })
     }
 
     /// Act on what the UI asked for besides the world's part (session
@@ -2628,7 +2682,10 @@ impl AttachedWindow {
                 ui.show_viewports(&outcomes);
             }
         }
-        let size = (self.config.width, self.config.height);
+        // The UI, its overlays included, is laid out and drawn in UI units.
+        let size = self
+            .ui_scale
+            .ui_size((self.config.width, self.config.height));
         // The overlays project with the camera the world was last drawn
         // with.
         let (camera, target) = match (self.world.as_ref(), self.scene.as_deref()) {
@@ -2697,11 +2754,12 @@ impl AttachedWindow {
     pub(crate) fn cursor_moved(&mut self, x: f64, y: f64) {
         let previous = self.cursor.replace((x, y));
         let mouse_look = self.cursor_held();
+        let (ui_x, ui_y) = self.ui_scale.ui_point(x, y);
         let routed = match self.ui.as_mut() {
             Some(ui) if self.input.is_accepting() => Some(ui_input::moved::<KeyCode>(
                 ui.host_mut(),
-                x as i32,
-                y as i32,
+                ui_x as i32,
+                ui_y as i32,
                 mouse_look,
             )),
             _ => None,
