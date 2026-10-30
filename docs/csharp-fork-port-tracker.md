@@ -11,7 +11,7 @@ don't apply, or are dropped.
 
 - **Source:** davidc-smith/OpenAC `main` at `5e7d7404`, 1,092 non-merge
   commits ahead of `upstream/main` since 2026-09-30.
-- **Target:** openac-rust at `bd93209`, plugin API 1.2 (WASM plugins).
+- **Target:** openac-rust at `198debb` (release 0.1.8), plugin API 1.2 (WASM plugins).
 - **Rules:** one client. Every non-retail feature sits behind an option that
   is off by default.
 - **Dropped:** Rynth (RynthCore host, RynthAi/Chat/Nav/Lua, its maps and
