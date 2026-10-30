@@ -668,6 +668,132 @@ fn triangle_layers_belong_to_their_plugin_and_go_with_it() {
     assert!(ui.merged_triangles().is_empty());
 }
 
+fn icon(anchor: crate::model::MarkerAnchor) -> crate::model::WorldIcon {
+    crate::model::WorldIcon {
+        anchor,
+        image: 7,
+        size: 24.0,
+        tint_rgba: 0xFFFF_FFFF,
+        border_rgba: None,
+        max_range: 60.0,
+    }
+}
+
+#[test]
+fn marker_layers_merge_by_plugin_and_go_with_it() {
+    use crate::model::MarkerAnchor;
+    let mut ui = PluginUi::new();
+    let later = ui.create_marker_layer("z.plugin");
+    let first = ui.create_marker_layer("a.plugin");
+    let second = ui.create_marker_layer("a.plugin");
+    assert!(ui.set_icons("z.plugin", later, vec![icon(MarkerAnchor::Object(3))]));
+    assert!(ui.set_icons("a.plugin", second, vec![icon(MarkerAnchor::Object(2))]));
+    assert!(ui.set_icons("a.plugin", first, vec![icon(MarkerAnchor::Object(1))]));
+    assert!(!ui.set_icons("z.plugin", first, vec![]));
+    let merged = ui.merged_icons();
+    let order: Vec<_> = merged.iter().map(|e| (&*e.owner, e.icon.anchor)).collect();
+    assert_eq!(
+        order,
+        [
+            ("a.plugin", MarkerAnchor::Object(1)),
+            ("a.plugin", MarkerAnchor::Object(2)),
+            ("z.plugin", MarkerAnchor::Object(3)),
+        ]
+    );
+    assert!(matches!(
+        ui.take_changes().last(),
+        Some(UiChange::Icons(i)) if i.len() == 3
+    ));
+    assert!(
+        ui.snapshot()
+            .iter()
+            .any(|c| matches!(c, UiChange::Icons(i) if i.len() == 3))
+    );
+    assert!(ui.remove_marker_layer("a.plugin", second));
+    assert_eq!(ui.merged_icons().len(), 2);
+    ui.release("a.plugin");
+    assert_eq!(ui.merged_icons().len(), 1);
+    assert!(!ui.remove_marker_layer("a.plugin", first));
+}
+
+#[test]
+fn unusable_icons_are_dropped_and_sizes_are_clamped() {
+    use crate::model::{MapPoint, MarkerAnchor};
+    let mut ui = PluginUi::new();
+    let layer = ui.create_marker_layer("edwards.tank");
+    let good = icon(MarkerAnchor::Object(5));
+    let bad_point = MapPoint {
+        east_west: f64::NAN,
+        ..MapPoint::default()
+    };
+    let given = vec![
+        good,
+        icon(MarkerAnchor::None),
+        icon(MarkerAnchor::Object(0)),
+        icon(MarkerAnchor::Position {
+            point: bad_point,
+            is_outdoor: true,
+        }),
+        crate::model::WorldIcon { image: 0, ..good },
+        crate::model::WorldIcon {
+            size: f32::NAN,
+            ..good
+        },
+        crate::model::WorldIcon {
+            max_range: 0.0,
+            ..good
+        },
+        crate::model::WorldIcon {
+            max_range: f32::INFINITY,
+            ..good
+        },
+        crate::model::WorldIcon { size: 1.0, ..good },
+        crate::model::WorldIcon {
+            size: 500.0,
+            ..good
+        },
+    ];
+    assert!(ui.set_icons("edwards.tank", layer, given));
+    let sizes: Vec<f32> = ui.merged_icons().iter().map(|e| e.icon.size).collect();
+    assert_eq!(sizes, [24.0, MINIMUM_ICON_SIZE, MAXIMUM_ICON_SIZE]);
+}
+
+#[test]
+fn the_icon_cap_counts_a_plugins_other_layers_and_only_its_own() {
+    use crate::model::MarkerAnchor;
+    let mut ui = PluginUi::new();
+    let one = icon(MarkerAnchor::Object(1));
+    let a = ui.create_marker_layer("edwards.tank");
+    let b = ui.create_marker_layer("edwards.tank");
+    let other = ui.create_marker_layer("another.plugin");
+    assert!(ui.set_icons("edwards.tank", a, vec![one; MAXIMUM_ICONS - 1]));
+    assert!(ui.set_icons("edwards.tank", b, vec![one]));
+    assert!(!ui.set_icons("edwards.tank", b, vec![one; 2]));
+    assert_eq!(ui.merged_icons().len(), MAXIMUM_ICONS);
+    assert!(ui.set_icons("another.plugin", other, vec![one; MAXIMUM_ICONS]));
+    // Replacing a layer counts its new set, not its old one.
+    assert!(ui.set_icons("edwards.tank", a, vec![one; MAXIMUM_ICONS - 1]));
+}
+
+#[test]
+fn clearing_markers_empties_the_layers_and_they_stay_usable() {
+    use crate::model::MarkerAnchor;
+    let mut ui = PluginUi::new();
+    let layer = ui.create_marker_layer("edwards.tank");
+    assert!(ui.set_icons("edwards.tank", layer, vec![icon(MarkerAnchor::Object(5))]));
+    drop(ui.take_changes());
+    ui.clear_markers();
+    assert!(ui.merged_icons().is_empty());
+    assert!(matches!(
+        ui.take_changes().as_slice(),
+        [UiChange::Icons(i)] if i.is_empty()
+    ));
+    ui.clear_markers();
+    assert!(ui.take_changes().is_empty());
+    assert!(ui.set_icons("edwards.tank", layer, vec![icon(MarkerAnchor::Object(5))]));
+    assert_eq!(ui.merged_icons().len(), 1);
+}
+
 /// Leaving the world takes every plugin's labels down; the plugins stay and
 /// show labels again on the next stay.
 #[test]

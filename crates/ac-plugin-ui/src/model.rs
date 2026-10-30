@@ -560,6 +560,71 @@ pub struct WorldTriangle {
     pub colors_rgba: [u32; 3],
 }
 
+/// What a world marker is pinned to.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum MarkerAnchor {
+    /// Nothing: a marker pinned to nothing is dropped.
+    #[default]
+    None,
+    /// An object, by the id the server gave it. While the client does not
+    /// hold it the marker is not drawn, and it comes back when it does.
+    Object(u32),
+    /// A fixed position.
+    Position {
+        /// Where.
+        point: MapPoint,
+        /// The position is on the landscape, not inside a building or
+        /// dungeon.
+        is_outdoor: bool,
+    },
+}
+
+impl MarkerAnchor {
+    /// Whether it pins something: an object with an id, or a position whose
+    /// coordinates are all finite.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Object(id) => *id != 0,
+            Self::Position { point, .. } => {
+                point.east_west.is_finite()
+                    && point.north_south.is_finite()
+                    && point.elevation.is_finite()
+            }
+        }
+    }
+}
+
+/// An image hung in the world at a constant size on the screen. Walls and
+/// hills do not hide it: like a label, it is drawn after the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldIcon {
+    /// Over an object, the client lays its icons out in rows above its head
+    /// and its labels; at a position, the icon is centred on it.
+    pub anchor: MarkerAnchor,
+    /// The plugin's own image.
+    pub image: u32,
+    /// The side of the square the image is fitted into, pixels.
+    pub size: f32,
+    /// Multiplied into the image, `0xRRGGBBAA`.
+    pub tint_rgba: u32,
+    /// A thin frame around the image, `0xRRGGBBAA`.
+    pub border_rgba: Option<u32>,
+    /// Shown up to this many metres away, fading over the last fifth.
+    pub max_range: f32,
+}
+
+/// An icon with the plugin it belongs to, whose images are the only ones
+/// its image is looked up in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldIconEntry {
+    /// The plugin.
+    pub owner: String,
+    /// The icon, already checked and with its size in range.
+    pub icon: WorldIcon,
+}
+
 /// One step of a simulated projectile flight, for drawing (OpenAC
 /// `PluginProjectileDebugSample`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -831,6 +896,8 @@ pub enum UiChange {
     Lines(Arc<Vec<WorldLine>>),
     /// Every plugin's world triangles, merged.
     Triangles(Arc<Vec<WorldTriangle>>),
+    /// Every plugin's world icons, merged.
+    Icons(Arc<Vec<WorldIconEntry>>),
     /// Projectile markers to show for a moment.
     ProjectileDebug(Arc<Vec<ProjectileSample>>),
     /// A plugin asks the window to show, hide or toggle a client window.
