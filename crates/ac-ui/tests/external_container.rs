@@ -629,10 +629,16 @@ fn a_pack_is_refused_over_the_contents_and_shortcuts_are_ignored() {
         s.slot(CONTENTS, 0).drag_acceptance(),
         DragAcceptance::Accept
     );
-    let shortcut = ItemDragPayload::new(ITEM, ItemDragSource::ShortcutBar, 0);
-    s.fire(CONTENTS, 0, kind::DRAG_ENTER, Some(shortcut));
-    s.update();
-    assert_eq!(s.slot(CONTENTS, 0).drag_acceptance(), DragAcceptance::None);
+    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+        let alias = ItemDragPayload::new(ITEM, source, 0);
+        s.fire(CONTENTS, 0, kind::DRAG_ENTER, Some(alias));
+        s.update();
+        assert_eq!(
+            s.slot(CONTENTS, 0).drag_acceptance(),
+            DragAcceptance::None,
+            "{source:?}"
+        );
+    }
 }
 
 #[test]

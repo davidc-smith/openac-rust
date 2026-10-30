@@ -1225,6 +1225,7 @@ impl VendorController {
 
     fn can_sell(&self, p: &ItemDragPayload, items: &ItemsView<'_>) -> bool {
         p.obj_id != 0
+            && !p.source_kind.is_alias()
             && self
                 .view
                 .as_ref()
@@ -1238,7 +1239,7 @@ impl VendorController {
         let Some(view) = self.view.clone() else {
             return;
         };
-        if p.obj_id == 0 {
+        if p.obj_id == 0 || p.source_kind.is_alias() {
             return;
         }
         if let Err(r) = sell_check(items, &view.profile, p.obj_id) {

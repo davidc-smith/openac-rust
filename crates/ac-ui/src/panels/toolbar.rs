@@ -136,6 +136,13 @@ pub struct ToolbarController {
     ammo_object: u32,
 }
 
+/// Whether a toolbar slot takes the drag: an item itself, or a shortcut
+/// moved along the bar; any other alias (a salvage window cell) is
+/// refused.
+fn takes_shortcut_drop(p: &ItemDragPayload) -> bool {
+    !p.source_kind.is_alias() || p.source_kind == ItemDragSource::ShortcutBar
+}
+
 fn cell_of(ui: &UiRoot, list: Option<ElementId>) -> Option<ElementId> {
     list.and_then(|l| ui.widget::<ItemList>(l))
         .and_then(|l| l.item(0))
@@ -222,7 +229,7 @@ impl ToolbarController {
             w.item_drag_accept_sprite = PACK_DRAG_ACCEPT_SPRITE;
             w.listeners.item_drop = true;
             w.on_item_drag_over = Some(Box::new(|p: &ItemDragPayload| {
-                if p.obj_id != 0 && p.source_kind != ItemDragSource::ShortcutBar {
+                if p.obj_id != 0 && !p.source_kind.is_alias() {
                     DragAcceptance::Accept
                 } else {
                     DragAcceptance::None
@@ -430,6 +437,9 @@ impl ToolbarController {
     }
 
     fn drop_on_slot(&mut self, ui: &mut UiRoot, target_slot: i32, p: &ItemDragPayload) {
+        if !takes_shortcut_drop(p) {
+            return;
+        }
         let source = if p.source_kind == ItemDragSource::ShortcutBar {
             ShortcutDropSource::ShortcutAlias
         } else {
@@ -487,7 +497,7 @@ impl ToolbarController {
         p: &ItemDragPayload,
         view: &ItemsView<'_>,
     ) {
-        if p.obj_id == 0 || p.source_kind == ItemDragSource::ShortcutBar {
+        if p.obj_id == 0 || p.source_kind.is_alias() {
             return;
         }
         if view.player == 0 || view.get(p.obj_id).is_none() {
@@ -624,7 +634,7 @@ impl ToolbarController {
                 }
             }
             ElementMessage::ItemDragEntered(p) => {
-                let a = if p.obj_id != 0 {
+                let a = if p.obj_id != 0 && takes_shortcut_drop(p) {
                     DragAcceptance::Accept
                 } else {
                     DragAcceptance::None
