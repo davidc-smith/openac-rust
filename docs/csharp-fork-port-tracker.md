@@ -128,6 +128,14 @@ quick live check to confirm.
 | G7 | Live check: late create on a hidden player (`b035cb2c`) | Present | Confirm an object created on the player uses Placement \| Slide. | S | Not started | |
 | G8 | Live check: Retina screenshots (`834b8eb4`) | Probably fine | Take a screenshot on a Retina Mac. | S | Not started | Rust captures at physical pixel size |
 
+## Mac fixes found along the way
+
+Bugs found while porting that are not C# fork work.
+
+| ID | Fix | What to do | Size | Status | Notes |
+| --- | --- | --- | --- | --- | --- |
+| M1 | Plugin peer socket path too long on macOS | macOS caps Unix socket paths at 104 bytes. `endpoint_for` (`ac-runtime/src/plugins/peer_transport.rs:123`) puts the socket at `<cache>/plugin-peers/openac-peer-<24 hex>`, 113 bytes for the live client on this Mac and 131 in the tests. Use a short socket folder when the path would be too long; the hash already names the directory and user. | S | Not started | Live peers probably fail on Mac; the 10 `peers` host-parity tests fail on Mac unless `TMPDIR=/tmp/`. Linux CI never sees it (108-byte limit, short `/tmp`) |
+
 ## Nothing to port
 
 These are already in Rust, don't apply to Rust's design, or have been dropped.
