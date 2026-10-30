@@ -1,0 +1,241 @@
+//! The shapes plugins lay on the ground, cut into see-through triangles for
+//! the world pass: rings, discs and wedges around an object's feet or a
+//! fixed position.
+//!
+//! Bearings are compass bearings: 0 is north (+Y), 90 east (+X), increasing
+//! clockwise. A shape follows the land only when its anchor is on the
+//! landscape and no more than [`ON_THE_LAND_METRES`] above the land at its
+//! centre. Anything else (a floor, a roof, a bridge, a dungeon) gets a flat
+//! shape at the anchor's height.
+
+use ac_plugin_ui::GroundShape;
+use glam::{Vec2, Vec3};
+
+/// About how long each piece of a shape's edge is, metres.
+pub const SEGMENT_METRES: f32 = 0.5;
+
+/// The fewest pieces a full turn is cut into.
+pub const MINIMUM_SEGMENTS: usize = 16;
+
+/// The most pieces a full turn is cut into.
+pub const MAXIMUM_SEGMENTS: usize = 128;
+
+/// About how deep each ring of a filled shape is, metres, so a large disc
+/// still has points on the land every few metres.
+pub const FILL_RING_METRES: f32 = 4.0;
+
+/// The most rings a filled shape is cut into.
+pub const MAXIMUM_FILL_RINGS: usize = 8;
+
+/// How far above the land, or the anchor's height, a shape lies, metres.
+pub const LIFT_METRES: f32 = crate::world_lines::GROUND_LIFT_METRES;
+
+/// How far above the land its anchor may be for a shape to follow it, metres
+/// (at or below the land counts).
+pub const ON_THE_LAND_METRES: f32 = 1.0;
+
+/// Where a shape's anchor is this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeAnchor {
+    /// Its base, drawing frame.
+    pub centre: Vec3,
+    /// The way it faces, as a compass bearing in degrees.
+    pub heading_degrees: f32,
+    /// On the landscape, not inside a building or dungeon.
+    pub is_outdoor: bool,
+}
+
+/// A plugin's ground shape placed in the drawing frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedShape {
+    /// Its centre, drawing frame.
+    pub centre: Vec3,
+    /// The bearing its arc starts at, the object's heading already added.
+    pub start_degrees: f32,
+    /// Each point lies on the land under it, rather than flat at the
+    /// centre's height.
+    pub follow_terrain: bool,
+    /// The land's height at the centre when it follows the land, else the
+    /// centre's height.
+    pub ground_z: f32,
+    /// The outer radius, metres.
+    pub radius: f32,
+    /// How wide a band is, metres, inward from the radius.
+    pub width: f32,
+    /// How far round it goes, clockwise from its start, degrees.
+    pub sweep_degrees: f32,
+    /// Filled from the centre, rather than a band.
+    pub filled: bool,
+    /// Red, green, blue, alpha, 0..1.
+    pub color: [f32; 4],
+}
+
+/// Where `shape` lies around `at`, or `None` when the anchor is not a finite
+/// position. `ground` is the land's height at a drawing-frame (x, y), where
+/// it is known.
+#[must_use]
+pub fn place(
+    shape: &GroundShape,
+    at: ShapeAnchor,
+    ground: impl Fn(f32, f32) -> Option<f32>,
+) -> Option<PlacedShape> {
+    if !at.centre.is_finite() {
+        return None;
+    }
+    let land = ground(at.centre.x, at.centre.y)
+        .filter(|z| at.is_outdoor && at.centre.z - z <= ON_THE_LAND_METRES);
+    let start_degrees = if shape.faces_object {
+        shape.start_degrees + at.heading_degrees
+    } else {
+        shape.start_degrees
+    };
+    Some(PlacedShape {
+        centre: at.centre,
+        start_degrees,
+        follow_terrain: land.is_some(),
+        ground_z: land.unwrap_or(at.centre.z),
+        radius: shape.radius,
+        width: shape.width,
+        sweep_degrees: shape.sweep_degrees,
+        filled: shape.filled,
+        color: shape
+            .color_rgba
+            .to_be_bytes()
+            .map(|channel| f32::from(channel) / 255.0),
+    })
+}
+
+/// How many pieces an edge of `radius` metres is cut into over
+/// `sweep_degrees`: about every half metre, between [`MINIMUM_SEGMENTS`] and
+/// [`MAXIMUM_SEGMENTS`] for a full turn, an arc taking its share and at least
+/// one.
+#[must_use]
+pub fn segments_for(radius: f32, sweep_degrees: f32) -> usize {
+    let full = (2.0 * std::f64::consts::PI * f64::from(radius) / f64::from(SEGMENT_METRES))
+        .ceil()
+        .clamp(MINIMUM_SEGMENTS as f64, MAXIMUM_SEGMENTS as f64);
+    let share = f64::from(sweep_degrees.clamp(0.0, 360.0)) / 360.0;
+    (full * share).ceil().max(1.0) as usize
+}
+
+/// How many rings a filled shape of `radius` metres is cut into.
+#[must_use]
+pub fn fill_rings_for(radius: f32) -> usize {
+    (radius / FILL_RING_METRES)
+        .ceil()
+        .clamp(1.0, MAXIMUM_FILL_RINGS as f32) as usize
+}
+
+/// How many points [`tessellate`] emits for `shape`.
+#[must_use]
+pub fn vertex_count(shape: &PlacedShape) -> usize {
+    let segments = segments_for(shape.radius, shape.sweep_degrees);
+    if shape.filled {
+        3 * segments * (2 * fill_rings_for(shape.radius) - 1)
+    } else {
+        6 * segments
+    }
+}
+
+/// One shape's edge points, enough for a full turn at the most pieces.
+type Row = [Vec3; MAXIMUM_SEGMENTS + 1];
+
+/// Appends the triangles of `shape` to `out`, three points each. A band runs
+/// from the radius less the width to the radius; a filled shape is a fan
+/// round the centre and then bands out to the radius. Following the land,
+/// each point lies [`LIFT_METRES`] above `ground`'s height under it (or the
+/// centre's height where it has none); otherwise every point lies that far
+/// above the centre's height.
+pub fn tessellate(
+    shape: &PlacedShape,
+    ground: &impl Fn(f32, f32) -> Option<f32>,
+    out: &mut Vec<Vec3>,
+) {
+    let segments = segments_for(shape.radius, shape.sweep_degrees);
+    let mut directions = [Vec2::ZERO; MAXIMUM_SEGMENTS + 1];
+    for (i, direction) in directions.iter_mut().enumerate().take(segments) {
+        let radians =
+            (shape.start_degrees + shape.sweep_degrees * i as f32 / segments as f32).to_radians();
+        *direction = Vec2::new(radians.sin(), radians.cos());
+    }
+    // A full turn ends exactly where it began, so it closes without a seam.
+    directions[segments] = if shape.sweep_degrees >= 360.0 {
+        directions[0]
+    } else {
+        let radians = (shape.start_degrees + shape.sweep_degrees).to_radians();
+        Vec2::new(radians.sin(), radians.cos())
+    };
+    let directions = &directions[..=segments];
+
+    let mut inner: Row = [Vec3::ZERO; MAXIMUM_SEGMENTS + 1];
+    let mut outer: Row = [Vec3::ZERO; MAXIMUM_SEGMENTS + 1];
+    if !shape.filled {
+        row(
+            shape,
+            shape.radius - shape.width,
+            directions,
+            ground,
+            &mut inner,
+        );
+        row(shape, shape.radius, directions, ground, &mut outer);
+        band(&inner[..=segments], &outer[..=segments], out);
+        return;
+    }
+    let rings = fill_rings_for(shape.radius);
+    let middle = lift(shape, shape.centre.x, shape.centre.y, ground);
+    row(
+        shape,
+        shape.radius / rings as f32,
+        directions,
+        ground,
+        &mut outer,
+    );
+    for i in 0..segments {
+        out.extend([middle, outer[i], outer[i + 1]]);
+    }
+    for ring in 2..=rings {
+        inner = outer;
+        let radius = shape.radius * ring as f32 / rings as f32;
+        row(shape, radius, directions, ground, &mut outer);
+        band(&inner[..=segments], &outer[..=segments], out);
+    }
+}
+
+fn row(
+    shape: &PlacedShape,
+    radius: f32,
+    directions: &[Vec2],
+    ground: &impl Fn(f32, f32) -> Option<f32>,
+    out: &mut Row,
+) {
+    for (point, direction) in out.iter_mut().zip(directions) {
+        let x = shape.centre.x + direction.x * radius;
+        let y = shape.centre.y + direction.y * radius;
+        *point = lift(shape, x, y, ground);
+    }
+}
+
+fn lift(shape: &PlacedShape, x: f32, y: f32, ground: &impl Fn(f32, f32) -> Option<f32>) -> Vec3 {
+    let land = if shape.follow_terrain {
+        ground(x, y)
+    } else {
+        None
+    };
+    Vec3::new(x, y, land.unwrap_or(shape.centre.z) + LIFT_METRES)
+}
+
+fn band(inner: &[Vec3], outer: &[Vec3], out: &mut Vec<Vec3>) {
+    for i in 0..inner.len() - 1 {
+        out.extend([
+            inner[i],
+            outer[i],
+            outer[i + 1],
+            inner[i],
+            outer[i + 1],
+            inner[i + 1],
+        ]);
+    }
+}
+
+#[cfg(test)]
+mod tests;
