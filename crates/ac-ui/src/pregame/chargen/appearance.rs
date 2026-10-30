@@ -678,13 +678,10 @@ impl AppearancePage {
             ui.reset_anchor_capture(skin);
         }
         self.set_arrows_enabled(ui, Part::Eyes, !hidden);
-        // Only a part the heritage does not offer is let go: the eyes and
-        // skin spins stay picked (a Gearknight's trim and gear colours).
-        let offered = matches!(self.part, Part::Hair | Part::Eyes | Part::Skin);
-        if hidden && (self.choice == Choice::Clothes || !offered) {
-            self.choice = Choice::Face;
-            self.part = Part::Hair;
-        }
+        // The pick stays as it is: a heritage without clothes is put back on
+        // the face only where the whole page updates
+        // ([`AppearancePage::on_page_update`]), so a Gearknight's trim and
+        // gear colours (the eyes and skin spins) stay picked as they change.
         self.apply_choice_visibility(ui);
         let (hair, eyes, skin) = match H(s.heritage_id) {
             H::GEARKNIGHT => (
