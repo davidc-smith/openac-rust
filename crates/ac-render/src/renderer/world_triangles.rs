@@ -1,11 +1,13 @@
-//! The plugins' world triangles on the GPU: this frame's triangles,
-//! uploaded after the camera has moved and drawn in the world pass after
-//! the world lines, tested against the world's depth without writing it.
+//! The plugins' world triangles and ground shapes on the GPU: this frame's
+//! triangles, uploaded after the camera has moved and drawn in the world
+//! pass after the world lines, tested against the world's depth without
+//! writing it.
 
 use super::WorldRenderer;
 use super::pipelines::vertex_buffer;
 use super::shadows::PassPipelines;
 use crate::frustum::FrustumPlanes;
+use crate::world_shapes::{self, PlacedShape};
 use crate::world_triangles::{PlacedTriangle, WorldTriangleVertex, build};
 
 /// This frame's triangles.
@@ -25,28 +27,36 @@ impl WorldTrianglesGpu {
 }
 
 impl WorldRenderer {
-    /// This frame's plugin triangles, placed in the drawing frame: those
-    /// around the camera and in its view, uploaded. Nothing without a
-    /// camera.
+    /// This frame's plugin triangles and ground shapes, placed in the
+    /// drawing frame: those around the camera and in its view, uploaded
+    /// together. Nothing without a camera.
     pub(crate) fn set_plugin_triangles(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         triangles: &[PlacedTriangle],
+        shapes: &[PlacedShape],
     ) {
         self.world_triangles.count = 0;
         let Some((eye, _)) = self.camera else {
             return;
         };
-        if triangles.is_empty() || !self.origin.is_known() {
+        if (triangles.is_empty() && shapes.is_empty()) || !self.origin.is_known() {
             return;
         }
         let frustum = self
             .view_matrices
             .map(|(view, projection)| FrustumPlanes::from_view_projection(projection * view));
-        let gpu = &mut self.world_triangles;
-        let mut scratch = std::mem::take(&mut gpu.scratch);
+        let mut scratch = std::mem::take(&mut self.world_triangles.scratch);
         build(triangles, eye, frustum.as_ref(), &mut scratch);
+        world_shapes::build(
+            shapes,
+            eye,
+            frustum.as_ref(),
+            |x, y| self.sample_terrain_z(x, y),
+            &mut scratch,
+        );
+        let gpu = &mut self.world_triangles;
         if !scratch.is_empty() {
             if gpu.vertices.is_none() || scratch.len() > gpu.capacity {
                 gpu.capacity = scratch.len().next_power_of_two();
@@ -99,7 +109,9 @@ mod tests {
     use crate::content::ContentSlot;
     use crate::renderer::WorldSettings;
     use crate::world_lines::PlacedLine;
+    use crate::world_shapes::ShapeAnchor;
     use ac_host::settings::DisplaySettings;
+    use ac_plugin_ui::{GroundShape, GroundShapeKind, MarkerAnchor};
 
     const SIZE: (u32, u32) = (64, 32);
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -170,12 +182,13 @@ mod tests {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: impl Fn(&WorldRenderer) -> (Vec<PlacedLine>, Vec<PlacedTriangle>),
+        shapes: impl Fn(&WorldRenderer) -> Vec<PlacedShape>,
     ) -> [u8; 4] {
         world.prepare(device, queue, None, FlyInput::default());
         world.origin.try_initialize(127, 127);
         let (lines, triangles) = scene(world);
         world.set_plugin_lines(device, queue, &lines);
-        world.set_plugin_triangles(device, queue, &triangles);
+        world.set_plugin_triangles(device, queue, &triangles, &shapes(world));
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("world triangle test target"),
             size: wgpu::Extent3d {
@@ -244,37 +257,89 @@ mod tests {
         let half_blue = [0.0, 0.0, 1.0, 0.5];
 
         // Half see-through red over black is half red.
-        let one = centre_pixel(&mut world, &device, &queue, |w| {
-            (vec![], vec![facing(w, 10.0, half_red)])
-        });
+        let one = centre_pixel(
+            &mut world,
+            &device,
+            &queue,
+            |w| (vec![], vec![facing(w, 10.0, half_red)]),
+            |_| vec![],
+        );
         assert!(near(one, [128, 0, 0]), "{one:?}");
 
         // Seen from its back (corners in the other order) it is drawn too.
-        let back = centre_pixel(&mut world, &device, &queue, |w| {
-            let mut t = facing(w, 10.0, half_red);
-            t.corners.swap(0, 1);
-            (vec![], vec![t])
-        });
+        let back = centre_pixel(
+            &mut world,
+            &device,
+            &queue,
+            |w| {
+                let mut t = facing(w, 10.0, half_red);
+                t.corners.swap(0, 1);
+                (vec![], vec![t])
+            },
+            |_| vec![],
+        );
         assert!(near(back, [128, 0, 0]), "{back:?}");
 
         // Two overlapping triangles blend: the nearer, drawn first, does
         // not hide the farther, as it writes no depth.
-        let both = centre_pixel(&mut world, &device, &queue, |w| {
-            (
-                vec![],
-                vec![facing(w, 10.0, half_red), facing(w, 20.0, half_blue)],
-            )
-        });
+        let both = centre_pixel(
+            &mut world,
+            &device,
+            &queue,
+            |w| {
+                (
+                    vec![],
+                    vec![facing(w, 10.0, half_red), facing(w, 20.0, half_blue)],
+                )
+            },
+            |_| vec![],
+        );
         assert!(both[0] > 40 && both[2] > 100, "{both:?}");
 
         // A solid line in front hides the triangle behind it.
-        let hidden = centre_pixel(&mut world, &device, &queue, |w| {
-            (
-                vec![line_across(w, 10.0, 0x00FF00)],
-                vec![facing(w, 20.0, half_red)],
-            )
-        });
+        let hidden = centre_pixel(
+            &mut world,
+            &device,
+            &queue,
+            |w| {
+                (
+                    vec![line_across(w, 10.0, 0x00FF00)],
+                    vec![facing(w, 20.0, half_red)],
+                )
+            },
+            |_| vec![],
+        );
         assert!(near(hidden, [0, 255, 0]), "{hidden:?}");
+
+        // A ground shape is drawn with them, see-through in the same way:
+        // a disc around the point the camera looks at.
+        let disc = centre_pixel(
+            &mut world,
+            &device,
+            &queue,
+            |_| (vec![], vec![]),
+            |w| {
+                let (eye, look) = w.camera.expect("a camera after prepare");
+                let at = ShapeAnchor {
+                    centre: eye + look * 10.0,
+                    heading_degrees: 0.0,
+                    is_outdoor: false,
+                };
+                let shape = GroundShape {
+                    anchor: MarkerAnchor::Object(1),
+                    kind: GroundShapeKind::Disc,
+                    radius: 100.0,
+                    width: 0.0,
+                    start_degrees: 0.0,
+                    sweep_degrees: 360.0,
+                    filled: true,
+                    faces_object: false,
+                    color_rgba: 0xFF00_0080,
+                };
+                vec![world_shapes::place(&shape, at, |_, _| None).unwrap()]
+            },
+        );
+        assert!(near(disc, [128, 0, 0]), "{disc:?}");
         assert!(crate::surface::block_on(scope.pop()).is_none());
     }
 }
