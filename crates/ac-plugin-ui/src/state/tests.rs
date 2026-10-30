@@ -635,6 +635,40 @@ fn labels_are_detached_validated_capped_and_per_owner() {
 }
 
 #[test]
+fn triangle_layers_belong_to_their_plugin_and_go_with_it() {
+    let mut ui = PluginUi::new();
+    let corner = crate::model::MapPoint::default();
+    let triangle = WorldTriangle {
+        corners: [corner; 3],
+        colors_rgba: [0xFF00_0080; 3],
+    };
+    let a = ui.create_triangle_layer("edwards.tank");
+    let b = ui.create_triangle_layer("another.plugin");
+    assert!(ui.set_triangles("edwards.tank", a, vec![triangle; 3]));
+    assert!(ui.set_triangles("another.plugin", b, vec![triangle]));
+    assert!(!ui.set_triangles("another.plugin", a, vec![]));
+    assert_eq!(ui.merged_triangles().len(), 4);
+    assert!(matches!(
+        ui.take_changes().last(),
+        Some(UiChange::Triangles(t)) if t.len() == 4
+    ));
+    assert!(ui.set_triangles(
+        "edwards.tank",
+        a,
+        vec![triangle; MAXIMUM_TRIANGLES_PER_LAYER + 10]
+    ));
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES_PER_LAYER + 1);
+    assert!(ui.snapshot().iter().any(
+        |c| matches!(c, UiChange::Triangles(t) if t.len() == MAXIMUM_TRIANGLES_PER_LAYER + 1)
+    ));
+    ui.release("edwards.tank");
+    assert_eq!(ui.merged_triangles().len(), 1);
+    assert!(!ui.remove_triangle_layer("edwards.tank", b));
+    assert!(ui.remove_triangle_layer("another.plugin", b));
+    assert!(ui.merged_triangles().is_empty());
+}
+
+#[test]
 fn line_layers_belong_to_their_plugin_and_go_with_it() {
     let mut ui = PluginUi::new();
     let line = WorldLine {
