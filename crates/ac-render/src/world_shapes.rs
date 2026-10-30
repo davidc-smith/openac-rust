@@ -7,9 +7,30 @@
 //! landscape and no more than [`ON_THE_LAND_METRES`] above the land at its
 //! centre. Anything else (a floor, a roof, a bridge, a dungeon) gets a flat
 //! shape at the anchor's height.
+//!
+//! The draw is bounded here, not by the plugin: a shape whose centre is more
+//! than [`DRAW_RANGE_METRES`] from the camera, or that lies wholly outside
+//! its view, is skipped, and the shapes of one frame never exceed
+//! [`VERTEX_BUDGET`]. When the shapes in range and in view would, the nearest
+//! are drawn and the farthest are left out.
 
 use ac_plugin_ui::GroundShape;
 use glam::{Vec2, Vec3};
+
+use crate::frustum::FrustumPlanes;
+use crate::world_triangles::{DEPTH_NUDGE, WorldTriangleVertex};
+
+/// Shapes further than this from the camera are not drawn, metres: the same
+/// reach as the plugins' world lines.
+pub const DRAW_RANGE_METRES: f32 = crate::world_lines::DRAW_RANGE_METRES;
+
+/// The most vertices one frame's shapes take: 2 MiB of them.
+pub const VERTEX_BUDGET: usize = 2 * 1024 * 1024 / size_of::<WorldTriangleVertex>();
+
+/// How far the land under a shape that follows it may rise or fall per metre
+/// out from its centre, for the box the view is tested against: steeper than
+/// any slope the land has, other than a cliff.
+pub const LAND_SLOPE_ALLOWANCE: f32 = 2.0;
 
 /// About how long each piece of a shape's edge is, metres.
 pub const SEGMENT_METRES: f32 = 0.5;
@@ -134,6 +155,75 @@ pub fn vertex_count(shape: &PlacedShape) -> usize {
         3 * segments * (2 * fill_rings_for(shape.radius) - 1)
     } else {
         6 * segments
+    }
+}
+
+/// Whether any of `shape` may be in the view: a box round it, as deep as the
+/// land under it could rise or fall, touches the frustum. A shape on the land
+/// is drawn at the land's height, which may be far from its anchor's, and at
+/// the anchor's where the land is not known, so the box spans both.
+#[must_use]
+pub fn is_in_view(frustum: &FrustumPlanes, shape: &PlacedShape) -> bool {
+    let rise = if shape.follow_terrain {
+        shape.radius * LAND_SLOPE_ALLOWANCE + LIFT_METRES
+    } else {
+        LIFT_METRES
+    };
+    let (centre, radius) = (shape.centre, shape.radius);
+    let min = Vec3::new(
+        centre.x - radius,
+        centre.y - radius,
+        centre.z.min(shape.ground_z) - rise,
+    );
+    let max = Vec3::new(
+        centre.x + radius,
+        centre.y + radius,
+        centre.z.max(shape.ground_z) + rise,
+    );
+    frustum.is_aabb_visible(min, max)
+}
+
+/// Appends this frame's vertices to `out`: the shapes with their centres
+/// within [`DRAW_RANGE_METRES`] of `camera` and some part inside `frustum`
+/// (when there is one), nearest first once they do not all fit in
+/// [`VERTEX_BUDGET`]. Each point moves [`DEPTH_NUDGE`] of the way toward the
+/// camera, so the land it lies on doesn't flicker through it.
+pub fn build(
+    shapes: &[PlacedShape],
+    camera: Vec3,
+    frustum: Option<&FrustumPlanes>,
+    ground: impl Fn(f32, f32) -> Option<f32>,
+    out: &mut Vec<WorldTriangleVertex>,
+) {
+    let range_squared = DRAW_RANGE_METRES * DRAW_RANGE_METRES;
+    let mut planned: Vec<(&PlacedShape, f32)> = shapes
+        .iter()
+        .filter_map(|shape| {
+            let distance_squared = camera.distance_squared(shape.centre);
+            let wanted = distance_squared <= range_squared
+                && frustum.is_none_or(|frustum| is_in_view(frustum, shape));
+            wanted.then_some((shape, distance_squared))
+        })
+        .collect();
+    let total: usize = planned.iter().map(|(s, _)| vertex_count(s)).sum();
+    // Only when the shapes do not all fit is the order worth a sort.
+    if total > VERTEX_BUDGET {
+        planned.sort_by(|a, b| a.1.total_cmp(&b.1));
+    }
+    let mut remaining = VERTEX_BUDGET;
+    let mut points = Vec::new();
+    for (shape, _) in planned {
+        let count = vertex_count(shape);
+        if count > remaining {
+            break;
+        }
+        remaining -= count;
+        points.clear();
+        tessellate(shape, &ground, &mut points);
+        out.extend(points.iter().map(|point| WorldTriangleVertex {
+            position: (*point + (camera - *point) * DEPTH_NUDGE).to_array(),
+            color: shape.color,
+        }));
     }
 }
 
