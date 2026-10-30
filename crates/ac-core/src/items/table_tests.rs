@@ -2152,3 +2152,104 @@ fn a_move_the_client_makes_on_its_own_leaves_a_refusal_standing() {
 
     assert!(f.get(CARRIED).last_appraisal_unsuccessful);
 }
+
+// --- A re-sent description re-creates the object -----------------------
+//
+// The game handles a re-sent description by deleting the object, which
+// takes it out of its container's list, and creating it again; the
+// container then has no place for it and puts it first among its own kind
+// (items or packs). Revealing a coalesced Aetheria's sigil sends one, so
+// the revealed Aetheria lands in its pack's top-left slot.
+
+const RECREATE_PACK: u32 = 0x5000_00C9;
+
+fn named_in(guid: u32, container: u32, name: &str) -> WeenieData {
+    WeenieData {
+        name: Some(name.into()),
+        ..in_container(guid, container)
+    }
+}
+
+#[test]
+fn ingest_recreated_puts_the_item_first_in_its_pack() {
+    let items = [0x7000_0A01, 0x7000_0A02, 0x7000_0A03];
+    let mut f = Fixture::new();
+    for (slot, &id) in items.iter().enumerate() {
+        f.ingest(named_in(id, RECREATE_PACK, "Coalesced Aetheria"));
+        assert!(f.server_move(id, RECREATE_PACK, slot as i32));
+    }
+    assert_eq!(f.contents(RECREATE_PACK), items);
+    f.take();
+
+    f.t.ingest_recreated(&named_in(items[2], RECREATE_PACK, "Aetheria"), &mut f.ev);
+
+    assert_eq!(f.contents(RECREATE_PACK), [items[2], items[0], items[1]]);
+    let slots: Vec<i32> = [items[2], items[0], items[1]]
+        .iter()
+        .map(|&id| f.get(id).container_slot)
+        .collect();
+    assert_eq!(slots, [0, 1, 2]);
+    assert_eq!(f.get(items[2]).name, "Aetheria");
+    let moved = moves(&f.take());
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].item_id, items[2]);
+    assert_eq!(moved[0].current.container_slot, 0);
+}
+
+#[test]
+fn ingest_recreated_puts_a_pack_first_among_packs_and_leaves_the_items() {
+    let (item_a, item_b) = (0x7000_0B01, 0x7000_0B02);
+    let (pack_a, pack_b) = (0x7000_0B11, 0x7000_0B12);
+    let mut f = Fixture::new();
+    for (slot, &id) in [item_a, item_b].iter().enumerate() {
+        f.ingest(in_container(id, PLAYER));
+        assert!(f.server_move(id, PLAYER, slot as i32));
+    }
+    for (slot, &id) in [pack_a, pack_b].iter().enumerate() {
+        f.ingest(in_container(id, PLAYER));
+        assert!(f.confirmed_move(id, PLAYER, slot as i32, 1));
+    }
+
+    f.t.ingest_recreated(&in_container(pack_b, PLAYER), &mut f.ev);
+
+    let order = f.contents(PLAYER);
+    let packs: Vec<u32> = order
+        .iter()
+        .copied()
+        .filter(|id| [pack_a, pack_b].contains(id))
+        .collect();
+    let loose: Vec<u32> = order
+        .iter()
+        .copied()
+        .filter(|id| [item_a, item_b].contains(id))
+        .collect();
+    assert_eq!(packs, [pack_b, pack_a]);
+    assert_eq!(loose, [item_a, item_b]);
+    assert_eq!(f.get(pack_b).container_slot, 0);
+    assert_eq!(f.get(pack_a).container_slot, 1);
+    assert_eq!(f.get(item_a).container_slot, 0);
+    assert_eq!(f.get(item_b).container_slot, 1);
+}
+
+#[test]
+fn ingest_recreated_without_a_container_keeps_where_the_object_is() {
+    const SWORD: u32 = 0x7000_0C01;
+    let mut f = Fixture::new();
+    f.ingest(full_weenie(SWORD));
+    assert!(f.t.apply_server_move(
+        SWORD,
+        wielded(PLAYER, EquipMask::MELEE_WEAPON),
+        None,
+        &mut f.ev
+    ));
+    f.take();
+
+    f.t.ingest_recreated(&full_weenie(SWORD), &mut f.ev);
+
+    assert_eq!(f.get(SWORD).wielder_id, PLAYER);
+    assert_eq!(
+        f.get(SWORD).currently_equipped_location,
+        EquipMask::MELEE_WEAPON
+    );
+    assert!(moves(&f.take()).is_empty());
+}
