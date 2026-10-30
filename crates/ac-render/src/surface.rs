@@ -18,6 +18,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::audio::{PlayerPlace, WindowAudio};
@@ -136,27 +137,49 @@ struct OpenFrame {
     reconfigure_after: bool,
 }
 
+/// A size `monitor` reports in pixels (its own, one of its modes'), in
+/// the unit the window's size and the resolution picks are counted in
+/// (points on macOS, as OpenAC's window library lists modes there).
+fn in_window_unit(monitor: &MonitorHandle, pixels: (i32, i32)) -> (i32, i32) {
+    match crate::display_mode::size_unit(HostOs::current()) {
+        crate::display_mode::SizeUnit::Pixels => pixels,
+        unit @ crate::display_mode::SizeUnit::Points => {
+            let side = |p: i32| u32::try_from(p).unwrap_or(0);
+            let (w, h) =
+                unit.from_pixels((side(pixels.0), side(pixels.1)), || monitor.scale_factor());
+            (i32::try_from(w).unwrap_or(0), i32::try_from(h).unwrap_or(0))
+        }
+    }
+}
+
+/// `monitor`'s size, in the window's size unit.
+fn desktop_of(monitor: &MonitorHandle) -> Option<(i32, i32)> {
+    crate::platform::monitor_size(monitor).map(|size| in_window_unit(monitor, size))
+}
+
 /// The fullscreen modes offered for the monitor `window` is on: the
 /// monitor's curated modes, else the standard sizes (OpenAC
 /// `DisplayModeCatalog.Resolutions ?? AvailableResolutions`).
 fn fullscreen_modes_of(window: &Window) -> Vec<String> {
     use ac_ui::panels::options::resolutions::{AVAILABLE_RESOLUTIONS, curate};
     let monitor = window.current_monitor();
-    let size = |s: PhysicalSize<u32>| {
-        (
-            i32::try_from(s.width).unwrap_or(0),
-            i32::try_from(s.height).unwrap_or(0),
+    let size = |monitor: &MonitorHandle, s: PhysicalSize<u32>| {
+        in_window_unit(
+            monitor,
+            (
+                i32::try_from(s.width).unwrap_or(0),
+                i32::try_from(s.height).unwrap_or(0),
+            ),
         )
     };
     let curated = monitor
         .as_ref()
-        .and_then(crate::platform::monitor_size)
+        .and_then(desktop_of)
         .filter(|(w, h)| *w > 0 && *h > 0)
         .map(|desktop| {
             let modes: Vec<(i32, i32)> = monitor
                 .iter()
-                .flat_map(winit::monitor::MonitorHandle::video_modes)
-                .map(|m| size(m.size()))
+                .flat_map(|monitor| monitor.video_modes().map(|m| size(monitor, m.size())))
                 .collect();
             curate(&modes, desktop)
         })
@@ -174,16 +197,20 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
 /// The resolutions the display menu offers for the monitor `window` is on.
 fn resolution_choices_of(window: &Window) -> Vec<String> {
     let monitor = window.current_monitor();
-    let desktop = monitor.as_ref().and_then(crate::platform::monitor_size);
+    let desktop = monitor.as_ref().and_then(desktop_of);
     let modes: Vec<(i32, i32)> = monitor
         .iter()
-        .flat_map(winit::monitor::MonitorHandle::video_modes)
-        .map(|m| {
-            let s = m.size();
-            (
-                i32::try_from(s.width).unwrap_or(0),
-                i32::try_from(s.height).unwrap_or(0),
-            )
+        .flat_map(|monitor| {
+            monitor.video_modes().map(|m| {
+                let s = m.size();
+                in_window_unit(
+                    monitor,
+                    (
+                        i32::try_from(s.width).unwrap_or(0),
+                        i32::try_from(s.height).unwrap_or(0),
+                    ),
+                )
+            })
         })
         .collect();
     crate::ui::options::resolution_choices(&modes, desktop)
@@ -360,9 +387,13 @@ impl AttachedWindow {
         options: &GraphicsOptions,
         settings: &ac_host::settings::PlayerSettings,
     ) -> Result<Self, RenderError> {
+        // The size picked is in points on macOS (the UI's unit there), in
+        // pixels elsewhere; the drawing surface follows in pixels.
         let attributes = Window::default_attributes()
             .with_title(spec.title.clone())
-            .with_inner_size(PhysicalSize::new(spec.width, spec.height));
+            .with_inner_size(
+                crate::display_mode::size_unit(HostOs::current()).request(spec.width, spec.height),
+            );
         let window = Arc::new(event_loop.create_window(attributes)?);
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
@@ -1788,7 +1819,9 @@ impl AttachedWindow {
     /// Returns the window's size afterwards.
     fn follow_fullscreen(&mut self) -> PhysicalSize<u32> {
         let mut lines = Vec::new();
-        let (width, height) = crate::display_mode::follow_resize(
+        // The window's size in its own unit (points on macOS); the
+        // drawing surface reads it again in pixels below.
+        let _ = crate::display_mode::follow_resize(
             &mut self.fullscreen_awaiting,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
@@ -1796,7 +1829,7 @@ impl AttachedWindow {
         );
         self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
-        PhysicalSize::new(width, height)
+        self.window.inner_size()
     }
 
     /// The event loop is ending: let go of the screen while the window's
