@@ -52,6 +52,7 @@ use crate::meshing::flatten_setup;
 use crate::renderer::WorldRenderer;
 use crate::scene::Scene;
 use crate::world_lines::PlacedLine;
+use crate::world_triangles::PlacedTriangle;
 
 /// How long a set of projectile markers shows after it arrives.
 pub const PROJECTILE_SAMPLES_SHOWN: Duration = Duration::from_millis(350);
@@ -127,6 +128,7 @@ pub struct PluginWindowUi {
     pub(super) labels: Vec<WorldLabel>,
     pub(super) anchors: HashMap<u32, WorldLabelAnchor>,
     world_lines: Vec<PlacedLine>,
+    world_triangles: Vec<PlacedTriangle>,
     samples: Vec<ProjectileDebugSample>,
     projectile_set: Option<(u64, Instant)>,
     setup_shapes: HashMap<u32, Option<SetupShape>>,
@@ -970,8 +972,15 @@ impl WindowUi {
         &self.plugins.world_lines
     }
 
-    /// The plugins' labels, lines and projectile markers placed in the
-    /// drawing frame from the world as last drawn (none without a world).
+    /// The plugins' world triangles placed in the drawing frame this frame
+    /// (the world renderer draws them in the scene).
+    pub(crate) fn plugin_world_triangles(&self) -> &[PlacedTriangle] {
+        &self.plugins.world_triangles
+    }
+
+    /// The plugins' labels, lines, triangles and projectile markers placed
+    /// in the drawing frame from the world as last drawn (none without a
+    /// world).
     pub(crate) fn set_plugin_world(
         &mut self,
         world: Option<&WorldRenderer>,
@@ -983,6 +992,7 @@ impl WindowUi {
         plugins.labels.clear();
         plugins.anchors.clear();
         plugins.world_lines.clear();
+        plugins.world_triangles.clear();
         plugins.samples.clear();
         let (Some(world), Some(scene)) = (world, scene) else {
             return;
@@ -1021,6 +1031,17 @@ impl WindowUi {
                     color_rgb: line.color_rgb,
                     follow_terrain: line.follow_terrain,
                     width_metres: line.width_metres,
+                });
+            }
+        }
+        for triangle in view.triangles.iter() {
+            let [a, b, c] = triangle
+                .corners
+                .map(|corner| map_point_in_frame(world, corner));
+            if let (Some(a), Some(b), Some(c)) = (a, b, c) {
+                plugins.world_triangles.push(PlacedTriangle {
+                    corners: [a, b, c],
+                    colors: triangle.colors_rgba.map(rgba_unit),
                 });
             }
         }
@@ -1177,6 +1198,11 @@ impl WindowUi {
 
 /// A map point in the drawing frame: its landblock placed by the world's
 /// floating origin.
+/// `0xRRGGBBAA` as red, green, blue and alpha in 0..1.
+fn rgba_unit(rgba: u32) -> [f32; 4] {
+    rgba.to_be_bytes().map(|channel| f32::from(channel) / 255.0)
+}
+
 fn map_point_in_frame(world: &WorldRenderer, point: MapPoint) -> Option<Vec3> {
     let (x, y, lx, ly, z) = point.to_landblock()?;
     let cell = (u32::from(x) << 24) | (u32::from(y) << 16) | 1;
@@ -1289,5 +1315,11 @@ mod tests {
             .map(|w| client_window_name(*w))
             .collect();
         assert_eq!(names.len(), ClientWindow::ALL.len());
+    }
+
+    #[test]
+    fn a_triangle_colour_is_red_green_blue_then_alpha() {
+        assert_eq!(rgba_unit(0xFF00_0080), [1.0, 0.0, 0.0, 128.0 / 255.0]);
+        assert_eq!(rgba_unit(0x0000_FFFF), [0.0, 0.0, 1.0, 1.0]);
     }
 }
