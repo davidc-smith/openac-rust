@@ -634,6 +634,37 @@ fn labels_are_detached_validated_capped_and_per_owner() {
     assert!(ui.merged_labels().is_empty());
 }
 
+/// OpenAC `ClearWorldLabelsOn`: leaving the world takes every plugin's
+/// labels down; the plugins stay and show labels again on the next stay.
+#[test]
+fn clearing_labels_takes_every_plugins_labels_down_and_leaves_lines() {
+    let mut ui = PluginUi::new();
+    let line = WorldLine {
+        start: crate::model::MapPoint::default(),
+        end: crate::model::MapPoint::default(),
+        color_rgb: 0xFF0000,
+        follow_terrain: false,
+        width_metres: 0.25,
+    };
+    let layer = ui.create_line_layer("edwards.tank");
+    assert!(ui.set_lines("edwards.tank", layer, vec![line]));
+    ui.show_labels("edwards.tank", vec![label(5)]);
+    ui.show_labels("another.plugin", vec![label(6)]);
+    drop(ui.take_changes());
+
+    ui.clear_labels();
+    assert!(ui.merged_labels().is_empty());
+    assert_eq!(ui.merged_lines().len(), 1);
+    let changes = ui.take_changes();
+    assert!(matches!(changes.as_slice(), [UiChange::Labels(l)] if l.is_empty()));
+
+    ui.clear_labels();
+    assert!(ui.take_changes().is_empty());
+
+    assert!(ui.show_labels("edwards.tank", vec![label(7)]));
+    assert_eq!(ui.merged_labels().len(), 1);
+}
+
 #[test]
 fn line_layers_belong_to_their_plugin_and_go_with_it() {
     let mut ui = PluginUi::new();

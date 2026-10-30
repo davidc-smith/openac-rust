@@ -1111,10 +1111,12 @@ impl SessionState {
         self.options.echo_shortcuts(self.inventory.shortcuts());
     }
 
-    /// The character left the world: the journal is saved and every piece
-    /// of server-owned state is forgotten.
+    /// The character left the world: the journal is saved, every piece of
+    /// server-owned state is forgotten and the plugins' world labels come
+    /// down.
     pub fn left_world(&mut self, wall_unix_ms: i64) {
         self.wall_unix_ms = wall_unix_ms;
+        self.plugin_ui.clear_labels();
         self.communication.left_world(wall_unix_ms);
         self.options.reset_session();
         self.inventory.reset_session(&mut self.world);
@@ -3106,6 +3108,26 @@ mod tests {
         assert_eq!(state.transit.snapshot(), PortalSnapshot::IDLE);
         state.set_window_attached(false, &mut outbox);
         assert!(outbox.is_empty());
+    }
+
+    /// OpenAC `ClearWorldLabelsOn`: the plugins outlive the stay, but their
+    /// world labels end with it, so a label on a lasting id (the character,
+    /// a carried item) does not come back on the next stay.
+    #[test]
+    fn leaving_the_world_takes_the_plugins_labels_down() {
+        let (mut state, _outbox) = state();
+        let label = ac_plugin_ui::WorldLabel {
+            object_id: 0x5000_0001,
+            text: "me".into(),
+            color: [1.0; 4],
+            height_offset: 0.0,
+            line: 0,
+            max_range: 60.0,
+            outline: true,
+        };
+        assert!(state.plugin_ui.show_labels("edwards.tank", vec![label]));
+        state.end_generation(0);
+        assert!(state.plugin_ui.merged_labels().is_empty());
     }
 
     #[test]
