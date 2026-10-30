@@ -15,7 +15,7 @@ use crate::markup::{self, normalize_icon};
 use crate::model::{
     CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction, ImageSource, PaintCmd,
     PanelDescriptor, PanelView, PluginIcon, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner,
-    WorldLabel, WorldLine,
+    WorldLabel, WorldLine, WorldTriangle,
 };
 use crate::value::{BindingSchema, UiValue};
 
@@ -33,6 +33,8 @@ pub const MAXIMUM_LABEL_TEXT: usize = 128;
 pub const MAXIMUM_CANVASES: usize = 8;
 /// The most lines one layer keeps (more are cut off).
 pub const MAXIMUM_LINES_PER_LAYER: usize = 16_384;
+/// The most triangles one layer keeps (more are cut off).
+pub const MAXIMUM_TRIANGLES_PER_LAYER: usize = 65_536;
 /// The most projectile markers kept.
 pub const MAXIMUM_PROJECTILE_SAMPLES: usize = 4096;
 /// The most commands one paint may hold (a host bound: a paint list is
@@ -107,6 +109,13 @@ struct LineLayer {
     lines: Vec<WorldLine>,
 }
 
+#[derive(Debug, Clone)]
+struct TriangleLayer {
+    id: u32,
+    owner: String,
+    triangles: Vec<WorldTriangle>,
+}
+
 /// The session's plugin UI. See the module documentation.
 #[derive(Debug, Default)]
 pub struct PluginUi {
@@ -133,6 +142,7 @@ pub struct PluginUi {
     file_clock: u64,
     labels: Vec<(String, Vec<WorldLabel>)>,
     layers: Vec<LineLayer>,
+    triangle_layers: Vec<TriangleLayer>,
     window_attached: bool,
     client_mounted: u16,
     client_visible: u16,
@@ -971,6 +981,65 @@ impl PluginUi {
         )
     }
 
+    /// A new, empty triangle layer for `owner`.
+    pub fn create_triangle_layer(&mut self, owner: &str) -> u32 {
+        let id = self.next_id();
+        self.triangle_layers.push(TriangleLayer {
+            id,
+            owner: owner.to_owned(),
+            triangles: Vec::new(),
+        });
+        id
+    }
+
+    /// Replaces a layer's triangles (the first
+    /// [`MAXIMUM_TRIANGLES_PER_LAYER`]); false when `owner` has no such
+    /// layer.
+    pub fn set_triangles(
+        &mut self,
+        owner: &str,
+        layer: u32,
+        mut triangles: Vec<WorldTriangle>,
+    ) -> bool {
+        let Some(l) = self
+            .triangle_layers
+            .iter_mut()
+            .find(|l| l.id == layer && l.owner == owner)
+        else {
+            return false;
+        };
+        triangles.truncate(MAXIMUM_TRIANGLES_PER_LAYER);
+        l.triangles = triangles;
+        self.changes
+            .push(UiChange::Triangles(self.merged_triangles()));
+        true
+    }
+
+    /// Removes a layer and its triangles; false when `owner` has no such
+    /// layer.
+    pub fn remove_triangle_layer(&mut self, owner: &str, layer: u32) -> bool {
+        let before = self.triangle_layers.len();
+        self.triangle_layers
+            .retain(|l| !(l.id == layer && l.owner == owner));
+        let removed = self.triangle_layers.len() != before;
+        if removed {
+            self.changes
+                .push(UiChange::Triangles(self.merged_triangles()));
+        }
+        removed
+    }
+
+    /// Every layer's triangles, in layer order.
+    #[must_use]
+    pub fn merged_triangles(&self) -> Arc<Vec<WorldTriangle>> {
+        Arc::new(
+            self.triangle_layers
+                .iter()
+                .flat_map(|l| l.triangles.iter().copied())
+                .collect(),
+        )
+    }
+
     /// Projectile markers to draw for a moment; unusable ones (a position
     /// that is not finite, a radius of zero or less) are dropped, and at
     /// most [`MAXIMUM_PROJECTILE_SAMPLES`] are kept.
@@ -1121,6 +1190,12 @@ impl PluginUi {
         if self.layers.len() != before {
             self.changes.push(UiChange::Lines(self.merged_lines()));
         }
+        let before = self.triangle_layers.len();
+        self.triangle_layers.retain(|l| l.owner != owner);
+        if self.triangle_layers.len() != before {
+            self.changes
+                .push(UiChange::Triangles(self.merged_triangles()));
+        }
         self.hotkeys.release(owner);
         self.follow_hotkeys();
         let dialogs: Vec<u32> = self
@@ -1142,7 +1217,8 @@ impl PluginUi {
     // ── The window ───────────────────────────────────────────────────────
 
     /// Everything as it stands, for a window that attaches: [`UiChange::Clear`]
-    /// then every panel, canvas and image, the labels and the lines.
+    /// then every panel, canvas and image, the labels, the lines and the
+    /// triangles.
     #[must_use]
     pub fn snapshot(&self) -> Vec<UiChange> {
         let mut out = vec![UiChange::Clear];
@@ -1166,6 +1242,7 @@ impl PluginUi {
         out.extend(self.file_icon_snapshot());
         out.push(UiChange::Labels(self.merged_labels()));
         out.push(UiChange::Lines(self.merged_lines()));
+        out.push(UiChange::Triangles(self.merged_triangles()));
         out.push(UiChange::Hotkeys(Arc::new(self.hotkeys.bound())));
         out.extend(
             self.dialogs
