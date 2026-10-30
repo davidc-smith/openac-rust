@@ -1044,7 +1044,8 @@ impl WindowUi {
 
     /// The plugins' labels, lines, triangles, icons, ground shapes and
     /// projectile markers placed in the drawing frame from the world as last
-    /// drawn (none without a world).
+    /// drawn (none without a world, and no labels or icons in the portal
+    /// view).
     pub(crate) fn set_plugin_world(
         &mut self,
         world: Option<&WorldRenderer>,
@@ -1063,18 +1064,23 @@ impl WindowUi {
         let (Some(world), Some(scene)) = (world, scene) else {
             return;
         };
-        for label in view.labels.iter() {
-            let [r, g, b, a] = label.color;
-            plugins.labels.push(WorldLabel {
-                object_id: label.object_id,
-                text: label.text.clone(),
-                color: Color::rgba(r, g, b, a),
-                height_offset: label.height_offset,
-                line: u32::try_from(label.line).unwrap_or(0),
-                max_range: label.max_range,
-                outline: label.outline,
-            });
-            plugins.keep_anchor(world, scene, &dats, label.object_id);
+        // Nothing of the world shows in the portal view, so nothing hangs over
+        // it either.
+        let world_shown = !world.portal_hides_world();
+        if world_shown {
+            for label in view.labels.iter() {
+                let [r, g, b, a] = label.color;
+                plugins.labels.push(WorldLabel {
+                    object_id: label.object_id,
+                    text: label.text.clone(),
+                    color: Color::rgba(r, g, b, a),
+                    height_offset: label.height_offset,
+                    line: u32::try_from(label.line).unwrap_or(0),
+                    max_range: label.max_range,
+                    outline: label.outline,
+                });
+                plugins.keep_anchor(world, scene, &dats, label.object_id);
+            }
         }
         for line in view.lines.iter() {
             if let (Some(from), Some(to)) = (
@@ -1102,7 +1108,7 @@ impl WindowUi {
             }
         }
         plugins.icon_entries = Arc::clone(&view.icons);
-        if !world.portal_hides_world() {
+        if world_shown {
             for (entry, icon) in view.icons.iter().enumerate() {
                 let anchor = match icon.icon.anchor {
                     MarkerAnchor::None => continue,
