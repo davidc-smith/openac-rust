@@ -71,6 +71,7 @@ mod test_gpu;
 pub mod texture_detail;
 pub mod translucency;
 pub mod ui;
+mod ui_scale;
 pub mod unowned_cache;
 pub mod viewport;
 pub mod walk;
