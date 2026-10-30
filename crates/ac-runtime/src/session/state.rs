@@ -3156,6 +3156,7 @@ mod tests {
             tint_rgba: 0xFFFF_FFFF,
             border_rgba: None,
             max_range: 60.0,
+            hidden_by_world: false,
         };
         let layer = state.plugin_ui.create_marker_layer("edwards.tank");
         assert!(state.plugin_ui.set_icons("edwards.tank", layer, vec![icon]));

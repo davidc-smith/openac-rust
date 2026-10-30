@@ -20,6 +20,7 @@ fn a_plugin_hangs_icons_in_layers_it_owns() {
         let second = h.create_marker_layer();
         let mut framed = world_icon(MarkerAnchor::Object(0x8000_0001), ART);
         framed.border_rgba = Some(0xFF00_00FF);
+        framed.hidden_by_world = true;
         let spot = MarkerAnchor::Position(
             MapPoint {
                 east_west: 10.0,
@@ -40,6 +41,8 @@ fn a_plugin_hangs_icons_in_layers_it_owns() {
     assert_eq!(shown[0].icon.tint_rgba, 0xFFFF_FFFF);
     assert_eq!(shown[0].icon.border_rgba, Some(0xFF00_00FF));
     assert_eq!(shown[0].icon.max_range, 60.0);
+    assert!(shown[0].icon.hidden_by_world);
+    assert!(!shown[1].icon.hidden_by_world);
     assert!(shown[1].icon.anchor.is_valid());
     assert_ne!(
         shown[1].icon.anchor,

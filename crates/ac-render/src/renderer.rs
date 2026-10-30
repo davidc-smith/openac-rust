@@ -13,6 +13,7 @@
 mod atlas_upload;
 pub(crate) mod atmosphere;
 mod detail;
+pub(crate) mod icon_probes;
 mod particles;
 pub(crate) mod pipelines;
 mod portal;
@@ -574,6 +575,7 @@ pub(crate) struct WorldRenderer {
     /// The plugins' world lines as this frame draws them.
     world_lines: world_lines::WorldLinesGpu,
     world_triangles: world_triangles::WorldTrianglesGpu,
+    icon_probes: icon_probes::IconProbes,
 
     models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
     requested_models: crate::model_requests::ModelRequests,
@@ -926,6 +928,7 @@ impl WorldRenderer {
             portal_vertices_capacity,
             world_lines: world_lines::WorldLinesGpu::default(),
             world_triangles: world_triangles::WorldTrianglesGpu::default(),
+            icon_probes: icon_probes::IconProbes::default(),
             models: crate::IdMap::default(),
             requested_models: crate::model_requests::ModelRequests::default(),
             appearances: HashMap::new(),
@@ -3644,6 +3647,17 @@ impl WorldRenderer {
         clear: wgpu::Color,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        self.draw_passes(encoder, target, clear, timestamps);
+        self.icon_probes.resolve(encoder);
+    }
+
+    fn draw_passes(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        clear: wgpu::Color,
+        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
         // The atmospheric rendering draws the world through its own
         // targets and composes it into `target`.
         if let Some(a) = self
@@ -3680,6 +3694,7 @@ impl WorldRenderer {
                 stencil_ops: None,
             }),
             timestamp_writes: timestamps,
+            occlusion_query_set: self.icon_probes.query_set(),
             ..Default::default()
         });
         // Behind portal space the frame is the tunnel's (built in place of
@@ -3693,6 +3708,7 @@ impl WorldRenderer {
         self.draw_steps(&mut pass, &pipelines);
         self.draw_world_lines(&mut pass, &pipelines);
         self.draw_world_triangles(&mut pass, &pipelines);
+        self.draw_icon_probes(&mut pass, &pipelines);
     }
 
     /// The draw stream in order, with `p`'s pipelines.

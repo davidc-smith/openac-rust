@@ -1125,9 +1125,9 @@ wire_enum! {
 }
 
 wire_record! {
-    /// An image hung in the world at a constant size on the screen. Walls
-    /// and hills do not hide it: like a label, it is drawn after the world.
-    /// API 1.3.
+    /// An image hung in the world at a constant size on the screen. It is
+    /// drawn after the world, like a label, so walls and hills do not hide
+    /// it unless it asks with `hidden_by_world`. API 1.3.
     pub struct WorldIcon {
         /// Over an object, the client lays its icons out in rows above its
         /// head and its labels; at a position, the icon is centred on it.
@@ -1147,6 +1147,10 @@ wire_record! {
         /// Shown up to this many metres away, fading over the last fifth;
         /// an icon whose range is not a positive finite number is dropped.
         pub max_range: f32,
+        /// The whole icon goes while walls, doors, hills or anything else in
+        /// the world stands between the camera and its anchor. It comes and
+        /// goes a frame or two after the view changes.
+        pub hidden_by_world: bool,
     }
 }
 
