@@ -9,8 +9,8 @@ use crate::ui::{
     self as abi, ActionValue, BindingKind, CanvasChange, CanvasPaint, CanvasRegistration,
     CanvasSet, CanvasState, ClientWindowRequest, ControlLabel, ControlRef, ControlVisible,
     EncodedImage, HotkeyRebind, HotkeyRegistration, HotkeyState, IconSet, ImageInfo, KeyChord,
-    LineSet, MarkerAnchor, PanelRegistration, PanelValues, PointerEvent, RgbaImage, TextSize,
-    TriangleSet, UiAction, UiValue, ViewShow,
+    LineSet, MarkerAnchor, PanelRegistration, PanelValues, PointerEvent, RgbaImage, ShapeSet,
+    TextSize, TriangleSet, UiAction, UiValue, ViewShow,
 };
 use crate::{DecodeError, Event, Import, Wire};
 use ac_plugin_ui::{
@@ -649,6 +649,30 @@ pub fn handle(
                 })
                 .collect();
             state.set_icons(id, r.layer, icons).to_bytes()
+        }
+        Import::UiMarkersSetShapes => {
+            let r = ShapeSet::from_bytes(request).map_err(bad)?;
+            let shapes = r
+                .shapes
+                .into_iter()
+                .map(|s| ui::GroundShape {
+                    anchor: anchor(s.anchor),
+                    kind: match s.kind {
+                        abi::GroundShapeKind::None => ui::GroundShapeKind::None,
+                        abi::GroundShapeKind::Ring => ui::GroundShapeKind::Ring,
+                        abi::GroundShapeKind::Disc => ui::GroundShapeKind::Disc,
+                        abi::GroundShapeKind::Arc => ui::GroundShapeKind::Arc,
+                    },
+                    radius: s.radius,
+                    width: s.width,
+                    start_degrees: s.start_degrees,
+                    sweep_degrees: s.sweep_degrees,
+                    filled: s.filled,
+                    faces_object: s.faces_object,
+                    color_rgba: s.color_rgba,
+                })
+                .collect();
+            state.set_shapes(id, r.layer, shapes).to_bytes()
         }
         Import::UiMarkersRemove => {
             let layer = u32::from_bytes(request).map_err(bad)?;
