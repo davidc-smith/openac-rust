@@ -995,7 +995,7 @@ impl Inventory {
             })
         });
         if sent {
-            self.replace_fully_merged_shortcut(join.source_object_id, join.target_object_id, ctx);
+            self.merge_sent(join.source_object_id, join.target_object_id, ctx);
         }
         Some(sent)
     }
@@ -1037,7 +1037,7 @@ impl Inventory {
             })
         });
         if sent {
-            self.replace_fully_merged_shortcut(plan.source_object_id, plan.target_object_id, ctx);
+            self.merge_sent(plan.source_object_id, plan.target_object_id, ctx);
         }
         sent
     }
@@ -1210,9 +1210,16 @@ impl Inventory {
     }
 
     /// A stack merge has just been sent, by any caller (a drag, a plugin,
-    /// an automatic join): the shortcut of the stack being poured moves to
-    /// the stack it is poured into, keeping its slot, and the server is told
-    /// of both changes. The poured stack's later removal then finds nothing
+    /// an automatic join): the poured stack's shortcut follows it, and the
+    /// stack it joins becomes the selection ([`Inventory::take_merged_into`]).
+    fn merge_sent(&mut self, source_id: u32, target_id: u32, ctx: &mut ItemContext<'_>) {
+        self.replace_fully_merged_shortcut(source_id, target_id, ctx);
+        self.merged_into.push(target_id);
+    }
+
+    /// After a stack merge was sent: the shortcut of the stack being poured
+    /// moves to the stack it is poured into, keeping its slot, and the
+    /// server is told of both changes. The poured stack's later removal then finds nothing
     /// of it on the bar.
     pub(super) fn replace_fully_merged_shortcut(
         &mut self,
@@ -1570,11 +1577,7 @@ impl Inventory {
                 BackpackPlacement::NotDispatched
             });
             if sent {
-                self.replace_fully_merged_shortcut(
-                    merge.source_object_id,
-                    merge.target_object_id,
-                    ctx,
-                );
+                self.merge_sent(merge.source_object_id, merge.target_object_id, ctx);
             }
             return sent;
         }
@@ -1682,11 +1685,7 @@ impl Inventory {
                 })
             });
             if sent {
-                self.replace_fully_merged_shortcut(
-                    join.source_object_id,
-                    join.target_object_id,
-                    ctx,
-                );
+                self.merge_sent(join.source_object_id, join.target_object_id, ctx);
             }
             return sent;
         }
