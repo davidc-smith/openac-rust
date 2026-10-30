@@ -2308,9 +2308,11 @@ impl AttachedWindow {
                 pressed,
             }),
         };
-        if let Some(WorldInput::Button { button, pressed }) = world {
+        let world = world_button(world, index, pressed, self.input.is_button_held(index));
+        if let Some((button, pressed, ui_took_it)) = world {
             self.input.button(button, pressed);
-            let state = self.device_state();
+            let mut state = self.device_state();
+            state.want_mouse |= ui_took_it;
             let now = self.gameplay_now();
             let now_ms = u64::try_from(self.input_clock.elapsed().as_millis()).unwrap_or(u64::MAX);
             let mut out = Vec::new();
@@ -2482,7 +2484,8 @@ impl AttachedWindow {
     }
 
     /// Lift what is under each world drag's press point, if anything lifts
-    /// (your own character out of combat lifts your main pack).
+    /// (out of combat a loose item lifts itself, your own character your
+    /// main pack).
     fn start_world_drags(&mut self) {
         let starts = match self.ui.as_mut() {
             Some(ui) => ui.take_world_drag_starts(),
@@ -2933,6 +2936,26 @@ fn button_index(button: MouseButton) -> u16 {
     }
 }
 
+/// What a mouse button change (`button` going down or up) does to the
+/// world, given what the UI passed on (`world`) and whether the world holds
+/// that button (`world_held`): (button, pressed, the UI took it). A release
+/// the UI kept whose press went to the world (a drag lifted off the world
+/// and let go over a window or the world) still lets the world's button
+/// go, as one the UI took, so it is no click; otherwise the world would go
+/// on thinking the button held (the orbit camera kept turning).
+fn world_button<K>(
+    world: Option<WorldInput<K>>,
+    button: u16,
+    pressed: bool,
+    world_held: bool,
+) -> Option<(u16, bool, bool)> {
+    match world {
+        Some(WorldInput::Button { button, pressed }) => Some((button, pressed, false)),
+        _ if !pressed && world_held => Some((button, false, true)),
+        _ => None,
+    }
+}
+
 /// The drawable size for a framebuffer resize, or `None` for a size with no
 /// area (minimized), which changes nothing.
 #[must_use]
@@ -3170,9 +3193,10 @@ mod tests {
     use super::{
         NO_IMAGE_RETRY, SURFACE_DRAWING, SURFACE_OCCLUDED, SURFACE_TIMED_OUT, Screenshots,
         SurfaceNotes, block_on, found_in_scene, framebuffer_resize, picks_as_found, redraw_after,
-        retail_screenshot_path, revealed_selection,
+        retail_screenshot_path, revealed_selection, world_button,
     };
     use crate::frame::FrameOutcome;
+    use crate::ui::input::WorldInput;
     use std::time::Duration;
 
     #[test]
@@ -3240,6 +3264,32 @@ mod tests {
         // incarnation finds nothing.
         assert_eq!(found_in_scene(&scene, LIFESTONE, 9), None);
         assert_eq!(found_in_scene(&scene, ACID, 2), None);
+    }
+
+    #[test]
+    fn a_release_the_ui_kept_still_lets_go_of_a_button_the_world_holds() {
+        // GitHub #45: a drag lifted off the world ends with the release on
+        // the UI's side; the world went on thinking the left button held,
+        // and the orbit camera kept turning until the next click.
+        let passed = Some(WorldInput::<()>::Button {
+            button: 0,
+            pressed: false,
+        });
+        assert_eq!(
+            world_button(passed, 0, false, true),
+            Some((0, false, false))
+        );
+        assert_eq!(
+            world_button::<()>(None, 0, false, true),
+            Some((0, false, true))
+        );
+        // Nothing for the world when it did not hold it, or for a press.
+        assert_eq!(world_button::<()>(None, 0, false, false), None);
+        assert_eq!(world_button::<()>(None, 0, true, true), None);
+        assert_eq!(
+            world_button(Some(WorldInput::<()>::Moved), 0, true, true),
+            None
+        );
     }
 
     #[test]

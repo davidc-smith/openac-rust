@@ -280,6 +280,16 @@ pub enum ItemCommand {
     AddShortcut(ShortcutEntry),
     /// Take the shortcut in this slot off the toolbar.
     RemoveShortcut(i32),
+    /// A loose item (on the ground or in an outside container) dropped on a
+    /// toolbar slot: it is picked up into the preferred pack, as the use key
+    /// picks it up, and once that request has gone out it gets the shortcut
+    /// in `slot`.
+    PickUpToShortcut {
+        /// The item.
+        item: ObjectRef,
+        /// The toolbar slot.
+        slot: i32,
+    },
     /// The next object clicked is used (the toolbar's use button with
     /// nothing selected).
     EnterUseMode,
