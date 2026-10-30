@@ -19,6 +19,7 @@ struct Rig {
     cameras: CameraController,
     buttons: u32,
     modifiers: Modifiers,
+    want_keyboard: bool,
     now: f32,
     out: Vec<GameplayOutput>,
 }
@@ -40,6 +41,7 @@ impl Rig {
             cameras,
             buttons: 0,
             modifiers: Modifiers::NONE,
+            want_keyboard: false,
             now: 1.0,
             out: Vec::new(),
         }
@@ -51,7 +53,7 @@ impl Rig {
             buttons: self.buttons,
             modifiers: self.modifiers,
             want_mouse: false,
-            want_keyboard: false,
+            want_keyboard: self.want_keyboard,
         }
     }
 
@@ -151,6 +153,47 @@ fn held_retail_keys_reach_the_session_as_movement_keys_once_per_change() {
             ..MovementKeys::default()
         })]
     );
+}
+
+/// GitHub issue #38: clicking the chat window gives its entry the keyboard,
+/// and the character running on a held forward key stopped. The game ends
+/// a held movement key on its release only, so the run goes on while the
+/// entry has the keyboard and stops when the key comes up; a key typed
+/// into the entry moves nothing, then or after the entry lets go.
+#[test]
+fn a_field_taking_the_keyboard_keeps_the_held_movement_keys() {
+    let mut r = Rig::new();
+    r.key(Key::W, true);
+    r.tick(1.0 / 60.0);
+    let forward = MovementKeys {
+        forward: true,
+        ..MovementKeys::default()
+    };
+    assert_eq!(r.movement(), [MovementCommand::Keys(forward)]);
+
+    // The chat entry takes the keyboard: the run goes on.
+    r.want_keyboard = true;
+    r.tick(1.0 / 60.0);
+    r.tick(1.0 / 60.0);
+    assert!(r.movement().is_empty(), "the held forward key was let go");
+
+    // A key pressed while the entry has the keyboard adds nothing.
+    r.key(Key::X, true);
+    r.tick(1.0 / 60.0);
+    assert!(r.movement().is_empty());
+
+    // The forward key comes up while the entry has the keyboard.
+    r.key(Key::W, false);
+    r.tick(1.0 / 60.0);
+    assert_eq!(
+        r.movement(),
+        [MovementCommand::Keys(MovementKeys::default())]
+    );
+
+    // The entry lets go with the typed key still down: it moves nothing.
+    r.want_keyboard = false;
+    r.tick(1.0 / 60.0);
+    assert!(r.movement().is_empty(), "a typed key started a move");
 }
 
 #[test]
@@ -469,6 +512,16 @@ fn keypad_keys_choose_views_and_hold_to_move_the_camera() {
     r.key(Key::Keypad4, true);
     r.tick(1.0 / 40.0);
     assert!(r.cameras.chase.yaw_offset < yaw, "keypad 4 swings left");
+    // A camera key held when the chat entry takes the keyboard goes on
+    // swinging until it is released, as a held movement key does.
+    r.want_keyboard = true;
+    let yaw = r.cameras.chase.yaw_offset;
+    r.tick(1.0 / 40.0);
+    assert!(r.cameras.chase.yaw_offset < yaw, "the held key was let go");
+    r.key(Key::Keypad4, false);
+    let yaw = r.cameras.chase.yaw_offset;
+    r.tick(1.0 / 40.0);
+    assert_eq!(r.cameras.chase.yaw_offset, yaw);
 }
 
 #[test]

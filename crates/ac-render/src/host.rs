@@ -27,9 +27,9 @@ use crate::surface::{AdapterSummary, AttachedWindow, GraphicsOptions};
 pub struct WindowSpec {
     /// The title bar text.
     pub title: String,
-    /// Inner width in physical pixels.
+    /// Inner width: pixels, points on macOS (as the resolution picks).
     pub width: u32,
-    /// Inner height in physical pixels.
+    /// Inner height: pixels, points on macOS (as the resolution picks).
     pub height: u32,
     /// The color every frame is cleared to (the sky until a sky is drawn).
     pub clear_color: wgpu::Color,

@@ -18,6 +18,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::window::{CursorGrabMode, Window, WindowId};
 
 use crate::audio::{PlayerPlace, WindowAudio};
@@ -136,27 +137,49 @@ struct OpenFrame {
     reconfigure_after: bool,
 }
 
+/// A size `monitor` reports in pixels (its own, one of its modes'), in
+/// the unit the window's size and the resolution picks are counted in
+/// (points on macOS, as OpenAC's window library lists modes there).
+fn in_window_unit(monitor: &MonitorHandle, pixels: (i32, i32)) -> (i32, i32) {
+    match crate::display_mode::size_unit(HostOs::current()) {
+        crate::display_mode::SizeUnit::Pixels => pixels,
+        unit @ crate::display_mode::SizeUnit::Points => {
+            let side = |p: i32| u32::try_from(p).unwrap_or(0);
+            let (w, h) =
+                unit.from_pixels((side(pixels.0), side(pixels.1)), || monitor.scale_factor());
+            (i32::try_from(w).unwrap_or(0), i32::try_from(h).unwrap_or(0))
+        }
+    }
+}
+
+/// `monitor`'s size, in the window's size unit.
+fn desktop_of(monitor: &MonitorHandle) -> Option<(i32, i32)> {
+    crate::platform::monitor_size(monitor).map(|size| in_window_unit(monitor, size))
+}
+
 /// The fullscreen modes offered for the monitor `window` is on: the
 /// monitor's curated modes, else the standard sizes (OpenAC
 /// `DisplayModeCatalog.Resolutions ?? AvailableResolutions`).
 fn fullscreen_modes_of(window: &Window) -> Vec<String> {
     use ac_ui::panels::options::resolutions::{AVAILABLE_RESOLUTIONS, curate};
     let monitor = window.current_monitor();
-    let size = |s: PhysicalSize<u32>| {
-        (
-            i32::try_from(s.width).unwrap_or(0),
-            i32::try_from(s.height).unwrap_or(0),
+    let size = |monitor: &MonitorHandle, s: PhysicalSize<u32>| {
+        in_window_unit(
+            monitor,
+            (
+                i32::try_from(s.width).unwrap_or(0),
+                i32::try_from(s.height).unwrap_or(0),
+            ),
         )
     };
     let curated = monitor
         .as_ref()
-        .and_then(crate::platform::monitor_size)
+        .and_then(desktop_of)
         .filter(|(w, h)| *w > 0 && *h > 0)
         .map(|desktop| {
             let modes: Vec<(i32, i32)> = monitor
                 .iter()
-                .flat_map(winit::monitor::MonitorHandle::video_modes)
-                .map(|m| size(m.size()))
+                .flat_map(|monitor| monitor.video_modes().map(|m| size(monitor, m.size())))
                 .collect();
             curate(&modes, desktop)
         })
@@ -174,16 +197,20 @@ fn fullscreen_modes_of(window: &Window) -> Vec<String> {
 /// The resolutions the display menu offers for the monitor `window` is on.
 fn resolution_choices_of(window: &Window) -> Vec<String> {
     let monitor = window.current_monitor();
-    let desktop = monitor.as_ref().and_then(crate::platform::monitor_size);
+    let desktop = monitor.as_ref().and_then(desktop_of);
     let modes: Vec<(i32, i32)> = monitor
         .iter()
-        .flat_map(winit::monitor::MonitorHandle::video_modes)
-        .map(|m| {
-            let s = m.size();
-            (
-                i32::try_from(s.width).unwrap_or(0),
-                i32::try_from(s.height).unwrap_or(0),
-            )
+        .flat_map(|monitor| {
+            monitor.video_modes().map(|m| {
+                let s = m.size();
+                in_window_unit(
+                    monitor,
+                    (
+                        i32::try_from(s.width).unwrap_or(0),
+                        i32::try_from(s.height).unwrap_or(0),
+                    ),
+                )
+            })
         })
         .collect();
     crate::ui::options::resolution_choices(&modes, desktop)
@@ -360,9 +387,13 @@ impl AttachedWindow {
         options: &GraphicsOptions,
         settings: &ac_host::settings::PlayerSettings,
     ) -> Result<Self, RenderError> {
+        // The size picked is in points on macOS (the UI's unit there), in
+        // pixels elsewhere; the drawing surface follows in pixels.
         let attributes = Window::default_attributes()
             .with_title(spec.title.clone())
-            .with_inner_size(PhysicalSize::new(spec.width, spec.height));
+            .with_inner_size(
+                crate::display_mode::size_unit(HostOs::current()).request(spec.width, spec.height),
+            );
         let window = Arc::new(event_loop.create_window(attributes)?);
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
@@ -1788,7 +1819,9 @@ impl AttachedWindow {
     /// Returns the window's size afterwards.
     fn follow_fullscreen(&mut self) -> PhysicalSize<u32> {
         let mut lines = Vec::new();
-        let (width, height) = crate::display_mode::follow_resize(
+        // The window's size in its own unit (points on macOS); the
+        // drawing surface reads it again in pixels below.
+        let _ = crate::display_mode::follow_resize(
             &mut self.fullscreen_awaiting,
             &mut crate::display_mode::WinitDisplay(&self.window),
             &mut crate::display_mode::WinitDisplay(&self.window),
@@ -1796,7 +1829,7 @@ impl AttachedWindow {
         );
         self.screen_saver.follow(&self.window, &mut lines);
         self.notices.extend(lines);
-        PhysicalSize::new(width, height)
+        self.window.inner_size()
     }
 
     /// The event loop is ending: let go of the screen while the window's
@@ -2321,9 +2354,11 @@ impl AttachedWindow {
                 pressed,
             }),
         };
-        if let Some(WorldInput::Button { button, pressed }) = world {
+        let world = world_button(world, index, pressed, self.input.is_button_held(index));
+        if let Some((button, pressed, ui_took_it)) = world {
             self.input.button(button, pressed);
-            let state = self.device_state();
+            let mut state = self.device_state();
+            state.want_mouse |= ui_took_it;
             let now = self.gameplay_now();
             let now_ms = u64::try_from(self.input_clock.elapsed().as_millis()).unwrap_or(u64::MAX);
             let mut out = Vec::new();
@@ -2479,7 +2514,7 @@ impl AttachedWindow {
         };
         let drops = ui.take_world_drops();
         for (payload, x, y) in drops {
-            let picked = self.pick_object(x as f32, y as f32);
+            let picked = self.pick_at_ui(x, y);
             let amount = self
                 .ui
                 .as_mut()
@@ -2495,16 +2530,15 @@ impl AttachedWindow {
     }
 
     /// Lift what is under each world drag's press point, if anything lifts
-    /// (your own character out of combat lifts your main pack).
+    /// (out of combat a loose item lifts itself, your own character your
+    /// main pack).
     fn start_world_drags(&mut self) {
         let starts = match self.ui.as_mut() {
             Some(ui) => ui.take_world_drag_starts(),
             None => return,
         };
         for (x, y) in starts {
-            let hit = self
-                .pick_object(x as f32, y as f32)
-                .map_or(0, |(guid, _)| guid);
+            let hit = self.pick_at_ui(x, y).map_or(0, |(guid, _)| guid);
             if let Some(ui) = self.ui.as_mut() {
                 ui.begin_world_drag(hit);
             }
@@ -2536,6 +2570,13 @@ impl AttachedWindow {
             x,
             y,
         )
+    }
+
+    /// [`Self::pick_object`] at a position the UI reports in its own units
+    /// (points on macOS), which the world picks in pixels.
+    fn pick_at_ui(&mut self, x: i32, y: i32) -> Option<(u32, u32)> {
+        let (x, y) = self.ui_scale.window_point(x, y);
+        self.pick_object(x, y)
     }
 
     /// The cursor in whole UI units (the world picks in pixels).
@@ -2927,18 +2968,24 @@ fn pick_eligible(
     y: f32,
 ) -> Option<(u32, u32)> {
     let hit = world.pick(x, y, 0)?;
-    scene?
-        .object_by_guid(hit.guid)
-        .filter(|o| o.key.local_id == hit.local_id)
+    found_in_scene(scene?, hit.guid, hit.local_id)
+}
+
+/// What a pick that hit object `guid` drawn as `local_id` finds in `scene`:
+/// that object, while the scene still holds that incarnation of it and it
+/// is not hidden from the UI; else nothing.
+fn found_in_scene(scene: &crate::scene::Scene, guid: u32, local_id: u32) -> Option<(u32, u32)> {
+    scene
+        .object_by_guid(guid)
+        .filter(|o| o.key.local_id == local_id)
         .filter(|o| picks_as_found(o.radar.public_weenie_bitfield))
-        .map(|_| (hit.guid, hit.local_id))
+        .map(|_| (guid, local_id))
 }
 
 /// Whether an object with public description bits `bitfield` is found when
-/// picked: not when it is hidden from the UI (retail
-/// `UIElement_SmartBoxWrapper::RecvNotice_SmartBoxObjectFound` drops a
-/// pick whose `BF_UI_HIDDEN` bit is set), so it is neither selected,
-/// used nor named under the pointer.
+/// picked: not when its UI-hidden bit is set. The game marks traps and
+/// similar scenery that way so the player cannot select, use or name them
+/// under the pointer, and the pick then finds nothing at all.
 fn picks_as_found(bitfield: u32) -> bool {
     bitfield & ac_core::items::PublicWeenieFlags::UI_HIDDEN.bits() == 0
 }
@@ -2952,6 +2999,26 @@ fn button_index(button: MouseButton) -> u16 {
         MouseButton::Back => 3,
         MouseButton::Forward => 4,
         MouseButton::Other(n) => n.saturating_add(5),
+    }
+}
+
+/// What a mouse button change (`button` going down or up) does to the
+/// world, given what the UI passed on (`world`) and whether the world holds
+/// that button (`world_held`): (button, pressed, the UI took it). A release
+/// the UI kept whose press went to the world (a drag lifted off the world
+/// and let go over a window or the world) still lets the world's button
+/// go, as one the UI took, so it is no click; otherwise the world would go
+/// on thinking the button held (the orbit camera kept turning).
+fn world_button<K>(
+    world: Option<WorldInput<K>>,
+    button: u16,
+    pressed: bool,
+    world_held: bool,
+) -> Option<(u16, bool, bool)> {
+    match world {
+        Some(WorldInput::Button { button, pressed }) => Some((button, pressed, false)),
+        _ if !pressed && world_held => Some((button, false, true)),
+        _ => None,
     }
 }
 
@@ -3191,10 +3258,11 @@ fn revealed_selection(selected: Option<u32>, shown: impl Fn(u32) -> bool) -> Opt
 mod tests {
     use super::{
         NO_IMAGE_RETRY, SURFACE_DRAWING, SURFACE_OCCLUDED, SURFACE_TIMED_OUT, Screenshots,
-        SurfaceNotes, block_on, framebuffer_resize, picks_as_found, redraw_after,
-        retail_screenshot_path, revealed_selection,
+        SurfaceNotes, block_on, found_in_scene, framebuffer_resize, picks_as_found, redraw_after,
+        retail_screenshot_path, revealed_selection, world_button,
     };
     use crate::frame::FrameOutcome;
+    use crate::ui::input::WorldInput;
     use std::time::Duration;
 
     #[test]
@@ -3208,6 +3276,86 @@ mod tests {
         assert!(!picks_as_found(
             (PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN).bits()
         ));
+    }
+
+    #[test]
+    fn a_pick_on_an_object_hidden_from_the_ui_finds_nothing_in_the_scene() {
+        use crate::scene::Scene;
+        use ac_core::items::PublicWeenieFlags;
+        use ac_runtime::session::PresentationEvent;
+        use ac_runtime::world::{ObjectKey, ObjectView, RadarFacts, WorldSnapshot};
+        let view = |local_id: u32, guid: u32, bitfield: PublicWeenieFlags| ObjectView {
+            key: ObjectKey {
+                local_id,
+                incarnation: 1,
+            },
+            guid,
+            name: None,
+            setup_id: None,
+            position: None,
+            parent: None,
+            placement: None,
+            rest_placement: 0,
+            scale: None,
+            translucency: None,
+            state: 0,
+            velocity: None,
+            model: ac_proto::ModelData::default(),
+            motion_table_id: None,
+            sound_table_id: None,
+            radar: RadarFacts {
+                public_weenie_bitfield: bitfield.bits(),
+                ..RadarFacts::default()
+            },
+            motion: None,
+            effects: ac_runtime::world::EffectFacts::default(),
+            step_blend: None,
+        };
+        const LIFESTONE: u32 = 0x7000_0001;
+        const ACID: u32 = 0x7000_0002;
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: None,
+            objects: vec![
+                view(1, LIFESTONE, PublicWeenieFlags::LIFESTONE),
+                view(
+                    2,
+                    ACID,
+                    PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN,
+                ),
+            ],
+        }));
+        assert_eq!(found_in_scene(&scene, LIFESTONE, 1), Some((LIFESTONE, 1)));
+        // A stale frame's hit on an id the scene now holds as another
+        // incarnation finds nothing.
+        assert_eq!(found_in_scene(&scene, LIFESTONE, 9), None);
+        assert_eq!(found_in_scene(&scene, ACID, 2), None);
+    }
+
+    #[test]
+    fn a_release_the_ui_kept_still_lets_go_of_a_button_the_world_holds() {
+        // GitHub #45: a drag lifted off the world ends with the release on
+        // the UI's side; the world went on thinking the left button held,
+        // and the orbit camera kept turning until the next click.
+        let passed = Some(WorldInput::<()>::Button {
+            button: 0,
+            pressed: false,
+        });
+        assert_eq!(
+            world_button(passed, 0, false, true),
+            Some((0, false, false))
+        );
+        assert_eq!(
+            world_button::<()>(None, 0, false, true),
+            Some((0, false, true))
+        );
+        // Nothing for the world when it did not hold it, or for a press.
+        assert_eq!(world_button::<()>(None, 0, false, false), None);
+        assert_eq!(world_button::<()>(None, 0, true, true), None);
+        assert_eq!(
+            world_button(Some(WorldInput::<()>::Moved), 0, true, true),
+            None
+        );
     }
 
     #[test]

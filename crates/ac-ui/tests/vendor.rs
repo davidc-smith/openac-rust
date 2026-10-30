@@ -25,9 +25,8 @@ use ac_core::properties::PropertyInt;
 use ac_runtime::inventory::shop::{StagedRow, VendorListsView};
 use ac_runtime::inventory::{ItemCommand, ObjectRef, VendorCommand, VendorView, VendorViewReason};
 use ac_runtime::session::SessionCommand;
-use ac_ui::ElementId;
 use ac_ui::element_info::ElementInfo;
-use ac_ui::event::{DragAcceptance, DragPayload, kind};
+use ac_ui::event::{DragAcceptance, DragPayload, ItemDragPayload, ItemDragSource, kind};
 use ac_ui::host::UiHost;
 use ac_ui::import::ImportedLayout;
 use ac_ui::panels::items::ItemsView;
@@ -36,6 +35,7 @@ use ac_ui::panels::{PanelOutput, panel_id};
 use ac_ui::root::UiRoot;
 use ac_ui::tree::Element;
 use ac_ui::widgets::{ItemList, ItemSlot, Menu, Panel, ScrollSource, Scrollbar, Text};
+use ac_ui::{ElementId, MouseButton, UiOutput};
 use common::items::*;
 use common::panels::*;
 use common::*;
@@ -1468,6 +1468,78 @@ fn lifting_a_staged_sale_takes_it_off_and_refuses_a_partial_selection() {
             .any(|o| matches!(o, PanelOutput::ResetSplitQuantity { stack: 10 })),
         "{out:?}"
     );
+}
+
+/// A vendor window with `OWNED_ARMOR` staged on the sell list, on the
+/// selling tab.
+fn staged_sale() -> Vendor {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        sell_profile(ItemType::ARMOR),
+        Vec::new(),
+    )));
+    v.owned(OWNED_ARMOR, ItemType::ARMOR, 100, 1, 1);
+    let mut view = shop(
+        VendorViewReason::Lists,
+        sell_profile(ItemType::ARMOR),
+        Vec::new(),
+    );
+    view.lists.selling = vec![row(OWNED_ARMOR, "Chainmail Shirt", 1)];
+    v.event(Some(&view));
+    v.click(vendor::SELLING_TAB_ID);
+    v
+}
+
+/// A staged sale let go over the world says it came from the vendor
+/// window, so the world only takes it off the sell list and never drops
+/// it on the ground (issue #44).
+#[test]
+fn a_staged_sale_dragged_out_over_the_world_comes_from_the_vendor_window() {
+    let mut v = staged_sale();
+    assert_eq!(
+        v.slot(vendor::SELLING_LIST_ID, 0).source_kind,
+        ItemDragSource::Vendor
+    );
+    let c = v.cell(vendor::SELLING_LIST_ID, 0);
+    let (x, y) = v.host.root.screen_position(c);
+    let e = v.host.root.element(c).unwrap();
+    let (x, y) = ((x + e.width / 2.0) as i32, (y + e.height / 2.0) as i32);
+    v.host.take_outputs();
+    v.host.mouse_move(x, y);
+    v.host.mouse_down(MouseButton::Left, x, y, 0);
+    v.host.mouse_move(x + 200, y + 300);
+    v.host.mouse_up(MouseButton::Left, x + 200, y + 300, 0);
+    let released: Vec<ItemDragSource> = v
+        .host
+        .take_outputs()
+        .into_iter()
+        .filter_map(|o| match o {
+            UiOutput::DragReleasedOutsideUi { payload, .. } => {
+                payload.get::<ItemDragPayload>().map(|p| p.source_kind)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(released, [ItemDragSource::Vendor]);
+}
+
+/// A drag out of the sell list is refused everywhere, the sell list
+/// included: a staged sale lifted and let go over the list again is not
+/// staged a second time.
+#[test]
+fn a_staged_sale_dropped_back_on_the_sell_list_is_refused() {
+    let mut v = staged_sale();
+    let c = v.cell(vendor::SELLING_LIST_ID, 0);
+    let lifted = ItemDragPayload::new(OWNED_ARMOR, ItemDragSource::Vendor, 0);
+    v.fire(c, kind::DRAG_ENTER, Some(DragPayload::new(lifted.clone())));
+    assert_eq!(
+        v.slot(vendor::SELLING_LIST_ID, 0).drag_acceptance(),
+        DragAcceptance::Reject
+    );
+    let out = v.fire(c, kind::DROP_RELEASED, Some(DragPayload::new(lifted)));
+    assert!(items_commands(&out).is_empty(), "{out:?}");
+    assert!(notices(&out).is_empty(), "{out:?}");
 }
 
 // ── Real dats ───────────────────────────────────────────────────────────

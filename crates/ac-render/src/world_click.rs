@@ -116,8 +116,8 @@ impl WorldClicks {
     /// An item dragged out of a window let go over the world, over
     /// `picked` (the ground when none): it is placed there, `amount` of a
     /// stack (0 for all). A shortcut dragged off the toolbar, or an item
-    /// dragged out of the salvage window, places nothing. The selection is
-    /// left alone.
+    /// dragged out of the salvage, vendor or house purchase window, places
+    /// nothing. The selection is left alone.
     #[must_use]
     pub fn drop_item(
         item_id: u32,
@@ -296,6 +296,17 @@ mod tests {
     fn a_salvage_window_drop_places_nothing() {
         for picked in [None, Some(TARGET)] {
             let out = WorldClicks::drop_item(0x7000_0002, ItemDragSource::Salvage, picked, 0);
+            assert!(out.commands.is_empty(), "{picked:?}");
+        }
+    }
+
+    /// Issue #44: an item dragged out of the vendor's sell list (or the
+    /// house purchase window) only comes off that list; it is not dropped
+    /// on the ground or onto an object.
+    #[test]
+    fn a_vendor_window_drop_places_nothing() {
+        for picked in [None, Some(TARGET)] {
+            let out = WorldClicks::drop_item(0x7000_0002, ItemDragSource::Vendor, picked, 0);
             assert!(out.commands.is_empty(), "{picked:?}");
         }
     }
