@@ -62,14 +62,15 @@ pub mod route;
 use std::collections::BTreeMap;
 
 pub use ac_plugin_abi::ui::{
-    ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, PaintCmd,
-    PointerEvent, ProjectileSample, Rect, RowAction, RowStep, TypedBindingDecl, TypedBindingKind,
-    TypedValue, UiAction, UiEvent, UiValue, WorldLabel, WorldLine, WorldTriangle,
+    ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, MarkerAnchor,
+    PaintCmd, PointerEvent, ProjectileSample, Rect, RowAction, RowStep, TypedBindingDecl,
+    TypedBindingKind, TypedValue, UiAction, UiEvent, UiValue, WorldIcon, WorldLabel, WorldLine,
+    WorldTriangle,
 };
 use ac_plugin_abi::ui::{
     CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
-    ControlVisible, DialogRequest, EncodedImage, ImageInfo, ItemRow, ItemTypeDecl, ItemValue,
-    LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
+    ControlVisible, DialogRequest, EncodedImage, IconSet, ImageInfo, ItemRow, ItemTypeDecl,
+    ItemValue, LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
     PanelValues, RgbaImage, TextSize, TriangleSet, TypedPanelRegistration, TypedPanelValues,
     ViewShow,
 };
@@ -783,6 +784,49 @@ impl TriangleLayer {
     }
 }
 
+/// A layer of world markers (API 1.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarkerLayer {
+    id: u32,
+}
+
+impl MarkerLayer {
+    /// Replaces the layer's icons. False, and the layer keeps what it had,
+    /// when this set and the plugin's other layers' icons come to more than
+    /// 256. Icons pinned to nothing or with an image of 0, or a size or
+    /// range that is not usable, are dropped from the set.
+    pub fn set_icons(self, host: &mut Host<'_>, icons: &[WorldIcon]) -> bool {
+        let request = IconSet {
+            layer: self.id,
+            icons: icons.to_vec(),
+        }
+        .to_bytes();
+        let reply = ui_call!(host, UiMarkersSetIcons, ui_markers_set_icons, &request);
+        decode(Import::UiMarkersSetIcons, &reply)
+    }
+
+    /// Removes the layer and its markers.
+    pub fn remove(self, host: &mut Host<'_>) -> bool {
+        let request = self.id.to_bytes();
+        let reply = ui_call!(host, UiMarkersRemove, ui_markers_remove, &request);
+        decode(Import::UiMarkersRemove, &reply)
+    }
+}
+
+/// An icon of `image` at `anchor`: 24 pixels, untinted, unframed, shown up
+/// to 60 m away (OpenAC `PluginWorldIcon`'s defaults).
+#[must_use]
+pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
+    WorldIcon {
+        anchor,
+        image: image.handle,
+        size: 24.0,
+        tint_rgba: 0xFFFF_FFFF,
+        border_rgba: None,
+        max_range: 60.0,
+    }
+}
+
 /// A triangle between `a`, `b` and `c` filled in one colour,
 /// `0xRRGGBBAA` (its alpha is how opaque the fill is). Give
 /// [`WorldTriangle::color_b`] and [`WorldTriangle::color_c`] their own
@@ -1108,6 +1152,16 @@ impl Host<'_> {
         let reply = ui_call!(self, UiTrianglesCreate, ui_triangles_create, &[]);
         TriangleLayer {
             id: decode(Import::UiTrianglesCreate, &reply),
+        }
+    }
+
+    /// A new, empty world-marker layer (API 1.3). Its markers go when the
+    /// character leaves the world, and the layer stays usable for the next
+    /// stay.
+    pub fn create_marker_layer(&mut self) -> MarkerLayer {
+        let reply = ui_call!(self, UiMarkersCreate, ui_markers_create, &[]);
+        MarkerLayer {
+            id: decode(Import::UiMarkersCreate, &reply),
         }
     }
 

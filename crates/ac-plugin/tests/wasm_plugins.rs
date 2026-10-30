@@ -830,7 +830,7 @@ fn a_plugin_built_for_api_1_1_loads_with_the_records_it_knew() {
     assert!(error.unwrap().contains(LAYOUT_REFUSAL));
 }
 
-/// API 1.3 added the world-triangle imports and nothing else: `probe` as
+/// API 1.3 added the world-triangle and marker imports and nothing else: `probe` as
 /// an API 1.2 SDK built it still loads.
 #[test]
 fn a_plugin_built_for_api_1_2_still_loads() {
@@ -1651,6 +1651,14 @@ fn uidemo_keeps_its_ui_in_the_session_with_or_without_a_window() {
     assert_eq!(
         (labels[0].object_id, labels[0].text.as_str()),
         (0x5000_000B, "uidemo")
+    );
+    assert_eq!(api.ui.merged_triangles().len(), 1);
+    let icons = api.ui.merged_icons();
+    assert_eq!(icons.len(), 1);
+    assert_eq!(icons[0].owner, "openac.uidemo");
+    assert_eq!(
+        icons[0].icon.anchor,
+        ac_plugin_ui::MarkerAnchor::Object(0x5000_000B)
     );
 
     // The player's input reaches the plugin with its next pump.

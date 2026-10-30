@@ -1108,6 +1108,61 @@ wire_record! {
     }
 }
 
+wire_enum! {
+    /// What a world marker is pinned to (OpenAC `PluginMarkerAnchor`).
+    /// API 1.3.
+    #[derive(Debug, Clone, PartialEq, Default)]
+    pub enum MarkerAnchor ("marker anchor") {
+        /// Nothing: a marker pinned to nothing is dropped.
+        #[default]
+        None = 0,
+        /// An object, by its id. While the client does not hold it the
+        /// marker is not drawn, and it comes back when it does.
+        Object(object_id: u32) = 1,
+        /// A fixed position, and whether it is on the landscape rather than
+        /// inside a building or dungeon.
+        Position(point: MapPoint, is_outdoor: bool) = 2,
+    }
+}
+
+wire_record! {
+    /// An image hung in the world at a constant size on the screen (OpenAC
+    /// `PluginWorldIcon`). Walls and hills do not hide it: like a label, it
+    /// is drawn after the world. API 1.3.
+    pub struct WorldIcon {
+        /// Over an object, the client lays its icons out in rows above its
+        /// head and its labels; at a position, the icon is centred on it.
+        pub anchor: MarkerAnchor,
+        /// The image, one of this plugin's own handles. One that is
+        /// released is not drawn.
+        pub image: u32,
+        /// The side of the square the image is fitted into, pixels, kept to
+        /// 8..=128; an icon whose size is not a finite number is dropped.
+        pub size: f32,
+        /// Multiplied into the image, `0xRRGGBBAA`: white leaves it as it
+        /// is, and the alpha is the icon's opacity.
+        pub tint_rgba: u32,
+        /// A thin frame around the image, `0xRRGGBBAA`.
+        pub border_rgba: Option<u32>,
+        /// Shown up to this many metres away, fading over the last fifth;
+        /// an icon whose range is not a positive finite number is dropped.
+        pub max_range: f32,
+    }
+}
+
+wire_record! {
+    /// A marker layer's icons ([`crate::Import::UiMarkersSetIcons`]); reply
+    /// `bool`: false, and the layer keeps what it had, when the plugin has
+    /// no such layer or this set and its other layers' icons come to more
+    /// than 256. API 1.3.
+    pub struct IconSet {
+        /// The layer.
+        pub layer: u32,
+        /// Its icons from now on.
+        pub icons: Vec<WorldIcon>,
+    }
+}
+
 wire_record! {
     /// A projectile marker (OpenAC `PluginProjectileDebugSample`).
     pub struct ProjectileSample {
