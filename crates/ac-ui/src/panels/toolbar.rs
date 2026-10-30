@@ -137,8 +137,8 @@ pub struct ToolbarController {
 }
 
 /// Whether a toolbar slot takes the drag: an item itself, or a shortcut
-/// moved along the bar; any other alias (a salvage window cell) is refused
-/// (retail `gmToolbarUI::OnItemListDragOver`).
+/// moved along the bar; any other alias (a salvage window cell) is
+/// refused.
 fn takes_shortcut_drop(p: &ItemDragPayload) -> bool {
     !p.source_kind.is_alias() || p.source_kind == ItemDragSource::ShortcutBar
 }

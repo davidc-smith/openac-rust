@@ -275,9 +275,9 @@ pub enum ItemDragSource {
 }
 
 impl ItemDragSource {
-    /// Whether the drag stands for an item rather than carrying it (retail
-    /// `DROPITEM_IS_ALIAS`): the world and the item windows refuse it, so
-    /// letting it go anywhere moves nothing.
+    /// Whether the drag stands for an item rather than carrying it: the
+    /// world and the item windows refuse it, so letting it go anywhere
+    /// moves nothing.
     #[must_use]
     pub fn is_alias(self) -> bool {
         matches!(self, Self::ShortcutBar | Self::Salvage)

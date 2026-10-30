@@ -761,8 +761,8 @@ fn a_fresh_item_on_an_occupied_slot_pushes_the_old_one_to_the_first_empty_on_the
     );
 }
 
-/// A salvage window cell is an alias the bar refuses (retail
-/// `gmToolbarUI::OnItemListDragOver`): it makes no shortcut.
+/// A salvage window cell is an alias the bar refuses: it makes no
+/// shortcut.
 #[test]
 fn a_salvage_window_drag_makes_no_shortcut() {
     let mut o = Objects::new();
