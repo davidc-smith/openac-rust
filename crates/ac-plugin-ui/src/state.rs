@@ -13,9 +13,9 @@ use std::sync::Arc;
 use crate::images::{ImageBudget, ImageTable};
 use crate::markup::{self, normalize_icon};
 use crate::model::{
-    CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction, ImageSource, PaintCmd,
-    PanelDescriptor, PanelView, PluginIcon, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner,
-    WorldLabel, WorldLine, WorldTriangle,
+    CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction, GroundShape, GroundShapeKind,
+    ImageSource, PaintCmd, PanelDescriptor, PanelView, PluginIcon, ProjectileSample, UiChange,
+    UiEvent, UiInput, UiOwner, WorldIcon, WorldIconEntry, WorldLabel, WorldLine, WorldTriangle,
 };
 use crate::value::{BindingSchema, UiValue};
 
@@ -35,6 +35,19 @@ pub const MAXIMUM_CANVASES: usize = 8;
 pub const MAXIMUM_LINES_PER_LAYER: usize = 16_384;
 /// The most triangles one layer keeps (more are cut off).
 pub const MAXIMUM_TRIANGLES_PER_LAYER: usize = 65_536;
+/// The most icons one plugin may have set at once, across its layers.
+pub const MAXIMUM_ICONS: usize = 256;
+/// The smallest an icon is drawn, pixels.
+pub const MINIMUM_ICON_SIZE: f32 = 8.0;
+/// The largest an icon is drawn, pixels.
+pub const MAXIMUM_ICON_SIZE: f32 = 128.0;
+/// The most ground shapes one plugin may have set at once, across its
+/// layers; counted apart from its icons.
+pub const MAXIMUM_SHAPES: usize = 256;
+/// The smallest radius a ground shape may have, metres.
+pub const MINIMUM_SHAPE_RADIUS: f32 = 0.1;
+/// The largest radius a ground shape may have, metres.
+pub const MAXIMUM_SHAPE_RADIUS: f32 = 100.0;
 /// The most projectile markers kept.
 pub const MAXIMUM_PROJECTILE_SAMPLES: usize = 4096;
 /// The most commands one paint may hold (a host bound: a paint list is
@@ -116,6 +129,78 @@ struct TriangleLayer {
     triangles: Vec<WorldTriangle>,
 }
 
+#[derive(Debug, Clone)]
+struct MarkerLayer {
+    id: u32,
+    owner: String,
+    icons: Vec<WorldIcon>,
+    shapes: Vec<GroundShape>,
+}
+
+/// The icon as the window draws it, its size in range, or `None` when it is
+/// dropped (OpenAC `WorldMarkerRules.TryNormalizeIcon`).
+fn normalized_icon(icon: WorldIcon) -> Option<WorldIcon> {
+    let usable = icon.anchor.is_valid()
+        && icon.image != 0
+        && icon.size.is_finite()
+        && icon.max_range.is_finite()
+        && icon.max_range > 0.0;
+    usable.then(|| WorldIcon {
+        size: icon.size.clamp(MINIMUM_ICON_SIZE, MAXIMUM_ICON_SIZE),
+        ..icon
+    })
+}
+
+/// The shape as the renderer draws it, or `None` when it is dropped (OpenAC
+/// `WorldMarkerRules.TryNormalizeShape`). A ring or disc becomes a full turn
+/// from north, whatever its start, sweep and facing; a disc or filled arc
+/// has no width.
+fn normalized_shape(shape: GroundShape) -> Option<GroundShape> {
+    if !shape.anchor.is_valid()
+        || !shape.radius.is_finite()
+        || !(MINIMUM_SHAPE_RADIUS..=MAXIMUM_SHAPE_RADIUS).contains(&shape.radius)
+    {
+        return None;
+    }
+    // A band runs inward from the radius: it must have some width and
+    // cannot run past the centre.
+    let band = shape.width.is_finite() && shape.width > 0.0 && shape.width <= shape.radius;
+    let full_turn = GroundShape {
+        start_degrees: 0.0,
+        sweep_degrees: 360.0,
+        faces_object: false,
+        ..shape
+    };
+    match shape.kind {
+        GroundShapeKind::None => None,
+        GroundShapeKind::Ring => band.then_some(GroundShape {
+            filled: false,
+            ..full_turn
+        }),
+        GroundShapeKind::Disc => Some(GroundShape {
+            width: 0.0,
+            filled: true,
+            ..full_turn
+        }),
+        GroundShapeKind::Arc => {
+            let sweep = shape.start_degrees.is_finite()
+                && shape.sweep_degrees.is_finite()
+                && shape.sweep_degrees > 0.0
+                && shape.sweep_degrees <= 360.0;
+            if !sweep {
+                None
+            } else if shape.filled {
+                Some(GroundShape {
+                    width: 0.0,
+                    ..shape
+                })
+            } else {
+                band.then_some(shape)
+            }
+        }
+    }
+}
+
 /// The session's plugin UI. See the module documentation.
 #[derive(Debug, Default)]
 pub struct PluginUi {
@@ -143,6 +228,7 @@ pub struct PluginUi {
     labels: Vec<(String, Vec<WorldLabel>)>,
     layers: Vec<LineLayer>,
     triangle_layers: Vec<TriangleLayer>,
+    marker_layers: Vec<MarkerLayer>,
     window_attached: bool,
     client_mounted: u16,
     client_visible: u16,
@@ -1051,6 +1137,147 @@ impl PluginUi {
         )
     }
 
+    /// A new, empty marker layer for `owner`.
+    pub fn create_marker_layer(&mut self, owner: &str) -> u32 {
+        let id = self.next_id();
+        self.marker_layers.push(MarkerLayer {
+            id,
+            owner: owner.to_owned(),
+            icons: Vec::new(),
+            shapes: Vec::new(),
+        });
+        id
+    }
+
+    /// Replaces a layer's icons; unusable ones are dropped quietly. False,
+    /// and nothing changed, when `owner` has no such layer, or when the
+    /// icons given and those on the plugin's other layers come to more than
+    /// [`MAXIMUM_ICONS`].
+    pub fn set_icons(&mut self, owner: &str, layer: u32, icons: Vec<WorldIcon>) -> bool {
+        if !self
+            .marker_layers
+            .iter()
+            .any(|l| l.id == layer && l.owner == owner)
+        {
+            return false;
+        }
+        let others: usize = self
+            .marker_layers
+            .iter()
+            .filter(|l| l.owner == owner && l.id != layer)
+            .map(|l| l.icons.len())
+            .sum();
+        if icons.len() + others > MAXIMUM_ICONS {
+            return false;
+        }
+        let kept = icons.into_iter().filter_map(normalized_icon).collect();
+        if let Some(l) = self.marker_layers.iter_mut().find(|l| l.id == layer) {
+            l.icons = kept;
+        }
+        self.changes.push(UiChange::Icons(self.merged_icons()));
+        true
+    }
+
+    /// Replaces a layer's ground shapes; unusable ones are dropped quietly.
+    /// False, and nothing changed, when `owner` has no such layer, or when
+    /// the shapes given and those on the plugin's other layers come to more
+    /// than [`MAXIMUM_SHAPES`].
+    pub fn set_shapes(&mut self, owner: &str, layer: u32, shapes: Vec<GroundShape>) -> bool {
+        if !self
+            .marker_layers
+            .iter()
+            .any(|l| l.id == layer && l.owner == owner)
+        {
+            return false;
+        }
+        let others: usize = self
+            .marker_layers
+            .iter()
+            .filter(|l| l.owner == owner && l.id != layer)
+            .map(|l| l.shapes.len())
+            .sum();
+        if shapes.len() + others > MAXIMUM_SHAPES {
+            return false;
+        }
+        let kept = shapes.into_iter().filter_map(normalized_shape).collect();
+        if let Some(l) = self.marker_layers.iter_mut().find(|l| l.id == layer) {
+            l.shapes = kept;
+        }
+        self.changes.push(UiChange::Shapes(self.merged_shapes()));
+        true
+    }
+
+    /// Removes a layer and its markers; false when `owner` has no such
+    /// layer.
+    pub fn remove_marker_layer(&mut self, owner: &str, layer: u32) -> bool {
+        let before = self.marker_layers.len();
+        self.marker_layers
+            .retain(|l| !(l.id == layer && l.owner == owner));
+        let removed = self.marker_layers.len() != before;
+        if removed {
+            self.push_markers();
+        }
+        removed
+    }
+
+    /// Tells the window every kind of marker changed.
+    fn push_markers(&mut self) {
+        self.changes.push(UiChange::Icons(self.merged_icons()));
+        self.changes.push(UiChange::Shapes(self.merged_shapes()));
+    }
+
+    /// Empties every plugin's marker layers (OpenAC
+    /// `PluginWorldMarkerStore.ClearOn`): the character left the world, and
+    /// with it the objects the markers sat on. The layers stay, so a plugin
+    /// sets its markers again on the next stay without a new layer.
+    pub fn clear_markers(&mut self) {
+        if self
+            .marker_layers
+            .iter()
+            .all(|l| l.icons.is_empty() && l.shapes.is_empty())
+        {
+            return;
+        }
+        for layer in &mut self.marker_layers {
+            layer.icons.clear();
+            layer.shapes.clear();
+        }
+        self.push_markers();
+    }
+
+    /// Every icon of every plugin, by plugin id, then its layers in the
+    /// order they were made, then the order given.
+    #[must_use]
+    pub fn merged_icons(&self) -> Arc<Vec<WorldIconEntry>> {
+        let mut layers: Vec<&MarkerLayer> = self.marker_layers.iter().collect();
+        layers.sort_by(|a, b| a.owner.cmp(&b.owner));
+        Arc::new(
+            layers
+                .into_iter()
+                .flat_map(|l| {
+                    l.icons.iter().map(|icon| WorldIconEntry {
+                        owner: l.owner.clone(),
+                        icon: *icon,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Every ground shape of every plugin, in the same order as
+    /// [`Self::merged_icons`].
+    #[must_use]
+    pub fn merged_shapes(&self) -> Arc<Vec<GroundShape>> {
+        let mut layers: Vec<&MarkerLayer> = self.marker_layers.iter().collect();
+        layers.sort_by(|a, b| a.owner.cmp(&b.owner));
+        Arc::new(
+            layers
+                .into_iter()
+                .flat_map(|l| l.shapes.iter().copied())
+                .collect(),
+        )
+    }
+
     /// Projectile markers to draw for a moment; unusable ones (a position
     /// that is not finite, a radius of zero or less) are dropped, and at
     /// most [`MAXIMUM_PROJECTILE_SAMPLES`] are kept.
@@ -1207,6 +1434,11 @@ impl PluginUi {
             self.changes
                 .push(UiChange::Triangles(self.merged_triangles()));
         }
+        let before = self.marker_layers.len();
+        self.marker_layers.retain(|l| l.owner != owner);
+        if self.marker_layers.len() != before {
+            self.push_markers();
+        }
         self.hotkeys.release(owner);
         self.follow_hotkeys();
         let dialogs: Vec<u32> = self
@@ -1228,8 +1460,8 @@ impl PluginUi {
     // ── The window ───────────────────────────────────────────────────────
 
     /// Everything as it stands, for a window that attaches: [`UiChange::Clear`]
-    /// then every panel, canvas and image, the labels, the lines and the
-    /// triangles.
+    /// then every panel, canvas and image, the labels, the lines, the
+    /// triangles, the icons and the ground shapes.
     #[must_use]
     pub fn snapshot(&self) -> Vec<UiChange> {
         let mut out = vec![UiChange::Clear];
@@ -1254,6 +1486,8 @@ impl PluginUi {
         out.push(UiChange::Labels(self.merged_labels()));
         out.push(UiChange::Lines(self.merged_lines()));
         out.push(UiChange::Triangles(self.merged_triangles()));
+        out.push(UiChange::Icons(self.merged_icons()));
+        out.push(UiChange::Shapes(self.merged_shapes()));
         out.push(UiChange::Hotkeys(Arc::new(self.hotkeys.bound())));
         out.extend(
             self.dialogs
