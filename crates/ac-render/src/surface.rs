@@ -2481,7 +2481,7 @@ impl AttachedWindow {
         };
         let drops = ui.take_world_drops();
         for (payload, x, y) in drops {
-            let picked = self.pick_object(x as f32, y as f32);
+            let picked = self.pick_at_ui(x, y);
             let amount = self
                 .ui
                 .as_mut()
@@ -2505,9 +2505,7 @@ impl AttachedWindow {
             None => return,
         };
         for (x, y) in starts {
-            let hit = self
-                .pick_object(x as f32, y as f32)
-                .map_or(0, |(guid, _)| guid);
+            let hit = self.pick_at_ui(x, y).map_or(0, |(guid, _)| guid);
             if let Some(ui) = self.ui.as_mut() {
                 ui.begin_world_drag(hit);
             }
@@ -2539,6 +2537,13 @@ impl AttachedWindow {
             x,
             y,
         )
+    }
+
+    /// [`Self::pick_object`] at a position the UI reports in its own units
+    /// (points on macOS), which the world picks in pixels.
+    fn pick_at_ui(&mut self, x: i32, y: i32) -> Option<(u32, u32)> {
+        let (x, y) = self.ui_scale.window_point(x, y);
+        self.pick_object(x, y)
     }
 
     /// The cursor in whole UI units (the world picks in pixels).
