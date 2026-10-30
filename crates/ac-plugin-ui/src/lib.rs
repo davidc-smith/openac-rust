@@ -39,13 +39,13 @@ pub use model::{
     ActionValue, CanvasAnchor, CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction,
     Color8, DialogView, ImageSource, ImageView, MapPoint, PaintCmd, PaintRect, PanelDescriptor,
     PanelView, PluginIcon, PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput,
-    UiOwner, WorldLabel, WorldLine, canvas_origin, window_name,
+    UiOwner, WorldLabel, WorldLine, WorldTriangle, canvas_origin, window_name,
 };
 pub use state::{
     DEFAULT_DIALOG_BUTTONS, MAXIMUM_CANVASES, MAXIMUM_DIALOG_BUTTONS, MAXIMUM_LABEL_TEXT,
     MAXIMUM_LABELS, MAXIMUM_LINES_PER_LAYER, MAXIMUM_PAINT_COMMANDS, MAXIMUM_PROJECTILE_SAMPLES,
-    MAXIMUM_STEP_MS, PluginUi, RELEASE_AFTER_MS, RELEASE_CHECK_INTERVAL_MS, TextMetrics,
-    UiResources,
+    MAXIMUM_STEP_MS, MAXIMUM_TRIANGLES_PER_LAYER, PluginUi, RELEASE_AFTER_MS,
+    RELEASE_CHECK_INTERVAL_MS, TextMetrics, UiResources,
 };
 pub use theme::{ThemeKind, ThemePalette};
 pub use value::{BindingKind, BindingSchema, ItemRecord, Rgba, UiValue};

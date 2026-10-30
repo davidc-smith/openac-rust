@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::model::{
     CanvasView, ClientWindow, ClientWindowAction, ImageView, PanelView, ProjectileSample, UiChange,
-    WorldLabel, WorldLine,
+    WorldLabel, WorldLine, WorldTriangle,
 };
 
 /// What changed in the copy since the window last looked.
@@ -37,6 +37,8 @@ pub struct PluginUiView {
     pub labels: Arc<Vec<WorldLabel>>,
     /// The world lines.
     pub lines: Arc<Vec<WorldLine>>,
+    /// The world triangles.
+    pub triangles: Arc<Vec<WorldTriangle>>,
     /// The projectile markers last sent, with how many sets have come
     /// (the window shows each set for a moment).
     pub projectile: (u64, Arc<Vec<ProjectileSample>>),
@@ -119,6 +121,7 @@ impl PluginUiView {
                 self.file_icons.clear();
                 self.labels = Arc::default();
                 self.lines = Arc::default();
+                self.triangles = Arc::default();
                 self.hotkeys = Arc::default();
                 self.client_requests.clear();
                 self.dialogs.clear();
@@ -221,6 +224,7 @@ impl PluginUiView {
             }
             UiChange::Labels(labels) => self.labels = labels,
             UiChange::Lines(lines) => self.lines = lines,
+            UiChange::Triangles(triangles) => self.triangles = triangles,
             UiChange::ProjectileDebug(samples) => {
                 self.projectile = (self.projectile.0 + 1, samples);
             }
