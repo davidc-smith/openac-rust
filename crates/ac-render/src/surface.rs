@@ -2652,10 +2652,12 @@ impl AttachedWindow {
             self.world.as_ref(),
             self.scene.as_deref().map(SceneSource::scene),
         );
-        // The plugins' world lines are drawn in the world pass, with its
-        // depth (OpenAC `PluginWorldLineRenderer`).
+        // The plugins' world lines and triangles are drawn in the world
+        // pass, with its depth (OpenAC `PluginWorldLineRenderer`,
+        // `PluginWorldTriangleRenderer`).
         if let Some(world) = self.world.as_mut() {
             world.set_plugin_lines(&self.device, &self.queue, ui.plugin_world_lines());
+            world.set_plugin_triangles(&self.device, &self.queue, ui.plugin_world_triangles());
         }
         // The object under the pointer (the world tooltip and the cursor's
         // "found" forms); none while the window holds the cursor.
