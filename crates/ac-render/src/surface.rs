@@ -2899,11 +2899,18 @@ fn pick_eligible(
     y: f32,
 ) -> Option<(u32, u32)> {
     let hit = world.pick(x, y, 0)?;
-    scene?
-        .object_by_guid(hit.guid)
-        .filter(|o| o.key.local_id == hit.local_id)
+    found_in_scene(scene?, hit.guid, hit.local_id)
+}
+
+/// What a pick that hit object `guid` drawn as `local_id` finds in `scene`:
+/// that object, while the scene still holds that incarnation of it and it
+/// is not hidden from the UI; else nothing.
+fn found_in_scene(scene: &crate::scene::Scene, guid: u32, local_id: u32) -> Option<(u32, u32)> {
+    scene
+        .object_by_guid(guid)
+        .filter(|o| o.key.local_id == local_id)
         .filter(|o| picks_as_found(o.radar.public_weenie_bitfield))
-        .map(|_| (hit.guid, hit.local_id))
+        .map(|_| (guid, local_id))
 }
 
 /// Whether an object with public description bits `bitfield` is found when
@@ -3162,7 +3169,7 @@ fn revealed_selection(selected: Option<u32>, shown: impl Fn(u32) -> bool) -> Opt
 mod tests {
     use super::{
         NO_IMAGE_RETRY, SURFACE_DRAWING, SURFACE_OCCLUDED, SURFACE_TIMED_OUT, Screenshots,
-        SurfaceNotes, block_on, framebuffer_resize, picks_as_found, redraw_after,
+        SurfaceNotes, block_on, found_in_scene, framebuffer_resize, picks_as_found, redraw_after,
         retail_screenshot_path, revealed_selection,
     };
     use crate::frame::FrameOutcome;
@@ -3179,6 +3186,60 @@ mod tests {
         assert!(!picks_as_found(
             (PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN).bits()
         ));
+    }
+
+    #[test]
+    fn a_pick_on_an_object_hidden_from_the_ui_finds_nothing_in_the_scene() {
+        use crate::scene::Scene;
+        use ac_core::items::PublicWeenieFlags;
+        use ac_runtime::session::PresentationEvent;
+        use ac_runtime::world::{ObjectKey, ObjectView, RadarFacts, WorldSnapshot};
+        let view = |local_id: u32, guid: u32, bitfield: PublicWeenieFlags| ObjectView {
+            key: ObjectKey {
+                local_id,
+                incarnation: 1,
+            },
+            guid,
+            name: None,
+            setup_id: None,
+            position: None,
+            parent: None,
+            placement: None,
+            rest_placement: 0,
+            scale: None,
+            translucency: None,
+            state: 0,
+            velocity: None,
+            model: ac_proto::ModelData::default(),
+            motion_table_id: None,
+            sound_table_id: None,
+            radar: RadarFacts {
+                public_weenie_bitfield: bitfield.bits(),
+                ..RadarFacts::default()
+            },
+            motion: None,
+            effects: ac_runtime::world::EffectFacts::default(),
+            step_blend: None,
+        };
+        const LIFESTONE: u32 = 0x7000_0001;
+        const ACID: u32 = 0x7000_0002;
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: None,
+            objects: vec![
+                view(1, LIFESTONE, PublicWeenieFlags::LIFESTONE),
+                view(
+                    2,
+                    ACID,
+                    PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN,
+                ),
+            ],
+        }));
+        assert_eq!(found_in_scene(&scene, LIFESTONE, 1), Some((LIFESTONE, 1)));
+        // A stale frame's hit on an id the scene now holds as another
+        // incarnation finds nothing.
+        assert_eq!(found_in_scene(&scene, LIFESTONE, 9), None);
+        assert_eq!(found_in_scene(&scene, ACID, 2), None);
     }
 
     #[test]
