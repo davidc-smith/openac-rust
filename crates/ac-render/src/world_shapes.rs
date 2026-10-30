@@ -8,6 +8,11 @@
 //! centre. Anything else (a floor, a roof, a bridge, a dungeon) gets a flat
 //! shape at the anchor's height.
 //!
+//! The land is flat within each triangle of its cells and creased between
+//! them, so a shape that follows it is split along every cell's edges and both
+//! its diagonals. Each piece then lies wholly on one flat part of the land, and
+//! a ridge cannot rise through it.
+//!
 //! The draw is bounded here, not by the plugin: a shape whose centre is more
 //! than [`DRAW_RANGE_METRES`] from the camera, or that lies wholly outside
 //! its view, is skipped, and the shapes of one frame never exceed
@@ -50,6 +55,13 @@ pub const MAXIMUM_FILL_RINGS: usize = 8;
 
 /// How far above the land, or the anchor's height, a shape lies, metres.
 pub const LIFT_METRES: f32 = crate::world_lines::GROUND_LIFT_METRES;
+
+/// The side of a land cell, metres. Cell edges and diagonals fall on multiples
+/// of this in the drawing frame, whose landblocks start on multiples of 192.
+pub const LAND_CELL_METRES: f32 = 24.0;
+
+/// A line this near a piece's corner does not split it, metres.
+const SPLIT_TOLERANCE_METRES: f32 = 0.001;
 
 /// How far above the land its anchor may be for a shape to follow it, metres
 /// (at or below the land counts).
@@ -147,7 +159,8 @@ pub fn fill_rings_for(radius: f32) -> usize {
         .clamp(1.0, MAXIMUM_FILL_RINGS as f32) as usize
 }
 
-/// How many points [`tessellate`] emits for `shape`.
+/// How many points [`tessellate`] emits for `shape`, before a shape that
+/// follows the land is split along its creases.
 #[must_use]
 pub fn vertex_count(shape: &PlacedShape) -> usize {
     let segments = segments_for(shape.radius, shape.sweep_degrees);
@@ -205,21 +218,17 @@ pub fn build(
             wanted.then_some((shape, distance_squared))
         })
         .collect();
-    let total: usize = planned.iter().map(|(s, _)| vertex_count(s)).sum();
-    // Only when the shapes do not all fit is the order worth a sort.
-    if total > VERTEX_BUDGET {
-        planned.sort_by(|a, b| a.1.total_cmp(&b.1));
-    }
+    // Only cutting a shape says how many points it takes on the land it is on.
+    planned.sort_by(|a, b| a.1.total_cmp(&b.1));
     let mut remaining = VERTEX_BUDGET;
     let mut points = Vec::new();
     for (shape, _) in planned {
-        let count = vertex_count(shape);
-        if count > remaining {
-            break;
-        }
-        remaining -= count;
         points.clear();
         tessellate(shape, &ground, &mut points);
+        if points.len() > remaining {
+            break;
+        }
+        remaining -= points.len();
         out.extend(points.iter().map(|point| WorldTriangleVertex {
             position: (*point + (camera - *point) * DEPTH_NUDGE).to_array(),
             color: shape.color,
@@ -234,13 +243,97 @@ type Row = [Vec3; MAXIMUM_SEGMENTS + 1];
 /// from the radius less the width to the radius; a filled shape is a fan
 /// round the centre and then bands out to the radius. Following the land,
 /// each point lies [`LIFT_METRES`] above `ground`'s height under it (or the
-/// centre's height where it has none); otherwise every point lies that far
-/// above the centre's height.
+/// centre's height where it has none), split along the land's creases;
+/// otherwise every point lies that far above the centre's height.
 pub fn tessellate(
     shape: &PlacedShape,
     ground: &impl Fn(f32, f32) -> Option<f32>,
     out: &mut Vec<Vec3>,
 ) {
+    let first = out.len();
+    cut(shape, ground, out);
+    if shape.follow_terrain {
+        split_along_creases(shape, ground, first, out);
+    }
+}
+
+/// Splits the triangles from `first` on along every land cell's edges and
+/// diagonals, the new corners lying on the land. Neighbours meet a line at the
+/// same point, so the pieces leave no cracks between them.
+fn split_along_creases(
+    shape: &PlacedShape,
+    ground: &impl Fn(f32, f32) -> Option<f32>,
+    first: usize,
+    out: &mut Vec<Vec3>,
+) {
+    const LINES: [Vec2; 4] = [
+        Vec2::new(1.0, 0.0),
+        Vec2::new(0.0, 1.0),
+        Vec2::new(1.0, -1.0),
+        Vec2::new(1.0, 1.0),
+    ];
+    let mut pieces: Vec<[Vec3; 3]> = out[first..]
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    let mut next = Vec::with_capacity(pieces.len());
+    for line in LINES {
+        next.clear();
+        while let Some(piece) = pieces.pop() {
+            split_piece(shape, ground, piece, line, &mut pieces, &mut next);
+        }
+        std::mem::swap(&mut pieces, &mut next);
+    }
+    out.truncate(first);
+    out.extend(pieces.into_iter().flatten());
+}
+
+/// Cuts `piece` at the first of `line`'s parallels inside it, returning both
+/// sides to `again`, or moves it to `done` when none is.
+fn split_piece(
+    shape: &PlacedShape,
+    ground: &impl Fn(f32, f32) -> Option<f32>,
+    piece: [Vec3; 3],
+    line: Vec2,
+    again: &mut Vec<[Vec3; 3]>,
+    done: &mut Vec<[Vec3; 3]>,
+) {
+    let along = piece.map(|p| p.truncate().dot(line));
+    let low = along[0].min(along[1]).min(along[2]);
+    let high = along[0].max(along[1]).max(along[2]);
+    let at = ((low + SPLIT_TOLERANCE_METRES) / LAND_CELL_METRES).floor() * LAND_CELL_METRES
+        + LAND_CELL_METRES;
+    if at >= high - SPLIT_TOLERANCE_METRES {
+        done.push(piece);
+        return;
+    }
+    let mut below: Vec<Vec3> = Vec::with_capacity(4);
+    let mut above: Vec<Vec3> = Vec::with_capacity(4);
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        if along[i] <= at {
+            below.push(piece[i]);
+        }
+        if along[i] >= at {
+            above.push(piece[i]);
+        }
+        if (along[i] < at) != (along[j] < at) && along[i] != at && along[j] != at {
+            let t = (at - along[i]) / (along[j] - along[i]);
+            let crossing = piece[i].lerp(piece[j], t);
+            let corner = lift(shape, crossing.x, crossing.y, ground);
+            below.push(corner);
+            above.push(corner);
+        }
+    }
+    for side in [below, above] {
+        for i in 1..side.len().saturating_sub(1) {
+            again.push([side[0], side[i], side[i + 1]]);
+        }
+    }
+}
+
+/// Appends the shape's rings of triangles to `out`, three points each.
+fn cut(shape: &PlacedShape, ground: &impl Fn(f32, f32) -> Option<f32>, out: &mut Vec<Vec3>) {
     let segments = segments_for(shape.radius, shape.sweep_degrees);
     let mut directions = [Vec2::ZERO; MAXIMUM_SEGMENTS + 1];
     for (i, direction) in directions.iter_mut().enumerate().take(segments) {

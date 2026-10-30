@@ -62,7 +62,8 @@ fn cut_over(
     let placed = place(shape, at, &ground).unwrap();
     let mut out = Vec::new();
     tessellate(&placed, &ground, &mut out);
-    assert_eq!(out.len(), vertex_count(&placed));
+    assert!(out.len() >= vertex_count(&placed));
+    assert_eq!(out.len() % 3, 0);
     out
 }
 
@@ -412,4 +413,103 @@ fn a_frame_appends_to_what_is_already_there() {
 #[test]
 fn a_distance_that_is_not_a_number_is_not_drawn() {
     assert!(draw(&[disc_at(Vec3::ZERO)], Vec3::NAN, None).is_empty());
+}
+
+/// Land with creases along a cell's grid line (x = 24) and its diagonal
+/// (x = y), and flat between them: a ridge either way.
+fn ridged(x: f32, y: f32) -> Option<f32> {
+    Some(30.0 - 0.5 * (x - y).abs() - 0.3 * (x - 24.0).abs())
+}
+
+/// The height of the triangle in `points` over (x, y), if one covers it.
+fn surface_at(points: &[Vec3], x: f32, y: f32) -> Option<f32> {
+    points.chunks_exact(3).find_map(|t| {
+        let (a, b, c) = (t[0], t[1], t[2]);
+        let det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+        if det.abs() < 1e-6 {
+            return None;
+        }
+        let u = ((b.y - c.y) * (x - c.x) + (c.x - b.x) * (y - c.y)) / det;
+        let v = ((c.y - a.y) * (x - c.x) + (a.x - c.x) * (y - c.y)) / det;
+        let w = 1.0 - u - v;
+        (u >= 0.0 && v >= 0.0 && w >= 0.0).then_some(u * a.z + v * b.z + w * c.z)
+    })
+}
+
+// Rings four metres apart would let a ridge between them rise through the
+// shape.
+#[test]
+fn a_filled_shape_lies_on_the_land_across_its_creases() {
+    let centre = Vec3::new(14.0, 12.0, ridged(14.0, 12.0).unwrap());
+    let points = cut_over(&disc(12.0), outdoors(centre), ridged);
+    let mut checked = 0;
+    for ix in 0..=80 {
+        for iy in 0..=80 {
+            let (x, y) = (2.0 + ix as f32 * 0.3, iy as f32 * 0.3);
+            if let Some(z) = surface_at(&points, x, y) {
+                let on_land = ridged(x, y).unwrap() + LIFT_METRES;
+                assert!((z - on_land).abs() < 0.01, "at {x},{y}: {z} over {on_land}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
+}
+
+#[test]
+fn a_band_lies_on_the_land_across_its_creases() {
+    let centre = Vec3::new(14.0, 12.0, ridged(14.0, 12.0).unwrap());
+    let points = cut_over(&ring(12.0, 6.0), outdoors(centre), ridged);
+    for ix in 0..=80 {
+        for iy in 0..=80 {
+            let (x, y) = (2.0 + ix as f32 * 0.3, iy as f32 * 0.3);
+            if let Some(z) = surface_at(&points, x, y) {
+                let on_land = ridged(x, y).unwrap() + LIFT_METRES;
+                assert!((z - on_land).abs() < 0.01, "at {x},{y}: {z} over {on_land}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_pieces_of_a_split_shape_cover_it_with_no_cracks() {
+    let centre = Vec3::new(14.0, 12.0, ridged(14.0, 12.0).unwrap());
+    let points = cut_over(&disc(12.0), outdoors(centre), ridged);
+    for ix in 0..=40 {
+        for iy in 0..=40 {
+            let (x, y) = (2.0 + ix as f32 * 0.6, iy as f32 * 0.6);
+            // Inside the rim's flat sides, every point is covered.
+            if (Vec2::new(x, y) - centre.truncate()).length() < 11.9 {
+                assert!(surface_at(&points, x, y).is_some(), "uncovered at {x},{y}");
+            }
+        }
+    }
+    assert!(
+        points
+            .chunks_exact(3)
+            .all(|t| (t[1] - t[0]).cross(t[2] - t[0]).length() > 0.0)
+    );
+}
+
+#[test]
+fn a_shape_that_outgrows_the_budget_on_the_land_is_not_drawn_past_it() {
+    let centre = Vec3::new(14.0, 12.0, ridged(14.0, 12.0).unwrap());
+    let big = place(&disc(100.0), outdoors(centre), ridged).unwrap();
+    assert!(big.follow_terrain);
+    let shapes = vec![big; 64];
+    let mut out = Vec::new();
+    build(&shapes, centre, None, ridged, &mut out);
+    assert!(!out.is_empty());
+    assert!(out.len() <= VERTEX_BUDGET);
+    assert_eq!(out.len() % 3, 0);
+}
+
+#[test]
+fn a_flat_shape_is_not_split_at_the_lands_creases() {
+    let centre = Vec3::new(14.0, 12.0, 100.0);
+    let placed = place(&disc(12.0), outdoors(centre), ridged).unwrap();
+    assert!(!placed.follow_terrain);
+    let mut out = Vec::new();
+    tessellate(&placed, &ridged, &mut out);
+    assert_eq!(out.len(), vertex_count(&placed));
 }
