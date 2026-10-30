@@ -10,3 +10,5 @@ CLAUDE.local.md
 /logs/
 # Test fixtures are data, whatever their extension.
 !crates/*/tests/fixtures/**
+# Decompiled retail acclient reference (local only, never commit)
+/ac-client-src/
