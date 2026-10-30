@@ -123,7 +123,8 @@ goes over is refused, and the layer keeps what it had. Markers pinned to
 nothing, or with values that are not usable, are dropped from the set.
 
 *Icons* (`MarkerLayer::set_icons`, `ui::world_icon`) hang one of the plugin's
-own images in the world at a constant size on the screen, 8 to 128 pixels.
+own images in the world at a constant size on the screen, 8 to 128 interface
+points (pixels, except on macOS).
 Walls and hills do not hide them: like labels, they are drawn after the world,
 under the labels' text. An object's icons sit in rows of eight above its head
 and its labels, in the order given; an icon at a position is centred on it.

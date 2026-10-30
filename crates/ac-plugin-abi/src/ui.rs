@@ -1136,8 +1136,9 @@ wire_record! {
         /// The image, one of this plugin's own handles. One that is
         /// released is not drawn.
         pub image: u32,
-        /// The side of the square the image is fitted into, pixels, kept to
-        /// 8..=128; an icon whose size is not a finite number is dropped.
+        /// The side of the square the image is fitted into, interface points
+        /// (pixels, except on macOS), kept to 8..=128; an icon whose size is
+        /// not a finite number is dropped.
         pub size: f32,
         /// Multiplied into the image, `0xRRGGBBAA`: white leaves it as it
         /// is, and the alpha is the icon's opacity.
