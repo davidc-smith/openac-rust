@@ -2214,6 +2214,108 @@ fn lifting_a_drag_selects_the_item() {
     assert_dbg_eq!(inv.outputs(), vec![PanelOutput::SelectObject(0xA)]);
 }
 
+/// Press on the world at an empty spot, drag, lift what the world lift
+/// gives `hit` (as the window does with its pick there), and let go over
+/// cell `i` of `list`; the session commands that drop sent.
+fn drag_off_the_world_onto(
+    inv: &mut Inv,
+    objects: &ac_core::items::ClientObjectTable,
+    hit: u32,
+    list: ElementId,
+    i: usize,
+) -> Vec<SessionCommand> {
+    let view = ItemsView::new(objects, PLAYER);
+    inv.update(&view);
+    inv.outputs();
+    let root = &mut inv.host.root;
+    root.on_mouse_down(MouseButton::Left, 600, 500, 0);
+    root.on_mouse_move(620, 520);
+    let starts: Vec<(i32, i32)> = root
+        .drain_output()
+        .iter()
+        .filter_map(|o| match o {
+            UiOutput::WorldDragStart { x, y } => Some((*x, *y)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        starts,
+        [(600, 500)],
+        "the press on the world asks for a lift"
+    );
+    let (payload, ghost) = ac_ui::world_drag::lift(
+        hit,
+        PLAYER,
+        ac_core::combat::CombatMode::NON_COMBAT,
+        objects,
+        None,
+        &mut inv.icons,
+    )
+    .expect("the item on the ground lifts");
+    assert!(inv.host.root.begin_world_drag(payload, ghost));
+    let cell = inv.cell(list, i);
+    let (x, y) = inv.host.root.screen_position(cell);
+    let (x, y) = (x as i32 + 4, y as i32 + 4);
+    inv.host.root.on_mouse_move(x, y);
+    inv.host.root.on_mouse_up(MouseButton::Left, x, y, 0);
+    inv.host.pump();
+    inv.update(&view);
+    sessions(&inv.outputs())
+}
+
+#[test]
+fn an_item_dragged_off_the_ground_into_the_pack_is_picked_up() {
+    // GitHub #45: an item lying on the ground could not be dragged into
+    // the inventory; the drag never started. It lifts as a ground drag,
+    // and each pack target picks it up.
+    const LOOT: u32 = 0x7000_0001;
+    let world = || {
+        let mut o = Objects::new();
+        o.player(102, 7);
+        o.contained(0xA, PLAYER, 0, ItemType::MISC);
+        o.bag(0xC, 1, 24);
+        let mut loot = ClientObject::new(LOOT);
+        loot.item_type = ItemType::MISC;
+        loot.icon_id = 0x0600_0777;
+        o.add(loot);
+        o
+    };
+    let pickup = |container: ObjectRef, slot: i32| {
+        vec![SessionCommand::Item(ItemCommand::DropInto {
+            item: ObjectRef::Guid(LOOT),
+            container,
+            slot,
+            amount: 0,
+            pickup: true,
+            join_stack: false,
+        })]
+    };
+    // The open pack's grid: after the item already there.
+    let o = world();
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let g = inv.grid;
+    assert_dbg_eq!(
+        drag_off_the_world_onto(&mut inv, &o.t, LOOT, g, 3),
+        pickup(ObjectRef::Player, 1)
+    );
+    // The main pack's icon.
+    let o = world();
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let top = inv.top;
+    assert_dbg_eq!(
+        drag_off_the_world_onto(&mut inv, &o.t, LOOT, top, 0),
+        pickup(ObjectRef::Player, 0)
+    );
+    // A side pack's icon.
+    let o = world();
+    let mut inv = inventory_window(None, InventorySprites::default());
+    let packs = inv.containers;
+    assert_dbg_eq!(
+        drag_off_the_world_onto(&mut inv, &o.t, LOOT, packs, 0),
+        pickup(ObjectRef::Guid(0xC), 0)
+    );
+}
+
 #[test]
 fn cells_of_items_in_flight_wait() {
     let mut o = Objects::new();

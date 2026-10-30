@@ -385,6 +385,49 @@ fn in_a_target_mode_the_backpack_button_and_a_slot_press_name_targets() {
 }
 
 #[test]
+fn an_item_dragged_off_the_ground_onto_the_backpack_button_is_put_away() {
+    // GitHub #45: an item lying on the ground could not be dragged onto the
+    // backpack button; the drag never started.
+    const LOOT: u32 = 0x7000_5001;
+    let mut o = Objects::new();
+    o.player(102, 7);
+    let mut loot = ClientObject::new(LOOT);
+    loot.item_type = ItemType::MISC;
+    loot.icon_id = 0x0600_0777;
+    o.add(loot);
+    let mut b = bar(&[], None);
+    let view = ItemsView::new(&o.t, PLAYER);
+    b.update(&view);
+    b.outputs();
+    let root = &mut b.host.root;
+    root.on_mouse_down(MouseButton::Left, 600, 500, 0);
+    root.on_mouse_move(620, 520);
+    let (payload, ghost) = ac_ui::world_drag::lift(
+        LOOT,
+        PLAYER,
+        CombatMode::NON_COMBAT,
+        &o.t,
+        None,
+        &mut b.icons,
+    )
+    .expect("the item on the ground lifts");
+    assert!(b.host.root.begin_world_drag(payload, ghost));
+    let button = b.ids[&toolbar::INVENTORY_BUTTON_ID];
+    let (x, y) = b.host.root.screen_position(button);
+    let (x, y) = (x as i32 + 4, y as i32 + 4);
+    b.host.root.on_mouse_move(x, y);
+    b.host.root.on_mouse_up(MouseButton::Left, x, y, 0);
+    b.host.pump();
+    b.update(&view);
+    assert_dbg_eq!(
+        sessions(&b.outputs()),
+        vec![SessionCommand::Item(ItemCommand::DropOnBackpack(
+            ObjectRef::Guid(LOOT)
+        ))]
+    );
+}
+
+#[test]
 fn a_drop_on_the_backpack_button_hands_the_session_the_item_to_put_away() {
     // ToolbarController.HandleInventoryButtonDrop: the owned item goes into
     // the preferred pack, loot straight into the main pack; the session

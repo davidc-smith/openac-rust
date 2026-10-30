@@ -2484,7 +2484,8 @@ impl AttachedWindow {
     }
 
     /// Lift what is under each world drag's press point, if anything lifts
-    /// (your own character out of combat lifts your main pack).
+    /// (out of combat a loose item lifts itself, your own character your
+    /// main pack).
     fn start_world_drags(&mut self) {
         let starts = match self.ui.as_mut() {
             Some(ui) => ui.take_world_drag_starts(),
