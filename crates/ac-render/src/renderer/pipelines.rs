@@ -458,6 +458,42 @@ pub fn world_triangle_pipeline(
     samples: u32,
     globals: &wgpu::BindGroupLayout,
 ) -> wgpu::RenderPipeline {
+    triangle_pipeline(
+        device,
+        format,
+        samples,
+        globals,
+        Some(wgpu::BlendState::ALPHA_BLENDING),
+        wgpu::ColorWrites::ALL,
+    )
+}
+
+/// The invisible probes of the icons hidden behind the world: the world
+/// triangles' vertices and depth test, writing nothing.
+pub fn icon_probe_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    globals: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    triangle_pipeline(
+        device,
+        format,
+        samples,
+        globals,
+        None,
+        wgpu::ColorWrites::empty(),
+    )
+}
+
+fn triangle_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    globals: &wgpu::BindGroupLayout,
+    blend: Option<wgpu::BlendState>,
+    write_mask: wgpu::ColorWrites,
+) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("world triangle"),
         source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/world_triangle.wgsl").into()),
@@ -495,8 +531,8 @@ pub fn world_triangle_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
+                blend,
+                write_mask,
             })],
         }),
         multiview_mask: None,

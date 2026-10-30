@@ -125,10 +125,13 @@ nothing, or with values that are not usable, are dropped from the set.
 *Icons* (`MarkerLayer::set_icons`, `ui::world_icon`) hang one of the plugin's
 own images in the world at a constant size on the screen, 8 to 128 interface
 points (pixels, except on macOS).
-Walls and hills do not hide them: like labels, they are drawn after the world,
-under the labels' text. An object's icons sit in rows of eight above its head
+They are drawn after the world, under the labels' text, so walls and hills do
+not hide them, unless `hidden_by_world` is set. Then the whole icon goes while
+anything in the world stands between the camera and its anchor, a frame or two
+after the view changes. An object's icons sit in rows of eight above its head
 and its labels, in the order given; an icon at a position is centred on it.
-Each fades over the last fifth of its range. The portal view hides them.
+Each fades over the last fifth of its range. The portal view hides icons and
+labels alike.
 
 *Ground shapes* (`MarkerLayer::set_shapes`, `ui::ground_ring`,
 `ui::ground_disc`, `ui::ground_arc`) lie on the ground around their anchor,

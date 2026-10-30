@@ -113,8 +113,8 @@ impl WindowUi {
     }
 
     /// One frame of the overlays. The plugins' labels follow only the
-    /// labels, their anchors and the game camera, so they stay up in portal
-    /// space as OpenAC's do.
+    /// labels, their anchors and the game camera; the window gives them no
+    /// labels while the portal view hides the world.
     pub(super) fn tick_overlays(&mut self) {
         let overlays = &mut self.status.overlays;
         let camera = overlays.camera;

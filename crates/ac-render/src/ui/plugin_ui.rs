@@ -52,6 +52,7 @@ use super::social_panels::{JOURNAL_WINDOW, SOCIAL_WINDOW};
 use super::window::{CHARACTER_WINDOW, INVENTORY_WINDOW, RADAR_WINDOW, SPELLBOOK_WINDOW, WindowUi};
 use crate::meshing::flatten_setup;
 use crate::renderer::WorldRenderer;
+use crate::renderer::icon_probes::{IconProbe, IconProbeKey};
 use crate::scene::Scene;
 use crate::world_lines::PlacedLine;
 use crate::world_shapes::{self, PlacedShape, ShapeAnchor};
@@ -145,6 +146,8 @@ pub struct PluginWindowUi {
     world_shapes: Vec<PlacedShape>,
     /// This frame's icons: none while the portal view hides the world.
     world_icons: Vec<PlacedIcon>,
+    /// The anchors of the icons hidden behind the world, to test this frame.
+    icon_probes: Vec<IconProbe>,
     icon_entries: Arc<Vec<WorldIconEntry>>,
     samples: Vec<ProjectileDebugSample>,
     projectile_set: Option<(u64, Instant)>,
@@ -1036,6 +1039,12 @@ impl WindowUi {
         &self.plugins.world_triangles
     }
 
+    /// The anchors of the plugins' icons that hide behind the world, to test
+    /// in the world pass this frame.
+    pub(crate) fn plugin_icon_probes(&self) -> &[IconProbe] {
+        &self.plugins.icon_probes
+    }
+
     /// The plugins' ground shapes placed in the drawing frame this frame
     /// (the world renderer draws them in the scene).
     pub(crate) fn plugin_world_shapes(&self) -> &[PlacedShape] {
@@ -1044,7 +1053,8 @@ impl WindowUi {
 
     /// The plugins' labels, lines, triangles, icons, ground shapes and
     /// projectile markers placed in the drawing frame from the world as last
-    /// drawn (none without a world).
+    /// drawn (none without a world, and no labels or icons in the portal
+    /// view).
     pub(crate) fn set_plugin_world(
         &mut self,
         world: Option<&WorldRenderer>,
@@ -1058,23 +1068,29 @@ impl WindowUi {
         plugins.world_lines.clear();
         plugins.world_triangles.clear();
         plugins.world_icons.clear();
+        plugins.icon_probes.clear();
         plugins.world_shapes.clear();
         plugins.samples.clear();
         let (Some(world), Some(scene)) = (world, scene) else {
             return;
         };
-        for label in view.labels.iter() {
-            let [r, g, b, a] = label.color;
-            plugins.labels.push(WorldLabel {
-                object_id: label.object_id,
-                text: label.text.clone(),
-                color: Color::rgba(r, g, b, a),
-                height_offset: label.height_offset,
-                line: u32::try_from(label.line).unwrap_or(0),
-                max_range: label.max_range,
-                outline: label.outline,
-            });
-            plugins.keep_anchor(world, scene, &dats, label.object_id);
+        // Nothing of the world shows in the portal view, so nothing hangs over
+        // it either.
+        let world_shown = !world.portal_hides_world();
+        if world_shown {
+            for label in view.labels.iter() {
+                let [r, g, b, a] = label.color;
+                plugins.labels.push(WorldLabel {
+                    object_id: label.object_id,
+                    text: label.text.clone(),
+                    color: Color::rgba(r, g, b, a),
+                    height_offset: label.height_offset,
+                    line: u32::try_from(label.line).unwrap_or(0),
+                    max_range: label.max_range,
+                    outline: label.outline,
+                });
+                plugins.keep_anchor(world, scene, &dats, label.object_id);
+            }
         }
         for line in view.lines.iter() {
             if let (Some(from), Some(to)) = (
@@ -1102,21 +1118,38 @@ impl WindowUi {
             }
         }
         plugins.icon_entries = Arc::clone(&view.icons);
-        if !world.portal_hides_world() {
+        if world_shown {
             for (entry, icon) in view.icons.iter().enumerate() {
-                let anchor = match icon.icon.anchor {
+                let (anchor, key, at) = match icon.icon.anchor {
                     MarkerAnchor::None => continue,
                     MarkerAnchor::Object(id) => {
                         plugins.keep_anchor(world, scene, &dats, id);
-                        WorldIconAnchor::Object(id)
+                        let head = plugins
+                            .anchors
+                            .get(&id)
+                            .map(|a| a.base + Vec3::Z * a.height);
+                        (WorldIconAnchor::Object(id), IconProbeKey::Object(id), head)
                     }
                     MarkerAnchor::Position { point, .. } => {
                         let Some(point) = map_point_in_frame(world, point) else {
                             continue;
                         };
-                        WorldIconAnchor::Point(point)
+                        (
+                            WorldIconAnchor::Point(point),
+                            IconProbeKey::Entry(entry),
+                            Some(point),
+                        )
                     }
                 };
+                if icon.icon.hidden_by_world {
+                    let Some(at) = at else {
+                        continue;
+                    };
+                    plugins.icon_probes.push(IconProbe { key, anchor: at });
+                    if world.icon_probe_visible(key) != Some(true) {
+                        continue;
+                    }
+                }
                 plugins.world_icons.push(PlacedIcon { entry, anchor });
             }
         }
