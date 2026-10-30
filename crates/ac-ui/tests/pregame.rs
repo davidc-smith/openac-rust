@@ -1670,9 +1670,9 @@ fn a_gearknights_trim_and_gear_colours_stay_picked_as_they_change() {
     );
     assert_eq!(w.screen().appearance_page().part(), Part::Skin);
 
-    // The gear colour moves up into the hidden nose's place (retail
-    // `gmCGAppearancePage::Update`: `MoveTo(0, 0x5a)`), and back down for
-    // a heritage with a nose and mouth (`MoveTo(0, 0xb4)`).
+    // The gear colour moves up into the hidden nose's place (90 pixels
+    // from the top), and back down below the mouth (180 pixels) for a
+    // heritage with a nose and mouth.
     let top = |w: &Wizard, e| w.h.ui.element(e).map(|e| (e.left, e.top));
     let nose = page.spin(Part::Nose).unwrap();
     assert_eq!(top(&w, gear), Some((0.0, 90.0)));
