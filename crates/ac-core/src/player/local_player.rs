@@ -280,7 +280,7 @@ impl LocalPlayerState {
         let base = self.get_attribute(kind)?.current();
         Some(match &self.spellbook {
             None => base.cast_signed(),
-            Some(book) => enchant_attribute(book.get_attribute_mod(kind.id()), base),
+            Some(book) => enchant_attribute(&book.get_attribute_mod(kind.id()), base),
         })
     }
 
@@ -415,7 +415,7 @@ impl LocalPlayerState {
         let modifier = self.spellbook.as_ref().map_or(VitalMod::IDENTITY, |book| {
             book.get_vital_mod(stat_key_for(kind))
         });
-        let mut buffed = unbuffed as f32 * modifier.multiplier + modifier.additive;
+        let mut buffed = modifier.apply(unbuffed as f32);
         let floor = if unbuffed >= 5 { 5.0 } else { 1.0 };
         if buffed < floor {
             buffed = floor;
