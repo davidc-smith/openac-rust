@@ -95,6 +95,52 @@ bindings, and hears its buttons as `Event::Ui`. The window's state lives in
 the session, so a game window that attaches later shows it as it stands, and
 a session without a window answers the same.
 
+**World drawing.** A plugin can put labels over objects
+(`Host::show_labels`), lines (`Host::create_line_layer`) and filled triangles
+(`Host::create_triangle_layer`, API 1.3) in the world, at `MapPoint`
+positions, and icons and ground shapes (`Host::create_marker_layer`, API 1.3)
+over objects or at positions. Lines, triangles and markers live in layers the
+plugin owns: setting a layer replaces its contents, and removing it, or
+unloading the plugin, takes them down. Labels and markers also go when the
+character leaves the world, since the objects they sat on go with it; a marker
+layer stays usable, so set its markers again on the next stay.
+
+*Triangles* are flat between their three corners and see-through by their
+colour's alpha (`0xRRGGBBAA`, one per corner, blended across the face). They
+are drawn from both sides and unlit. Walls and hills in front hide them, but
+overlapping triangles blend rather than hide each other. A triangle does not
+follow the ground, so lift one meant to lie on it by about 0.1 m. The client
+draws what is within 250 m of the camera and in view, nearest first when a
+frame holds more than about twelve thousand. A layer keeps at most 65,536
+triangles; send a few thousand at a time, a few times a second, not every
+frame.
+
+*Markers* are pinned by a `MarkerAnchor`: an object by its id, which they
+follow, or a `MapPoint` and whether it is on the landscape. A marker over an
+object the client does not hold is not drawn, and comes back when it does.
+A plugin holds at most 256 icons and 256 shapes across its layers; a set that
+goes over is refused, and the layer keeps what it had. Markers pinned to
+nothing, or with values that are not usable, are dropped from the set.
+
+*Icons* (`MarkerLayer::set_icons`, `ui::world_icon`) hang one of the plugin's
+own images in the world at a constant size on the screen, 8 to 128 pixels.
+Walls and hills do not hide them: like labels, they are drawn after the world,
+under the labels' text. An object's icons sit in rows of eight above its head
+and its labels, in the order given; an icon at a position is centred on it.
+Each fades over the last fifth of its range. The portal view hides them.
+
+*Ground shapes* (`MarkerLayer::set_shapes`, `ui::ground_ring`,
+`ui::ground_disc`, `ui::ground_arc`) lie on the ground around their anchor,
+with a radius of 0.1 to 100 m: a ring is a band inward from the radius, a disc
+is filled, and an arc goes clockwise from a compass bearing (0 north, 90 east),
+as a wedge or a band. Set `faces_object` for an arc that turns with its object,
+with its start measured from the way the object faces. They are see-through by
+their colour's alpha, and walls and hills hide them. On the landscape, within a
+metre of the land, a shape follows the slope; anywhere else (a floor, a roof, a
+bridge, a dungeon) it lies flat at the anchor's height. The client draws shapes
+centred within 250 m of the camera and in view, nearest first when a frame holds
+more than it has room for.
+
 ## Testing natively
 
 On a native target the SDK has `testing::FakeHost`, which answers every
