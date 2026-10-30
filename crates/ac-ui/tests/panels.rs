@@ -1323,7 +1323,8 @@ fn a_scene_projects_into_blips_around_the_player() {
             ),
             RadarObject {
                 name: None,
-                pwd_bitfield: 0x8000_0000,
+                // Hidden from the UI: no blip.
+                pwd_bitfield: 0x0000_0080,
                 ..object(
                     0x14,
                     Vec3::new(1.0, 0.0, 0.0),
