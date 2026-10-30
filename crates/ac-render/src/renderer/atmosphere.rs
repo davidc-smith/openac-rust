@@ -14,7 +14,7 @@ use bytemuck::{Pod, Zeroable};
 use super::particles::{ParticleGpu, ParticlePipelines};
 use super::pipelines::{
     DEPTH_FORMAT, mesh_pipeline_with, portal_pipeline, shader, sky_pipeline, uniform_entry,
-    world_line_pipeline,
+    world_line_pipeline, world_triangle_pipeline,
 };
 use crate::assets::{MeshGpuVertex, TerrainGpuVertex};
 use crate::atmosphere::auto_quality::{
@@ -88,6 +88,8 @@ pub(crate) struct HdrWorldPipelines {
     pub particle_meshes: HashMap<(crate::draws::ParticleBlend, Cull), wgpu::RenderPipeline>,
     /// The plugins' world lines.
     pub world_line: wgpu::RenderPipeline,
+    /// The plugins' world triangles.
+    pub world_triangle: wgpu::RenderPipeline,
 }
 
 /// The layouts the plain world's pipelines are built against.
@@ -195,6 +197,7 @@ impl HdrWorldPipelines {
         let (billboard, particle_meshes): ParticlePipelines =
             ParticleGpu::pipelines(device, format, samples, layouts.globals, layouts.material);
         let world_line = world_line_pipeline(device, format, samples, layouts.globals);
+        let world_triangle = world_triangle_pipeline(device, format, samples, layouts.globals);
         Self {
             terrain,
             portal,
@@ -204,6 +207,7 @@ impl HdrWorldPipelines {
             billboard,
             particle_meshes,
             world_line,
+            world_triangle,
         }
     }
 }
