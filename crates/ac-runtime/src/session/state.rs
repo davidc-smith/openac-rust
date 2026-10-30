@@ -1117,6 +1117,7 @@ impl SessionState {
     pub fn left_world(&mut self, wall_unix_ms: i64) {
         self.wall_unix_ms = wall_unix_ms;
         self.plugin_ui.clear_labels();
+        self.plugin_ui.clear_markers();
         self.communication.left_world(wall_unix_ms);
         self.options.reset_session();
         self.inventory.reset_session(&mut self.world);
@@ -3128,6 +3129,26 @@ mod tests {
         assert!(state.plugin_ui.show_labels("edwards.tank", vec![label]));
         state.end_generation(0);
         assert!(state.plugin_ui.merged_labels().is_empty());
+    }
+
+    /// OpenAC `PluginWorldMarkerStore.ClearOn`: markers end with the stay
+    /// too, and the plugin's layer stays usable for the next one.
+    #[test]
+    fn leaving_the_world_empties_the_plugins_marker_layers() {
+        let (mut state, _outbox) = state();
+        let icon = ac_plugin_ui::WorldIcon {
+            anchor: ac_plugin_ui::MarkerAnchor::Object(0x5000_0001),
+            image: 1,
+            size: 24.0,
+            tint_rgba: 0xFFFF_FFFF,
+            border_rgba: None,
+            max_range: 60.0,
+        };
+        let layer = state.plugin_ui.create_marker_layer("edwards.tank");
+        assert!(state.plugin_ui.set_icons("edwards.tank", layer, vec![icon]));
+        state.end_generation(0);
+        assert!(state.plugin_ui.merged_icons().is_empty());
+        assert!(state.plugin_ui.set_icons("edwards.tank", layer, vec![icon]));
     }
 
     #[test]
