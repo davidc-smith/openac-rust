@@ -301,3 +301,118 @@ fn the_shapes_colour_and_opacity_are_kept() {
     let placed = place(&disc(2.0), outdoors(Vec3::ZERO), no_land).unwrap();
     assert_eq!(placed.color, [1.0, 0.0, 0.0, 128.0 / 255.0]);
 }
+
+fn draw(
+    shapes: &[PlacedShape],
+    camera: Vec3,
+    frustum: Option<&FrustumPlanes>,
+) -> Vec<WorldTriangleVertex> {
+    let mut out = Vec::new();
+    build(shapes, camera, frustum, no_land, &mut out);
+    out
+}
+
+fn disc_at(centre: Vec3) -> PlacedShape {
+    place(&disc(2.0), outdoors(centre), no_land).unwrap()
+}
+
+/// A camera at the origin looking east, 60 degrees across.
+fn looking_east() -> FrustumPlanes {
+    let view = glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::X, Vec3::Z);
+    let projection =
+        glam::camera::rh::proj::directx::perspective(60f32.to_radians(), 1.0, 0.1, 1000.0);
+    FrustumPlanes::from_view_projection(projection * view)
+}
+
+#[test]
+fn a_shape_whose_centre_is_beyond_the_draw_range_is_not_drawn() {
+    let near = DRAW_RANGE_METRES - 1.0;
+    let far = DRAW_RANGE_METRES + 1.0;
+    assert!(!draw(&[disc_at(Vec3::new(near, 0.0, 0.0))], Vec3::ZERO, None).is_empty());
+    assert!(draw(&[disc_at(Vec3::new(far, 0.0, 0.0))], Vec3::ZERO, None).is_empty());
+}
+
+#[test]
+fn a_shape_outside_the_cameras_view_is_not_drawn() {
+    let frustum = looking_east();
+    let ahead = disc_at(Vec3::new(20.0, 0.0, 0.0));
+    let behind = disc_at(Vec3::new(-20.0, 0.0, 0.0));
+    assert!(!draw(&[ahead], Vec3::ZERO, Some(&frustum)).is_empty());
+    assert!(draw(&[behind], Vec3::ZERO, Some(&frustum)).is_empty());
+}
+
+#[test]
+fn a_shape_on_the_land_is_in_view_where_the_land_is_not_where_its_anchor_is() {
+    let frustum = looking_east();
+    // The anchor stands 40 m under the land the shape is drawn on, well
+    // below the view; the land itself is straight ahead.
+    let at = outdoors(Vec3::new(20.0, 0.0, -40.0));
+    let on_land = place(&disc(2.0), at, |_, _| Some(0.0)).unwrap();
+    assert!(on_land.follow_terrain);
+    assert!(is_in_view(&frustum, &on_land));
+    let flat = place(&disc(2.0), at, no_land).unwrap();
+    assert!(!is_in_view(&frustum, &flat));
+}
+
+#[test]
+fn a_shape_off_screen_does_not_take_the_budget_from_one_on_it() {
+    let frustum = looking_east();
+    let shape = disc(100.0);
+    let count = vertex_count(&place(&shape, outdoors(Vec3::ZERO), no_land).unwrap());
+    let behind = place(&shape, outdoors(Vec3::new(-150.0, 0.0, 0.0)), no_land).unwrap();
+    let ahead = place(&shape, outdoors(Vec3::new(150.0, 0.0, 0.0)), no_land).unwrap();
+    let mut shapes = vec![behind; VERTEX_BUDGET / count + 1];
+    shapes.push(ahead);
+    assert_eq!(draw(&shapes, Vec3::ZERO, Some(&frustum)).len(), count);
+}
+
+#[test]
+fn every_point_is_pulled_slightly_toward_the_camera() {
+    let camera = Vec3::new(0.0, 0.0, 100.0);
+    let shapes = [disc_at(Vec3::ZERO)];
+    let drawn = draw(&shapes, camera, None);
+    let mut points = Vec::new();
+    tessellate(&shapes[0], &no_land, &mut points);
+    assert_eq!(drawn.len(), points.len());
+    for (vertex, point) in drawn.iter().zip(&points) {
+        let moved = *point + (camera - *point) * DEPTH_NUDGE;
+        assert_eq!(Vec3::from_array(vertex.position), moved);
+        assert_eq!(vertex.color, shapes[0].color);
+    }
+}
+
+#[test]
+fn when_the_budget_runs_out_the_shapes_nearest_the_camera_are_the_ones_drawn() {
+    let big = disc(100.0);
+    let count = vertex_count(&place(&big, outdoors(Vec3::ZERO), no_land).unwrap());
+    let fit = VERTEX_BUDGET / count;
+    let far = place(&big, outdoors(Vec3::new(200.0, 0.0, 0.0)), no_land).unwrap();
+    let near = place(&big, outdoors(Vec3::new(10.0, 0.0, 0.0)), no_land).unwrap();
+    let mut shapes = vec![far; fit];
+    shapes.push(near);
+    let drawn = draw(&shapes, Vec3::ZERO, None);
+    assert_eq!(drawn.len(), fit * count);
+    // Sorted nearest first, the near disc's points come first: none of them
+    // is further east than its rim.
+    let near_first = drawn
+        .iter()
+        .take(count)
+        .all(|v| Vec3::from_array(v.position).x < 110.0 + TOLERANCE);
+    assert!(near_first);
+}
+
+#[test]
+fn a_frame_appends_to_what_is_already_there() {
+    let mut out = vec![WorldTriangleVertex {
+        position: [0.0; 3],
+        color: [0.0; 4],
+    }];
+    build(&[disc_at(Vec3::ZERO)], Vec3::ZERO, None, no_land, &mut out);
+    assert!(out.len() > 1);
+    assert_eq!(out[0].color, [0.0; 4]);
+}
+
+#[test]
+fn a_distance_that_is_not_a_number_is_not_drawn() {
+    assert!(draw(&[disc_at(Vec3::ZERO)], Vec3::NAN, None).is_empty());
+}
