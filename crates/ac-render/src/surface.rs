@@ -2891,7 +2891,9 @@ impl AttachedWindow {
 
 /// The object `world` drew under pixel (`x`, `y`), kept only while the
 /// scene still holds that incarnation of it (a stale frame never picks a
-/// newer object reusing the id): its id and local id.
+/// newer object reusing the id) and it is not hidden from the UI: its id
+/// and local id. A hidden object nearest the pointer finds nothing; it
+/// does not let the pick through to what is behind it.
 fn pick_eligible(
     world: &mut WorldRenderer,
     scene: Option<&crate::scene::Scene>,
@@ -2902,7 +2904,17 @@ fn pick_eligible(
     scene?
         .object_by_guid(hit.guid)
         .filter(|o| o.key.local_id == hit.local_id)
+        .filter(|o| picks_as_found(o.radar.public_weenie_bitfield))
         .map(|_| (hit.guid, hit.local_id))
+}
+
+/// Whether an object with public description bits `bitfield` is found when
+/// picked: not when it is hidden from the UI (retail
+/// `UIElement_SmartBoxWrapper::RecvNotice_SmartBoxObjectFound` drops a
+/// pick whose `BF_UI_HIDDEN` bit is set), so it is neither selected,
+/// used nor named under the pointer.
+fn picks_as_found(bitfield: u32) -> bool {
+    bitfield & ac_core::items::PublicWeenieFlags::UI_HIDDEN.bits() == 0
 }
 
 /// A mouse button as a small number for the held-button set.
@@ -3153,11 +3165,24 @@ fn revealed_selection(selected: Option<u32>, shown: impl Fn(u32) -> bool) -> Opt
 mod tests {
     use super::{
         NO_IMAGE_RETRY, SURFACE_DRAWING, SURFACE_OCCLUDED, SURFACE_TIMED_OUT, Screenshots,
-        SurfaceNotes, block_on, framebuffer_resize, redraw_after, retail_screenshot_path,
-        revealed_selection,
+        SurfaceNotes, block_on, framebuffer_resize, picks_as_found, redraw_after,
+        retail_screenshot_path, revealed_selection,
     };
     use crate::frame::FrameOutcome;
     use std::time::Duration;
+
+    #[test]
+    fn an_object_hidden_from_the_ui_is_never_found_under_the_pointer() {
+        use ac_core::items::PublicWeenieFlags;
+        assert!(picks_as_found(PublicWeenieFlags::NONE.bits()));
+        assert!(picks_as_found(
+            (PublicWeenieFlags::STUCK | PublicWeenieFlags::ATTACKABLE).bits()
+        ));
+        assert!(!picks_as_found(PublicWeenieFlags::UI_HIDDEN.bits()));
+        assert!(!picks_as_found(
+            (PublicWeenieFlags::STUCK | PublicWeenieFlags::UI_HIDDEN).bits()
+        ));
+    }
 
     #[test]
     fn a_frame_without_an_image_is_tried_again_after_a_wait_never_at_once() {
