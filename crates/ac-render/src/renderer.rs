@@ -21,6 +21,7 @@ mod sink;
 mod viewport;
 mod world_lines;
 pub(crate) mod world_pipelines;
+mod world_triangles;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -572,6 +573,7 @@ pub(crate) struct WorldRenderer {
     portal_vertices_capacity: usize,
     /// The plugins' world lines as this frame draws them.
     world_lines: world_lines::WorldLinesGpu,
+    world_triangles: world_triangles::WorldTrianglesGpu,
 
     models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
     requested_models: crate::model_requests::ModelRequests,
@@ -923,6 +925,7 @@ impl WorldRenderer {
             ),
             portal_vertices_capacity,
             world_lines: world_lines::WorldLinesGpu::default(),
+            world_triangles: world_triangles::WorldTrianglesGpu::default(),
             models: crate::IdMap::default(),
             requested_models: crate::model_requests::ModelRequests::default(),
             appearances: HashMap::new(),
@@ -1191,9 +1194,10 @@ impl WorldRenderer {
         fly: FlyInput,
     ) {
         let started = Instant::now();
-        // The plugins' lines are set again for this frame's camera, after
-        // the camera has moved.
+        // The plugins' lines and triangles are set again for this frame's
+        // camera, after the camera has moved.
         self.world_lines.clear();
+        self.world_triangles.clear();
         self.pump_loader(device, queue);
         self.ensure_effects();
 
@@ -3688,6 +3692,7 @@ impl WorldRenderer {
         let pipelines = self.plain_pipelines();
         self.draw_steps(&mut pass, &pipelines);
         self.draw_world_lines(&mut pass, &pipelines);
+        self.draw_world_triangles(&mut pass, &pipelines);
     }
 
     /// The draw stream in order, with `p`'s pipelines.
