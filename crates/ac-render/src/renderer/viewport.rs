@@ -303,7 +303,16 @@ impl WorldRenderer {
         all.sort_by_key(|d| d.guid);
         all.truncate(MAX_HELD);
         let turn = figure_turn();
-        let (min, max) = turned_box(creature_box(bounds, &main.parts), turn);
+        // The copy is drawn at the creature's size, so the box it is
+        // framed by is too: the model's box grown by the size, or the
+        // parts where they stand in the creature's own frame.
+        let scale = object.scale.filter(|s| *s > 0.0).unwrap_or(1.0);
+        let own = main.root.inverse() * main.world;
+        let offsets = main
+            .parts
+            .iter()
+            .map(|p| (own * p.transform).w_axis.truncate());
+        let (min, max) = turned_box(creature_box(bounds, scale, offsets), turn);
         let mut parts = Vec::new();
         // The creature shows as the world shows it (not at all while
         // hidden); what it holds always shows.

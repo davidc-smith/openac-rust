@@ -589,14 +589,19 @@ impl WindowUi {
         std::mem::take(&mut self.status.world_drag_starts)
     }
 
-    /// Start the drag the world pick `hit` lifts, if any (your own
-    /// character out of combat lifts your main pack). True when a drag
-    /// began.
+    /// Start the drag the world pick `hit` lifts, if any (out of combat a
+    /// loose item lifts itself, your own character your main pack). True
+    /// when a drag began.
     pub fn begin_world_drag(&mut self, hit: u32) -> bool {
         let state = &self.facts.state;
-        let Some((payload, ghost)) =
-            ac_ui::world_drag::lift(hit, state.player, state.combat_mode, &mut self.icons)
-        else {
+        let Some((payload, ghost)) = ac_ui::world_drag::lift(
+            hit,
+            state.player,
+            state.combat_mode,
+            &self.facts.objects,
+            state.pending_item,
+            &mut self.icons,
+        ) else {
             return false;
         };
         self.host.root.begin_world_drag(payload, ghost)

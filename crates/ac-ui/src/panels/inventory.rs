@@ -570,7 +570,7 @@ impl InventoryController {
         p: &ItemDragPayload,
         view: &ItemsView<'_>,
     ) -> DragAcceptance {
-        if p.source_kind == ItemDragSource::ShortcutBar {
+        if p.source_kind.is_alias() {
             return DragAcceptance::None;
         }
         let target_item = slot(ui, cell).map_or(0, |s| s.object_id);
@@ -692,7 +692,7 @@ impl InventoryController {
         p: &ItemDragPayload,
         view: &ItemsView<'_>,
     ) {
-        if p.source_kind == ItemDragSource::ShortcutBar {
+        if p.source_kind.is_alias() {
             return;
         }
         let item = p.obj_id;

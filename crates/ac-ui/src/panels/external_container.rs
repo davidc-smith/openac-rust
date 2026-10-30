@@ -526,7 +526,7 @@ impl ExternalContainerController {
         p: &ItemDragPayload,
         view: &ItemsView<'_>,
     ) -> DragAcceptance {
-        if p.source_kind == ItemDragSource::ShortcutBar {
+        if p.source_kind.is_alias() {
             return DragAcceptance::None;
         }
         if list != self.contents || self.open_container == 0 {
@@ -546,7 +546,7 @@ impl ExternalContainerController {
         p: &ItemDragPayload,
         view: &ItemsView<'_>,
     ) {
-        if p.source_kind == ItemDragSource::ShortcutBar || self.open_container == 0 {
+        if p.source_kind.is_alias() || self.open_container == 0 {
             return;
         }
         if let Some(r) = self.evaluate_drop(p.obj_id, view) {

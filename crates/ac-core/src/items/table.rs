@@ -19,7 +19,9 @@ use super::{
     ClientArmorProfile, ClientObject, ClientWeaponProfile, EquipMask, HouseRestrictionRecord,
     ItemType, ObjectIdentity, PropertyBundle, PublicWeenieFlags, WeenieData, pk_status,
 };
-use crate::properties::{PropertyDataId, PropertyFloat, PropertyInstanceId, PropertyInt};
+use crate::properties::{
+    PropertyBool, PropertyDataId, PropertyFloat, PropertyInstanceId, PropertyInt,
+};
 
 /// One entry of a contents list: the object and its container type (0 an
 /// item, 1 a pack, 2 a spell focus).
@@ -1352,7 +1354,10 @@ impl ClientObjectTable {
         true
     }
 
-    /// Records one true/false property update.
+    /// Records one true/false property update. The UI-hidden one is also
+    /// the description's UI-hidden bit, which decides whether the object
+    /// can be picked, cycled to or shown on the radar, so it moves the bit
+    /// with it.
     pub fn update_bool_property(
         &mut self,
         item_id: u32,
@@ -1364,6 +1369,11 @@ impl ClientObjectTable {
             return false;
         };
         item.properties.bools.insert(property_id, value);
+        if PropertyBool(property_id) == PropertyBool::UI_HIDDEN {
+            let mut bitfield = item.public_weenie_bitfield.unwrap_or_default();
+            bitfield.set(PublicWeenieFlags::UI_HIDDEN, value);
+            item.public_weenie_bitfield = Some(bitfield);
+        }
         self.emit_updated(item_id, events);
         true
     }
@@ -1470,6 +1480,30 @@ impl ClientObjectTable {
             self.apply_server_move(guid, placement, hint, events);
         }
         self.identity_of(guid)
+    }
+
+    /// A re-sent description of an object the client holds (a revealed
+    /// Aetheria, a tinkered or tailored item). The game deletes the object
+    /// and creates it again: deleting takes it out of its container's
+    /// list, so the container the new description names has no place for
+    /// it and puts it first among its own kind (items or packs). A
+    /// re-sent item therefore lands in its pack's top-left slot. A
+    /// description that names no container leaves the object where it is.
+    pub fn ingest_recreated(
+        &mut self,
+        data: &WeenieData,
+        events: &mut Vec<TableEvent>,
+    ) -> ObjectIdentity {
+        let identity = self.ingest(data, events);
+        if let Some(container_id) = data.container_id.filter(|&id| id != 0) {
+            self.apply_server_move(
+                data.guid,
+                ClientObjectPlacement::in_container(container_id, 0),
+                None,
+                events,
+            );
+        }
+        identity
     }
 
     /// Records an object's membership from the character description: its
