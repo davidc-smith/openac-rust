@@ -32,12 +32,14 @@ use crate::gpu_timer::GpuTimer;
 use crate::input::InputState;
 use crate::lifetime::OrderedTeardown;
 use crate::pacing::DisplayPacing;
+use crate::platform::HostOs;
 use crate::portal_space::PortalCue;
 use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage, TitleFacts, format_title};
 use crate::renderer::{WorldRenderer, WorldSettings, WorldStats};
 use crate::scene::{SceneEffect, SceneSource};
 use crate::ui::input::{self as ui_input, Routed, WorldInput};
 use crate::ui::{UiBatch, UiRenderer, WindowUi};
+use crate::ui_scale::UiScale;
 use crate::{RenderError, WindowSpec};
 use ac_core::sky::EnvironmentEffect;
 use ac_runtime::session::SessionCommand;
@@ -294,6 +296,8 @@ pub(crate) struct AttachedWindow {
     modifiers: ModifiersState,
     /// The last cursor position, for drags.
     cursor: Option<(f64, f64)>,
+    /// Framebuffer pixels per UI unit, as the window's monitor has it.
+    ui_scale: UiScale,
     /// Where this window publishes what a crash report wants.
     facts: SharedFacts,
     last_world: WorldOutcome,
@@ -462,9 +466,15 @@ impl AttachedWindow {
         // The retail UI reads its layouts, fonts and art from the dats; a
         // window without dats draws no UI.
         let choices = resolution_choices_of(&window);
+        let ui_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
         let ui = world.and_then(|world| {
             let built = world.content.ui_dats().and_then(|dats| {
-                WindowUi::build_with(dats, (config.width, config.height), settings, choices)
+                WindowUi::build_with(
+                    dats,
+                    ui_scale.ui_size((config.width, config.height)),
+                    settings,
+                    choices,
+                )
             });
             match built {
                 Ok(mut ui) => {
@@ -583,6 +593,7 @@ impl AttachedWindow {
             gameplay_tick: None,
             modifiers: ModifiersState::empty(),
             cursor: None,
+            ui_scale,
             facts: options.facts.clone(),
             last_world: WorldOutcome::default(),
             frame_index: 0,
@@ -826,6 +837,8 @@ impl AttachedWindow {
 
     /// The window moved or changed scale: it may be on another monitor.
     pub(crate) fn monitor_changed(&mut self) {
+        // The UI follows on its next frame (its size comes from the scale).
+        self.ui_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
         let policy = self
             .pacing
             .set_monitor_refresh(monitor_refresh_hz(&self.window));
@@ -2289,7 +2302,7 @@ impl AttachedWindow {
     /// world's.
     pub(crate) fn mouse_button(&mut self, button: MouseButton, pressed: bool) {
         let index = button_index(button);
-        let (x, y) = self.cursor_pixel();
+        let (x, y) = self.cursor_ui();
         let held: &[u16] = if pressed { &[index] } else { &[] };
         let flags = ui_input::mouse_flags(held, crate::ui::keys::ui_modifiers(self.modifiers));
         let mouse_look = self.cursor_held();
@@ -2528,9 +2541,12 @@ impl AttachedWindow {
         )
     }
 
-    /// The cursor as whole window pixels.
-    fn cursor_pixel(&self) -> (i32, i32) {
-        self.cursor.map_or((0, 0), |(x, y)| (x as i32, y as i32))
+    /// The cursor in whole UI units (the world picks in pixels).
+    fn cursor_ui(&self) -> (i32, i32) {
+        self.cursor.map_or((0, 0), |(x, y)| {
+            let (x, y) = self.ui_scale.ui_point(x, y);
+            (x as i32, y as i32)
+        })
     }
 
     /// Act on what the UI asked for besides the world's part (session
@@ -2628,7 +2644,10 @@ impl AttachedWindow {
                 ui.show_viewports(&outcomes);
             }
         }
-        let size = (self.config.width, self.config.height);
+        // The UI, its overlays included, is laid out and drawn in UI units.
+        let size = self
+            .ui_scale
+            .ui_size((self.config.width, self.config.height));
         // The overlays project with the camera the world was last drawn
         // with.
         let (camera, target) = match (self.world.as_ref(), self.scene.as_deref()) {
@@ -2697,11 +2716,12 @@ impl AttachedWindow {
     pub(crate) fn cursor_moved(&mut self, x: f64, y: f64) {
         let previous = self.cursor.replace((x, y));
         let mouse_look = self.cursor_held();
+        let (ui_x, ui_y) = self.ui_scale.ui_point(x, y);
         let routed = match self.ui.as_mut() {
             Some(ui) if self.input.is_accepting() => Some(ui_input::moved::<KeyCode>(
                 ui.host_mut(),
-                x as i32,
-                y as i32,
+                ui_x as i32,
+                ui_y as i32,
                 mouse_look,
             )),
             _ => None,
