@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::model::{
-    CanvasView, ClientWindow, ClientWindowAction, ImageView, PanelView, ProjectileSample, UiChange,
-    WorldIconEntry, WorldLabel, WorldLine, WorldTriangle,
+    CanvasView, ClientWindow, ClientWindowAction, GroundShape, ImageView, PanelView,
+    ProjectileSample, UiChange, WorldIconEntry, WorldLabel, WorldLine, WorldTriangle,
 };
 
 /// What changed in the copy since the window last looked.
@@ -41,6 +41,8 @@ pub struct PluginUiView {
     pub triangles: Arc<Vec<WorldTriangle>>,
     /// The world icons.
     pub icons: Arc<Vec<WorldIconEntry>>,
+    /// The ground shapes.
+    pub shapes: Arc<Vec<GroundShape>>,
     /// The projectile markers last sent, with how many sets have come
     /// (the window shows each set for a moment).
     pub projectile: (u64, Arc<Vec<ProjectileSample>>),
@@ -125,6 +127,7 @@ impl PluginUiView {
                 self.lines = Arc::default();
                 self.triangles = Arc::default();
                 self.icons = Arc::default();
+                self.shapes = Arc::default();
                 self.hotkeys = Arc::default();
                 self.client_requests.clear();
                 self.dialogs.clear();
@@ -229,6 +232,7 @@ impl PluginUiView {
             UiChange::Lines(lines) => self.lines = lines,
             UiChange::Triangles(triangles) => self.triangles = triangles,
             UiChange::Icons(icons) => self.icons = icons,
+            UiChange::Shapes(shapes) => self.shapes = shapes,
             UiChange::ProjectileDebug(samples) => {
                 self.projectile = (self.projectile.0 + 1, samples);
             }

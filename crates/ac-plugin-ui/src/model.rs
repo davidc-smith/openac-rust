@@ -625,6 +625,50 @@ pub struct WorldIconEntry {
     pub icon: WorldIcon,
 }
 
+/// What form a ground shape takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroundShapeKind {
+    /// Nothing: a shape of no kind is dropped.
+    #[default]
+    None,
+    /// A band all the way round the anchor, from the radius less the width
+    /// out to the radius.
+    Ring,
+    /// A circle around the anchor, filled from its centre.
+    Disc,
+    /// Part of a circle: a wedge filled from the centre, or a band like a
+    /// ring's.
+    Arc,
+}
+
+/// A shape lying on the ground around an anchor: a ring under a target, a
+/// disc over an area, a wedge in front of a creature. Drawn in the world,
+/// so walls and hills hide it, and outdoors it follows the slope of the
+/// land.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GroundShape {
+    /// Around an object's feet, following it, or around a fixed position.
+    pub anchor: MarkerAnchor,
+    /// What form it takes.
+    pub kind: GroundShapeKind,
+    /// The outer radius, metres.
+    pub radius: f32,
+    /// How wide a ring's or unfilled arc's band is, metres, inward from the
+    /// radius.
+    pub width: f32,
+    /// Where an arc starts, as a compass bearing in degrees (0 north, 90
+    /// east); with `faces_object`, from the way the object faces.
+    pub start_degrees: f32,
+    /// How far round an arc goes, clockwise from its start, degrees.
+    pub sweep_degrees: f32,
+    /// An arc filled from the centre, a wedge, rather than a band.
+    pub filled: bool,
+    /// An arc over an object turns with it.
+    pub faces_object: bool,
+    /// Its colour, `0xRRGGBBAA`; the alpha is how opaque it is.
+    pub color_rgba: u32,
+}
+
 /// One step of a simulated projectile flight, for drawing (OpenAC
 /// `PluginProjectileDebugSample`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -898,6 +942,8 @@ pub enum UiChange {
     Triangles(Arc<Vec<WorldTriangle>>),
     /// Every plugin's world icons, merged.
     Icons(Arc<Vec<WorldIconEntry>>),
+    /// Every plugin's ground shapes, merged.
+    Shapes(Arc<Vec<GroundShape>>),
     /// Projectile markers to show for a moment.
     ProjectileDebug(Arc<Vec<ProjectileSample>>),
     /// A plugin asks the window to show, hide or toggle a client window.
