@@ -1501,7 +1501,20 @@ impl SessionState {
         let sent = self.inventory.execute(item, &mut ctx);
         self.inventory.observe(&mut ctx);
         self.begin_games(outbox, active, clocks);
+        self.select_merged_stacks(outbox, active, clocks);
         sent
+    }
+
+    /// Each merge sent selects the stack it joins (a pickup that joins a
+    /// carried stack shows that stack and its count, not the one picked
+    /// up), here so a session with no window follows it as one with a
+    /// window does.
+    fn select_merged_stacks(&mut self, outbox: &mut Outbox, active: bool, clocks: Clocks) {
+        use crate::inventory::ObjectRef;
+        for target in self.inventory.take_merged_into() {
+            let select = GameplayCommand::Select(ObjectRef::Guid(target));
+            self.command(SessionCommand::Gameplay(select), outbox, active, clocks);
+        }
     }
 
     /// The game boards the item owner was asked to use begin their games
@@ -4562,6 +4575,56 @@ mod list_tests {
         );
         assert_eq!(state.gameplay.selection().selected(), Some(0x7000_0001));
         assert!(status_lines(&mut state).is_empty());
+    }
+
+    #[test]
+    fn a_pickup_that_joins_a_carried_stack_selects_that_stack() {
+        // OpenAC `InventoryController.OnMergeAttempted` (every merge the
+        // runtime sends selects the stack it joins), from the game's merge
+        // attempt, which selects the target after sending the merge. The
+        // loose gem picked up leaves the world; the joined stack stays the
+        // selection and its new size is what the selection shows.
+        const LOOSE: u32 = 0x6000_0002;
+        let (mut state, mut outbox) = monster_and_gem();
+        let Inbound::CreateObject(mut loose) =
+            create(LOOSE, stamps(1, 1), Some(position(0xA9B4_0001, 11.0)))
+        else {
+            unreachable!()
+        };
+        loose.weenie = Some(ac_proto::PublicWeenieDesc {
+            name: "Gem".into(),
+            item_type: ac_core::items::ItemType::GEM.bits(),
+            stack_size: Some(1),
+            max_stack_size: Some(100),
+            ..ac_proto::PublicWeenieDesc::default()
+        });
+        state.world.apply(&Inbound::CreateObject(loose));
+        select(&mut state, &mut outbox, LOOSE);
+        key(&mut state, &mut outbox, ItemCommand::PickUpSelected);
+        assert_eq!(
+            outbox.drain().map(|o| o.body).collect::<Vec<_>>(),
+            [ac_proto::inventory::build_stackable_merge(1, LOOSE, GEM, 1)]
+        );
+        assert_eq!(state.gameplay.selection().selected(), Some(GEM));
+        // The server's answer: the loose stack goes, the carried one grows.
+        let clocks = Clocks::default();
+        for message in [
+            Inbound::InventoryRemoveObject(ac_proto::InventoryRemoveObject { guid: LOOSE }),
+            Inbound::DeleteObject(ac_proto::DeleteObject {
+                guid: LOOSE,
+                instance_sequence: 1,
+            }),
+            Inbound::SetStackSize(ac_proto::SetStackSize {
+                sequence: 1,
+                guid: GEM,
+                stack_size: 6,
+                value: 60,
+            }),
+        ] {
+            state.apply(&message, &mut outbox, true, clocks);
+        }
+        assert_eq!(state.gameplay.selection().selected(), Some(GEM));
+        assert_eq!(state.world.item(GEM).map(|g| g.stack_size), Some(6));
     }
 
     #[test]

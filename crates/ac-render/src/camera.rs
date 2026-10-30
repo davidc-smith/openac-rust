@@ -234,9 +234,24 @@ pub const MAXIMUM_VERTICAL_COMPONENT: f32 = 450.0;
 /// The boom reaches at most 1.8 m below the pivot.
 pub const MINIMUM_VERTICAL_COMPONENT: f32 = -1.8;
 
-/// The default view: 2.5 m behind and 0.75 m above the pivot.
+/// The default view before its scale: 2.5 m behind and 0.75 m above the
+/// pivot.
 const DEFAULT_BACK: f32 = 2.5;
 const DEFAULT_UP: f32 = 0.75;
+/// In the game world the default view is scaled by 1.1, so it sits 2.75 m
+/// behind and 0.825 m above the pivot (a 2.87 m boom). Only the default
+/// view is scaled: the look-down, map and first-person views are not.
+pub const DEFAULT_VIEW_SCALE: f32 = 1.1;
+
+/// The default view's boom, `(back, up)` in meters, scale applied.
+#[must_use]
+pub fn default_view_offset() -> (f32, f32) {
+    (
+        DEFAULT_BACK * DEFAULT_VIEW_SCALE,
+        DEFAULT_UP * DEFAULT_VIEW_SCALE,
+    )
+}
+
 /// The look-down view's boom: 2 m back.
 const LOOK_DOWN_BACK: f32 = 2.0;
 /// The map view's boom: 450 m back.
@@ -347,9 +362,10 @@ struct SavedView {
 
 impl Default for ChaseCamera {
     fn default() -> Self {
+        let (back, up) = default_view_offset();
         Self {
-            distance: 2.61,
-            pitch: 0.291,
+            distance: back.hypot(up),
+            pitch: up.atan2(back),
             yaw_offset: 0.0,
             pivot_height: 1.5,
             tuning: ChaseTuning::default(),
@@ -686,7 +702,7 @@ impl ChaseCamera {
         self.adjust_pitch(invert * y * sensitivity * MOUSE_ORBIT_SCALE);
     }
 
-    /// Back to the default view: 2.5 m back, 0.75 m up, no swing.
+    /// Back to the default view: 2.75 m back, 0.825 m up, no swing.
     pub fn set_default_view(&mut self) {
         self.looking_down = false;
         self.map_mode = false;
@@ -694,7 +710,8 @@ impl ChaseCamera {
         self.target_direction_local = None;
         self.yaw_offset = 0.0;
         self.pivot_height = 1.5;
-        self.set_viewer_offset(DEFAULT_BACK, DEFAULT_UP);
+        let (back, up) = default_view_offset();
+        self.set_viewer_offset(back, up);
     }
 
     /// The first-person view: the eye 0.18 m ahead of the pivot, looking
@@ -1938,11 +1955,27 @@ mod tests {
     }
 
     #[test]
-    fn default_view_is_two_and_a_half_back_and_three_quarters_up() {
-        let mut cam = ChaseCamera::default();
+    fn default_view_is_two_and_three_quarters_back_and_0_825_up() {
+        // The game's default view: 2.5 m back and 0.75 m up, scaled by 1.1
+        // in the game world.
+        let mut cam = ChaseCamera {
+            distance: 7.0,
+            pitch: 0.5,
+            ..ChaseCamera::default()
+        };
         cam.set_default_view();
-        assert!(close(cam.distance * cam.pitch.cos(), 2.5, 1e-5));
-        assert!(close(cam.distance * cam.pitch.sin(), 0.75, 1e-5));
+        assert!(close(cam.distance * cam.pitch.cos(), 2.75, 1e-5));
+        assert!(close(cam.distance * cam.pitch.sin(), 0.825, 1e-5));
+    }
+
+    #[test]
+    fn the_chase_camera_starts_in_the_scaled_default_view() {
+        let cam = ChaseCamera::default();
+        assert!(close(cam.distance * cam.pitch.cos(), 2.75, 1e-5));
+        assert!(close(cam.distance * cam.pitch.sin(), 0.825, 1e-5));
+        assert!(close(cam.distance, 2.871_15, 1e-4));
+        // The scale lengthens the boom but keeps its angle (16.7 degrees).
+        assert!(close(cam.pitch, 0.75f32.atan2(2.5), 1e-6));
     }
 
     #[test]

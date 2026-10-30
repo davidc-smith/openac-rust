@@ -1630,6 +1630,69 @@ fn the_appearance_page_spins_paints_and_shades() {
 
 #[test]
 #[ignore = "needs the retail dat files"]
+fn a_gearknights_trim_and_gear_colours_stay_picked_as_they_change() {
+    // Issue #37: a Gearknight's trim colour (the eyes spin) and gear colour
+    // (the skin spin) went back to the body style (the hair) on the
+    // change's refresh.
+    use ac_runtime::session::creation::{AppearanceSlot, ShadeSlot};
+    use ac_ui::pregame::chargen::appearance::Part;
+    const GEARKNIGHT: u32 = 6;
+    let mut w = Wizard::new();
+    w.open();
+    let gearknight = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == GEARKNIGHT)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(gearknight);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    let page = w.screen().appearance_page().clone();
+    let trim = page.spin(Part::Eyes).unwrap();
+    w.message(trim, ElementMessage::Clicked { x: 130, y: 10 });
+    assert_eq!(w.screen().appearance_page().part(), Part::Eyes);
+    let (swatches, _) = page.swatches();
+    assert_eq!(
+        w.click(swatches[1].unwrap()),
+        [CreationCommand::SetAppearance(AppearanceSlot::EyeColor, 1)]
+    );
+    assert_eq!(w.screen().appearance_page().part(), Part::Eyes);
+    assert_eq!(w.h.ui.retail_state(trim), Some(ac_ui::states::HIGHLIGHT));
+
+    let gear = page.spin(Part::Skin).unwrap();
+    w.message(gear, ElementMessage::Clicked { x: 130, y: 10 });
+    let (_, shade) = page.grad_and_shade();
+    assert_eq!(
+        w.message(shade.unwrap(), ElementMessage::ScalarChanged(0.25)),
+        [CreationCommand::SetShade(ShadeSlot::Skin, 0.25)]
+    );
+    assert_eq!(w.screen().appearance_page().part(), Part::Skin);
+
+    // The gear colour moves up into the hidden nose's place (90 pixels
+    // from the top), and back down below the mouth (180 pixels) for a
+    // heritage with a nose and mouth.
+    let top = |w: &Wizard, e| w.h.ui.element(e).map(|e| (e.left, e.top));
+    let nose = page.spin(Part::Nose).unwrap();
+    assert_eq!(top(&w, gear), Some((0.0, 90.0)));
+    assert_eq!(top(&w, gear), top(&w, nose));
+    w.click(w.shell(chargen::TAB_IDS[0]));
+    let aluvian = w
+        .screen()
+        .heritage_page()
+        .buttons()
+        .iter()
+        .find(|b| b.2 == ALUVIAN)
+        .map(|b| b.0)
+        .unwrap();
+    w.click(aluvian);
+    w.click(w.shell(chargen::TAB_IDS[3]));
+    assert_eq!(top(&w, gear), Some((0.0, 180.0)));
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
 fn the_spin_arrows_are_buttons_of_their_own() {
     // OpenAC `CharacterCreationUiControllerTests.
     // AppearanceSpinArrows_AreTheirOwnButtons_SkinsAlwaysGhosted`,

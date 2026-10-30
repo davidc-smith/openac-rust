@@ -1980,6 +1980,26 @@ fn a_pickup_that_joins_a_carried_stack_moves_the_shortcut_too() {
     assert_eq!(f.slot(6), None);
 }
 
+// OpenAC `InventoryController.OnMergeAttempted`: every merge sent, the
+// pickup's join and a drag's merge alike, names the stack it joins for the
+// selection, once.
+#[test]
+fn every_merge_sent_names_the_stack_it_joins_for_the_selection() {
+    let mut f = Fixture::new();
+    assert!(f.run(ItemCommand::PickUp(guid(LOOSE))));
+    assert_eq!(f.sent(), [build_stackable_merge(1, LOOSE, GEM, 2)]);
+    assert_eq!(f.inventory.take_merged_into(), [GEM]);
+    assert!(f.inventory.take_merged_into().is_empty());
+
+    let mut f = Fixture::new();
+    assert!(f.run(ItemCommand::Merge {
+        from: guid(GEM),
+        to: guid(GEM2),
+        amount: 5,
+    }));
+    assert_eq!(f.inventory.take_merged_into(), [GEM2]);
+}
+
 #[test]
 fn the_use_and_examine_modes_act_on_the_next_object_offered() {
     // OpenAC `RuntimeItemInteraction.OfferPrimaryClick`: the use mode uses

@@ -49,6 +49,16 @@ impl UiScale {
     pub(crate) fn ui_point(self, x: f64, y: f64) -> (f64, f64) {
         (x / self.0, y / self.0)
     }
+
+    /// A position the UI reports in its units, in window pixels: the
+    /// world picks in pixels, so what the UI hands it (where an item was
+    /// let go, where a drag over the world began) is scaled back first.
+    pub(crate) fn window_point(self, x: i32, y: i32) -> (f32, f32) {
+        (
+            (f64::from(x) * self.0) as f32,
+            (f64::from(y) * self.0) as f32,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -60,6 +70,29 @@ mod tests {
         let scale = UiScale::for_window(HostOs::MacOs, 2.0);
         assert_eq!(scale.ui_size((3024, 1842)), (1512, 921));
         assert_eq!(scale.ui_point(800.0, 401.0), (400.0, 200.5));
+    }
+
+    /// An item let go over the world at (400, 300) points on a Retina
+    /// screen lands on what is drawn at (800, 600) pixels, not on what is
+    /// at half the pointer's position.
+    #[test]
+    fn a_ui_position_picks_the_world_at_its_pixel() {
+        let scale = UiScale::for_window(HostOs::MacOs, 2.0);
+        assert_eq!(scale.window_point(400, 300), (800.0, 600.0));
+        // The pointer the UI saw, back where the window had it.
+        let (x, y) = scale.ui_point(800.0, 600.0);
+        assert_eq!(scale.window_point(x as i32, y as i32), (800.0, 600.0));
+    }
+
+    #[test]
+    fn one_unit_a_pixel_picks_where_the_ui_says() {
+        for (x, y) in [(0, 0), (301, 7), (-5, 1_000_000), (i32::MAX, i32::MIN)] {
+            assert_eq!(
+                UiScale::ONE.window_point(x, y),
+                (x as f32, y as f32),
+                "{x},{y}"
+            );
+        }
     }
 
     #[test]

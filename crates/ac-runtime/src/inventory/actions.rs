@@ -258,6 +258,10 @@ impl Inventory {
             }
             C::AddShortcut(entry) => self.add_shortcut(*entry, ctx),
             C::RemoveShortcut(slot) => self.remove_shortcut(*slot, ctx),
+            C::PickUpToShortcut { item, slot } => {
+                let item = resolve!(item);
+                self.pick_up_to_shortcut(item, *slot, ctx)
+            }
             C::EnterUseMode => {
                 self.mode = InteractionMode::Use;
                 true
@@ -991,7 +995,7 @@ impl Inventory {
             })
         });
         if sent {
-            self.replace_fully_merged_shortcut(join.source_object_id, join.target_object_id, ctx);
+            self.merge_sent(join.source_object_id, join.target_object_id, ctx);
         }
         Some(sent)
     }
@@ -1033,7 +1037,7 @@ impl Inventory {
             })
         });
         if sent {
-            self.replace_fully_merged_shortcut(plan.source_object_id, plan.target_object_id, ctx);
+            self.merge_sent(plan.source_object_id, plan.target_object_id, ctx);
         }
         sent
     }
@@ -1158,6 +1162,40 @@ impl Inventory {
         true
     }
 
+    /// A loose item dropped on the toolbar's `slot`: it is picked up into
+    /// the preferred pack as the use key picks it up, and once that request
+    /// has gone out it gets the shortcut in `slot` (any other shortcut to it
+    /// is taken off first). When the pickup does not go out (no room, a
+    /// request already in flight) the bar is left as it is.
+    pub(super) fn pick_up_to_shortcut(
+        &mut self,
+        item_id: u32,
+        slot: i32,
+        ctx: &mut ItemContext<'_>,
+    ) -> bool {
+        let on_bar = usize::try_from(slot).is_ok_and(|i| i < SHORTCUT_SLOTS);
+        if item_id == 0 || !on_bar || ctx.world.item(item_id).is_none() {
+            return false;
+        }
+        let acted = self.place_world_item_in_backpack(item_id, ctx);
+        if self.backpack_placement != Some(BackpackPlacement::Sent) {
+            return acted;
+        }
+        if let Some(existing) =
+            (0..SHORTCUT_SLOTS as i32).find(|&s| self.shortcuts.get(s) == item_id)
+        {
+            self.remove_shortcut(existing, ctx);
+        }
+        self.add_shortcut(
+            ShortcutEntry {
+                index: slot,
+                object_id: item_id,
+                spell_id: 0,
+            },
+            ctx,
+        )
+    }
+
     /// Take the shortcut in `slot` off the bar.
     pub(super) fn remove_shortcut(&mut self, slot: i32, ctx: &mut ItemContext<'_>) -> bool {
         let Some(index) = u32::try_from(slot)
@@ -1172,9 +1210,16 @@ impl Inventory {
     }
 
     /// A stack merge has just been sent, by any caller (a drag, a plugin,
-    /// an automatic join): the shortcut of the stack being poured moves to
-    /// the stack it is poured into, keeping its slot, and the server is told
-    /// of both changes. The poured stack's later removal then finds nothing
+    /// an automatic join): the poured stack's shortcut follows it, and the
+    /// stack it joins becomes the selection ([`Inventory::take_merged_into`]).
+    fn merge_sent(&mut self, source_id: u32, target_id: u32, ctx: &mut ItemContext<'_>) {
+        self.replace_fully_merged_shortcut(source_id, target_id, ctx);
+        self.merged_into.push(target_id);
+    }
+
+    /// After a stack merge was sent: the shortcut of the stack being poured
+    /// moves to the stack it is poured into, keeping its slot, and the
+    /// server is told of both changes. The poured stack's later removal then finds nothing
     /// of it on the bar.
     pub(super) fn replace_fully_merged_shortcut(
         &mut self,
@@ -1532,11 +1577,7 @@ impl Inventory {
                 BackpackPlacement::NotDispatched
             });
             if sent {
-                self.replace_fully_merged_shortcut(
-                    merge.source_object_id,
-                    merge.target_object_id,
-                    ctx,
-                );
+                self.merge_sent(merge.source_object_id, merge.target_object_id, ctx);
             }
             return sent;
         }
@@ -1644,11 +1685,7 @@ impl Inventory {
                 })
             });
             if sent {
-                self.replace_fully_merged_shortcut(
-                    join.source_object_id,
-                    join.target_object_id,
-                    ctx,
-                );
+                self.merge_sent(join.source_object_id, join.target_object_id, ctx);
             }
             return sent;
         }

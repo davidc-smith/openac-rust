@@ -860,7 +860,7 @@ impl VendorController {
             let mut slot = ItemSlot {
                 slot_index: i32::try_from(index).unwrap_or(i32::MAX),
                 allow_drag_source: true,
-                source_kind: ItemDragSource::Inventory,
+                source_kind: ItemDragSource::Vendor,
                 show_sell_overlay: true,
                 sell_overlay_sprite: SELL_OVERLAY_SPRITE,
                 tooltip: items.tooltip(guid),

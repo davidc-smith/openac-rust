@@ -272,6 +272,9 @@ pub enum ItemDragSource {
     /// A salvage window cell: a pack item staged there. Dragging it out
     /// only unstages it.
     Salvage,
+    /// A vendor window or house purchase window cell: a pack item staged
+    /// there to sell or to pay with. Dragging it out only unstages it.
+    Vendor,
 }
 
 impl ItemDragSource {
@@ -280,7 +283,7 @@ impl ItemDragSource {
     /// moves nothing.
     #[must_use]
     pub fn is_alias(self) -> bool {
-        matches!(self, Self::ShortcutBar | Self::Salvage)
+        matches!(self, Self::ShortcutBar | Self::Salvage | Self::Vendor)
     }
 }
 

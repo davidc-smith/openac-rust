@@ -589,9 +589,11 @@ impl GameplayInput {
         } else {
             FlyInput::default()
         };
+        // A key held when a text field took the keyboard is still held
+        // (the dispatcher ends it on its release), one pressed into the
+        // field is not.
         if let Some(cameras) = cameras.as_deref_mut()
             && mode == Some(CameraMode::Chase)
-            && !state.want_keyboard
         {
             use InputAction as A;
             let any = |actions: &[InputAction]| actions.iter().any(|a| held(*a));
