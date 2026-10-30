@@ -62,17 +62,17 @@ pub mod route;
 use std::collections::BTreeMap;
 
 pub use ac_plugin_abi::ui::{
-    ActionValue, BindingDecl, BindingKind, CanvasState, Color, ItemRows, MapPoint, MarkerAnchor,
-    PaintCmd, PointerEvent, ProjectileSample, Rect, RowAction, RowStep, TypedBindingDecl,
-    TypedBindingKind, TypedValue, UiAction, UiEvent, UiValue, WorldIcon, WorldLabel, WorldLine,
-    WorldTriangle,
+    ActionValue, BindingDecl, BindingKind, CanvasState, Color, GroundShape, GroundShapeKind,
+    ItemRows, MapPoint, MarkerAnchor, PaintCmd, PointerEvent, ProjectileSample, Rect, RowAction,
+    RowStep, TypedBindingDecl, TypedBindingKind, TypedValue, UiAction, UiEvent, UiValue, WorldIcon,
+    WorldLabel, WorldLine, WorldTriangle,
 };
 use ac_plugin_abi::ui::{
     CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
     ControlVisible, DialogRequest, EncodedImage, IconSet, ImageInfo, ItemRow, ItemTypeDecl,
     ItemValue, LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
-    PanelValues, RgbaImage, TextSize, TriangleSet, TypedPanelRegistration, TypedPanelValues,
-    ViewShow,
+    PanelValues, RgbaImage, ShapeSet, TextSize, TriangleSet, TypedPanelRegistration,
+    TypedPanelValues, ViewShow,
 };
 use ac_plugin_abi::{Import, Wire};
 
@@ -805,6 +805,20 @@ impl MarkerLayer {
         decode(Import::UiMarkersSetIcons, &reply)
     }
 
+    /// Replaces the layer's ground shapes. False, and the layer keeps what
+    /// it had, when this set and the plugin's other layers' shapes come to
+    /// more than 256. Shapes pinned to nothing, or with a radius, band or
+    /// sweep that is not usable, are dropped from the set.
+    pub fn set_shapes(self, host: &mut Host<'_>, shapes: &[GroundShape]) -> bool {
+        let request = ShapeSet {
+            layer: self.id,
+            shapes: shapes.to_vec(),
+        }
+        .to_bytes();
+        let reply = ui_call!(host, UiMarkersSetShapes, ui_markers_set_shapes, &request);
+        decode(Import::UiMarkersSetShapes, &reply)
+    }
+
     /// Removes the layer and its markers.
     pub fn remove(self, host: &mut Host<'_>) -> bool {
         let request = self.id.to_bytes();
@@ -824,6 +838,64 @@ pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
         tint_rgba: 0xFFFF_FFFF,
         border_rgba: None,
         max_range: 60.0,
+    }
+}
+
+/// The width of an arc's band when none is given, metres.
+pub const DEFAULT_ARC_WIDTH: f32 = 0.15;
+
+/// A band all the way round `anchor`, `width` metres wide inward from
+/// `radius`, in one colour, `0xRRGGBBAA`.
+#[must_use]
+pub fn ground_ring(anchor: MarkerAnchor, radius: f32, width: f32, rgba: u32) -> GroundShape {
+    GroundShape {
+        anchor,
+        kind: GroundShapeKind::Ring,
+        radius,
+        width,
+        sweep_degrees: 360.0,
+        color_rgba: rgba,
+        ..GroundShape::default()
+    }
+}
+
+/// A filled circle around `anchor`, in one colour, `0xRRGGBBAA`.
+#[must_use]
+pub fn ground_disc(anchor: MarkerAnchor, radius: f32, rgba: u32) -> GroundShape {
+    GroundShape {
+        anchor,
+        kind: GroundShapeKind::Disc,
+        radius,
+        sweep_degrees: 360.0,
+        filled: true,
+        color_rgba: rgba,
+        ..GroundShape::default()
+    }
+}
+
+/// Part of a circle around `anchor`, in one colour, `0xRRGGBBAA`:
+/// `sweep_degrees` clockwise from the compass bearing `start_degrees`, a
+/// wedge when `filled` and otherwise a band [`DEFAULT_ARC_WIDTH`] wide. Set
+/// [`GroundShape::faces_object`] for an arc that turns with its object.
+#[must_use]
+pub fn ground_arc(
+    anchor: MarkerAnchor,
+    radius: f32,
+    start_degrees: f32,
+    sweep_degrees: f32,
+    filled: bool,
+    rgba: u32,
+) -> GroundShape {
+    GroundShape {
+        anchor,
+        kind: GroundShapeKind::Arc,
+        radius,
+        width: DEFAULT_ARC_WIDTH,
+        start_degrees,
+        sweep_degrees,
+        filled,
+        color_rgba: rgba,
+        ..GroundShape::default()
     }
 }
 

@@ -47,12 +47,14 @@ use super::indicator_panels::{
 };
 use super::map_window::MAP_HOUSE_WINDOW;
 use super::options::OPTIONS_WINDOW;
+use super::overlays::Placement;
 use super::social_panels::{JOURNAL_WINDOW, SOCIAL_WINDOW};
 use super::window::{CHARACTER_WINDOW, INVENTORY_WINDOW, RADAR_WINDOW, SPELLBOOK_WINDOW, WindowUi};
 use crate::meshing::flatten_setup;
 use crate::renderer::WorldRenderer;
 use crate::scene::Scene;
 use crate::world_lines::PlacedLine;
+use crate::world_shapes::{self, PlacedShape, ShapeAnchor};
 use crate::world_triangles::PlacedTriangle;
 
 /// How long a set of projectile markers shows after it arrives.
@@ -84,6 +86,9 @@ pub fn client_window_name(window: ClientWindow) -> &'static str {
         ClientWindow::Radar => RADAR_WINDOW,
     }
 }
+
+/// The first cell number inside a building or dungeon.
+const FIRST_INDOOR_CELL: u32 = 0x0100;
 
 /// A plugin's icon placed this frame: which of the merged icons, and where.
 #[derive(Debug, Clone, Copy)]
@@ -137,6 +142,7 @@ pub struct PluginWindowUi {
     pub(super) anchors: HashMap<u32, WorldLabelAnchor>,
     world_lines: Vec<PlacedLine>,
     world_triangles: Vec<PlacedTriangle>,
+    world_shapes: Vec<PlacedShape>,
     /// This frame's icons: none while the portal view hides the world.
     world_icons: Vec<PlacedIcon>,
     icon_entries: Arc<Vec<WorldIconEntry>>,
@@ -1030,9 +1036,15 @@ impl WindowUi {
         &self.plugins.world_triangles
     }
 
-    /// The plugins' labels, lines, triangles, icons and projectile markers
-    /// placed in the drawing frame from the world as last drawn (none
-    /// without a world).
+    /// The plugins' ground shapes placed in the drawing frame this frame
+    /// (the world renderer draws them in the scene).
+    pub(crate) fn plugin_world_shapes(&self) -> &[PlacedShape] {
+        &self.plugins.world_shapes
+    }
+
+    /// The plugins' labels, lines, triangles, icons, ground shapes and
+    /// projectile markers placed in the drawing frame from the world as last
+    /// drawn (none without a world).
     pub(crate) fn set_plugin_world(
         &mut self,
         world: Option<&WorldRenderer>,
@@ -1046,6 +1058,7 @@ impl WindowUi {
         plugins.world_lines.clear();
         plugins.world_triangles.clear();
         plugins.world_icons.clear();
+        plugins.world_shapes.clear();
         plugins.samples.clear();
         let (Some(world), Some(scene)) = (world, scene) else {
             return;
@@ -1105,6 +1118,13 @@ impl WindowUi {
                     }
                 };
                 plugins.world_icons.push(PlacedIcon { entry, anchor });
+            }
+        }
+        for shape in view.shapes.iter() {
+            if let Some(placed) = shape_anchor(world, scene, shape.anchor)
+                .and_then(|at| world_shapes::place(shape, at, |x, y| world.sample_terrain_z(x, y)))
+            {
+                plugins.world_shapes.push(placed);
             }
         }
         for sample in view.projectile.1.iter() {
@@ -1275,6 +1295,36 @@ fn map_point_in_frame(world: &WorldRenderer, point: MapPoint) -> Option<Vec3> {
     let (x, y, lx, ly, z) = point.to_landblock()?;
     let cell = (u32::from(x) << 24) | (u32::from(y) << 16) | 1;
     world.frame_position(cell, Vec3::new(lx, ly, z))
+}
+
+/// Where a ground shape's anchor is this frame: an object's base and the
+/// way it faces, a held object's from the pose its holder's hand gives it,
+/// or a fixed position. An object with no cell yet counts as outdoors, so
+/// the height rule alone decides.
+fn shape_anchor(world: &WorldRenderer, scene: &Scene, anchor: MarkerAnchor) -> Option<ShapeAnchor> {
+    match anchor {
+        MarkerAnchor::None => None,
+        MarkerAnchor::Object(guid) => {
+            let object = scene.object_by_guid(guid)?;
+            let placement = super::overlays::placement(world, object)?;
+            let rotation = match placement {
+                Placement::World { rotation, .. } => rotation,
+                Placement::Held(root) => root.to_scale_rotation_translation().1,
+            };
+            Some(ShapeAnchor {
+                centre: placement.base(),
+                heading_degrees: ac_physics::scenery::heading_of(rotation * Vec3::Y),
+                is_outdoor: object
+                    .position
+                    .is_none_or(|pos| pos.cell_id & 0xFFFF < FIRST_INDOOR_CELL),
+            })
+        }
+        MarkerAnchor::Position { point, is_outdoor } => Some(ShapeAnchor {
+            centre: map_point_in_frame(world, point)?,
+            heading_degrees: 0.0,
+            is_outdoor,
+        }),
+    }
 }
 
 /// Where a label over `guid` hangs (OpenAC
