@@ -827,8 +827,9 @@ impl MarkerLayer {
     }
 }
 
-/// An icon of `image` at `anchor`: 24 pixels, untinted, unframed, shown up
-/// to 60 m away.
+/// An icon of `image` at `anchor`: 24 points, untinted, unframed, shown up to
+/// 60 m away and over the world. Set [`WorldIcon::hidden_by_world`] for one
+/// that hides behind it.
 #[must_use]
 pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
     WorldIcon {
@@ -838,6 +839,7 @@ pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
         tint_rgba: 0xFFFF_FFFF,
         border_rgba: None,
         max_range: 60.0,
+        hidden_by_world: false,
     }
 }
 

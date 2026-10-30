@@ -1478,6 +1478,9 @@ impl FramePhases for AttachedWindow {
         if let Some(timer) = self.gpu_timer.as_mut() {
             timer.submitted();
         }
+        if let Some(world) = self.world.as_mut() {
+            world.icon_probes_submitted();
+        }
         self.window.pre_present_notify();
         self.queue.present(frame.texture);
         self.frames_presented += 1;
@@ -2722,6 +2725,7 @@ impl AttachedWindow {
                 ui.plugin_world_triangles(),
                 ui.plugin_world_shapes(),
             );
+            world.set_icon_probes(&self.device, &self.queue, ui.plugin_icon_probes());
         }
         // The object under the pointer (the world tooltip and the cursor's
         // "found" forms); none while the window holds the cursor.

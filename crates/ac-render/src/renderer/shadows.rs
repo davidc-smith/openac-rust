@@ -56,6 +56,8 @@ pub(super) struct PassPipelines<'a> {
     pub world_line: &'a wgpu::RenderPipeline,
     /// The plugins' world triangles.
     pub world_triangle: &'a wgpu::RenderPipeline,
+    /// The invisible probes of the icons hidden behind the world.
+    pub icon_probe: &'a wgpu::RenderPipeline,
 }
 
 impl WorldRenderer {
@@ -73,6 +75,7 @@ impl WorldRenderer {
             atmosphere: None,
             world_line: &self.pipelines.world_line,
             world_triangle: &self.pipelines.world_triangle,
+            icon_probe: &self.pipelines.icon_probe,
         }
     }
 
@@ -675,6 +678,7 @@ impl WorldRenderer {
                     stencil_ops: None,
                 }),
                 timestamp_writes: begin,
+                occlusion_query_set: self.icon_probes.query_set(),
                 ..Default::default()
             });
             if !withheld {
@@ -691,10 +695,12 @@ impl WorldRenderer {
                     atmosphere: Some(&a.group),
                     world_line: &w.world_line,
                     world_triangle: &w.world_triangle,
+                    icon_probe: &w.icon_probe,
                 };
                 self.draw_steps(&mut pass, &pipelines);
                 self.draw_world_lines(&mut pass, &pipelines);
                 self.draw_world_triangles(&mut pass, &pipelines);
+                self.draw_icon_probes(&mut pass, &pipelines);
             }
         }
         a.encode_post(encoder, target, end);

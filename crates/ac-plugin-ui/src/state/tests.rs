@@ -676,6 +676,7 @@ fn icon(anchor: crate::model::MarkerAnchor) -> crate::model::WorldIcon {
         tint_rgba: 0xFFFF_FFFF,
         border_rgba: None,
         max_range: 60.0,
+        hidden_by_world: false,
     }
 }
 
