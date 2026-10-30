@@ -231,6 +231,79 @@ fn a_refresh_of_an_item_with_no_physics_record_updates_the_item_only() {
     assert!(world.object(ITEM).is_none());
 }
 
+// --- A re-created item takes the first place in its pack ----------------
+//
+// The game deletes a held object on a re-sent description, which takes it
+// out of its container's list, and creates it again; the container has no
+// place for it then and puts it first. Revealing a coalesced Aetheria's
+// sigil re-sends its description, so the revealed Aetheria moves to the
+// top-left slot of the pack it is in.
+
+const AETHERIA_PACK: u32 = 0x5000_00C9;
+
+fn pack_item(guid: u32, name: &str) -> CreateObject {
+    let mut desc = description(guid, name, None);
+    if let Some(weenie) = desc.weenie.as_mut() {
+        weenie.container_id = Some(AETHERIA_PACK);
+    }
+    desc
+}
+
+fn put(world: &mut World, guid: u32, placement: u32) {
+    world.apply_put_in_container(&PutObjInContainer {
+        item_guid: guid,
+        container_guid: AETHERIA_PACK,
+        placement,
+        container_type: 0,
+    });
+}
+
+#[test]
+fn a_resent_description_puts_a_held_item_first_in_its_pack() {
+    let items = [0x5000_0101, 0x5000_0102, 0x5000_0103];
+    let mut world = World::new();
+    for (slot, &guid) in items.iter().enumerate() {
+        world.apply(&Inbound::CreateObject(Box::new(pack_item(
+            guid,
+            "Coalesced Aetheria",
+        ))));
+        put(&mut world, guid, slot as u32);
+    }
+    assert_eq!(world.items().get_contents(AETHERIA_PACK), items);
+
+    world.apply(&Inbound::UpdateObject(Box::new(pack_item(
+        items[2], "Aetheria",
+    ))));
+
+    assert_eq!(
+        world.items().get_contents(AETHERIA_PACK),
+        [items[2], items[0], items[1]]
+    );
+    let revealed = world.item(items[2]).unwrap();
+    assert_eq!(revealed.container_slot, 0);
+    assert_eq!(revealed.name, "Aetheria");
+    assert_eq!(world.item(items[0]).unwrap().container_slot, 1);
+    assert_eq!(world.item(items[1]).unwrap().container_slot, 2);
+}
+
+#[test]
+fn a_resent_description_of_an_item_not_held_keeps_its_place() {
+    // Known only to the item table (no create arrived): the game has no
+    // object to delete, and the container still lists it where it was.
+    let items = [0x5000_0201, 0x5000_0202];
+    let mut world = World::new();
+    world.mutate_items_for_test(|table, events| {
+        table.replace_contents_ids(AETHERIA_PACK, &items, events);
+    });
+
+    world.apply(&Inbound::UpdateObject(Box::new(pack_item(
+        items[1], "Aetheria",
+    ))));
+
+    assert_eq!(world.items().get_contents(AETHERIA_PACK), items);
+    assert!(world.object(items[1]).is_none());
+}
+
 // --- The player-killer bits in the object's view -----------------------
 //
 // OpenAC copies the description's bit field into each entity's snapshot

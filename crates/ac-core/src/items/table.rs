@@ -1482,6 +1482,30 @@ impl ClientObjectTable {
         self.identity_of(guid)
     }
 
+    /// A re-sent description of an object the client holds (a revealed
+    /// Aetheria, a tinkered or tailored item). The game deletes the object
+    /// and creates it again: deleting takes it out of its container's
+    /// list, so the container the new description names has no place for
+    /// it and puts it first among its own kind (items or packs). A
+    /// re-sent item therefore lands in its pack's top-left slot. A
+    /// description that names no container leaves the object where it is.
+    pub fn ingest_recreated(
+        &mut self,
+        data: &WeenieData,
+        events: &mut Vec<TableEvent>,
+    ) -> ObjectIdentity {
+        let identity = self.ingest(data, events);
+        if let Some(container_id) = data.container_id.filter(|&id| id != 0) {
+            self.apply_server_move(
+                data.guid,
+                ClientObjectPlacement::in_container(container_id, 0),
+                None,
+                events,
+            );
+        }
+        identity
+    }
+
     /// Records an object's membership from the character description: its
     /// container (when non-zero) and worn location (which clears the
     /// slot), plus container type and priority when given.
