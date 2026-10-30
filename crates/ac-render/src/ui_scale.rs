@@ -39,6 +39,12 @@ impl UiScale {
         (side(pixels.0), side(pixels.1))
     }
 
+    /// Framebuffer pixels per UI unit, for what the UI shows that is drawn
+    /// in pixels (its 3-D viewports).
+    pub(crate) fn pixels_per_unit(self) -> f32 {
+        self.0 as f32
+    }
+
     /// A window position in pixels, in UI units.
     pub(crate) fn ui_point(self, x: f64, y: f64) -> (f64, f64) {
         (x / self.0, y / self.0)
