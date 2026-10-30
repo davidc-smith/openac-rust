@@ -1074,6 +1074,41 @@ wire_record! {
 }
 
 wire_record! {
+    /// A filled triangle in the world (OpenAC `PluginWorldTriangle`): flat
+    /// between its corners, see-through by its colours' alpha, drawn from
+    /// both sides and unlit. Hills and walls in front of it hide it; it
+    /// writes no depth, so overlapping triangles blend. It does not follow
+    /// the ground: one meant to lie on it is lifted a little (about 0.1 m)
+    /// by the plugin. API 1.3.
+    pub struct WorldTriangle {
+        /// The first corner.
+        pub a: MapPoint,
+        /// The second corner.
+        pub b: MapPoint,
+        /// The third corner.
+        pub c: MapPoint,
+        /// Corner `a`'s colour, `0xRRGGBBAA`; its alpha is how opaque the
+        /// fill is there.
+        pub color_a: u32,
+        /// Corner `b`'s colour, blended across the face.
+        pub color_b: u32,
+        /// Corner `c`'s colour.
+        pub color_c: u32,
+    }
+}
+
+wire_record! {
+    /// A layer's triangles ([`crate::Import::UiTrianglesSet`]); reply
+    /// `bool`. API 1.3.
+    pub struct TriangleSet {
+        /// The layer.
+        pub layer: u32,
+        /// Its triangles from now on (the first 65,536 are kept).
+        pub triangles: Vec<WorldTriangle>,
+    }
+}
+
+wire_record! {
     /// A projectile marker (OpenAC `PluginProjectileDebugSample`).
     pub struct ProjectileSample {
         /// Where the step ended.

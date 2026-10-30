@@ -54,6 +54,8 @@ pub(super) struct PassPipelines<'a> {
     pub atmosphere: Option<&'a wgpu::BindGroup>,
     /// The plugins' world lines.
     pub world_line: &'a wgpu::RenderPipeline,
+    /// The plugins' world triangles.
+    pub world_triangle: &'a wgpu::RenderPipeline,
 }
 
 impl WorldRenderer {
@@ -70,6 +72,7 @@ impl WorldRenderer {
             particle_meshes: &self.particle_gpu.meshes,
             atmosphere: None,
             world_line: &self.pipelines.world_line,
+            world_triangle: &self.pipelines.world_triangle,
         }
     }
 
@@ -687,9 +690,11 @@ impl WorldRenderer {
                     particle_meshes: &w.particle_meshes,
                     atmosphere: Some(&a.group),
                     world_line: &w.world_line,
+                    world_triangle: &w.world_triangle,
                 };
                 self.draw_steps(&mut pass, &pipelines);
                 self.draw_world_lines(&mut pass, &pipelines);
+                self.draw_world_triangles(&mut pass, &pipelines);
             }
         }
         a.encode_post(encoder, target, end);

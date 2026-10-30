@@ -202,7 +202,7 @@ mod tests {
     /// commit; when an existing record changed shape (not only a new
     /// import, event or `since`-marked field), say in the commit message
     /// which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0xa7e9_ffe2_33f6_5ae3;
+    const PUBLISHED: u64 = 0xa40e_095e_aa88_e8e7;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -255,6 +255,25 @@ mod tests {
             if !API_1_1_IMPORTS.iter().any(|(i, _)| i == import) {
                 assert_eq!(import.shape_at(v1_1), import.shape(), "{import:?}");
             }
+        }
+    }
+
+    /// API 1.3 added only imports (the world triangles): an API 1.2
+    /// plugin's core and import shapes are this build's, and its section
+    /// leaves the new imports out.
+    #[test]
+    fn api_1_2_plugins_keep_their_core_and_import_shapes() {
+        let v1_2 = ApiVersion::new(1, 2);
+        assert_eq!(core_shape(v1_2), CORE_SHAPE);
+        let triangles = [
+            Import::UiTrianglesCreate,
+            Import::UiTrianglesSet,
+            Import::UiTrianglesRemove,
+        ];
+        let section = PluginLayout::parse(&section_at(v1_2)).unwrap();
+        for import in Import::ALL {
+            let expected = (!triangles.contains(import)).then(|| import.shape());
+            assert_eq!(section.import_shape(import.name()), expected, "{import:?}");
         }
     }
 

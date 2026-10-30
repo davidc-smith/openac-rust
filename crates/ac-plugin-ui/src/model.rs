@@ -549,6 +549,17 @@ pub struct WorldLine {
     pub width_metres: f32,
 }
 
+/// A filled triangle in the world, flat between its corners, see-through
+/// by its colours' alpha, drawn from both sides and unlit (OpenAC
+/// `PluginWorldTriangle`). It does not follow the ground.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldTriangle {
+    /// The corners.
+    pub corners: [MapPoint; 3],
+    /// Each corner's colour, `0xRRGGBBAA`, blended across the face.
+    pub colors_rgba: [u32; 3],
+}
+
 /// One step of a simulated projectile flight, for drawing (OpenAC
 /// `PluginProjectileDebugSample`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -818,6 +829,8 @@ pub enum UiChange {
     Labels(Arc<Vec<WorldLabel>>),
     /// Every plugin's world lines, merged.
     Lines(Arc<Vec<WorldLine>>),
+    /// Every plugin's world triangles, merged.
+    Triangles(Arc<Vec<WorldTriangle>>),
     /// Projectile markers to show for a moment.
     ProjectileDebug(Arc<Vec<ProjectileSample>>),
     /// A plugin asks the window to show, hide or toggle a client window.
