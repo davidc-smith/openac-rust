@@ -431,24 +431,28 @@ fn a_drop_on_the_backpack_button_hands_the_session_the_item_to_put_away() {
             SessionCommand::Item(ItemCommand::DropOnBackpack(ObjectRef::Guid(0x7000_5001))),
         ]
     );
-    // A shortcut alias stays neutral and moves nothing.
-    let alias = ItemDragPayload::new(0x5001, ItemDragSource::ShortcutBar, 2);
-    b.host.root.fire_event(
-        kind::DRAG_ENTER,
-        button,
-        Some(DragPayload::new(alias.clone())),
-    );
-    assert_eq!(
-        b.button(toolbar::INVENTORY_BUTTON_ID)
-            .item_drag_acceptance(),
-        DragAcceptance::None
-    );
-    b.host
-        .root
-        .fire_event(kind::DROP_RELEASED, button, Some(DragPayload::new(alias)));
-    b.host.pump();
-    b.update(&view);
-    assert!(sessions(&b.outputs()).is_empty());
+    // An alias (a shortcut, or a salvage window cell) stays neutral and
+    // moves nothing.
+    for source in [ItemDragSource::ShortcutBar, ItemDragSource::Salvage] {
+        let alias = ItemDragPayload::new(0x5001, source, 2);
+        b.host.root.fire_event(
+            kind::DRAG_ENTER,
+            button,
+            Some(DragPayload::new(alias.clone())),
+        );
+        assert_eq!(
+            b.button(toolbar::INVENTORY_BUTTON_ID)
+                .item_drag_acceptance(),
+            DragAcceptance::None,
+            "{source:?}"
+        );
+        b.host
+            .root
+            .fire_event(kind::DROP_RELEASED, button, Some(DragPayload::new(alias)));
+        b.host.pump();
+        b.update(&view);
+        assert!(sessions(&b.outputs()).is_empty(), "{source:?}");
+    }
 }
 
 #[test]
@@ -755,6 +759,22 @@ fn a_fresh_item_on_an_occupied_slot_pushes_the_old_one_to_the_first_empty_on_the
         shortcut_changes(&b.outputs()),
         vec!["remove 2", "add 2 0x5001", "add 4 0x5002"]
     );
+}
+
+/// A salvage window cell is an alias the bar refuses (retail
+/// `gmToolbarUI::OnItemListDragOver`): it makes no shortcut.
+#[test]
+fn a_salvage_window_drag_makes_no_shortcut() {
+    let mut o = Objects::new();
+    item(&mut o, 0x5001);
+    let mut b = bar(&[], None);
+    b.update(&ItemsView::new(&o.t, PLAYER));
+    b.outputs();
+    let p = ItemDragPayload::new(0x5001, ItemDragSource::Salvage, 0);
+    b.fire(2, kind::DRAG_ENTER, Some(p.clone()));
+    assert_eq!(b.slot(2).drag_acceptance(), DragAcceptance::None);
+    b.fire(2, kind::DROP_RELEASED, Some(p));
+    assert!(shortcut_changes(&b.outputs()).is_empty());
 }
 
 #[test]

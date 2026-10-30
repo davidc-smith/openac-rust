@@ -2484,11 +2484,9 @@ impl AttachedWindow {
                 .ui
                 .as_mut()
                 .map_or(0, |ui| ui.drag_amount(payload.obj_id));
-            let from_shortcut_bar =
-                payload.source_kind == ac_ui::event::ItemDragSource::ShortcutBar;
             let outcome = crate::world_click::WorldClicks::drop_item(
                 payload.obj_id,
-                from_shortcut_bar,
+                payload.source_kind,
                 picked.map(|(guid, _)| guid),
                 amount,
             );
