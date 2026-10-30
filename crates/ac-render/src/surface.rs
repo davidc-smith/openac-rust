@@ -2907,10 +2907,9 @@ fn pick_eligible(
 }
 
 /// Whether an object with public description bits `bitfield` is found when
-/// picked: not when it is hidden from the UI (retail
-/// `UIElement_SmartBoxWrapper::RecvNotice_SmartBoxObjectFound` drops a
-/// pick whose `BF_UI_HIDDEN` bit is set), so it is neither selected,
-/// used nor named under the pointer.
+/// picked: not when its UI-hidden bit is set. The game marks traps and
+/// similar scenery that way so the player cannot select, use or name them
+/// under the pointer, and the pick then finds nothing at all.
 fn picks_as_found(bitfield: u32) -> bool {
     bitfield & ac_core::items::PublicWeenieFlags::UI_HIDDEN.bits() == 0
 }
