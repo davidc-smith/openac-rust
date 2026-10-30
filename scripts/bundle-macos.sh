@@ -13,20 +13,35 @@ if [ "$(uname -s)" != Darwin ]; then
     exit 1
 fi
 
+usage() {
+    echo "usage: scripts/bundle-macos.sh [--target <triple>]" >&2
+    exit 2
+}
 target=""
 case "${1:-}" in
-    --target) target="${2:?--target needs a target triple}" ;;
-    "") ;;
-    *) echo "usage: scripts/bundle-macos.sh [--target <triple>]" >&2; exit 2 ;;
+    --target)
+        target="${2:?--target needs a target triple}"
+        [ "$#" -eq 2 ] || usage
+        ;;
+    "") [ "$#" -eq 0 ] || usage ;;
+    *) usage ;;
 esac
 
+# The license texts every release zip carries; cargo-about lists each crate compiled in.
+if ! cargo about --version > /dev/null 2>&1; then
+    echo "cargo-about is needed for the license list: cargo install --locked cargo-about --version 0.9.2 --features cli" >&2
+    exit 1
+fi
+
+# Cargo's build folder, which CARGO_TARGET_DIR moves.
+target_dir="${CARGO_TARGET_DIR:-target}"
 if [ -n "$target" ]; then
     cargo build --release --locked --target "$target" -p openac -p openac-launcher
-    bin="target/$target/release"
+    bin="$target_dir/$target/release"
     arch="${target%%-*}"
 else
     cargo build --release --locked -p openac -p openac-launcher
-    bin="target/release"
+    bin="$target_dir/release"
     arch="$(uname -m)"
 fi
 case "$arch" in
@@ -48,6 +63,22 @@ mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 # Contents/MacOS holds only code: codesign refuses a bundle with a plain file there.
 install -m 0755 "$bin/openac-launcher" "$bin/openac" "$bundle/Contents/MacOS/"
 cp LICENSE NOTICE.md "$bundle/Contents/Resources/"
+
+# The same license files as the other release zips: every crate compiled in, the bundled
+# Noto Sans font, and the launcher's fonts (their texts ship in the font crate).
+resources="$bundle/Contents/Resources"
+cargo about generate --workspace --locked --fail \
+    -c about.toml -o "$resources/THIRD-PARTY-LICENSES.html" about.hbs
+[ -s "$resources/THIRD-PARTY-LICENSES.html" ] || { echo "The license list is empty." >&2; exit 1; }
+mkdir -p "$resources/licenses/egui-fonts"
+cp assets/fonts/NotoSans/OFL.txt "$resources/licenses/NotoSans-OFL.txt"
+fonts_version="$(awk '/^name = "epaint_default_fonts"$/ { getline; print; exit }' Cargo.lock \
+    | sed -n 's/^version = "\(.*\)"$/\1/p')"
+fonts_dir="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d \
+    -name "epaint_default_fonts-$fonts_version" 2> /dev/null | head -n 1)/fonts"
+for file in OFL.txt UFL.txt Hack-Regular.txt emoji-icon-font-mit-license.txt; do
+    cp "$fonts_dir/$file" "$resources/licenses/egui-fonts/"
+done
 
 # The icon, from the launcher's 256-pixel art (no larger source exists, so no larger entries).
 iconset="$out/OpenAC.iconset"
