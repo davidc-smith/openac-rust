@@ -646,6 +646,7 @@ pub fn handle(
                     tint_rgba: i.tint_rgba,
                     border_rgba: i.border_rgba,
                     max_range: i.max_range,
+                    hidden_by_world: i.hidden_by_world,
                 })
                 .collect();
             state.set_icons(id, r.layer, icons).to_bytes()

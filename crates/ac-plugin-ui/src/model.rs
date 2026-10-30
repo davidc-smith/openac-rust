@@ -597,8 +597,8 @@ impl MarkerAnchor {
 }
 
 /// An image hung in the world at a constant size on the screen (OpenAC
-/// `PluginWorldIcon`). Walls and hills do not hide it: like a label, it is
-/// drawn after the world.
+/// `PluginWorldIcon`). It is drawn after the world, like a label, so walls and
+/// hills do not hide it unless it asks with `hidden_by_world`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldIcon {
     /// Over an object, the client lays its icons out in rows above its head
@@ -614,6 +614,9 @@ pub struct WorldIcon {
     pub border_rgba: Option<u32>,
     /// Shown up to this many metres away, fading over the last fifth.
     pub max_range: f32,
+    /// The whole icon goes while walls, doors, hills or anything else in the
+    /// world stands between the camera and its anchor.
+    pub hidden_by_world: bool,
 }
 
 /// An icon with the plugin it belongs to, whose images are the only ones
