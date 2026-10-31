@@ -7,7 +7,9 @@
 //! The answer is read back when the GPU has finished, a frame or two later, so
 //! a probe's first answer and every change come that much late. An anchor with
 //! no answer yet counts as out of sight, so an icon never flashes through a
-//! wall as it is set.
+//! wall as it is set. Answers are kept by anchor (an object, or a position),
+//! never by an icon's place among the icons, which changes as plugins set
+//! theirs.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -50,8 +52,11 @@ const FAILED: u8 = 3;
 pub(crate) enum IconProbeKey {
     /// An object, whichever of its icons asked.
     Object(u32),
-    /// A fixed position, by its icon's place among the merged icons.
-    Entry(usize),
+    /// A fixed position, by the bits of its map coordinates (east-west,
+    /// north-south, elevation): every icon there shares the answer, and an
+    /// icon put somewhere else, even in the place of one taken away, starts
+    /// with none.
+    Position([u64; 3]),
 }
 
 /// An anchor to test this frame.
@@ -399,7 +404,7 @@ mod tests {
         world.set_plugin_lines(device, queue, &lines);
         // The probe is raised off its anchor, so the anchor is put under the
         // line of sight to have the probe on it.
-        let key = IconProbeKey::Entry(0);
+        let key = IconProbeKey::Position([0; 3]);
         let anchor = at(distance) - Vec3::Z * RISE_METRES;
         world.set_icon_probes(device, queue, &[IconProbe { key, anchor }]);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -461,7 +466,10 @@ mod tests {
             &DisplaySettings::default(),
             &[4],
         );
-        assert_eq!(world.icon_probe_visible(IconProbeKey::Entry(0)), None);
+        assert_eq!(
+            world.icon_probe_visible(IconProbeKey::Position([0; 3])),
+            None
+        );
         assert_eq!(
             answer(&mut world, &device, &queue, 20.0, None),
             Some(true),
