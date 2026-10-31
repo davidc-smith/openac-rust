@@ -42,20 +42,20 @@ these groups:
 | **Parked: replaces retail UI** | F6, H1-H13 | Includes H5, even though it is logic only, because nothing uses it until H6 |
 | **Other C# ports, not now** | Plugin windows and dock: F5, P1-P7, P13, P14, P19. Canvas extras with no use found in the five HUDs: P11, P12, P17. Data for navigation: W7-W9. Levels: W10. Walks and live checks: G1-G8. Mac: M1 | Still to port, but no focus item needs them. P1 and P2 restyle plugin windows and the dock, not retail windows |
 
-**Clicks and Ctrl+drag already work in the API.** A canvas gets press, release,
-move, wheel and cancel events with the Shift, Ctrl and Alt bits, keeps the
-pointer until the button comes up, and can change its anchor and offset. Moving
-a HUD is plugin code, as `HudDrag.cs` does it in Aethrix, so no host work is
-needed for the move itself. This has not been tried live in Rust yet. On a Mac
-the bit means the physical Ctrl key; Command is not sent to plugins.
+**Clicks and Ctrl+drag work, with fix M3.** A canvas gets press, release, move,
+wheel and cancel events with the Shift, Ctrl and Alt bits, keeps the pointer
+until the button comes up, and can change its anchor and offset. Moving a HUD is
+plugin code, as `HudDrag.cs` does it in Aethrix. Live-checked 2026-10-31 on the
+Air's trackpad against ACECustom with a test plugin: clicks, wheel and Ctrl+drag.
+The middle button was not tried. On a Mac the bit means the physical Ctrl key;
+Command is not sent to plugins.
 
 Not in the C# fork, so not a port: a canvas setting the mouse cursor, so that
 holding Ctrl shows it can move (Aethrix `docs/api-gaps.md` #56, still open).
 
 Order within the focus:
 
-1. **Live check, no new code:** a test plugin's canvas takes clicks and moves
-   with Ctrl+drag, on the Mac and with Rust's real input path.
+1. **M3 upstream:** the fix Ctrl+drag depends on. Done on `main`, PR not open.
 2. **F3, then P9:** F3 adds no ABI and can start now. P9 waits for PR #51.
 3. **P18, P15, P16 and W6, after PR #51:** each adds to the ABI, so they would
    conflict with it until it merges. P10 follows.
@@ -177,6 +177,7 @@ Bugs found while porting that are not C# fork work.
 | ID | Fix | What to do | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
 | M1 | Plugin peer socket path too long on macOS | macOS caps Unix socket paths at 104 bytes. `endpoint_for` (`ac-runtime/src/plugins/peer_transport.rs:123`) puts the socket at `<cache>/plugin-peers/openac-peer-<24 hex>`, 113 bytes for the live client on this Mac and 131 in the tests. Use a short socket folder when the path would be too long; the hash already names the directory and user. | S | Not started | Live peers probably fail on Mac; the 10 `peers` host-parity tests fail on Mac unless `TMPDIR=/tmp/`. Linux CI never sees it (108-byte limit, short `/tmp`) |
+| M3 | Pointer events had no modifier keys (all platforms) | Only key events set `UiEvent::modifiers`, so a canvas was always told none were held, and a Ctrl- or Shift-click on a multi-select list did a plain pick. The window now passes each change to `UiRoot::set_modifiers`, and `event_for` puts them on every event. No ABI change. | S | In progress | On `main`, branch `fix/pointer-modifiers` off `upstream-main`, PR not open. Canvas test and live check done; the list click is from reading the code, not tried. Needs the full check first |
 | M2 | Load-sensitive host-parity tests | The walk scenarios re-planned on one arm (`Planning, Walking, Planning, Walking, Arrived`): the staged hidden monster stood a metre out on the walking line, and on that slope a walk that brushed it was pinned (the step down lands the body in its sphere and the placement check refuses the move). Retail does the same: a hidden creature still collides (`FindObjCollisions` skips only ethereal ones) and `CTransition::step_down` ignores creatures then refuses an overlapping placement. Whether a walk brushed it was frame timing. Harness fix: the hidden monster stands 3 m north, and the two corpse-walk scenarios leave the walking body's position updates (`0xF753`) out of the transcript. | S-M | Done | Merged upstream in #46 (PR #42). Not a client bug; the client matches retail |
 
 ## Nothing to port
