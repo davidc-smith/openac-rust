@@ -11,8 +11,9 @@
 //! Everything here is pure: sizes come in UI units, along with how many units
 //! one device pixel is, and triangles go out as a list, three corners each.
 //!
-//! Strokes grow both radii of an ellipse alike, so a strongly eccentric
-//! ellipse's stroke is thinner along its flat sides.
+//! Numbers can come from a plugin, so none of them is trusted: a position,
+//! size or width that is not a finite number draws nothing, and a radius that
+//! is not one, or is negative, is a square corner.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -30,12 +31,16 @@ pub const MAX_SEGMENTS_PER_CORNER: u32 = 32;
 /// The fewest chords an ellipse is cut into.
 pub const MIN_ELLIPSE_SEGMENTS: u32 = 8;
 
-/// The most chords an ellipse is cut into.
+/// The most chords an ellipse's outline is cut into. A stretched ellipse's
+/// tight ends can add as many again for the rings that lie away from it.
 pub const MAX_ELLIPSE_SEGMENTS: u32 = 256;
 
 /// How far out a polygon corner's soft edge may reach, as a multiple of half
 /// the edge. A very sharp corner's true mitre would reach much further.
 const MAX_MITER: f64 = 10.0;
+
+/// The smallest radius a shadow's corner is given, too small to see.
+const MIN_SHADOW_RADIUS: f32 = 0.01;
 
 /// A rectangle's left, top, width and height.
 pub type ShapeRect = (f32, f32, f32, f32);
@@ -53,6 +58,8 @@ pub enum ShapeOutcome {
     TooManyPoints,
     /// An outline that turns both ways, or winds round more than once.
     NotConvex,
+    /// A point or colour that is not a finite number.
+    NotFinite,
 }
 
 /// The four corner radii of a rounded rectangle.
@@ -114,9 +121,11 @@ pub fn arc_segments(radius: f32, sweep: f32, pixel: f32) -> u32 {
 
 /// Scales every radius down by one factor when two neighbours would not fit
 /// along the side they share, the way CSS does, so a corner never overruns
-/// its side and the shape keeps its proportions.
+/// its side and the shape keeps its proportions. A radius that is not a
+/// finite number, or is negative, counts as none.
 #[must_use]
 pub fn clamp_radii(radii: CornerRadii, width: f32, height: f32) -> CornerRadii {
+    let radii = radii.map(|r| if positive(r) { r } else { 0.0 });
     let fit = |factor: f32, side: f32, sum: f32| {
         if sum > side {
             factor.min(side / sum)
@@ -149,6 +158,9 @@ pub fn fill_convex_polygon(
     }
     if points.len() > MAX_POLYGON_POINTS {
         return ShapeOutcome::TooManyPoints;
+    }
+    if !points.iter().all(ColorVertex::is_finite) {
+        return ShapeOutcome::NotFinite;
     }
     let mut corners: Vec<ColorVertex> = Vec::with_capacity(points.len());
     for &point in points {
@@ -197,7 +209,9 @@ pub fn fill_convex_polygon(
     if turn == 0 {
         return ShapeOutcome::Nothing;
     }
-    if reverses || (turning.abs() - std::f64::consts::TAU).abs() > 1e-3 {
+    // Not a number when the points are too far apart to measure.
+    let off_a_full_turn = (turning.abs() - std::f64::consts::TAU).abs();
+    if reverses || off_a_full_turn.is_nan() || off_a_full_turn > 1e-3 {
         return ShapeOutcome::NotConvex;
     }
     fill_convex_core(&corners, turn, pixel, out);
@@ -415,10 +429,10 @@ pub fn fill_rounded_rect(
     pixel: f32,
     out: &mut Vec<ColorVertex>,
 ) {
-    let (_, _, width, height) = rect;
-    if !(positive(width) && positive(height)) {
+    if !usable(rect) {
         return;
     }
+    let (_, _, width, height) = rect;
     let radii = clamp_radii(radii, width, height);
     let half = pixel * 0.5;
     let segments = corner_segments(radii, half, pixel);
@@ -449,10 +463,10 @@ pub fn stroke_rounded_rect(
     pixel: f32,
     out: &mut Vec<ColorVertex>,
 ) {
-    let (x, y, width, height) = rect;
-    if !(positive(width) && positive(height) && positive(thickness)) {
+    if !usable(rect) || !positive(thickness) {
         return;
     }
+    let (x, y, width, height) = rect;
     let radii = clamp_radii(radii, width, height);
     let (half_width, ink) = stroke_profile(thickness, color, pixel);
     if width <= 2.0 * half_width || height <= 2.0 * half_width {
@@ -470,25 +484,25 @@ pub fn stroke_rounded_rect(
     }
     let fringe = pixel * 0.5;
     let segments = corner_segments(radii, half_width + fringe, pixel);
-    let ring = |grow: f32| rounded_rect_ring(rect, radii, grow, segments);
+    let ring =
+        |grow: f32, color: Color| painted(&rounded_rect_ring(rect, radii, grow, segments), color);
     stroke_rings(
         [
-            ring(half_width + fringe),
-            ring(half_width - fringe),
-            ring(fringe - half_width),
-            ring(-half_width - fringe),
+            ring(half_width + fringe, transparent(ink)),
+            ring(half_width - fringe, ink),
+            ring(fringe - half_width, ink),
+            ring(-half_width - fringe, transparent(ink)),
         ],
-        ink,
         half_width > fringe,
         out,
     );
 }
 
 /// The soft shadow round a rounded rectangle, outside it only: `layers` bands,
-/// each `spread` / layers wide, as dark as that many fills of `layer` would be
-/// if each were grown a band further than the last and all were stacked.
-/// Neighbouring bands share their edge, so none shows a seam; the outermost
-/// fades out over a device pixel.
+/// each `spread` / layers wide, from the rectangle's edge out to nothing. Where
+/// two bands meet the shadow is as dark as `layer` stacked once for each band
+/// still to come, and each band blends from one such ring to the next, so the
+/// darkness falls off along that curve with no step or seam.
 pub fn shadow_bands(
     rect: ShapeRect,
     radii: CornerRadii,
@@ -497,32 +511,23 @@ pub fn shadow_bands(
     pixel: f32,
     out: &mut Vec<ColorVertex>,
 ) {
-    let (_, _, width, height) = rect;
-    if !(positive(width) && positive(height) && positive(spread)) || layers < 1 {
+    if !usable(rect) || !positive(spread) || layers < 1 {
         return;
     }
-    let radii = clamp_radii(radii, width, height);
-    let half = pixel * 0.5;
-    let segments = corner_segments(radii, spread + half, pixel);
-    let mut inner = rounded_rect_ring(rect, radii, 0.0, segments);
-    let mut ink = layer;
+    let radii = shadow_radii(radii, rect);
+    let segments = corner_segments(radii, spread, pixel);
+    let ring = |grow: f32, stack: u32| {
+        painted(
+            &rounded_rect_ring(rect, radii, grow, segments),
+            stacked(layer, stack),
+        )
+    };
+    let mut inner = ring(0.0, layers);
     for band_at in 1..=layers {
-        let grow = if band_at == layers {
-            (spread - half).max(0.0)
-        } else {
-            spread * band_at as f32 / layers as f32
-        };
-        let outer = rounded_rect_ring(rect, radii, grow, segments);
-        ink = stacked(layer, layers - band_at + 1);
-        band(&painted(&inner, ink), &painted(&outer, ink), out);
+        let outer = ring(spread * band_at as f32 / layers as f32, layers - band_at);
+        band(&inner, &outer, out);
         inner = outer;
     }
-    let outer = rounded_rect_ring(rect, radii, spread + half, segments);
-    band(
-        &painted(&inner, ink),
-        &painted(&outer, transparent(layer)),
-        out,
-    );
 }
 
 /// The inside of the rectangle [`shadow_bands`] surrounds, as dark as all its
@@ -535,39 +540,51 @@ pub fn shadow_core(
     pixel: f32,
     out: &mut Vec<ColorVertex>,
 ) {
-    let (_, _, width, height) = rect;
-    if !(positive(width) && positive(height) && positive(spread)) || layers < 1 {
+    if !usable(rect) || !positive(spread) || layers < 1 {
         return;
     }
-    let radii = clamp_radii(radii, width, height);
-    let segments = corner_segments(radii, spread + pixel * 0.5, pixel);
+    let radii = shadow_radii(radii, rect);
+    let segments = corner_segments(radii, spread, pixel);
     let ring = rounded_rect_ring(rect, radii, 0.0, segments);
     fan(&painted(&ring, stacked(layer, layers)), out);
 }
 
+/// A shadow's radii: even a square corner gets the least of a curve, so its
+/// rings round off as they grow rather than leaving a seam along the diagonal.
+fn shadow_radii(radii: CornerRadii, (_, _, width, height): ShapeRect) -> CornerRadii {
+    clamp_radii(radii, width, height).map(|r| r.max(MIN_SHADOW_RADIUS.min(width.min(height) * 0.5)))
+}
+
 /// An ellipse filling a rectangle.
 pub fn fill_ellipse(rect: ShapeRect, color: Color, pixel: f32, out: &mut Vec<ColorVertex>) {
-    let (x, y, width, height) = rect;
-    if !(positive(width) && positive(height)) {
+    if !usable(rect) {
         return;
     }
+    let (x, y, width, height) = rect;
     let centre = (x + width * 0.5, y + height * 0.5);
     let radii = (width * 0.5, height * 0.5);
     let half = pixel * 0.5;
-    let segments = ellipse_segments(radii, half, pixel);
-    let inner = ellipse_ring(centre, radii, -half, segments);
-    let outer = ellipse_ring(centre, radii, half, segments);
+    let curve = EllipseCurve::new(centre, radii, half, pixel);
+    // Coverage is a half at the outline and full half a pixel inside; where
+    // the ellipse is too tight to go that deep, it stops at what it reached.
+    let edge = f64::from(half);
+    let inner = curve.shaded(-half, color, |depth| (depth + edge) / (2.0 * edge));
+    let outer = painted(&curve.ring(half), transparent(color));
     let start = out.len();
-    fill_ring(&inner, &outer, color, out);
+    // A fan blends from its first corner across the whole shape, so it starts
+    // where the coverage is sure to be full.
+    let mut from_solid = inner.clone();
+    from_solid.rotate_left(curve.deepest_place());
+    fan(&from_solid, out);
+    band(&inner, &outer, out);
     if radii.0 <= half || radii.1 <= half {
         let area = std::f64::consts::PI * f64::from(radii.0) * f64::from(radii.1);
         scale_to_area(out, start, area);
     }
 }
 
-/// An ellipse's outline, `thickness` wide, centred on the outline. Its rings
-/// grow both radii alike, which is exact for a circle and close for an
-/// ellipse.
+/// An ellipse's outline, `thickness` wide all the way round, centred on the
+/// outline. A stroke too wide to leave a hole fills the ellipse.
 pub fn stroke_ellipse(
     rect: ShapeRect,
     color: Color,
@@ -575,32 +592,40 @@ pub fn stroke_ellipse(
     pixel: f32,
     out: &mut Vec<ColorVertex>,
 ) {
-    let (x, y, width, height) = rect;
-    if !(positive(width) && positive(height) && positive(thickness)) {
+    if !usable(rect) || !positive(thickness) {
         return;
     }
+    let (x, y, width, height) = rect;
     let centre = (x + width * 0.5, y + height * 0.5);
     let radii = (width * 0.5, height * 0.5);
     let (half_width, ink) = stroke_profile(thickness, color, pixel);
     let fringe = pixel * 0.5;
-    let segments = ellipse_segments(radii, half_width + fringe, pixel);
-    let ring = |grow: f32| ellipse_ring(centre, radii, grow, segments);
+    let reach = half_width + fringe;
+    let curve = EllipseCurve::new(centre, radii, reach, pixel);
+    // Coverage is full until the inner soft edge begins and gone at its end;
+    // where the ellipse is too tight to go that deep, it stops at what it
+    // reached.
+    let (clear_at, across) = (f64::from(reach), f64::from(pixel));
     stroke_rings(
         [
-            ring(half_width + fringe),
-            ring(half_width - fringe),
-            ring(fringe - half_width),
-            ring(-half_width - fringe),
+            painted(&curve.ring(reach), transparent(ink)),
+            painted(&curve.ring(half_width - fringe), ink),
+            painted(&curve.ring(fringe - half_width), ink),
+            curve.shaded(-reach, ink, |depth| (clear_at - depth) / across),
         ],
-        ink,
         half_width > fringe,
         out,
     );
 }
 
-/// False for zero, a negative or not a number.
+/// False for zero, a negative, infinity or not a number.
 fn positive(value: f32) -> bool {
-    value > 0.0
+    value > 0.0 && value.is_finite()
+}
+
+/// A rectangle with an area and a place on the screen.
+fn usable((x, y, width, height): ShapeRect) -> bool {
+    x.is_finite() && y.is_finite() && positive(width) && positive(height)
 }
 
 /// How wide a stroke is drawn and in what colour: as asked, or, thinner than a
@@ -619,19 +644,15 @@ fn stroke_profile(thickness: f32, color: Color, pixel: f32) -> (f32, Color) {
 /// joined into the two soft edges and, when the stroke is wider than them, the
 /// solid core between.
 fn stroke_rings(
-    [outer_fade, outer_edge, inner_edge, inner_fade]: [Vec<(f32, f32)>; 4],
-    ink: Color,
+    [outer_fade, outer_edge, inner_edge, inner_fade]: [Vec<ColorVertex>; 4],
     has_core: bool,
     out: &mut Vec<ColorVertex>,
 ) {
-    let clear = transparent(ink);
-    let outer_edge = painted(&outer_edge, ink);
-    let inner_edge = painted(&inner_edge, ink);
-    band(&outer_edge, &painted(&outer_fade, clear), out);
+    band(&outer_edge, &outer_fade, out);
     if has_core {
         band(&inner_edge, &outer_edge, out);
     }
-    band(&painted(&inner_fade, clear), &inner_edge, out);
+    band(&inner_fade, &inner_edge, out);
 }
 
 /// A convex shape given as its inner (solid) and outer (clear) rings.
@@ -745,21 +766,101 @@ fn ellipse_segments(radii: (f32, f32), grow: f32, pixel: f32) -> u32 {
     segments.div_ceil(4) * 4
 }
 
-/// The ellipse with both radii grown by `grow` (never below zero).
-fn ellipse_ring(
-    (cx, cy): (f32, f32),
-    radii: (f32, f32),
-    grow: f32,
-    segments: u32,
-) -> Vec<(f32, f32)> {
-    let rx = (radii.0 + grow).max(0.0);
-    let ry = (radii.1 + grow).max(0.0);
-    (0..segments)
-        .map(|i| {
-            let angle = TAU * i as f32 / segments as f32;
-            (cx + rx * angle.cos(), cy + ry * angle.sin())
+/// An ellipse's outline and the places round it that every ring of one shape
+/// shares, so neighbouring rings join point for point. A ring lies a set
+/// distance from the outline along its normal, so a stroke is as wide all the
+/// way round. Worked in `f64`, since radii can be far apart.
+struct EllipseCurve {
+    centre: (f64, f64),
+    radii: (f64, f64),
+    /// The cosine and sine of each place round it, clockwise on screen from
+    /// the right.
+    places: Vec<(f64, f64)>,
+}
+
+impl EllipseCurve {
+    /// With rings up to `reach` units from the outline.
+    fn new(centre: (f32, f32), radii: (f32, f32), reach: f32, pixel: f32) -> Self {
+        use std::f64::consts::FRAC_PI_2;
+        let (a, b) = (f64::from(radii.0), f64::from(radii.1));
+        let parts = ellipse_segments(radii, reach, pixel) / 4;
+        let mut angles: Vec<f64> = (0..parts)
+            .map(|i| FRAC_PI_2 * f64::from(i) / f64::from(parts))
+            .collect();
+        // Even cuts keep the outline within tolerance, but its normal swings
+        // fast round the tight ends of a stretched ellipse, and a ring away
+        // from the outline carries that swing a long way out. So cut at even
+        // turns of the normal as well.
+        if a != b {
+            let turns = arc_segments(reach, TAU, pixel)
+                .clamp(MIN_ELLIPSE_SEGMENTS, MAX_ELLIPSE_SEGMENTS)
+                .div_ceil(4);
+            angles.extend((1..turns).map(|i| {
+                let normal = FRAC_PI_2 * f64::from(i) / f64::from(turns);
+                (b * normal.sin()).atan2(a * normal.cos())
+            }));
+            angles.sort_by(f64::total_cmp);
+            angles.dedup_by(|p, q| (*p - *q).abs() < 1e-9);
+        }
+        // One quarter from the right to just short of the bottom on screen,
+        // mirrored into the other three.
+        let quarter: Vec<(f64, f64)> = angles.iter().map(|t| (t.cos(), t.sin())).collect();
+        let mut places = Vec::with_capacity(quarter.len() * 4);
+        places.extend(quarter.iter().copied());
+        places.push((0.0, 1.0));
+        places.extend(quarter[1..].iter().rev().map(|&(c, s)| (-c, s)));
+        places.extend(quarter.iter().map(|&(c, s)| (-c, -s)));
+        places.push((0.0, -1.0));
+        places.extend(quarter[1..].iter().rev().map(|&(c, s)| (c, -s)));
+        Self {
+            centre: (f64::from(centre.0), f64::from(centre.1)),
+            radii: (a, b),
+            places,
+        }
+    }
+
+    /// Each place's point on the ring `grow` out from the outline (negative is
+    /// inside), and how deep inside that point is. Going inward along a normal
+    /// stops at the long axis: past it, a point is nearer another part of the
+    /// outline, and the ring would cross itself.
+    fn points(&self, grow: f32) -> impl Iterator<Item = ((f32, f32), f64)> + '_ {
+        let grow = f64::from(grow);
+        let (a, b) = self.radii;
+        self.places.iter().map(move |&(c, s)| {
+            let across = ((b * c).powi(2) + (a * s).powi(2)).sqrt();
+            let to_long_axis = a.min(b) * across / a.max(b);
+            let depth = (-grow).clamp(0.0, to_long_axis);
+            let along = if grow < 0.0 { -depth } else { grow };
+            let x = self.centre.0 + a * c + b * c / across * along;
+            let y = self.centre.1 + b * s + a * s / across * along;
+            ((x as f32, y as f32), depth)
         })
-        .collect()
+    }
+
+    /// The place at the end of the short axis, furthest from the tight ends.
+    fn deepest_place(&self) -> usize {
+        if self.radii.0 > self.radii.1 {
+            self.places.len() / 4
+        } else {
+            0
+        }
+    }
+
+    /// The ring `grow` out from the outline.
+    fn ring(&self, grow: f32) -> Vec<(f32, f32)> {
+        self.points(grow).map(|(point, _)| point).collect()
+    }
+
+    /// The ring `grow` out from the outline in `color`, its alpha scaled by
+    /// `coverage` of how deep each point is, no more than full.
+    fn shaded(&self, grow: f32, color: Color, coverage: impl Fn(f64) -> f64) -> Vec<ColorVertex> {
+        self.points(grow)
+            .map(|((x, y), depth)| {
+                let a = color.a * coverage(depth).min(1.0) as f32;
+                ColorVertex::new(x, y, Color { a, ..color })
+            })
+            .collect()
+    }
 }
 
 /// Weakens the triangles written from `start` on, all by one factor, until

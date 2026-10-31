@@ -151,6 +151,15 @@ impl ColorVertex {
     pub const fn new(x: f32, y: f32, color: Color) -> Self {
         Self { x, y, color }
     }
+
+    /// True when every number in it is finite.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        let c = self.color;
+        [self.x, self.y, c.r, c.g, c.b, c.a]
+            .iter()
+            .all(|n| n.is_finite())
+    }
 }
 
 /// One drawing command, in screen pixels, already clipped.
@@ -855,7 +864,9 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Local triangles, three corners each with its own colour, following
-    /// the origin, the opacity and the clip like every other primitive.
+    /// the origin, the opacity and the clip like every other primitive. A
+    /// triangle with anything but finite numbers in it is dropped, so what
+    /// reaches the GPU is always something it can draw.
     pub fn triangles(&mut self, triangles: &[ColorVertex]) {
         if self.current_clip_is_empty() {
             return;
@@ -863,6 +874,9 @@ impl<'a> RenderContext<'a> {
         let mut vertices = Vec::with_capacity(triangles.len());
         for t in triangles.chunks_exact(3) {
             let placed = [self.place(t[0]), self.place(t[1]), self.place(t[2])];
+            if !placed.iter().all(ColorVertex::is_finite) {
+                continue;
+            }
             match self.clip {
                 Some(clip) => clip.clip_triangle(placed, &mut vertices),
                 None => vertices.extend_from_slice(&placed),
@@ -1011,12 +1025,12 @@ impl<'a> RenderContext<'a> {
     }
 
     /// The soft shadow of an opaque rounded rectangle at (`x`, `y`), dropped
-    /// `drop` below it: as dark as six stacked fills, each grown by a further
-    /// sixth of `spread`, so the darkness fades outwards. Only what the
-    /// caster leaves showing is drawn: the bands round the dropped rectangle,
-    /// and the dropped rectangle itself from where the caster's bottom
-    /// corners start to round off. Drawn with the clip lifted to the whole
-    /// screen, because a shadow lies outside the element that casts it.
+    /// `drop` below it: `color` where it meets the rectangle, fading to
+    /// nothing `spread` further out. Only what the caster leaves showing is
+    /// drawn: the bands round the dropped rectangle, and the dropped rectangle
+    /// itself from where the caster's bottom corners start to round off. Drawn
+    /// with the clip lifted to the whole screen, because a shadow lies outside
+    /// the element that casts it. Anything but finite numbers draws nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn soft_shadow(
         &mut self,
@@ -1030,7 +1044,8 @@ impl<'a> RenderContext<'a> {
         color: Color,
     ) {
         const LAYERS: u32 = 6;
-        if color.a.is_nan() || color.a <= 0.0 {
+        let numbers = [x, y, w, h, radius, drop, spread, color.a];
+        if !numbers.iter().all(|n| n.is_finite()) || color.a <= 0.0 {
             return;
         }
         let layer = Color {
@@ -1054,7 +1069,7 @@ impl<'a> RenderContext<'a> {
 
         // Above the caster's bottom corners its straight sides cover the
         // dropped rectangle edge to edge.
-        let shown = y + h - radius.min(h * 0.5);
+        let shown = y + h - radius.clamp(0.0, (h * 0.5).max(0.0));
         self.push_clip(x, shown, w, top + h - shown);
         shape.clear();
         shapes::shadow_core(
@@ -1837,6 +1852,27 @@ mod tests {
             assert!(p.x <= 10.0 + 1e-4);
             if (p.x - 10.0).abs() < 1e-4 {
                 assert!((p.color.r - 0.5).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn a_triangle_that_is_not_all_numbers_is_dropped_and_the_rest_are_kept() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut bad_position = triangle();
+            bad_position[1].x = bad;
+            let mut bad_colour = triangle();
+            bad_colour[2].color.g = bad;
+            for broken in [bad_position, bad_colour] {
+                let list = with_ctx(|c| {
+                    c.triangles(&[broken, triangle()].concat());
+                });
+                assert_eq!(triangles(&list), triangle());
+                let clipped = with_ctx(|c| {
+                    c.push_clip(0.0, 0.0, 100.0, 100.0);
+                    c.triangles(&[broken, triangle()].concat());
+                });
+                assert_eq!(triangles(&clipped), triangle());
             }
         }
     }

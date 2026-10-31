@@ -396,6 +396,115 @@ fn an_ellipse_that_is_not_a_circle_covers_its_area() {
     assert_covers(PI64 * 40.0 * 10.0, &t, 0.01);
 }
 
+/// An ellipse's perimeter, to well within these tests' tolerances
+/// (Ramanujan's second formula).
+fn perimeter(a: f64, b: f64) -> f64 {
+    let h = ((a - b) / (a + b)).powi(2);
+    PI64 * (a + b) * (1.0 + 3.0 * h / (10.0 + (4.0 - 3.0 * h).sqrt()))
+}
+
+/// How far `point` is from the outline of an ellipse with radii (`a`, `b`)
+/// about the origin, by walking the outline.
+fn from_outline(point: (f64, f64), a: f64, b: f64) -> f64 {
+    (0..1440)
+        .map(|i| {
+            let t = f64::from(i) * std::f64::consts::TAU / 1440.0;
+            let (dx, dy) = (point.0 - a * t.cos(), point.1 - b * t.sin());
+            (dx * dx + dy * dy).sqrt()
+        })
+        .fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn a_stroke_on_a_stretched_ellipse_is_as_thick_all_the_way_round() {
+    // A band of even width has the area of its width times the perimeter.
+    let mut t = Vec::new();
+    stroke_ellipse((0.0, 0.0, 80.0, 20.0), WHITE, 2.0, 1.0, &mut t);
+    assert_covers(2.0 * perimeter(40.0, 10.0), &t, 0.005);
+
+    // Each solid corner stays within half the width of the outline.
+    let mut t = Vec::new();
+    stroke_ellipse((-40.0, -10.0, 80.0, 20.0), WHITE, 6.0, 1.0, &mut t);
+    for v in t.iter().filter(|v| v.color.a == 1.0) {
+        let far = from_outline((f64::from(v.x), f64::from(v.y)), 40.0, 10.0);
+        assert!(far <= 2.5 + 0.02, "{v:?} is {far} from the outline");
+    }
+}
+
+#[test]
+fn a_thick_stroke_on_a_stretched_ellipse_does_not_fold_inside() {
+    // Half the width is more than the outline's tightest radius (2.5), so a
+    // plain inner offset would cross itself near the ends of the long axis.
+    let half = 4.0;
+    let mut t = Vec::new();
+    stroke_ellipse((-40.0, -10.0, 80.0, 20.0), WHITE, 2.0 * half, 1.0, &mut t);
+    // What should be covered, cell by cell over one quarter of it.
+    let step = 0.5;
+    let mut expected = 0.0;
+    for ix in 0..100 {
+        for iy in 0..40 {
+            let x = (f64::from(ix) + 0.5) * step;
+            let y = (f64::from(iy) + 0.5) * step;
+            if from_outline((x, y), 40.0, 10.0) <= f64::from(half) {
+                expected += 4.0 * step * step;
+            }
+        }
+    }
+    assert_covers(expected, &t, 0.02);
+    assert!(alphas_in_range(&t));
+}
+
+#[test]
+fn a_stroke_thicker_than_a_stretched_ellipse_fills_it() {
+    let half = 15.0_f64;
+    let mut t = Vec::new();
+    stroke_ellipse((0.0, 0.0, 80.0, 20.0), WHITE, 30.0, 1.0, &mut t);
+    // The outer parallel curve encloses the ellipse, a band and a full circle.
+    let outer = PI64 * 40.0 * 10.0 + perimeter(40.0, 10.0) * half + PI64 * half * half;
+    assert_covers(outer, &t, 0.01);
+}
+
+#[test]
+fn a_wide_stroke_stays_smooth_round_the_tight_ends_of_an_ellipse() {
+    // At the ends of a thin ellipse the outline turns fast, and a wide
+    // stroke's outer edge carries that turn a long way out.
+    let (a, b, half) = (40.0, 2.0, 20.0_f64);
+    let curve = EllipseCurve::new((0.0, 0.0), (40.0, 2.0), 20.5, 1.0);
+    let ring = curve.ring(20.0);
+    for i in 0..ring.len() {
+        let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+        let middle = (f64::from(p.0 + q.0) * 0.5, f64::from(p.1 + q.1) * 0.5);
+        let far = from_outline(middle, a, b);
+        assert!(far >= half - 0.25, "a chord strays to {far}");
+    }
+}
+
+#[test]
+fn a_thin_ellipse_covers_its_area_with_its_ends_fading() {
+    // The soft edge is deeper than the tightest radius at its ends.
+    let mut t = Vec::new();
+    fill_ellipse((0.0, 0.0, 200.0, 4.0), WHITE, 1.0, &mut t);
+    assert_covers(PI64 * 100.0 * 2.0, &t, 0.02);
+    assert!(alphas_in_range(&t));
+    assert_eq!(max_alpha(&t), 1.0);
+}
+
+#[test]
+fn an_ellipse_keeps_its_symmetry_and_a_circle_its_even_cuts() {
+    let curve = EllipseCurve::new((0.0, 0.0), (40.0, 10.0), 3.5, 1.0);
+    let ring = curve.ring(3.0);
+    assert_eq!(ring.len() % 4, 0);
+    for &(x, y) in &ring {
+        let mirrored = |mx: f32, my: f32| {
+            ring.iter()
+                .any(|p| (p.0 - mx).abs() < 1e-3 && (p.1 - my).abs() < 1e-3)
+        };
+        assert!(mirrored(-x, y) && mirrored(x, -y), "{x},{y}");
+    }
+    let circle = EllipseCurve::new((0.0, 0.0), (20.0, 20.0), 0.5, 1.0);
+    assert_eq!(circle.ring(0.5).len(), 32);
+}
+
 #[test]
 fn a_sliver_triangle_does_not_fold() {
     let t = polygon(&[(0.0, 0.0), (100.0, 0.0), (50.0, 0.3)]);
@@ -540,7 +649,63 @@ fn triangle_like_polygons_with_a_tiny_extra_edge_stay_solid() {
 }
 
 #[test]
-fn a_shadow_darkens_inward_and_fades_out_at_its_rim() {
+fn a_shadow_falls_off_without_a_step_from_its_rectangle_to_nothing() {
+    let layer = Color::rgba(0.0, 0.0, 0.0, 0.1);
+    let rect = (20.0, 20.0, 40.0, 20.0);
+    let mut bands = Vec::new();
+    shadow_bands(
+        rect,
+        CornerRadii::default(),
+        (12.0, 3),
+        layer,
+        1.0,
+        &mut bands,
+    );
+    // A ring's darkness by how far it has grown: as dark as the fills stacked
+    // there, each band blending from one ring to the next.
+    let stacked_at = |n: i32| 1.0 - 0.9_f32.powi(n);
+    let right_side = bands
+        .iter()
+        .filter(|v| v.x >= 60.0 && v.y >= 20.0 && v.y <= 40.0);
+    for v in right_side {
+        let expected = match (v.x - 60.0).round() as i32 {
+            0 => stacked_at(3),
+            4 => stacked_at(2),
+            8 => stacked_at(1),
+            12 => 0.0,
+            other => panic!("a ring at {other}"),
+        };
+        assert!((v.color.a - expected).abs() < 1e-6, "{v:?}");
+    }
+    // Every band runs from one darkness to another: none is flat.
+    for quad in bands.chunks_exact(6) {
+        let lowest = quad.iter().map(|v| v.color.a).fold(f32::MAX, f32::min);
+        assert!(max_alpha(quad) > lowest, "{quad:?}");
+    }
+}
+
+#[test]
+fn the_shadow_of_a_square_corner_curves_as_it_spreads() {
+    let layer = Color::rgba(0.0, 0.0, 0.0, 0.1);
+    let mut bands = Vec::new();
+    shadow_bands(
+        (20.0, 20.0, 40.0, 20.0),
+        CornerRadii::default(),
+        (12.0, 3),
+        layer,
+        1.0,
+        &mut bands,
+    );
+    // Its rim stays a spread from the corner, not out at the square's corner.
+    for v in bands.iter().filter(|v| v.x >= 60.0 && v.y <= 20.0) {
+        let from_corner = length((v.x - 60.0, v.y - 20.0));
+        assert!(from_corner <= 12.0 + 0.1, "{v:?}");
+    }
+    assert!(bands.iter().any(|v| v.x > 60.0 && v.x < 72.0 && v.y < 20.0));
+}
+
+#[test]
+fn a_shadow_reaches_as_far_as_its_spread_and_meets_its_core() {
     let layer = Color::rgba(0.0, 0.0, 0.0, 0.1);
     let rect = (20.0, 20.0, 40.0, 20.0);
     let radii = CornerRadii::all(4.0);
@@ -553,17 +718,125 @@ fn a_shadow_darkens_inward_and_fades_out_at_its_rim() {
     assert!((max_alpha(&bands) - dark).abs() < 1e-6);
     assert!(core.iter().all(|v| (v.color.a - dark).abs() < 1e-6));
     assert!(bands.iter().any(|v| v.color.a == 0.0));
-    // Nothing reaches further than the spread and half a pixel.
     for v in &bands {
-        assert!(v.x >= 20.0 - 12.5 - 1e-3 && v.x <= 60.0 + 12.5 + 1e-3);
-        assert!(v.y >= 20.0 - 12.5 - 1e-3 && v.y <= 40.0 + 12.5 + 1e-3);
+        assert!(v.x >= 20.0 - 12.0 - 1e-3 && v.x <= 60.0 + 12.0 + 1e-3);
+        assert!(v.y >= 20.0 - 12.0 - 1e-3 && v.y <= 40.0 + 12.0 + 1e-3);
     }
-    // The bands leave the rectangle itself to the core: what they cover
-    // comes to less than the grown rectangle at full darkness.
-    assert!(covered_area(&bands) < f64::from(dark) * (64.0 * 44.0 - 40.0 * 20.0));
     // The core's edge is the first band's inner edge, exactly.
-    let edge = |t: &[ColorVertex]| -> HashSet<(u32, u32)> { t.iter().map(|v| bits(*v)).collect() };
-    let core_points = edge(&core);
-    let band_points = edge(&bands);
-    assert!(core_points.is_subset(&band_points));
+    let points =
+        |t: &[ColorVertex]| -> HashSet<(u32, u32)> { t.iter().map(|v| bits(*v)).collect() };
+    assert!(points(&core).is_subset(&points(&bands)));
+}
+
+const NOT_NUMBERS: [f32; 3] = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY];
+
+#[test]
+fn a_position_or_size_that_is_not_a_number_writes_nothing() {
+    let square = CornerRadii::default();
+    for bad in NOT_NUMBERS {
+        for rect in [
+            (bad, 0.0, 10.0, 10.0),
+            (0.0, bad, 10.0, 10.0),
+            (0.0, 0.0, bad, 10.0),
+            (0.0, 0.0, 10.0, bad),
+        ] {
+            let mut t = Vec::new();
+            fill_rounded_rect(rect, square, WHITE, 1.0, &mut t);
+            stroke_rounded_rect(rect, square, WHITE, 2.0, 1.0, &mut t);
+            fill_ellipse(rect, WHITE, 1.0, &mut t);
+            stroke_ellipse(rect, WHITE, 2.0, 1.0, &mut t);
+            shadow_bands(rect, square, (4.0, 6), WHITE, 1.0, &mut t);
+            shadow_core(rect, square, (4.0, 6), WHITE, 1.0, &mut t);
+            assert!(t.is_empty(), "{rect:?}");
+        }
+        let rect = (0.0, 0.0, 10.0, 10.0);
+        let mut t = Vec::new();
+        stroke_rounded_rect(rect, square, WHITE, bad, 1.0, &mut t);
+        stroke_ellipse(rect, WHITE, bad, 1.0, &mut t);
+        shadow_bands(rect, square, (bad, 6), WHITE, 1.0, &mut t);
+        shadow_core(rect, square, (bad, 6), WHITE, 1.0, &mut t);
+        assert!(t.is_empty(), "thickness or spread {bad}");
+    }
+}
+
+#[test]
+fn a_radius_that_is_not_a_number_or_is_negative_is_a_square_corner() {
+    assert_eq!(
+        clamp_radii(
+            CornerRadii::new(f32::NAN, -5.0, f32::INFINITY, 10.0),
+            60.0,
+            30.0
+        ),
+        CornerRadii::new(0.0, 0.0, 0.0, 10.0)
+    );
+    for bad in NOT_NUMBERS {
+        // Thin enough for the alpha to be worked out from the corners.
+        let mut t = Vec::new();
+        fill_rounded_rect(
+            (0.0, 0.0, 100.0, 0.5),
+            CornerRadii::all(bad),
+            WHITE,
+            1.0,
+            &mut t,
+        );
+        assert_covers(50.0, &t, 0.02);
+    }
+}
+
+#[test]
+fn a_polygon_with_a_point_that_is_not_a_number_is_told_apart() {
+    for bad in NOT_NUMBERS {
+        let good = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)];
+        for i in 0..good.len() {
+            for point in [(bad, good[i].1), (good[i].0, bad)] {
+                let mut points = good;
+                points[i] = point;
+                let mut t = Vec::new();
+                assert_eq!(
+                    fill_convex_polygon(&white(&points), 1.0, &mut t),
+                    ShapeOutcome::NotFinite
+                );
+                assert!(t.is_empty());
+            }
+        }
+        let mut corners = white(&good);
+        corners[1].color.a = bad;
+        let mut t = Vec::new();
+        assert_eq!(
+            fill_convex_polygon(&corners, 1.0, &mut t),
+            ShapeOutcome::NotFinite
+        );
+    }
+}
+
+#[test]
+fn a_polygon_too_large_to_measure_is_not_drawn() {
+    let huge = 1e30;
+    let mut t = Vec::new();
+    // Every turn overflows, so none of them turns either way.
+    assert_eq!(
+        fill_convex_polygon(
+            &white(&[(-huge, -huge), (huge, -huge), (huge, huge), (-huge, huge)]),
+            1.0,
+            &mut t,
+        ),
+        ShapeOutcome::Nothing
+    );
+    // One small corner does turn, and the rest cannot be added up.
+    assert_eq!(
+        fill_convex_polygon(
+            &white(&[
+                (-1.0, 0.0),
+                (0.0, -1.0),
+                (1.0, 0.0),
+                (huge, huge),
+                (0.0, 2.0 * huge),
+                (-huge, huge),
+            ]),
+            1.0,
+            &mut t,
+        ),
+        ShapeOutcome::NotConvex
+    );
+    assert!(t.is_empty());
 }

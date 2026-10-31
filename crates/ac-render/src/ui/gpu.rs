@@ -1030,7 +1030,8 @@ mod tests {
         }
     }
 
-    /// A shadow darkens most beside its caster and is gone past its spread.
+    /// A shadow darkens most beside its caster, fades smoothly and is gone
+    /// past its spread.
     #[test]
     #[ignore = "needs a GPU"]
     fn a_shadow_fades_out_from_its_caster() {
@@ -1040,8 +1041,13 @@ mod tests {
         });
         let across: Vec<u8> = (44..58).map(|x| drawn[32 * 64 + x]).collect();
         assert!(across[0] > 100, "{across:?}");
-        assert!(across.windows(2).all(|p| p[0] >= p[1]), "{across:?}");
         assert_eq!(across[across.len() - 1], 0, "{across:?}");
+        // No flat runs and no jumps: it fades, it does not step.
+        let fading = &across[..12];
+        for pair in fading.windows(2) {
+            assert!(pair[0] > pair[1], "{across:?}");
+            assert!(pair[0] - pair[1] <= 25, "{across:?}");
+        }
     }
 
     /// A one-byte coverage texture draws exactly as its four-channel image
