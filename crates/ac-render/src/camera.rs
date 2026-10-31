@@ -123,6 +123,18 @@ pub fn yaw_of(orientation: Quat) -> f32 {
     forward.y.atan2(forward.x)
 }
 
+/// `angle` wrapped to (-π, π], radians.
+#[must_use]
+pub fn wrap_angle(angle: f32) -> f32 {
+    use std::f32::consts::{PI, TAU};
+    let wrapped = (angle + PI).rem_euclid(TAU) - PI;
+    if wrapped <= -PI {
+        wrapped + TAU
+    } else {
+        wrapped
+    }
+}
+
 /// Translation and rotation smoothing of the chase camera: each frame the
 /// eye moves `stiffness * dt * 10` of the way to where it should be. The
 /// player's "camera stiffness" setting replaces it ([`ChaseTuning`]).
@@ -149,6 +161,11 @@ pub struct ChaseTuning {
     pub invert_mouse_look_y_axis: bool,
     /// The camera heads along the slope the player moves on.
     pub align_to_slope: bool,
+    /// Modern mouse turning: a right-button drag over the world turns the
+    /// view around the character, and the character turns to face it.
+    pub modern_mouse_turning: bool,
+    /// With modern mouse turning, both buttons held run forward.
+    pub both_mouse_buttons_run_forward: bool,
 }
 
 impl Default for ChaseTuning {
@@ -165,6 +182,8 @@ impl From<&ac_host::settings::CameraTurningSettings> for ChaseTuning {
             mouse_look_sensitivity: s.mouse_look_sensitivity,
             invert_mouse_look_y_axis: s.invert_mouse_look_y_axis,
             align_to_slope: s.align_to_slope,
+            modern_mouse_turning: s.modern_mouse_turning,
+            both_mouse_buttons_run_forward: s.both_mouse_buttons_run_forward,
         }
     }
 }
@@ -345,6 +364,11 @@ pub struct ChaseCamera {
     /// Rotates asked for in the first-person view since the frame last
     /// took them (they turn the character).
     pending_first_person_rotate: f32,
+    /// Modern mouse turning holds the view: the yaw it looks along (radians
+    /// from +x, counter-clockwise), whatever the character faces.
+    held_view: Option<f32>,
+    /// The character's facing at the last update.
+    subject_yaw: f32,
 }
 
 /// One first-person rotate turns the character this many compass degrees.
@@ -384,6 +408,8 @@ impl Default for ChaseCamera {
             last_mouse_delta: (0.0, 0.0),
             last_filter_time: 0.0,
             pending_first_person_rotate: 0.0,
+            held_view: None,
+            subject_yaw: 0.0,
         }
     }
 }
@@ -421,11 +447,24 @@ impl ChaseCamera {
         collision: Option<ChaseCollision<'_>>,
     ) {
         let pivot = subject.position + Vec3::new(0.0, 0.0, self.pivot_height);
-        let tracked = compute_tracked_heading(pivot, subject.tracked_target);
+        self.subject_yaw = subject.yaw;
+        // A held view looks where it was turned, whatever the character
+        // faces: the swing is what lies between them, and neither a combat
+        // target nor the slope turns it.
+        let held = self.held_view;
+        if let Some(view) = held {
+            self.yaw_offset = wrap_angle(view - subject.yaw);
+        }
+        let tracked = if held.is_some() {
+            None
+        } else {
+            compute_tracked_heading(pivot, subject.tracked_target)
+        };
 
         // Look-down, map mode and a wide orbit see the flat facing; the
         // head view always tilts.
-        let alignment = self.tuning.align_to_slope
+        let alignment = held.is_none()
+            && self.tuning.align_to_slope
             && !self.looking_down
             && !self.map_mode
             && (self.in_head
@@ -446,11 +485,14 @@ impl ChaseCamera {
         }
         let average = average_velocity(&self.velocity_ring, self.velocity_count);
 
-        // Look-down and map mode bake the orbit into the heading.
-        let heading_yaw = if !self.in_head && self.target_direction_local.is_some() {
-            subject.yaw + self.yaw_offset
-        } else {
-            subject.yaw
+        // Look-down and map mode bake the orbit into the heading; a held
+        // view in the head looks along the view.
+        let heading_yaw = match held {
+            Some(view) if self.in_head => view,
+            _ if !self.in_head && self.target_direction_local.is_some() => {
+                subject.yaw + self.yaw_offset
+            }
+            _ => subject.yaw,
         };
         let heading = tracked.unwrap_or_else(|| {
             compute_heading(
@@ -470,7 +512,9 @@ impl ChaseCamera {
             desired_pose(pivot, heading, self.distance, self.pitch, self.yaw_offset)
         };
 
-        let sought_eye = if self.initialised {
+        // A held view sits rigidly where the mouse put it; in the head the
+        // look still eases.
+        let sought_eye = if self.initialised && (held.is_none() || self.in_head) {
             // The game's camera stiffness sets only the rotation in first
             // person.
             let t_alpha = if self.in_head {
@@ -641,11 +685,71 @@ impl ChaseCamera {
         if !adjustment.is_finite() || adjustment == 0.0 {
             return;
         }
+        // The mouse owns a held view: the orbit keys leave it alone.
+        if self.held_view.is_some() {
+            return;
+        }
         if self.in_head {
             self.pending_first_person_rotate += adjustment;
             return;
         }
         self.yaw_offset += adjustment * OFFSET_ANGLE_RADIANS;
+    }
+
+    /// The player's camera settings. Turning modern mouse turning on or off
+    /// puts the swing back to zero (behind the character).
+    pub fn set_tuning(&mut self, tuning: ChaseTuning) {
+        if tuning.modern_mouse_turning != self.tuning.modern_mouse_turning {
+            self.yaw_offset = 0.0;
+        }
+        self.tuning = tuning;
+    }
+
+    /// Modern mouse turning takes the view: from now it looks along the
+    /// yaw it looks along now (the character's facing and the swing), and
+    /// it stays there while the character turns, until it is turned
+    /// ([`Self::turn_held_view`]) or let go ([`Self::release_view`]). It
+    /// follows the character rigidly while held (no easing), so it turns
+    /// with the mouse at once; in the first-person view the look still
+    /// eases. The orbit keys leave a held view alone, and neither a combat
+    /// target nor the slope turns it.
+    pub fn hold_view(&mut self) {
+        if self.held_view.is_none() {
+            let swing = if self.in_head { 0.0 } else { self.yaw_offset };
+            self.held_view = Some(wrap_angle(self.subject_yaw + swing));
+        }
+    }
+
+    /// Turn the held view by `radians` (positive turns it left).
+    pub fn turn_held_view(&mut self, radians: f32) {
+        if let Some(view) = self.held_view.as_mut()
+            && radians.is_finite()
+        {
+            *view = wrap_angle(*view + radians);
+        }
+    }
+
+    /// The yaw the held view looks along, while one is held.
+    #[must_use]
+    pub fn held_view_yaw(&self) -> Option<f32> {
+        self.held_view
+    }
+
+    /// Let go of the held view: the camera stays where it is, as a swing
+    /// from the character's facing, and follows the character again.
+    pub fn release_view(&mut self) {
+        if let Some(view) = self.held_view.take()
+            && !self.in_head
+        {
+            self.yaw_offset = wrap_angle(view - self.subject_yaw);
+        }
+    }
+
+    /// The character's facing at the last update (radians from +x,
+    /// counter-clockwise).
+    #[must_use]
+    pub fn subject_yaw(&self) -> f32 {
+        self.subject_yaw
     }
 
     /// The rotate collected in the first-person view since the last call,
@@ -721,6 +825,10 @@ impl ChaseCamera {
         self.target_direction_local = None;
         self.yaw_offset = 0.0;
         self.pivot_height = 1.5;
+        // A held view comes back behind the character too.
+        if self.held_view.is_some() {
+            self.held_view = Some(self.subject_yaw);
+        }
         let (back, up) = default_view_offset();
         self.set_viewer_offset(back, up);
     }
@@ -733,6 +841,9 @@ impl ChaseCamera {
         self.in_head = true;
         self.target_direction_local = None;
         self.yaw_offset = 0.0;
+        if self.held_view.is_some() {
+            self.held_view = Some(self.subject_yaw);
+        }
         self.distance = FIRST_PERSON_FORWARD;
         self.pitch = 0.0;
         self.initialised = false;

@@ -212,6 +212,13 @@ pub struct CameraTurningSettings {
     /// The configuration page's own "use mouse turning" preference (the
     /// character option of the same name is the server's).
     pub use_mouse_turning: bool,
+    /// Modern mouse turning (an OpenAC option, off by default): dragging
+    /// with the right button pressed over the world turns the view around
+    /// the character, and the character turns to face where it looks.
+    pub modern_mouse_turning: bool,
+    /// With modern mouse turning on, holding both mouse buttons (pressed
+    /// over the world) runs forward (an OpenAC option, off by default).
+    pub both_mouse_buttons_run_forward: bool,
 }
 
 impl Default for CameraTurningSettings {
@@ -223,6 +230,8 @@ impl Default for CameraTurningSettings {
             align_to_slope: true,
             invert_mouse_look_y_axis: false,
             use_mouse_turning: false,
+            modern_mouse_turning: false,
+            both_mouse_buttons_run_forward: false,
         }
     }
 }
@@ -239,6 +248,8 @@ impl CameraTurningSettings {
             align_to_slope: false,
             invert_mouse_look_y_axis: true,
             use_mouse_turning: false,
+            modern_mouse_turning: false,
+            both_mouse_buttons_run_forward: false,
         }
     }
 }
@@ -412,6 +423,12 @@ fn read_camera(c: &[Member]) -> Result<CameraTurningSettings, Unreadable> {
         align_to_slope: read_bool(c, "alignToSlope", d.align_to_slope),
         invert_mouse_look_y_axis: read_bool(c, "invertMouseLookYAxis", d.invert_mouse_look_y_axis),
         use_mouse_turning: read_bool(c, "useMouseTurning", d.use_mouse_turning),
+        modern_mouse_turning: read_bool(c, "modernMouseTurning", d.modern_mouse_turning),
+        both_mouse_buttons_run_forward: read_bool(
+            c,
+            "bothMouseButtonsRunForward",
+            d.both_mouse_buttons_run_forward,
+        ),
     })
 }
 
@@ -555,9 +572,14 @@ impl SettingsStore {
             ("adjustmentSpeed", float_text(c.adjustment_speed)),
             ("alignToSlope", bool_text(c.align_to_slope)),
             (
+                "bothMouseButtonsRunForward",
+                bool_text(c.both_mouse_buttons_run_forward),
+            ),
+            (
                 "invertMouseLookYAxis",
                 bool_text(c.invert_mouse_look_y_axis),
             ),
+            ("modernMouseTurning", bool_text(c.modern_mouse_turning)),
             ("mouseLookSensitivity", float_text(c.mouse_look_sensitivity)),
             ("stiffness", float_text(c.stiffness)),
             ("useMouseTurning", bool_text(c.use_mouse_turning)),

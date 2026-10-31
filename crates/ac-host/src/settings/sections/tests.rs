@@ -351,9 +351,53 @@ fn the_camera_section_round_trips_use_mouse_turning() {
         align_to_slope: false,
         invert_mouse_look_y_axis: true,
         use_mouse_turning: true,
+        modern_mouse_turning: false,
+        both_mouse_buttons_run_forward: false,
     };
     store.save_camera_turning(&original).unwrap();
     assert_eq!(store.load_camera_turning(), (original, None));
+}
+
+#[test]
+fn modern_mouse_turning_is_off_by_default_and_round_trips_under_openacs_keys() {
+    let d = CameraTurningSettings::default();
+    assert!(!d.modern_mouse_turning);
+    assert!(!d.both_mouse_buttons_run_forward);
+
+    let t = Temp::new("camera-modern");
+    let store = t.store();
+    let modern = CameraTurningSettings {
+        modern_mouse_turning: true,
+        both_mouse_buttons_run_forward: true,
+        ..d
+    };
+    store.save_camera_turning(&modern).unwrap();
+    let raw = t.raw();
+    assert!(raw.contains("\"modernMouseTurning\": true"), "{raw}");
+    assert!(
+        raw.contains("\"bothMouseButtonsRunForward\": true"),
+        "{raw}"
+    );
+    assert_eq!(store.load_camera_turning(), (modern, None));
+
+    // A file written before the options existed reads them as off.
+    t.write(r#"{ "cameraTurning": { "stiffness": 0.6, "useMouseTurning": true } }"#);
+    let (old, error) = store.load_camera_turning();
+    assert_eq!(error, None);
+    assert!(old.use_mouse_turning);
+    assert!(!old.modern_mouse_turning && !old.both_mouse_buttons_run_forward);
+}
+
+#[test]
+fn the_mouse_turning_macro_leaves_modern_mouse_turning_alone() {
+    let current = CameraTurningSettings {
+        modern_mouse_turning: true,
+        both_mouse_buttons_run_forward: true,
+        ..CameraTurningSettings::default()
+    };
+    let r = mouse_turning_macro(&current, false);
+    assert!(r.updated.modern_mouse_turning);
+    assert!(r.updated.both_mouse_buttons_run_forward);
 }
 
 // -- sections together ------------------------------------------------------

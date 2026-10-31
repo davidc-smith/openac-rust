@@ -474,6 +474,26 @@ const fn mixer(field: MixerField) -> OptionKey {
     OptionKey::Mixer(field)
 }
 
+/// The caption of the modern mouse turning option.
+pub const MODERN_MOUSE_TURNING_LABEL: &str = "Modern Mouse Turning";
+/// The caption of its both-buttons-run option.
+pub const BOTH_MOUSE_BUTTONS_RUN_FORWARD_LABEL: &str = "Both Mouse Buttons Run Forward";
+
+/// A row the settings make unavailable now: Use Mouse Turning while modern
+/// mouse turning is on (modern turning replaces it), and Both Mouse
+/// Buttons Run Forward while it is off (it needs it). Shown grey; a click
+/// changes nothing.
+#[must_use]
+pub fn unavailable(key: OptionKey, settings: &ac_host::settings::PlayerSettings) -> bool {
+    match key {
+        OptionKey::Camera(CameraField::UseMouseTurning) => settings.camera.modern_mouse_turning,
+        OptionKey::Camera(CameraField::BothMouseButtonsRunForward) => {
+            !settings.camera.modern_mouse_turning
+        }
+        _ => false,
+    }
+}
+
 const fn explicit_toggle(
     label: &'static str,
     default: bool,
@@ -756,6 +776,12 @@ pub fn config_rows() -> Vec<ConfigRow> {
         ),
         Separator,
         Header("ID_Input_InputSection"),
+        explicit_toggle(
+            MODERN_MOUSE_TURNING_LABEL,
+            false,
+            camera(CameraField::ModernMouseTurning),
+            "Hold the right mouse button over the world and drag: the view turns around your character, and your character turns to face it at its normal turn speed. The turn keys still turn your character. Replaces Use Mouse Turning while on.",
+        ),
         slider(
             template::SIMPLE_SLIDER,
             "ID_Input_MouseLookSensitivity",
@@ -778,6 +804,12 @@ pub fn config_rows() -> Vec<ConfigRow> {
             false,
             camera(CameraField::UseMouseTurning),
             true,
+        ),
+        explicit_toggle(
+            BOTH_MOUSE_BUTTONS_RUN_FORWARD_LABEL,
+            false,
+            camera(CameraField::BothMouseButtonsRunForward),
+            "With Modern Mouse Turning on: hold both mouse buttons, pressed over the world, to run forward. Letting go of either stops; the back-up key cancels it.",
         ),
         Separator,
         Header("ID_UI_UISection"),
@@ -1133,8 +1165,24 @@ mod tests {
             .position(|r| matches!(r, ConfigRow::ExplicitHeader(_)))
             .expect("the enhancements section");
         let rows = &all[..enhancements];
-        assert_eq!(option_rows(rows), 40);
-        assert_eq!(rows.len(), 49);
+        // The 39, the UI scale row, and OpenAC's two modern mouse turning
+        // rows, last of the explicit toggles (they sit in the input section).
+        let modern: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                ConfigRow::ExplicitToggle { label, .. } => Some(*label),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            modern[modern.len() - 2..],
+            [
+                MODERN_MOUSE_TURNING_LABEL,
+                BOTH_MOUSE_BUTTONS_RUN_FORWARD_LABEL
+            ]
+        );
+        assert_eq!(option_rows(rows), 39 + 1 + 2);
+        assert_eq!(rows.len(), 48 + 1 + 2);
         let headers = rows
             .iter()
             .filter(|r| matches!(r, ConfigRow::Header(_)))

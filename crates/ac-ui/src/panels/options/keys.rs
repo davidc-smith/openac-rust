@@ -40,6 +40,8 @@ pub enum CameraField {
     AlignToSlope,
     InvertMouseLookYAxis,
     UseMouseTurning,
+    ModernMouseTurning,
+    BothMouseButtonsRunForward,
 }
 
 /// A display setting.
@@ -235,6 +237,10 @@ impl LiveValues {
                     CameraField::AlignToSlope => Bool(c.align_to_slope),
                     CameraField::InvertMouseLookYAxis => Bool(c.invert_mouse_look_y_axis),
                     CameraField::UseMouseTurning => Bool(c.use_mouse_turning),
+                    CameraField::ModernMouseTurning => Bool(c.modern_mouse_turning),
+                    CameraField::BothMouseButtonsRunForward => {
+                        Bool(c.both_mouse_buttons_run_forward)
+                    }
                 }
             }
             OptionKey::Display(f) => {
@@ -330,6 +336,10 @@ impl LiveValues {
                         c.invert_mouse_look_y_axis = *x;
                     }
                     (CameraField::UseMouseTurning, Bool(x)) => c.use_mouse_turning = *x,
+                    (CameraField::ModernMouseTurning, Bool(x)) => c.modern_mouse_turning = *x,
+                    (CameraField::BothMouseButtonsRunForward, Bool(x)) => {
+                        c.both_mouse_buttons_run_forward = *x;
+                    }
                     _ => return None,
                 }
                 Some(Section::Camera)
