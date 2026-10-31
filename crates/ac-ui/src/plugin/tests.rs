@@ -469,7 +469,10 @@ fn font_window(
     let mut host = UiHost::new();
     let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
     let c = build_panel(&mut host.root, &view, Some(Arc::clone(classic)), outbox)
-        .with_modern_font(Some(Arc::clone(modern)));
+        .with_modern_fonts(Some(ModernFonts {
+            regular: Arc::clone(modern),
+            semibold: Arc::clone(modern),
+        }));
     let root = host.root.root();
     host.root.add_child(root, c.root);
     host.root
@@ -481,9 +484,13 @@ fn font_window(
 /// Two fonts as OpenAC's test makes them: the bundled font at 16 and at
 /// 12 pixels.
 fn bundled_fonts() -> (Arc<UiFont>, Arc<UiFont>) {
-    use crate::bundled_font::bake;
-    let modern = bake(16.0).unwrap().create_font(TextureRef::Runtime(1));
-    let classic = bake(12.0).unwrap().create_font(TextureRef::Runtime(2));
+    use crate::bundled_font::{Weight, bake};
+    let modern = bake(16.0, Weight::Regular)
+        .unwrap()
+        .create_font(TextureRef::Runtime(1));
+    let classic = bake(12.0, Weight::Regular)
+        .unwrap()
+        .create_font(TextureRef::Runtime(2));
     (Arc::new(modern), Arc::new(classic))
 }
 

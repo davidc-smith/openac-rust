@@ -25,7 +25,7 @@ use ac_plugin_ui::{
 use ac_proto::Quaternion;
 use ac_runtime::session::SessionCommand;
 use ac_ui::DatContent;
-use ac_ui::bundled_font;
+use ac_ui::bundled_font::{self, BundledFontError, ModernFonts, Weight};
 use ac_ui::draw::{Color, SpriteSizes, TextureRef};
 use ac_ui::font::{DEFAULT_FONT_ID, UiFont};
 use ac_ui::icons::{IconComposer, IconSource, Rgba};
@@ -128,7 +128,7 @@ pub struct PluginWindowUi {
     manager_chord: Option<ac_ui::input::KeyChord>,
     /// The bundled sans font the modern themes draw opted-in windows in
     /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
-    modern_font: Option<Arc<UiFont>>,
+    modern_fonts: Option<ModernFonts>,
     /// A markup window's title colour without a theme, from the player's
     /// `controlsntrols.ini` (`[title] color`); white without one.
     title_color: Option<Color>,
@@ -428,14 +428,11 @@ impl WindowUi {
     pub(super) fn mount_plugin_ui(&mut self) {
         // The bundled sans font of the modern themes, baked into an atlas
         // texture of this window (OpenAC `BundledUiFont.Load`).
-        match bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT) {
-            Ok(mut atlas) => {
-                let coverage = std::mem::take(&mut atlas.coverage);
-                let texture = self
-                    .images
-                    .add_coverage(atlas.width, atlas.height, coverage);
-                self.plugins.modern_font = Some(Arc::new(atlas.create_font(texture)));
-            }
+        match self.bake_bundled_font(Weight::Regular).and_then(|regular| {
+            let semibold = self.bake_bundled_font(Weight::SemiBold)?;
+            Ok(ModernFonts { regular, semibold })
+        }) {
+            Ok(fonts) => self.plugins.modern_fonts = Some(fonts),
             Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
         }
         let font = self.content.font(DEFAULT_FONT_ID);
@@ -472,6 +469,17 @@ impl WindowUi {
         // changes nothing (as OpenAC's publish of an unchanged theme
         // raises nothing); only another theme is sent.
         self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
+    }
+
+    /// The bundled font in `weight` at its usual size, as a font over a new
+    /// atlas texture.
+    fn bake_bundled_font(&self, weight: Weight) -> Result<Arc<UiFont>, BundledFontError> {
+        let mut atlas = bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT, weight)?;
+        let coverage = std::mem::take(&mut atlas.coverage);
+        let texture = self
+            .images
+            .add_coverage(atlas.width, atlas.height, coverage);
+        Ok(Arc::new(atlas.create_font(texture)))
     }
 
     /// The plugin theme in force: opted-in windows restyle, the shelf
@@ -545,7 +553,7 @@ impl WindowUi {
             let outbox: PluginOutbox = Rc::new(std::cell::RefCell::new(Vec::new()));
             let font = self.content.font(DEFAULT_FONT_ID);
             let controller = build_panel(&mut self.host.root, &view, font, Rc::clone(&outbox))
-                .with_modern_font(self.plugins.modern_font.clone())
+                .with_modern_fonts(self.plugins.modern_fonts.clone())
                 .with_title_color(&mut self.host.root, self.plugins.title_color());
             let frame = controller.root;
             let window = controller.window_name.clone();
@@ -748,7 +756,7 @@ impl WindowUi {
                 Rc::clone(&self.plugins.outbox),
                 Some(state),
             )
-            .with_modern_font(self.plugins.modern_font.clone())
+            .with_modern_fonts(self.plugins.modern_fonts.clone())
             .with_title_color(&mut self.host.root, self.plugins.title_color());
             for warning in controller.warnings() {
                 self.notices.push(format!(

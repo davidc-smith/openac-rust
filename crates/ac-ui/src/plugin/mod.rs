@@ -35,6 +35,7 @@ use ac_plugin_ui::markup::{
 };
 use ac_plugin_ui::{ActionValue, PanelView, Rgba, UiInput, UiValue};
 
+use crate::bundled_font::ModernFonts;
 use crate::draw::Color;
 use crate::font::UiFont;
 use crate::geometry::AnchorEdges;
@@ -287,7 +288,7 @@ pub struct PluginPanelController {
     /// The font the window was built with.
     classic_font: Option<Arc<UiFont>>,
     /// The bundled sans font the modern themes draw text in, when loaded.
-    modern_font: Option<Arc<UiFont>>,
+    modern_fonts: Option<ModernFonts>,
     /// The title's colour without a theme (`controls.ini`'s `[title] color`,
     /// else white).
     title_color: Color,
@@ -545,7 +546,7 @@ pub fn build_panel_with_state(
         shifts,
         notices: Vec::new(),
         classic_font: font.clone(),
-        modern_font: None,
+        modern_fonts: None,
         title_color: Color::WHITE,
         title_bar,
         content,
@@ -680,8 +681,8 @@ impl PluginPanelController {
     /// `PluginUiThemeSettings.ModernFont`). Without it, every theme keeps
     /// the built font.
     #[must_use]
-    pub fn with_modern_font(mut self, font: Option<Arc<UiFont>>) -> Self {
-        self.modern_font = font;
+    pub fn with_modern_fonts(mut self, fonts: Option<ModernFonts>) -> Self {
+        self.modern_fonts = fonts;
         self
     }
 
@@ -856,8 +857,11 @@ impl PluginPanelController {
         // With the bundled font loaded: the text font and a menu's caption
         // font for this theme (OpenAC `PluginMarkupTheme`'s font bindings;
         // a menu is built without a caption font of its own).
-        let fonts = self.modern_font.as_ref().map(|modern| match p {
-            Some(_) => (Some(Arc::clone(modern)), Some(Arc::clone(modern))),
+        let fonts = self.modern_fonts.as_ref().map(|modern| match p {
+            Some(_) => (
+                Some(Arc::clone(&modern.regular)),
+                Some(Arc::clone(&modern.regular)),
+            ),
             None => (self.classic_font.clone(), None),
         });
         let text_font = fonts.as_ref().map(|(text, _)| text);
