@@ -23,18 +23,32 @@ pub enum TitleSubject<'a> {
     /// No character is in the world yet (or the window has no session).
     BeforeWorld,
     /// A character is in the world: its name, once the session has sent
-    /// the player's object.
+    /// it.
     InWorld(Option<&'a str>),
 }
 
 impl<'a> TitleSubject<'a> {
-    /// Whose window shows `scene`: the character the session plays, read
-    /// from that session's own player object, so each window names its own.
+    /// Whose window shows `scene`: the character its own session plays, so
+    /// each window names its own. The name is the account's character list
+    /// entry for the player, as character selection shows it (an admin's
+    /// with its "+"; the server may name the object in the world without
+    /// it, as while cloaked); the player object's name until the list is
+    /// known.
     #[must_use]
     pub fn of(scene: Option<&'a Scene>) -> Self {
         match scene {
             Some(scene) if scene.in_world() => {
-                Self::InWorld(scene.player().and_then(|p| p.name.as_deref()))
+                let listed = scene.player_guid().and_then(|guid| {
+                    scene
+                        .pregame()
+                        .selection
+                        .as_ref()?
+                        .entries
+                        .iter()
+                        .find(|entry| entry.character_id == guid)
+                        .map(|entry| entry.name.as_str())
+                });
+                Self::InWorld(listed.or_else(|| scene.player().and_then(|p| p.name.as_deref())))
             }
             _ => Self::BeforeWorld,
         }
@@ -250,6 +264,37 @@ mod tests {
         assert_eq!(
             TitleSubject::of(Some(&arriving)),
             TitleSubject::InWorld(None)
+        );
+    }
+
+    #[test]
+    fn the_name_is_the_character_list_entry_as_character_selection_shows_it() {
+        use ac_runtime::session::pregame::PreGameEvent;
+        use ac_runtime::session::selection::{CharacterSelection, SelectionEntry};
+        // The server names an admin's object in the world without the "+"
+        // the account's character list gives it.
+        let mut scene = scene(Some(0x5000_0001), vec![object(1, 0x5000_0001, "Aldric")]);
+        let mut list = CharacterSelection::new().snapshot();
+        list.entries = vec![
+            SelectionEntry {
+                active_index: 0,
+                character_id: 0x5000_0002,
+                name: "Brienne".into(),
+                seconds_greyed_out: 0,
+            },
+            SelectionEntry {
+                active_index: 1,
+                character_id: 0x5000_0001,
+                name: "+Aldric".into(),
+                seconds_greyed_out: 0,
+            },
+        ];
+        scene.apply(PresentationEvent::PreGame(PreGameEvent::Selection(
+            Box::new(list),
+        )));
+        assert_eq!(
+            TitleSubject::of(Some(&scene)),
+            TitleSubject::InWorld(Some("+Aldric"))
         );
     }
 }
