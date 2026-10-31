@@ -101,9 +101,11 @@ a session without a window answers the same.
 positions, and icons and ground shapes (`Host::create_marker_layer`, API 1.3)
 over objects or at positions. Lines, triangles and markers live in layers the
 plugin owns: setting a layer replaces its contents, and removing it, or
-unloading the plugin, takes them down. Labels and markers also go when the
-character leaves the world, since the objects they sat on go with it; a marker
-layer stays usable, so set its markers again on the next stay.
+unloading the plugin, takes them down. Labels, and markers over objects, also
+go when the character leaves the world, since the objects they sat on go with
+it and their ids mean nothing on the next stay; a marker layer stays usable,
+so set them again on the next stay. Lines, triangles and markers at a fixed
+position stay, since a position is the same place in the world after a relog.
 
 *Triangles* are flat between their three corners and see-through by their
 colour's alpha (`0xRRGGBBAA`, one per corner, blended across the face). They

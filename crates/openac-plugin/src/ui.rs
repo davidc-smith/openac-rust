@@ -1230,9 +1230,9 @@ impl Host<'_> {
         }
     }
 
-    /// A new, empty world-marker layer (API 1.3). Its markers go when the
-    /// character leaves the world, and the layer stays usable for the next
-    /// stay.
+    /// A new, empty world-marker layer (API 1.3). Its markers over objects
+    /// go when the character leaves the world (those at fixed positions
+    /// stay), and the layer stays usable for the next stay.
     pub fn create_marker_layer(&mut self) -> MarkerLayer {
         let reply = ui_call!(self, UiMarkersCreate, ui_markers_create, &[]);
         MarkerLayer {

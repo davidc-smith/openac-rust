@@ -14,9 +14,9 @@ use crate::images::{ImageBudget, ImageTable};
 use crate::markup::{self, normalize_icon};
 use crate::model::{
     CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction, GroundShape, GroundShapeKind,
-    ImageSource, PaintCmd, PanelDescriptor, PanelView, PluginIcon, PointerKind, ProjectileSample,
-    UiChange, UiEvent, UiInput, UiOwner, WorldIcon, WorldIconEntry, WorldLabel, WorldLine,
-    WorldTriangle, canvas_origin,
+    ImageSource, MarkerAnchor, PaintCmd, PanelDescriptor, PanelView, PluginIcon, PointerKind,
+    ProjectileSample, UiChange, UiEvent, UiInput, UiOwner, WorldIcon, WorldIconEntry, WorldLabel,
+    WorldLine, WorldTriangle, canvas_origin,
 };
 use crate::value::{BindingSchema, UiValue};
 
@@ -1238,20 +1238,23 @@ impl PluginUi {
         self.changes.push(UiChange::Shapes(self.merged_shapes()));
     }
 
-    /// Empties every plugin's marker layers: the character left the world,
-    /// and with it the objects the markers sat on. The layers stay, so a
-    /// plugin sets its markers again on the next stay without a new layer.
-    pub fn clear_markers(&mut self) {
-        if self
-            .marker_layers
-            .iter()
-            .all(|l| l.icons.is_empty() && l.shapes.is_empty())
-        {
+    /// Takes every plugin's markers over objects down: the character left
+    /// the world, and with it the objects they sat on, whose ids mean
+    /// nothing on the next stay. Markers at fixed positions stay, as lines
+    /// and triangles do: a position is the same place in the world after a
+    /// relog. The layers stay, so a plugin sets its markers again on the
+    /// next stay without a new layer.
+    pub fn clear_object_markers(&mut self) {
+        let on_object = |anchor: &MarkerAnchor| matches!(anchor, MarkerAnchor::Object(_));
+        if !self.marker_layers.iter().any(|l| {
+            l.icons.iter().any(|i| on_object(&i.anchor))
+                || l.shapes.iter().any(|s| on_object(&s.anchor))
+        }) {
             return;
         }
         for layer in &mut self.marker_layers {
-            layer.icons.clear();
-            layer.shapes.clear();
+            layer.icons.retain(|i| !on_object(&i.anchor));
+            layer.shapes.retain(|s| !on_object(&s.anchor));
         }
         self.push_markers();
     }

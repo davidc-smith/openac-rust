@@ -1112,12 +1112,12 @@ impl SessionState {
     }
 
     /// The character left the world: the journal is saved, every piece of
-    /// server-owned state is forgotten and the plugins' world labels come
-    /// down.
+    /// server-owned state is forgotten and the plugins' labels and markers
+    /// over objects come down (what they draw at fixed positions stays).
     pub fn left_world(&mut self, wall_unix_ms: i64) {
         self.wall_unix_ms = wall_unix_ms;
         self.plugin_ui.clear_labels();
-        self.plugin_ui.clear_markers();
+        self.plugin_ui.clear_object_markers();
         self.communication.left_world(wall_unix_ms);
         self.options.reset_session();
         self.inventory.reset_session(&mut self.world);
@@ -3144,10 +3144,10 @@ mod tests {
         assert!(state.plugin_ui.merged_labels().is_empty());
     }
 
-    /// Markers end with the stay too, and the plugin's layer stays usable
-    /// for the next one.
+    /// Markers over objects end with the stay too, those at fixed positions
+    /// stay, and the plugin's layer stays usable for the next one.
     #[test]
-    fn leaving_the_world_empties_the_plugins_marker_layers() {
+    fn leaving_the_world_takes_the_plugins_markers_over_objects_down() {
         let (mut state, _outbox) = state();
         let icon = ac_plugin_ui::WorldIcon {
             anchor: ac_plugin_ui::MarkerAnchor::Object(0x5000_0001),
@@ -3158,10 +3158,28 @@ mod tests {
             max_range: 60.0,
             hidden_by_world: false,
         };
+        let here = ac_plugin_ui::MarkerAnchor::Position {
+            point: ac_plugin_ui::MapPoint {
+                east_west: 40.0,
+                north_south: 12.5,
+                elevation: 0.3,
+            },
+            is_outdoor: true,
+        };
+        let waypoint = ac_plugin_ui::WorldIcon {
+            anchor: here,
+            ..icon
+        };
         let layer = state.plugin_ui.create_marker_layer("edwards.tank");
-        assert!(state.plugin_ui.set_icons("edwards.tank", layer, vec![icon]));
+        assert!(
+            state
+                .plugin_ui
+                .set_icons("edwards.tank", layer, vec![icon, waypoint])
+        );
         state.end_generation(0);
-        assert!(state.plugin_ui.merged_icons().is_empty());
+        let left = state.plugin_ui.merged_icons();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].icon.anchor, here);
         assert!(state.plugin_ui.set_icons("edwards.tank", layer, vec![icon]));
     }
 
