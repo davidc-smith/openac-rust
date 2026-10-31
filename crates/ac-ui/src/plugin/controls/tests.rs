@@ -751,6 +751,38 @@ fn a_multi_select_list_reports_the_rows_a_click_picks() {
 }
 
 #[test]
+fn ctrl_or_the_command_key_adds_to_a_multi_select_list() {
+    // MarkupListMultiSelectTests with OpenAC's UiSelectModifiers: Add is
+    // Ctrl or Cmd (the Windows key elsewhere), for a click and for A.
+    for add in [Modifiers::CTRL, Modifiers::WIN] {
+        let mut m = Mounted::new(
+            r#"<list x="0" y="0" w="300" h="108" selectmode="multi" selected="{Selection}" onchange="{SetRows}">
+             <column type="text" width="120" items="{Names}"/><column type="text" items="{Dists}"/></list>"#,
+            list_schema(),
+            list_values(),
+        );
+        let panel = m.panel;
+        m.click(30, 5);
+        m.set("Selection", UiValue::IntList(vec![0]));
+        m.host.set_modifiers(add);
+        m.click(30, 18 * 2 + 5);
+        // A click does not take keyboard focus.
+        let list = m.element(0);
+        m.host.root.set_keyboard_focus(Some(list));
+        m.host.key_down(Key::A, add);
+        assert_eq!(
+            m.take(),
+            [
+                action(panel, "SetRows", ActionValue::IntList(vec![0])),
+                action(panel, "SetRows", ActionValue::IntList(vec![0, 2])),
+                action(panel, "SetRows", ActionValue::IntList(vec![0, 1, 2, 3])),
+            ],
+            "{add:?}"
+        );
+    }
+}
+
+#[test]
 fn a_tree_arrow_folds_a_parent_and_hides_its_rows() {
     // MarkupListTreeTests.ArrowClick_TogglesAParentWithoutSelecting,
     // Clicks_ReportPluginRowsUnderCollapse
