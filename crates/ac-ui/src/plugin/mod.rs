@@ -1408,6 +1408,9 @@ impl PluginPanelController {
                     if let Some(w) = ui.widget_mut::<controls::MarkupNumber>(el) {
                         w.set_current(current);
                         w.inner.background_color = bg;
+                        w.inner.theme_palette = palette;
+                        w.inner.selection_color =
+                            p.map_or(Field::default().selection_color, |p| p.selected);
                         w.text_color = col;
                         w.palette = palette;
                         if let Some(f) = text_font {
@@ -1801,7 +1804,15 @@ impl crate::tree::Widget for MarkupField {
     }
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut crate::draw::RenderContext<'_>) {
+        let faded =
+            self.inner.theme_palette.is_some() && !ui.element(me).is_some_and(|e| e.enabled);
+        if faded {
+            rc.push_alpha(style::DISABLED_ALPHA);
+        }
         self.inner.draw(ui, me, rc);
+        if faded {
+            rc.pop_alpha();
+        }
     }
 
     fn draw_after_children(

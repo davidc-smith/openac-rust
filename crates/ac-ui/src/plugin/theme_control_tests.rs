@@ -6,7 +6,7 @@ use super::theme_tests::{CLASSIC_TEXTURE, Gallery, SEMIBOLD_TEXTURE, find_named}
 use super::title_bar::{self, TitleBar};
 use super::*;
 use crate::draw::{DrawCmd, DrawList, TextureRef};
-use crate::event::MouseButton;
+use crate::event::{Key, Modifiers, MouseButton};
 
 const P: Palette = Palette::MOSS;
 
@@ -412,4 +412,286 @@ fn switching_to_classic_clears_every_controls_palette() {
     assert_eq!(set(&g), [Some(P); 4]);
     g.set_theme(PluginTheme::Classic);
     assert_eq!(set(&g), [None; 4]);
+}
+
+fn focus(g: &mut Gallery, name: &str) {
+    let ui = &mut g.host.root;
+    let id = find_named(ui, ui.root(), name).unwrap();
+    ui.set_keyboard_focus(Some(id));
+}
+
+/// Whether a corner is exactly this colour, alpha included.
+fn has_exact(v: &[(f32, f32, Color)], color: Color) -> bool {
+    v.iter()
+        .any(|(_, _, c)| same_rgb(*c, color) && (c.a - color.a).abs() < 0.01)
+}
+
+fn corner_at(v: &[(f32, f32, Color)], x: f32, y: f32, color: Color) -> bool {
+    v.iter()
+        .any(|(vx, vy, c)| (*vx - x).abs() < 0.01 && (*vy - y).abs() < 0.01 && same_rgb(*c, color))
+}
+
+#[test]
+fn a_themed_toggle_is_a_switch_with_its_caption_after_it() {
+    let mut g = control(
+        r#"<toggle name="t" x="10" y="10" w="160" h="20" text="Auto" checked="{On}" onclick="{Click}"/>"#,
+    );
+    let list = element_list(&mut g, "t");
+    let v = corners(&list);
+    assert!(has_color(&v, P.text), "the knob, on");
+    assert!(has_color(&v, P.accent), "the edge, on");
+    let (_, left, _) = text_runs(&list)[0];
+    assert_eq!(
+        left,
+        10.0 + super::content_size::THEMED_TOGGLE_CAPTION_X,
+        "the caption starts after the switch and the gap"
+    );
+}
+
+#[test]
+fn a_themed_toggle_measures_room_for_its_switch() {
+    let body = r#"<toggle name="t" text="Auto" checked="{On}" onclick="{Click}"/>"#;
+    let markup = format!(r#"<panel x="0" y="0" theme="plugin" layout="row">{body}</panel>"#);
+    let width = |g: &mut Gallery| {
+        g.tick();
+        g.draw();
+        let ui = &g.host.root;
+        let id = find_named(ui, ui.root(), "t").unwrap();
+        ui.element(id).unwrap().width
+    };
+    let mut g = Gallery::of(&markup, PluginTheme::Moss);
+    let themed = width(&mut g);
+    g.set_theme(PluginTheme::Classic);
+    let classic = width(&mut g);
+    assert_eq!(
+        themed - classic,
+        super::content_size::THEMED_TOGGLE_CAPTION_X
+            - super::content_size::CLASSIC_TOGGLE_CAPTION_X
+    );
+}
+
+#[test]
+fn a_themed_checkbox_is_a_rounded_tick_box_with_a_focus_ring() {
+    let mut g = control(
+        r#"<checkbox name="on" x="10" y="10" w="120" h="20" text="Loot" checked="{On}" onchange="{SetFlag}"/>
+           <checkbox name="some" x="10" y="40" w="120" h="20" text="Some" checked="{Maybe}" onchange="{SetFlag}"/>"#,
+    );
+    let v = element_corners(&mut g, "on");
+    assert!(has_color(&v, P.accent));
+    // The box sits at (1, 4.5) inside the checkbox: no square corner there.
+    assert!(!corner_at(&v, 11.0, 14.5, P.accent));
+    assert!(
+        has_color(&element_corners(&mut g, "some"), P.field),
+        "the dash"
+    );
+    focus(&mut g, "on");
+    let focused = element_corners(&mut g, "on");
+    assert!(has_exact(&focused, style::focus_ring_color(&P)));
+    assert!(!has_color(&focused, super::controls::FOCUS));
+}
+
+#[test]
+fn a_themed_radio_button_is_round() {
+    let mut g = control(
+        r#"<radio name="r" x="10" y="10" w="120" h="40" items="A|B" selected="{Choice}" onchange="{Choose}"/>"#,
+    );
+    let v = element_corners(&mut g, "r");
+    let accent: Vec<_> = v
+        .iter()
+        .filter(|(_, _, c)| same_rgb(*c, P.accent))
+        .collect();
+    assert!(!accent.is_empty());
+    // Option 1 is the second 20-point cell; its glyph sits at (11, 30 + 4.5).
+    let (cx, cy) = (11.0 + 5.5, 30.0 + 4.5 + 5.5);
+    for (x, y, _) in accent {
+        let distance = ((x - cx).powi(2) + (y - cy).powi(2)).sqrt();
+        // Its radius, and half a pixel of soft edge.
+        assert!(distance <= 6.01, "{x} {y}");
+    }
+}
+
+#[test]
+fn a_themed_segmented_radio_is_a_rounded_track_with_a_selected_pill() {
+    let mut g = control(
+        r#"<radio name="r" x="10" y="10" w="120" h="24" items="A|B" orientation="horizontal" style="segmented" selected="{Choice}" onchange="{Choose}"/>"#,
+    );
+    let v = element_corners(&mut g, "r");
+    assert!(has_color(&v, P.selected));
+    assert!(!corner_at(&v, 10.0, 10.0, P.field));
+}
+
+#[test]
+fn a_themed_number_spin_has_chevrons_and_no_square_outline() {
+    let mut g = control(
+        r#"<number name="n" x="10" y="10" w="100" h="24" value="{Count}" onchange="{SetCount}"/>"#,
+    );
+    let v = element_corners(&mut g, "n");
+    let spin = 110.0 - super::controls::SPIN_WIDTH;
+    assert!(
+        !v.iter()
+            .any(|(x, _, c)| *x > spin + 0.5 && same_rgb(*c, P.border)),
+        "the field stops at the spin buttons"
+    );
+    assert!(v.iter().any(|(x, _, c)| *x > spin && same_rgb(*c, P.muted)));
+}
+
+#[test]
+fn a_themed_hotkey_and_colour_glow_when_focused() {
+    let mut g = control(
+        r#"<hotkey name="h" x="10" y="10" w="120" h="24" value="{Key}" onchange="{SetKey}"/>
+           <color name="c" x="10" y="40" w="40" h="24" value="{Colour}" onchange="{SetColour}"/>"#,
+    );
+    assert!(!corner_at(
+        &element_corners(&mut g, "h"),
+        10.0,
+        10.0,
+        P.border
+    ));
+    focus(&mut g, "h");
+    assert!(has_exact(
+        &element_corners(&mut g, "h"),
+        style::focus_glow(&P)
+    ));
+    focus(&mut g, "c");
+    assert!(has_exact(
+        &element_corners(&mut g, "c"),
+        style::focus_glow(&P)
+    ));
+}
+
+#[test]
+fn a_disabled_themed_field_number_and_hotkey_fade_their_faces() {
+    let mut g = control(
+        r#"<field name="f" x="10" y="10" w="120" h="24" enabled="{TabOff}"/>
+           <number name="n" x="10" y="40" w="100" h="24" value="{Count}" onchange="{SetCount}" enabled="{TabOff}"/>
+           <hotkey name="h" x="10" y="70" w="120" h="24" value="{Key}" onchange="{SetKey}" enabled="{TabOff}"/>"#,
+    );
+    for name in ["f", "n", "h"] {
+        let v = element_corners(&mut g, name);
+        assert!(!v.is_empty());
+        assert!(
+            v.iter()
+                .all(|(_, _, c)| c.a <= style::DISABLED_ALPHA + 1e-4),
+            "{name}"
+        );
+    }
+}
+
+/// Whether some corner is off a whole pixel: drawn smooth, not stepped.
+fn is_smooth(v: &[&(f32, f32, Color)]) -> bool {
+    v.iter().any(|(x, _, _)| (x - x.round()).abs() > 0.01)
+}
+
+#[test]
+fn a_themed_tree_arrow_is_a_smooth_chevron() {
+    let mut g = control(
+        r#"<list name="l" x="0" y="0" w="200" h="80" tree="true" levels="{Levels}" keys="{Keys}" selected="{Index}" onchange="{Choose}">
+             <column type="text" items="{Items}"/></list>"#,
+    );
+    let v = element_corners(&mut g, "l");
+    let arrow: Vec<_> = v
+        .iter()
+        .filter(|(x, y, c)| *x < 16.0 && *y < 18.0 && c.a > 0.05 && same_rgb(*c, P.text))
+        .collect();
+    assert!(!arrow.is_empty());
+    assert!(is_smooth(&arrow));
+}
+
+#[test]
+fn a_themed_expander_arrow_is_a_muted_chevron() {
+    let mut g = control(r#"<expander name="x" x="8" y="8" w="200" h="100" text="Advanced"/>"#);
+    let v = corners(&g.draw());
+    let arrow: Vec<_> = v
+        .iter()
+        .filter(|(x, y, c)| {
+            *x < 8.0 + super::fold::CAPTION_X && *y < 28.0 && c.a > 0.05 && same_rgb(*c, P.muted)
+        })
+        .collect();
+    assert!(!arrow.is_empty());
+    assert!(is_smooth(&arrow));
+}
+
+#[test]
+fn a_themed_split_bar_is_a_slim_grip_pill() {
+    let mut g =
+        control(r#"<split name="s" x="10" y="10" w="305" h="200"><group/><group/></split>"#);
+    g.tick();
+    let ui = &mut g.host.root;
+    let split = find_named(ui, ui.root(), "s").unwrap();
+    let bar = ui.widget::<super::fold::MarkupSplit>(split).unwrap().bar;
+    let mut list = DrawList::default();
+    let mut rc =
+        crate::draw::RenderContext::new(&mut list, (1024.0, 768.0), &crate::draw::NoSprites);
+    ui.draw_tree(bar, &mut rc);
+    drop(rc);
+    let v = corners(&list);
+    assert!(!has_color(&v, P.field), "no band");
+    let grip: Vec<_> = v
+        .iter()
+        .filter(|(_, _, c)| c.a > 0.05 && same_rgb(*c, P.border))
+        .collect();
+    assert!(!grip.is_empty());
+    let (top, bottom) = span(grip.iter().map(|p| p.1));
+    // 24 long, and half a pixel of soft edge at each end.
+    assert!(bottom - top <= 25.01, "{top} {bottom}");
+}
+
+fn is_shadow(c: &Color) -> bool {
+    c.a > 0.0 && c.r == 0.0 && c.g == 0.0 && c.b == 0.0
+}
+
+#[test]
+fn a_themed_context_menu_is_shadowed_and_hovers_in_the_hover_colour() {
+    let mut g = control(
+        r#"<button name="b" x="10" y="10" w="80" h="20" text="Go" onclick="{Click}"><contextmenu items="{Items}" onselect="{Choose}"/></button>"#,
+    );
+    let at = g.centre("b");
+    g.click(MouseButton::Right, at);
+    let list = g.draw();
+    let overlay = DrawList {
+        overlay: list.overlay.clone(),
+        ..DrawList::default()
+    };
+    let v = corners(&overlay);
+    assert!(v.iter().any(|(_, _, c)| is_shadow(c)));
+    g.host.key_down(Key::Down, Modifiers::NONE);
+    let list = g.draw();
+    let keyed = corners(&DrawList {
+        overlay: list.overlay,
+        ..DrawList::default()
+    });
+    assert!(has_exact(&keyed, style::hover(&P, P.field)));
+    assert!(!has_color(&keyed, P.selected));
+}
+
+#[test]
+fn a_themed_colour_popup_is_shadowed() {
+    let mut g = control(
+        r#"<color name="c" x="10" y="40" w="40" h="24" value="{Colour}" onchange="{SetColour}"/>"#,
+    );
+    let at = g.centre("c");
+    g.click(MouseButton::Left, at);
+    let list = g.draw();
+    let v = corners(&DrawList {
+        overlay: list.overlay,
+        ..DrawList::default()
+    });
+    assert!(v.iter().any(|(_, _, c)| is_shadow(c)));
+}
+
+#[test]
+fn a_classic_colour_popup_has_no_shadow() {
+    let mut g = control(
+        r#"<color name="c" x="10" y="40" w="40" h="24" value="{Colour}" onchange="{SetColour}"/>"#,
+    );
+    g.set_theme(PluginTheme::Classic);
+    let at = g.centre("c");
+    g.click(MouseButton::Left, at);
+    let list = g.draw();
+    let v = corners(&DrawList {
+        overlay: list.overlay,
+        ..DrawList::default()
+    });
+    assert!(!v.is_empty());
+    assert!(!v.iter().any(|(_, _, c)| is_shadow(c) && c.a < 0.9));
 }

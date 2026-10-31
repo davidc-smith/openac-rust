@@ -607,25 +607,28 @@ impl Widget for MarkupToggle {
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
+        let live = enabled(ui, me);
+        let mut color = self.color;
+        if !live {
+            color.a = DISABLED_ALPHA;
+        }
+        let y = (h - line_height(self.font.as_ref())) * 0.5;
+        if let Some(p) = &self.palette {
+            let switch_y = ((h - style::SWITCH_HEIGHT) * 0.5).max(0.0);
+            style::switch(rc, p, 1.0, switch_y, self.checked, live);
+            if self.keyboard_focused {
+                style::focus_ring(rc, p, w, h, style::SMALL_RADIUS);
+            }
+            let x = super::content_size::THEMED_TOGGLE_CAPTION_X;
+            text(rc, self.font.as_ref(), &self.text, x, y, color, false);
+            return;
+        }
         if self.keyboard_focused {
             rc.rect_outline(0.0, 0.0, w, h, KEYBOARD_FOCUS_OUTLINE, 1.0);
         }
         let check_y = ((h - CHECK_SIZE) * 0.5).max(1.0);
-        draw_check(rc, 1.0, check_y, self.checked, self.palette.as_ref());
-        let mut color = self.color;
-        if !enabled(ui, me) {
-            color.a = DISABLED_ALPHA;
-        }
-        let y = (h - line_height(self.font.as_ref())) * 0.5;
-        text(
-            rc,
-            self.font.as_ref(),
-            &self.text,
-            17.0,
-            y,
-            color,
-            self.palette.is_none(),
-        );
+        draw_check(rc, 1.0, check_y, self.checked, None);
+        text(rc, self.font.as_ref(), &self.text, 17.0, y, color, true);
     }
 }
 
@@ -1716,8 +1719,18 @@ impl Widget for MarkupList {
                         let mut tx = cx + PADDING;
                         if let Some((level, parent, expanded)) = tree {
                             let slot = cx + PADDING + level as f32 * super::list_ext::TREE_INDENT;
-                            if parent {
-                                let arrow = p.map_or(self.text_color, |p| p.text);
+                            if let (true, Some(p)) = (parent, &p) {
+                                // A smooth chevron: down when expanded, right
+                                // when collapsed.
+                                let cy = y + self.row_height * 0.5;
+                                if expanded {
+                                    style::chevron(rc, slot + 2.0, cy - 2.0, 7.0, 4.0, p.text);
+                                } else {
+                                    let x = slot + 3.5;
+                                    style::chevron_right(rc, x, cy - 3.5, 3.5, 7.0, p.text);
+                                }
+                            } else if parent {
+                                let arrow = self.text_color;
                                 let top = y + ((self.row_height - 7.0) * 0.5).floor();
                                 for i in 0..4u8 {
                                     let i = f32::from(i);
