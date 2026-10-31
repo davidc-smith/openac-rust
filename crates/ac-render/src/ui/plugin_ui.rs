@@ -1330,11 +1330,10 @@ fn map_point_in_frame(world: &WorldRenderer, point: MapPoint) -> Option<Vec3> {
     world.frame_position(cell, Vec3::new(lx, ly, z))
 }
 
-/// Where a ground shape's anchor is this frame (OpenAC
-/// `PluginGroundShapeRenderer.TryPlace`): an object's base and the way it
-/// faces, a held object's from the pose its holder's hand gives it, or a
-/// fixed position. An object with no cell yet counts as outdoors, so the
-/// height rule alone decides.
+/// Where a ground shape's anchor is this frame: an object's base and the
+/// way it faces, a held object's from the pose its holder's hand gives it,
+/// or a fixed position. An object with no cell yet counts as outdoors, so
+/// the height rule alone decides.
 fn shape_anchor(world: &WorldRenderer, scene: &Scene, anchor: MarkerAnchor) -> Option<ShapeAnchor> {
     match anchor {
         MarkerAnchor::None => None,

@@ -1074,12 +1074,12 @@ wire_record! {
 }
 
 wire_record! {
-    /// A filled triangle in the world (OpenAC `PluginWorldTriangle`): flat
-    /// between its corners, see-through by its colours' alpha, drawn from
-    /// both sides and unlit. Hills and walls in front of it hide it; it
-    /// writes no depth, so overlapping triangles blend. It does not follow
-    /// the ground: one meant to lie on it is lifted a little (about 0.1 m)
-    /// by the plugin. API 1.3.
+    /// A filled triangle in the world: flat between its corners,
+    /// see-through by its colours' alpha, drawn from both sides and unlit.
+    /// Hills and walls in front of it hide it; it writes no depth, so
+    /// overlapping triangles blend. It does not follow the ground: one
+    /// meant to lie on it is lifted a little (about 0.1 m) by the plugin.
+    /// API 1.3.
     pub struct WorldTriangle {
         /// The first corner.
         pub a: MapPoint,
@@ -1109,8 +1109,7 @@ wire_record! {
 }
 
 wire_enum! {
-    /// What a world marker is pinned to (OpenAC `PluginMarkerAnchor`).
-    /// API 1.3.
+    /// What a world marker is pinned to. API 1.3.
     #[derive(Debug, Clone, PartialEq, Default)]
     pub enum MarkerAnchor ("marker anchor") {
         /// Nothing: a marker pinned to nothing is dropped.
@@ -1126,10 +1125,9 @@ wire_enum! {
 }
 
 wire_record! {
-    /// An image hung in the world at a constant size on the screen (OpenAC
-    /// `PluginWorldIcon`). It is drawn after the world, like a label, so walls
-    /// and hills do not hide it unless it asks with `hidden_by_world`.
-    /// API 1.3.
+    /// An image hung in the world at a constant size on the screen. It is
+    /// drawn after the world, like a label, so walls and hills do not hide
+    /// it unless it asks with `hidden_by_world`. API 1.3.
     pub struct WorldIcon {
         /// Over an object, the client lays its icons out in rows above its
         /// head and its labels; at a position, the icon is centred on it.
@@ -1170,8 +1168,7 @@ wire_record! {
 }
 
 wire_enum! {
-    /// What form a ground shape takes (OpenAC `PluginGroundShapeKind`).
-    /// API 1.3.
+    /// What form a ground shape takes. API 1.3.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     pub enum GroundShapeKind ("ground shape kind") {
         /// Nothing: a shape of no kind is dropped.
@@ -1190,9 +1187,9 @@ wire_enum! {
 
 wire_record! {
     /// A shape lying on the ground around an anchor: a ring under a target,
-    /// a disc over an area, a wedge in front of a creature (OpenAC
-    /// `PluginGroundShape`). Drawn in the world, so walls and hills hide it,
-    /// and outdoors it follows the slope of the land. API 1.3.
+    /// a disc over an area, a wedge in front of a creature. Drawn in the
+    /// world, so walls and hills hide it, and outdoors it follows the slope
+    /// of the land. API 1.3.
     pub struct GroundShape {
         /// Around an object's feet, following it, or around a fixed position.
         pub anchor: MarkerAnchor,

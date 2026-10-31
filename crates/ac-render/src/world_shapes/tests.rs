@@ -1,6 +1,3 @@
-//! Ported from OpenAC `tests/AcDream.App.Tests/Rendering/GroundShapeTessellatorTests.cs`
-//! and `PluginGroundShapeRendererTests.cs`.
-
 use ac_plugin_ui::{GroundShapeKind, MarkerAnchor};
 
 use super::*;
@@ -439,8 +436,8 @@ fn surface_at(points: &[Vec3], x: f32, y: f32) -> Option<f32> {
     })
 }
 
-// Not in OpenAC, whose rings four metres apart let a ridge between them rise
-// through the shape.
+// Rings four metres apart would let a ridge between them rise through the
+// shape.
 #[test]
 fn a_filled_shape_lies_on_the_land_across_its_creases() {
     let centre = Vec3::new(14.0, 12.0, ridged(14.0, 12.0).unwrap());

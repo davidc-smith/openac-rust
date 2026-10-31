@@ -549,9 +549,9 @@ pub struct WorldLine {
     pub width_metres: f32,
 }
 
-/// A filled triangle in the world, flat between its corners, see-through
-/// by its colours' alpha, drawn from both sides and unlit (OpenAC
-/// `PluginWorldTriangle`). It does not follow the ground.
+/// A filled triangle in the world, flat between its corners, see-through by
+/// its colours' alpha, drawn from both sides and unlit. It does not follow
+/// the ground.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldTriangle {
     /// The corners.
@@ -560,7 +560,7 @@ pub struct WorldTriangle {
     pub colors_rgba: [u32; 3],
 }
 
-/// What a world marker is pinned to (OpenAC `PluginMarkerAnchor`).
+/// What a world marker is pinned to.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum MarkerAnchor {
     /// Nothing: a marker pinned to nothing is dropped.
@@ -580,8 +580,8 @@ pub enum MarkerAnchor {
 }
 
 impl MarkerAnchor {
-    /// Whether it pins something: an object with an id, or a position
-    /// whose coordinates are all finite (OpenAC `WorldMarkerRules`).
+    /// Whether it pins something: an object with an id, or a position whose
+    /// coordinates are all finite.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         match self {
@@ -596,9 +596,9 @@ impl MarkerAnchor {
     }
 }
 
-/// An image hung in the world at a constant size on the screen (OpenAC
-/// `PluginWorldIcon`). It is drawn after the world, like a label, so walls and
-/// hills do not hide it unless it asks with `hidden_by_world`.
+/// An image hung in the world at a constant size on the screen. It is drawn
+/// after the world, like a label, so walls and hills do not hide it unless
+/// it asks with `hidden_by_world`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldIcon {
     /// Over an object, the client lays its icons out in rows above its head
@@ -629,7 +629,7 @@ pub struct WorldIconEntry {
     pub icon: WorldIcon,
 }
 
-/// What form a ground shape takes (OpenAC `PluginGroundShapeKind`).
+/// What form a ground shape takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GroundShapeKind {
     /// Nothing: a shape of no kind is dropped.
@@ -646,9 +646,9 @@ pub enum GroundShapeKind {
 }
 
 /// A shape lying on the ground around an anchor: a ring under a target, a
-/// disc over an area, a wedge in front of a creature (OpenAC
-/// `PluginGroundShape`). Drawn in the world, so walls and hills hide it, and
-/// outdoors it follows the slope of the land.
+/// disc over an area, a wedge in front of a creature. Drawn in the world,
+/// so walls and hills hide it, and outdoors it follows the slope of the
+/// land.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroundShape {
     /// Around an object's feet, following it, or around a fixed position.

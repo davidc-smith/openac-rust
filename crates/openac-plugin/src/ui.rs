@@ -828,8 +828,8 @@ impl MarkerLayer {
 }
 
 /// An icon of `image` at `anchor`: 24 points, untinted, unframed, shown up to
-/// 60 m away (OpenAC `PluginWorldIcon`'s defaults) and over the world. Set
-/// [`WorldIcon::hidden_by_world`] for one that hides behind it.
+/// 60 m away and over the world. Set [`WorldIcon::hidden_by_world`] for one
+/// that hides behind it.
 #[must_use]
 pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
     WorldIcon {
@@ -843,8 +843,7 @@ pub fn world_icon(anchor: MarkerAnchor, image: Image) -> WorldIcon {
     }
 }
 
-/// The width of an arc's band when none is given, metres (OpenAC
-/// `PluginGroundShape.DefaultWidth`).
+/// The width of an arc's band when none is given, metres.
 pub const DEFAULT_ARC_WIDTH: f32 = 0.15;
 
 /// A band all the way round `anchor`, `width` metres wide inward from

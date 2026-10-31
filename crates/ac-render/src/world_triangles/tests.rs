@@ -1,5 +1,3 @@
-//! Ported from OpenAC `tests/AcDream.App.Tests/Rendering/PluginWorldTriangleRendererTests.cs`.
-
 use super::*;
 
 const RED: [f32; 4] = [1.0, 0.0, 0.0, 0.5];
@@ -29,15 +27,14 @@ fn looking_east() -> FrustumPlanes {
     FrustumPlanes::from_view_projection(projection * view)
 }
 
-// OpenAC `PluginWorldTriangleRenderer.VertexBudget`: 1 MiB of vertices.
 #[test]
 fn the_budget_is_one_mebibyte_of_vertices() {
     assert_eq!(size_of::<WorldTriangleVertex>(), 28);
     assert_eq!(VERTEX_BUDGET, 37_449);
 }
 
-// OpenAC `ATriangleIsDrawnBetweenItsCornersInItsColour`: each corner moves a
-// little toward the camera, so a triangle on a surface is drawn over it.
+// Each corner moves a little toward the camera, so a triangle on a surface
+// is drawn over it.
 #[test]
 fn a_triangle_is_drawn_between_its_corners_in_its_colour() {
     let corners = [
@@ -59,7 +56,6 @@ fn a_triangle_is_drawn_between_its_corners_in_its_colour() {
     }
 }
 
-// OpenAC `CornerColoursAreUploadedPerVertex`.
 #[test]
 fn corner_colours_are_uploaded_per_vertex() {
     let colors = [
@@ -79,7 +75,6 @@ fn corner_colours_are_uploaded_per_vertex() {
     assert_eq!(out.iter().map(|v| v.color).collect::<Vec<_>>(), colors);
 }
 
-// OpenAC `ATriangleWithACornerThatIsNotANumberIsDropped`.
 #[test]
 fn a_triangle_with_a_corner_that_is_not_a_number_is_dropped() {
     let out = draw(
@@ -109,7 +104,6 @@ fn a_triangle_with_a_corner_that_is_not_a_number_is_dropped() {
     assert_eq!(out.len(), 3);
 }
 
-// OpenAC `ATriangleOutOfRangeIsNotDrawn`.
 #[test]
 fn a_triangle_out_of_range_is_not_drawn() {
     let out = draw(
@@ -125,8 +119,7 @@ fn a_triangle_out_of_range_is_not_drawn() {
     assert!(out.is_empty());
 }
 
-// OpenAC `ALargeTriangleReachingIntoRangeIsDrawn`: every corner is past the
-// range; its long edge passes 50 m away.
+// Every corner is past the range; its long edge passes 50 m away.
 #[test]
 fn a_large_triangle_reaching_into_range_is_drawn() {
     let out = draw(
@@ -142,7 +135,6 @@ fn a_large_triangle_reaching_into_range_is_drawn() {
     assert_eq!(out.len(), 3);
 }
 
-// OpenAC `ATriangleOutOfViewIsNotDrawn`.
 #[test]
 fn a_triangle_out_of_view_is_not_drawn() {
     let frustum = looking_east();
@@ -168,7 +160,6 @@ fn a_triangle_out_of_view_is_not_drawn() {
     assert!(out.iter().all(|v| v.position[0] > 0.0));
 }
 
-// OpenAC `WhenTheBudgetRunsOutTheTrianglesNearestTheCameraAreTheOnesDrawn`.
 #[test]
 fn when_the_budget_runs_out_the_triangles_nearest_the_camera_are_the_ones_drawn() {
     let capacity = VERTEX_BUDGET / 3;
@@ -196,7 +187,6 @@ fn when_the_budget_runs_out_the_triangles_nearest_the_camera_are_the_ones_drawn(
     );
 }
 
-// OpenAC `TheNearestPointOfATriangleIsOnItsFaceAnEdgeOrACorner`.
 #[test]
 fn the_nearest_point_of_a_triangle_is_on_its_face_an_edge_or_a_corner() {
     let (a, b, c) = (

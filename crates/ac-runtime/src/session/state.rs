@@ -3124,9 +3124,9 @@ mod tests {
         assert!(outbox.is_empty());
     }
 
-    /// OpenAC `ClearWorldLabelsOn`: the plugins outlive the stay, but their
-    /// world labels end with it, so a label on a lasting id (the character,
-    /// a carried item) does not come back on the next stay.
+    /// The plugins outlive the stay, but their world labels end with it, so
+    /// a label on a lasting id (the character, a carried item) does not
+    /// come back on the next stay.
     #[test]
     fn leaving_the_world_takes_the_plugins_labels_down() {
         let (mut state, _outbox) = state();
@@ -3144,8 +3144,8 @@ mod tests {
         assert!(state.plugin_ui.merged_labels().is_empty());
     }
 
-    /// OpenAC `PluginWorldMarkerStore.ClearOn`: markers end with the stay
-    /// too, and the plugin's layer stays usable for the next one.
+    /// Markers end with the stay too, and the plugin's layer stays usable
+    /// for the next one.
     #[test]
     fn leaving_the_world_empties_the_plugins_marker_layers() {
         let (mut state, _outbox) = state();

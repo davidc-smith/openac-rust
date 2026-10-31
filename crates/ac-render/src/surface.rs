@@ -2715,8 +2715,8 @@ impl AttachedWindow {
             self.scene.as_deref().map(SceneSource::scene),
         );
         // The plugins' world lines, triangles and ground shapes are drawn in
-        // the world pass, with its depth (OpenAC `PluginWorldLineRenderer`,
-        // `PluginWorldTriangleRenderer`, `PluginGroundShapeRenderer`).
+        // the world pass, with its depth (lines as in OpenAC
+        // `PluginWorldLineRenderer`).
         if let Some(world) = self.world.as_mut() {
             world.set_plugin_lines(&self.device, &self.queue, ui.plugin_world_lines());
             world.set_plugin_triangles(

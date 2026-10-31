@@ -243,7 +243,6 @@ mod tests {
             .all(|(a, e)| a.abs_diff(e) <= 2)
     }
 
-    // OpenAC `TrianglesAreDrawnSeeThroughFromBothSidesUnderTheWorldsDepth`.
     #[test]
     #[ignore = "needs a GPU"]
     fn triangles_are_see_through_from_both_sides_under_the_worlds_depth() {

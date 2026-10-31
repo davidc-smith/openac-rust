@@ -634,8 +634,6 @@ fn labels_are_detached_validated_capped_and_per_owner() {
     assert!(ui.merged_labels().is_empty());
 }
 
-// OpenAC `LayersAreDrawnTogetherAndADisposedLayerIsGone` and
-// `TheStoreCopiesWhatItIsGivenAndKeepsALimit`.
 #[test]
 fn triangle_layers_belong_to_their_plugin_and_go_with_it() {
     let mut ui = PluginUi::new();
@@ -682,9 +680,6 @@ fn icon(anchor: crate::model::MarkerAnchor) -> crate::model::WorldIcon {
     }
 }
 
-// OpenAC `TheOverlaySeesIconsByPluginThenLayerThenTheOrderGiven`,
-// `DisposingALayerTakesItsIconsAndRefusesFurtherUse` and
-// `DisposingAPluginsSurfaceTakesEveryLayerAndTheNextAskIsFresh`.
 #[test]
 fn marker_layers_merge_by_plugin_and_go_with_it() {
     use crate::model::MarkerAnchor;
@@ -722,8 +717,6 @@ fn marker_layers_merge_by_plugin_and_go_with_it() {
     assert!(!ui.remove_marker_layer("a.plugin", first));
 }
 
-// OpenAC `InvalidIconsAreDroppedAndTheRestShown` and
-// `SizesAreClampedIntoTheDrawableRange`.
 #[test]
 fn unusable_icons_are_dropped_and_sizes_are_clamped() {
     use crate::model::{MapPoint, MarkerAnchor};
@@ -766,8 +759,6 @@ fn unusable_icons_are_dropped_and_sizes_are_clamped() {
     assert_eq!(sizes, [24.0, MINIMUM_ICON_SIZE, MAXIMUM_ICON_SIZE]);
 }
 
-// OpenAC `TheCapCountsEveryLayerOfThePluginAndRefusesTheWholeSet` and
-// `AnotherPluginsIconsDoNotCountAgainstTheCap`.
 #[test]
 fn the_icon_cap_counts_a_plugins_other_layers_and_only_its_own() {
     use crate::model::MarkerAnchor;
@@ -799,8 +790,6 @@ fn ring(radius: f32, width: f32) -> crate::model::GroundShape {
     }
 }
 
-// OpenAC `InvalidShapesAreDroppedAndTheRestShown` and
-// `RingsAndDiscsBecomeFullTurnsFromNorthAndFilledShapesLoseTheirWidth`.
 #[test]
 fn a_ring_or_disc_is_a_full_turn_and_unusable_shapes_are_dropped() {
     use crate::model::{GroundShape, GroundShapeKind, MarkerAnchor};
@@ -874,7 +863,6 @@ fn a_ring_or_disc_is_a_full_turn_and_unusable_shapes_are_dropped() {
     assert!(w.filled);
 }
 
-// OpenAC `TheLimitsThemselvesAreAccepted`.
 #[test]
 fn a_shapes_limits_themselves_are_accepted() {
     use crate::model::{GroundShape, GroundShapeKind};
@@ -895,7 +883,6 @@ fn a_shapes_limits_themselves_are_accepted() {
     assert_eq!(ui.merged_shapes().len(), 3);
 }
 
-// OpenAC `SettingShapesLeavesTheLayersIconsAloneAndTheOtherWayRound`.
 #[test]
 fn setting_one_kind_of_marker_leaves_the_other_alone() {
     use crate::model::MarkerAnchor;
@@ -910,7 +897,6 @@ fn setting_one_kind_of_marker_leaves_the_other_alone() {
     assert_eq!(ui.merged_shapes().len(), 1);
 }
 
-// OpenAC `IconsAndShapesAreCappedApart`.
 #[test]
 fn the_shape_cap_counts_a_plugins_other_layers_apart_from_its_icons() {
     use crate::model::MarkerAnchor;
@@ -940,7 +926,6 @@ fn the_shape_cap_counts_a_plugins_other_layers_apart_from_its_icons() {
     assert!(ui.merged_shapes().is_empty());
 }
 
-// OpenAC `ClearingEmptiesEveryLayerButTheLayersStayUsable`.
 #[test]
 fn clearing_markers_empties_the_layers_and_they_stay_usable() {
     use crate::model::MarkerAnchor;
@@ -960,8 +945,8 @@ fn clearing_markers_empties_the_layers_and_they_stay_usable() {
     assert_eq!(ui.merged_icons().len(), 1);
 }
 
-/// OpenAC `ClearWorldLabelsOn`: leaving the world takes every plugin's
-/// labels down; the plugins stay and show labels again on the next stay.
+/// Leaving the world takes every plugin's labels down; the plugins stay and
+/// show labels again on the next stay.
 #[test]
 fn clearing_labels_takes_every_plugins_labels_down_and_leaves_lines() {
     let mut ui = PluginUi::new();

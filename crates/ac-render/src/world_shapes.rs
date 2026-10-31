@@ -1,7 +1,6 @@
 //! The shapes plugins lay on the ground, cut into see-through triangles for
 //! the world pass: rings, discs and wedges around an object's feet or a
-//! fixed position (OpenAC `GroundShapeTessellator`,
-//! `PluginGroundShapeRenderer`).
+//! fixed position.
 //!
 //! Bearings are compass bearings: 0 is north (+Y), 90 east (+X), increasing
 //! clockwise. A shape follows the land only when its anchor is on the

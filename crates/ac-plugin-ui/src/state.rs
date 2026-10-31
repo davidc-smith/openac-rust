@@ -138,7 +138,7 @@ struct MarkerLayer {
 }
 
 /// The icon as the window draws it, its size in range, or `None` when it is
-/// dropped (OpenAC `WorldMarkerRules.TryNormalizeIcon`).
+/// dropped.
 fn normalized_icon(icon: WorldIcon) -> Option<WorldIcon> {
     let usable = icon.anchor.is_valid()
         && icon.image != 0
@@ -151,10 +151,9 @@ fn normalized_icon(icon: WorldIcon) -> Option<WorldIcon> {
     })
 }
 
-/// The shape as the renderer draws it, or `None` when it is dropped (OpenAC
-/// `WorldMarkerRules.TryNormalizeShape`). A ring or disc becomes a full turn
-/// from north, whatever its start, sweep and facing; a disc or filled arc
-/// has no width.
+/// The shape as the renderer draws it, or `None` when it is dropped. A ring
+/// or disc becomes a full turn from north, whatever its start, sweep and
+/// facing; a disc or filled arc has no width.
 fn normalized_shape(shape: GroundShape) -> Option<GroundShape> {
     if !shape.anchor.is_valid()
         || !shape.radius.is_finite()
@@ -1007,9 +1006,9 @@ impl PluginUi {
         true
     }
 
-    /// Takes every plugin's labels down (OpenAC `ClearWorldLabelsOn`): the
-    /// character left the world, and with it the objects the labels sat on.
-    /// The plugins stay and show labels again on the next stay.
+    /// Takes every plugin's labels down: the character left the world, and
+    /// with it the objects the labels sat on. The plugins stay and show
+    /// labels again on the next stay.
     pub fn clear_labels(&mut self) {
         if self.labels.is_empty() {
             return;
@@ -1226,10 +1225,9 @@ impl PluginUi {
         self.changes.push(UiChange::Shapes(self.merged_shapes()));
     }
 
-    /// Empties every plugin's marker layers (OpenAC
-    /// `PluginWorldMarkerStore.ClearOn`): the character left the world, and
-    /// with it the objects the markers sat on. The layers stay, so a plugin
-    /// sets its markers again on the next stay without a new layer.
+    /// Empties every plugin's marker layers: the character left the world,
+    /// and with it the objects the markers sat on. The layers stay, so a
+    /// plugin sets its markers again on the next stay without a new layer.
     pub fn clear_markers(&mut self) {
         if self
             .marker_layers

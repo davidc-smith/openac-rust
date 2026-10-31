@@ -1,7 +1,7 @@
 //! The filled triangles plugins put in the world, for the world pass: see
 //! through by their colour's alpha, unlit, drawn from both sides after the
 //! rest of the world, so walls and hills hide them but they never hide each
-//! other (OpenAC `PluginWorldTriangleRenderer`).
+//! other.
 //!
 //! A plugin may send thousands of triangles, so the draw is bounded here,
 //! not by the plugin: a triangle no part of which is within

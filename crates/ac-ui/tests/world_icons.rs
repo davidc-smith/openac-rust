@@ -1,7 +1,5 @@
 //! The plugins' world icons: where each goes on the screen, and how few
-//! draw runs they cost. Ported from OpenAC
-//! `tests/AcDream.App.Tests/UI/Layout/WorldIconOverlayLayoutTests.cs` and
-//! `WorldIconOverlayDrawTests.cs`.
+//! draw runs they cost.
 
 mod common;
 
