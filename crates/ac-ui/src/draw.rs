@@ -8,6 +8,7 @@
 //! and caches.
 
 use crate::font::UiFont;
+use crate::shapes::{self, CornerRadii, ShapeOutcome};
 
 /// A colour, straight (not premultiplied) alpha, components 0..=1.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -474,6 +475,7 @@ pub struct RenderContext<'a> {
     alphas: Vec<f32>,
     sprite_sizes: &'a dyn SpriteSizes,
     media_seconds: f64,
+    device_pixel: f32,
 }
 
 /// Pixel sizes of render surfaces, so widgets can tile UI art. `None` for an
@@ -512,7 +514,21 @@ impl<'a> RenderContext<'a> {
             alphas: Vec::new(),
             sprite_sizes,
             media_seconds: 0.0,
+            device_pixel: 1.0,
         }
+    }
+
+    /// With how many framebuffer pixels one unit of this context covers, for
+    /// the width of a shape's soft edge. Anything but a positive number
+    /// counts as one.
+    #[must_use]
+    pub fn with_pixels_per_unit(mut self, pixels: f32) -> Self {
+        self.device_pixel = if pixels.is_finite() && pixels > 0.0 {
+            1.0 / pixels
+        } else {
+            1.0
+        };
+        self
     }
 
     /// With the UI media clock (seconds) animated media is sampled at.
@@ -877,6 +893,196 @@ impl<'a> RenderContext<'a> {
             self.origin.1 + v.y,
             self.apply_alpha(v.color),
         )
+    }
+
+    /// A rectangle with rounded corners and a smooth edge; zero radii give
+    /// square corners.
+    pub fn fill_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        color: Color,
+    ) {
+        let mut shape = Vec::new();
+        shapes::fill_rounded_rect((x, y, w, h), radii, color, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+    }
+
+    /// A rounded rectangle's outline `thickness` wide, centred on the
+    /// outline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        color: Color,
+        thickness: f32,
+    ) {
+        let mut shape = Vec::new();
+        shapes::stroke_rounded_rect(
+            (x, y, w, h),
+            radii,
+            color,
+            thickness,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+    }
+
+    /// An ellipse filling a local rectangle.
+    pub fn fill_ellipse(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let mut shape = Vec::new();
+        shapes::fill_ellipse((x, y, w, h), color, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+    }
+
+    /// The outline, `thickness` wide, of an ellipse filling a local
+    /// rectangle.
+    pub fn stroke_ellipse(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color, thickness: f32) {
+        let mut shape = Vec::new();
+        shapes::stroke_ellipse(
+            (x, y, w, h),
+            color,
+            thickness,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+    }
+
+    /// A convex polygon with a colour at each corner and a smooth edge; what
+    /// it came to says why nothing was drawn.
+    pub fn fill_convex_polygon(&mut self, corners: &[ColorVertex]) -> ShapeOutcome {
+        let mut shape = Vec::new();
+        let outcome = shapes::fill_convex_polygon(corners, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+        outcome
+    }
+
+    /// A straight segment `thickness` wide with smooth sides and square,
+    /// flush ends.
+    pub fn smooth_line(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: Color,
+        thickness: f32,
+    ) {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length.is_nan() || length <= 0.0 || thickness.is_nan() || thickness <= 0.0 {
+            return;
+        }
+        let nx = -dy / length * thickness * 0.5;
+        let ny = dx / length * thickness * 0.5;
+        self.fill_convex_polygon(&[
+            ColorVertex::new(x0 + nx, y0 + ny, color),
+            ColorVertex::new(x1 + nx, y1 + ny, color),
+            ColorVertex::new(x1 - nx, y1 - ny, color),
+            ColorVertex::new(x0 - nx, y0 - ny, color),
+        ]);
+    }
+
+    /// A rounded rectangle whose colour runs from `top` to `bottom`. Each
+    /// corner of the shape takes the colour at its height; the soft edge
+    /// keeps its own transparency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_vertical_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        top: Color,
+        bottom: Color,
+    ) {
+        let mut shape = Vec::new();
+        shapes::fill_rounded_rect(
+            (x, y, w, h),
+            radii,
+            Color::WHITE,
+            self.device_pixel,
+            &mut shape,
+        );
+        for v in &mut shape {
+            let c = top.lerp(bottom, ((v.y - y) / h).clamp(0.0, 1.0));
+            v.color = Color {
+                a: c.a * v.color.a,
+                ..c
+            };
+        }
+        self.triangles(&shape);
+    }
+
+    /// The soft shadow of an opaque rounded rectangle at (`x`, `y`), dropped
+    /// `drop` below it: `color` where it meets the rectangle, fading to
+    /// nothing `spread` further out. Only what the caster leaves showing is
+    /// drawn: the bands round the dropped rectangle, and the dropped rectangle
+    /// itself from where the caster's bottom corners start to round off. Drawn
+    /// with the clip lifted to the whole screen, because a shadow lies outside
+    /// the element that casts it. Anything but finite numbers draws nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn soft_shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        drop: f32,
+        spread: f32,
+        color: Color,
+    ) {
+        const LAYERS: u32 = 6;
+        let numbers = [x, y, w, h, radius, drop, spread, color.a];
+        if !numbers.iter().all(|n| n.is_finite()) || color.a <= 0.0 {
+            return;
+        }
+        let layer = Color {
+            a: color.a / LAYERS as f32,
+            ..color
+        };
+        let radii = CornerRadii::all(radius);
+        let top = y + drop.max(0.0);
+        let rect = (x, top, w, h);
+        self.push_clip_unbounded();
+        let mut shape = Vec::new();
+        shapes::shadow_bands(
+            rect,
+            radii,
+            (spread, LAYERS),
+            layer,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+
+        // Above the caster's bottom corners its straight sides cover the
+        // dropped rectangle edge to edge.
+        let shown = y + h - radius.clamp(0.0, (h * 0.5).max(0.0));
+        self.push_clip(x, shown, w, top + h - shown);
+        shape.clear();
+        shapes::shadow_core(
+            rect,
+            radii,
+            (spread, LAYERS),
+            layer,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+        self.pop_clip();
+        self.pop_clip();
     }
 
     /// Draw `text` with a dat font at local (`x`, `y`) (the line top):
@@ -1679,6 +1885,124 @@ mod tests {
             c.pop_clip();
             c.push_clip(0.0, 0.0, 0.0, 10.0);
             c.triangles(&triangle());
+        });
+        assert!(list.main.is_empty());
+    }
+
+    #[test]
+    fn a_shape_moves_with_the_origin_and_is_cut_by_the_clip() {
+        let list = with_ctx(|c| {
+            c.push_transform(100.0, 100.0);
+            c.push_clip(0.0, 0.0, 10.0, 40.0);
+            c.fill_rounded_rect(0.0, 0.0, 20.0, 20.0, CornerRadii::all(4.0), RED);
+        });
+        for v in triangles(&list) {
+            assert!(v.x >= 99.5 && v.x <= 110.0 + 1e-4, "{v:?}");
+            assert!(v.y >= 99.5 && v.y <= 120.5, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_shapes_soft_edge_is_one_device_pixel_wide() {
+        let rim = |pixels: f32| {
+            let mut list = DrawList::default();
+            let mut c = RenderContext::new(&mut list, (800.0, 600.0), &NoSprites)
+                .with_pixels_per_unit(pixels);
+            c.fill_rounded_rect(10.0, 10.0, 20.0, 20.0, CornerRadii::default(), RED);
+            triangles(&list)
+                .iter()
+                .map(|v| v.x)
+                .fold(f32::MAX, f32::min)
+        };
+        assert_eq!(rim(1.0), 9.5);
+        assert_eq!(rim(2.0), 9.75);
+        // A scale that means nothing counts as one.
+        assert_eq!(rim(0.0), 9.5);
+        assert_eq!(rim(f32::NAN), 9.5);
+    }
+
+    #[test]
+    fn a_polygon_says_what_it_came_to_and_draws_only_when_it_drew() {
+        let list = with_ctx(|c| {
+            let line = [cv(0.0, 0.0, RED), cv(10.0, 0.0, RED), cv(20.0, 0.0, RED)];
+            assert_eq!(c.fill_convex_polygon(&line), ShapeOutcome::Nothing);
+            assert_eq!(
+                c.fill_convex_polygon(&line[..2]),
+                ShapeOutcome::TooFewPoints
+            );
+        });
+        assert!(list.main.is_empty());
+        let list = with_ctx(|c| {
+            assert_eq!(c.fill_convex_polygon(&triangle()), ShapeOutcome::Drawn);
+        });
+        assert_eq!(list.main.len(), 1);
+    }
+
+    #[test]
+    fn a_smooth_line_has_soft_sides_round_its_thickness() {
+        let list = with_ctx(|c| c.smooth_line(10.0, 20.0, 110.0, 20.0, RED, 4.0));
+        let ys: Vec<f32> = triangles(&list).iter().map(|v| v.y).collect();
+        assert_eq!(ys.iter().copied().fold(f32::MAX, f32::min), 17.5);
+        assert_eq!(ys.iter().copied().fold(f32::MIN, f32::max), 22.5);
+        let list = with_ctx(|c| {
+            c.smooth_line(5.0, 5.0, 5.0, 5.0, RED, 3.0);
+            c.smooth_line(0.0, 0.0, 50.0, 0.0, RED, 0.0);
+        });
+        assert!(list.main.is_empty());
+    }
+
+    #[test]
+    fn a_gradient_takes_the_colour_at_its_height_and_keeps_its_soft_edge() {
+        let list = with_ctx(|c| {
+            c.fill_vertical_gradient(0.0, 100.0, 50.0, 100.0, CornerRadii::default(), RED, BLUE);
+        });
+        let v = triangles(&list);
+        let solid_top = v
+            .iter()
+            .find(|p| p.y == 100.5 && p.color.a == 1.0)
+            .expect("the solid ring's top");
+        assert!((solid_top.color.r - 0.995).abs() < 1e-4);
+        let solid_bottom = v
+            .iter()
+            .find(|p| p.y == 199.5 && p.color.a == 1.0)
+            .expect("the solid ring's bottom");
+        assert!((solid_bottom.color.b - 0.995).abs() < 1e-4);
+        // The rim beyond the shape holds the end colour, faded out.
+        let rim = v.iter().find(|p| p.y == 99.5).expect("the top rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..RED });
+    }
+
+    #[test]
+    fn a_shadow_escapes_the_clip_and_leaves_the_stacks_as_they_were() {
+        let black = Color::rgba(0.0, 0.0, 0.0, 0.5);
+        let mut list = DrawList::default();
+        let mut c = RenderContext::new(&mut list, (800.0, 600.0), &NoSprites);
+        c.push_clip(100.0, 100.0, 40.0, 40.0);
+        let before = c.depths();
+        c.soft_shadow(100.0, 100.0, 40.0, 40.0, 6.0, 4.0, 14.0, black);
+        assert_eq!(c.depths(), before);
+        let reach = list.commands().flat_map(|cmd| match cmd {
+            DrawCmd::Triangles { vertices } => vertices.iter().map(|v| v.x).collect(),
+            _ => Vec::new(),
+        });
+        assert!(reach.fold(f32::MAX, f32::min) < 100.0);
+        // The bands, then the strip of the dropped rectangle showing below
+        // the caster.
+        assert_eq!(list.main.len(), 2);
+        let DrawCmd::Triangles { vertices } = &list.main[1] else {
+            panic!("the strip is triangles");
+        };
+        for v in vertices {
+            assert!(v.y >= 134.0 - 1e-3 && v.y <= 144.0 + 1e-3, "{v:?}");
+            assert!(v.x >= 100.0 - 1e-3 && v.x <= 140.0 + 1e-3, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_shadow_with_no_colour_draws_nothing() {
+        let list = with_ctx(|c| {
+            c.soft_shadow(0.0, 0.0, 10.0, 10.0, 2.0, 2.0, 4.0, Color::TRANSPARENT);
+            c.soft_shadow(0.0, 0.0, 10.0, 10.0, 2.0, 2.0, 0.0, Color::BLACK);
         });
         assert!(list.main.is_empty());
     }
