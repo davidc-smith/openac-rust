@@ -560,6 +560,8 @@ pub struct ObjectSummary {
     pub distance: Option<f32>,
     /// The object holding this one, if any.
     pub parent: Option<u32>,
+    /// Its allegiance's monarch, if it has one.
+    pub monarch: Option<u32>,
 }
 
 /// How a session ended, with link counters for diagnostics.

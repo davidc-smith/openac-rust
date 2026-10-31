@@ -2235,6 +2235,9 @@ fn list_objects(world: &World) -> Vec<ObjectSummary> {
                 origin: position.map(|p| [p.origin.x, p.origin.y, p.origin.z]),
                 distance: position.zip(player).map(|(p, me)| distance(p, &me)),
                 parent: o.parent().map(|p| p.guid),
+                monarch: world
+                    .item(o.guid())
+                    .and_then(ac_core::items::ClientObject::monarch_id),
             }
         })
         .collect();
