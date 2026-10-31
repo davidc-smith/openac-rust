@@ -291,6 +291,68 @@ fn the_docks_gear_opens_and_closes_the_appearance_window() {
     assert!(!press(&mut ui, 1), "and closes it");
 }
 
+/// The dock's place: a saved one applies, a drag is saved only as it ends, and
+/// the Appearance window offers all six.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_dock_takes_its_saved_place_and_a_drag_is_saved_when_it_ends() {
+    use ac_host::settings::PlayerSettings;
+    use ac_ui::event::MouseButton;
+    use ac_ui::plugin::dock::{DockMode, PluginDock, WINDOW};
+    let size = (1280, 720);
+    let (state, _) = session();
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = Scene::default();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.snapshot(),
+    )));
+    ui.feed(&mut scene);
+    ui.frame(Instant::now(), size);
+    let mode = |ui: &mut WindowUi| {
+        ui.host_mut()
+            .with_controller::<PluginDock, _>(WINDOW, |c, _| c.mode())
+            .unwrap()
+    };
+    assert_eq!(mode(&mut ui), DockMode::Floating);
+
+    let mut saved = PlayerSettings::default();
+    saved.plugin_ui.dock = "top".to_owned();
+    ui.settings_changed_elsewhere(&saved);
+    ui.frame(Instant::now(), size);
+    assert_eq!(mode(&mut ui), DockMode::Top);
+    let frame = ui.host().root.window(WINDOW).unwrap().frame;
+    let at = |ui: &WindowUi| {
+        let e = ui.host().root.element(frame).unwrap();
+        (e.left, e.top)
+    };
+    assert_eq!(at(&ui).1, 0.0);
+
+    // Pull it down off the top, then to the left edge.
+    let (left, _) = at(&ui);
+    let (x, y) = (left as i32 + 5, 10);
+    let host = ui.host_mut();
+    host.mouse_move(x, y);
+    host.mouse_down(MouseButton::Left, x, y, 0);
+    host.mouse_move(x, y + 100);
+    ui.frame(Instant::now(), size);
+    ui.feed(&mut scene);
+    assert_eq!(mode(&mut ui), DockMode::FloatingHorizontal);
+    assert_eq!(
+        ui.settings().plugin_ui.dock,
+        "top",
+        "not until the drag ends"
+    );
+    ui.host_mut().mouse_up(MouseButton::Left, x, y + 100, 0);
+    ui.frame(Instant::now(), size);
+    ui.feed(&mut scene);
+    assert_eq!(ui.settings().plugin_ui.dock, "floating-horizontal");
+    assert!(
+        ui.take_settings_changes()
+            .iter()
+            .any(|(s, _)| *s == ac_ui::panels::options::Section::PluginUi)
+    );
+}
+
 /// A reader that hands out a 4 x 4 image for every path (OpenAC PR #271's
 /// file icons; the real reader is `ac-plugin`'s).
 #[derive(Debug)]

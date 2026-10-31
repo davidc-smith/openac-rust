@@ -80,6 +80,57 @@ pub enum DockMode {
 }
 
 impl DockMode {
+    /// Every mode, in the order the Appearance window lists them.
+    pub const ALL: [Self; 6] = [
+        Self::Floating,
+        Self::FloatingHorizontal,
+        Self::Left,
+        Self::Right,
+        Self::Top,
+        Self::Bottom,
+    ];
+
+    /// The name it is saved under.
+    #[must_use]
+    pub const fn saved_name(self) -> &'static str {
+        match self {
+            Self::Floating => "floating",
+            Self::FloatingHorizontal => "floating-horizontal",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    /// The mode saved as `name`, in any case; an unknown name is floating.
+    #[must_use]
+    pub fn from_saved(name: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.saved_name().eq_ignore_ascii_case(name))
+            .unwrap_or_default()
+    }
+
+    /// Its name in the Appearance window.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Floating => "Floating",
+            Self::FloatingHorizontal => "Floating, horizontal",
+            Self::Left => "Left edge",
+            Self::Right => "Right edge",
+            Self::Top => "Top edge",
+            Self::Bottom => "Bottom edge",
+        }
+    }
+
+    /// The mode with this name in the Appearance window.
+    #[must_use]
+    pub fn from_display_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.display_name() == name)
+    }
+
     /// Whether its slots run left to right.
     #[must_use]
     pub const fn is_horizontal(self) -> bool {
@@ -548,6 +599,18 @@ mod tests {
         assert!(l.fade_start && l.fade_end);
         assert!(l.slots[1].is_none());
         assert_eq!(l.slots[2].unwrap().x, SLOTS_START);
+    }
+
+    #[test]
+    fn saved_names_round_trip_and_an_unknown_one_is_floating() {
+        for mode in DockMode::ALL {
+            assert_eq!(DockMode::from_saved(mode.saved_name()), mode);
+            assert_eq!(DockMode::from_display_name(mode.display_name()), Some(mode));
+        }
+        assert_eq!(DockMode::from_saved("RIGHT"), DockMode::Right);
+        assert_eq!(DockMode::from_saved(""), DockMode::Floating);
+        assert_eq!(DockMode::from_saved("sideways"), DockMode::Floating);
+        assert_eq!(DockMode::from_display_name("Sideways"), None);
     }
 
     const SCREEN: (f32, f32) = (800.0, 600.0);

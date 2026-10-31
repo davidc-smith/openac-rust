@@ -23,7 +23,8 @@ use std::sync::Arc;
 use ac_plugin_ui::markup::normalize_icon;
 use ac_plugin_ui::{PanelView, PluginIcon, UiInput};
 
-use self::layout::{ART, DockLayout, DockMode, FADE_LENGTH};
+pub use self::layout::DockMode;
+use self::layout::{ART, DockLayout, FADE_LENGTH};
 use self::style::{Direction, DockSide};
 use super::style::PointerState;
 use super::widgets::ButtonLook;
@@ -131,6 +132,12 @@ pub struct PluginDock {
     /// The dock is being dragged, with the closest the pointer has been to its
     /// rail's edge since it was grabbed or snapped there.
     dragging: Option<f32>,
+    /// The pointer has left where it pressed since the drag began.
+    moved_in_drag: bool,
+    /// The mode it had when the drag began.
+    mode_before_drag: DockMode,
+    /// A drag ended in another mode since the window last asked.
+    mode_dragged: bool,
     /// The player right-clicked the dock or pressed the gear since the window
     /// last asked.
     appearance_requested: bool,
@@ -184,6 +191,9 @@ impl PluginDock {
             layout,
             screen: ui.size(),
             dragging: None,
+            moved_in_drag: false,
+            mode_before_drag: mode,
+            mode_dragged: false,
             appearance_requested: false,
         };
         dock.reflow(ui);
@@ -248,7 +258,7 @@ impl PluginDock {
         self.mode
     }
 
-    /// Puts the dock in `mode`: a rail goes to its edge, and a floating dock
+    /// Puts the dock in `mode`, as saved or picked: a rail goes to its edge, and a floating dock
     /// that was a rail goes 10 points in from the edge it was on. It keeps its
     /// place along the edge.
     pub fn set_mode(&mut self, ui: &mut UiRoot, mode: DockMode) {
@@ -273,6 +283,12 @@ impl PluginDock {
         if !mode.is_rail() {
             ui.move_window(WINDOW, left, top);
         }
+    }
+
+    /// The mode a drag left the dock in, once, when the drag has ended (the
+    /// window saves it). A drag in progress does not change what is saved.
+    pub fn take_dragged_mode(&mut self) -> Option<DockMode> {
+        std::mem::take(&mut self.mode_dragged).then_some(self.mode)
     }
 
     /// Whether the player right-clicked the dock or pressed the gear since
@@ -522,6 +538,10 @@ impl PluginDock {
         else {
             return;
         };
+        if self.dragging.is_none() {
+            self.mode_before_drag = self.mode;
+            self.moved_in_drag = false;
+        }
         let (mx, my) = ui.mouse();
         let pointer = (mx as f32, my as f32);
         let from_edge = |mode, at| layout::pointer_from_edge(mode, self.screen, at);
@@ -532,7 +552,8 @@ impl PluginDock {
             .unwrap_or(f32::INFINITY);
         let closest = from_edge(self.mode, pointer).map_or(closest, |d| closest.min(d));
         // Pressing the handle is not yet moving the dock.
-        let next = if pointer == start {
+        self.moved_in_drag = self.moved_in_drag || pointer != start;
+        let next = if !self.moved_in_drag {
             self.mode
         } else {
             layout::dragged_mode(self.mode, at, self.screen, pointer, closest)
@@ -547,8 +568,11 @@ impl PluginDock {
             self.reflow(ui);
         }
         self.dragging = moving.then_some(closest);
-        if !moving && let Some(g) = ui.widget_mut::<DockGrip>(self.grip) {
-            g.held = None;
+        if !moving {
+            self.mode_dragged = self.mode != self.mode_before_drag;
+            if let Some(g) = ui.widget_mut::<DockGrip>(self.grip) {
+                g.held = None;
+            }
         }
     }
 

@@ -784,14 +784,17 @@ fn top_and_bottom_rails_lie_along_their_edges_and_float_ten_in() {
 }
 
 #[test]
-fn dragging_near_the_left_edge_snaps_at_once() {
+fn dragging_near_the_left_edge_snaps_at_once_and_the_mode_is_saved_when_the_drag_ends() {
     let mut rig = Rig::in_mode(DockMode::Floating);
     let (x, y) = rig.grab(ON_HANDLE);
     rig.move_to(x - 4, y + 30);
     assert_eq!(rig.mode(), DockMode::Left);
     assert_eq!(rig.at().0, 0.0);
     assert_eq!(rig.size().0, layout::RAIL_THICKNESS);
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), None);
     rig.release(x - 4, y + 30);
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), Some(DockMode::Left));
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), None);
     assert_eq!(rig.mode(), DockMode::Left);
     assert_eq!(rig.at().1, DEFAULT_TOP + 30.0);
 }
@@ -830,6 +833,21 @@ fn dragging_past_the_bottom_edge_turns_the_dock_into_a_bottom_rail() {
     assert_eq!(rig.mode(), DockMode::Bottom);
     rig.release(x, 590);
     assert_eq!(rig.at().1, 600.0 - layout::RAIL_THICKNESS);
+}
+
+#[test]
+fn a_drag_that_ends_in_the_mode_it_began_saves_nothing() {
+    let mut rig = Rig::in_mode(DockMode::Left);
+    rig.drag(ON_HANDLE, (5, 60));
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), None);
+    // Pulled off and back on within one drag.
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.move_to(x + 100, y);
+    assert_eq!(rig.mode(), DockMode::Floating);
+    rig.move_to(x, y);
+    assert_eq!(rig.mode(), DockMode::Left);
+    rig.release(x, y);
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), None);
 }
 
 #[test]
@@ -1008,6 +1026,7 @@ fn a_whole_drag_between_two_frames_still_snaps_and_saves() {
     rig.tick();
     assert_eq!(rig.mode(), DockMode::Left);
     assert_eq!(rig.at().0, 0.0);
+    assert_eq!(rig.with(|c, _| c.take_dragged_mode()), Some(DockMode::Left));
 }
 
 #[test]

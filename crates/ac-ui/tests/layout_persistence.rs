@@ -743,6 +743,31 @@ fn the_plugin_dock_remembers_being_minimized_per_character_and_keeps_its_saved_n
     assert!(!minimized(&mut host));
 }
 
+#[test]
+fn a_saved_rail_restores_to_its_edge_with_its_place_along_it() {
+    use ac_ui::plugin::dock::{DockMode, PluginDock, WINDOW};
+    let dir = Dir::new();
+    {
+        let mut host = dock_host();
+        host.with_controller::<PluginDock, _>(WINDOW, |c, ui| c.set_mode(ui, DockMode::Right));
+        let mut p = persist(&mut host, Some(dir.store()), "Alice", (1280, 720));
+        p.set_gameplay_active(&mut host, true);
+        p.restore_all(&mut host);
+        host.root.move_window(WINDOW, 300.0, 222.0);
+        p.follow(&mut host);
+    }
+    // The saved mode comes first in a new run, then the place.
+    let mut host = dock_host();
+    host.with_controller::<PluginDock, _>(WINDOW, |c, ui| c.set_mode(ui, DockMode::Right));
+    let mut p = persist(&mut host, Some(dir.store()), "Alice", (1280, 720));
+    p.set_gameplay_active(&mut host, true);
+    p.restore_all(&mut host);
+    host.tick(0.016, 16, None);
+    let (left, top, width, _) = geometry(&host, WINDOW);
+    assert_eq!(width, 46.0);
+    assert_eq!((left, top), (1280.0 - 46.0, 222.0));
+}
+
 // ── .SidePanels ─────────────────────────────────────────────────────────
 
 fn side_panel_size_survives_a_map_switch_and_a_fresh_login(chosen: f32) {

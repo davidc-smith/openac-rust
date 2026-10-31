@@ -33,7 +33,7 @@ use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
-use ac_ui::plugin::dock::{self, PluginDock};
+use ac_ui::plugin::dock::{self, DockMode, PluginDock};
 use ac_ui::plugin::fold::SharedControlState;
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
@@ -280,10 +280,12 @@ const APPEARANCE_OWNER: &str = "openac";
 const APPEARANCE_VIEW: &str = "appearance";
 
 /// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
-const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="140" title="Plugin appearance" theme="plugin">
+const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="196" title="Plugin appearance" theme="plugin">
   <label x="12" y="33" text="Theme" />
   <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="8" />
-  <button x="226" y="102" w="72" h="24" text="Close" onclick="{Close}" />
+  <label x="12" y="89" text="Dock" />
+  <menu x="12" y="111" w="286" h="24" items="{Docks}" selected="{SelectedDock}" onchange="{SelectDock}" rows="6" />
+  <button x="226" y="158" w="72" h="24" text="Close" onclick="{Close}" />
 </panel>"#;
 
 /// Markup with no images to resolve.
@@ -484,6 +486,7 @@ impl WindowUi {
             self.plugins.canvases = Some(CanvasLayer::mount(root, host));
             self.plugins.projectile = Some(ProjectileDebugOverlay::mount(root, host));
         }
+        self.follow_plugin_dock_setting();
         // The theme the player saved: opted-in windows take it from their
         // first draw, and plugins are told it (OpenAC `FollowTheme`).
         let saved = ThemeKind::from_saved(&self.settings.plugin_ui.theme);
@@ -610,6 +613,41 @@ impl WindowUi {
         }
     }
 
+    /// The dock's mode, as last saved or picked.
+    fn plugin_dock_mode(&mut self) -> DockMode {
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.mode())
+            .unwrap_or_default()
+    }
+
+    /// The dock's mode is saved with the client settings.
+    fn save_plugin_dock(&mut self, mode: DockMode) {
+        mode.saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+    }
+
+    /// The player picked a place for the dock in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock(&mut self, mode: DockMode) {
+        if mode == self.plugin_dock_mode() {
+            return;
+        }
+        self.save_plugin_dock(mode);
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_mode(ui, mode));
+    }
+
+    /// The saved place of the dock is applied, when it differs.
+    pub(super) fn follow_plugin_dock_setting(&mut self) {
+        let saved = DockMode::from_saved(&self.settings.plugin_ui.dock);
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_mode(ui, saved));
+    }
+
     /// Open the Appearance window, building it the first time, or close it
     /// when it is open (OpenAC `ShowPluginAppearance`).
     fn toggle_plugin_appearance(&mut self) {
@@ -620,6 +658,9 @@ impl WindowUi {
                 .with("Themes", ac_plugin_ui::BindingKind::TextList)
                 .with("Selected", ac_plugin_ui::BindingKind::Text)
                 .with("Select", ac_plugin_ui::BindingKind::TextAction)
+                .with("Docks", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDock", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDock", ac_plugin_ui::BindingKind::TextAction)
                 .with("Close", ac_plugin_ui::BindingKind::Action);
             let mut descriptor =
                 ac_plugin_ui::PanelDescriptor::new(APPEARANCE_VIEW, "Plugin appearance");
@@ -684,10 +725,11 @@ impl WindowUi {
         }
     }
 
-    /// The Appearance window shows the theme in force.
+    /// The Appearance window shows the theme in force and where the dock is.
     fn sync_appearance(&mut self) {
         let theme = self.plugins.theme;
         let kind = self.plugins.theme_kind;
+        let mode = self.plugin_dock_mode();
         let Some(a) = self.plugins.appearance.as_mut() else {
             return;
         };
@@ -703,6 +745,19 @@ impl WindowUi {
                 (
                     "Selected".into(),
                     ac_plugin_ui::UiValue::Text(kind.display_name().to_owned()),
+                ),
+                (
+                    "Docks".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockMode::ALL
+                            .iter()
+                            .map(|m| m.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDock".into(),
+                    ac_plugin_ui::UiValue::Text(mode.display_name().to_owned()),
                 ),
             ],
         );
@@ -729,6 +784,7 @@ impl WindowUi {
             return;
         }
         let mut picked = None;
+        let mut picked_dock = None;
         for input in inputs {
             match &input {
                 UiInput::Action {
@@ -736,6 +792,11 @@ impl WindowUi {
                     value: ac_plugin_ui::ActionValue::Text(name),
                     ..
                 } if handler == "Select" => picked = ThemeKind::from_display_name(name),
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDock" => picked_dock = DockMode::from_display_name(name),
                 UiInput::Action { handler, .. } if handler == "Close" => {
                     a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, false);
                 }
@@ -744,6 +805,9 @@ impl WindowUi {
         }
         if let Some(kind) = picked {
             self.pick_plugin_theme(kind);
+        }
+        if let Some(mode) = picked_dock {
+            self.pick_plugin_dock(mode);
         }
         self.sync_appearance();
     }
@@ -774,6 +838,14 @@ impl WindowUi {
                 .unwrap_or(false);
         if appearance_asked {
             self.toggle_plugin_appearance();
+        }
+        let dragged = self
+            .host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.take_dragged_mode())
+            .flatten();
+        if let Some(mode) = dragged {
+            self.save_plugin_dock(mode);
+            self.sync_appearance();
         }
         self.follow_appearance();
     }
