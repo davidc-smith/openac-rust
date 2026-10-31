@@ -32,6 +32,7 @@ impl Rig {
             player_present: true,
             controller_ready: true,
             world_ready: true,
+            world_entry: 1,
         });
         cameras
             .chase

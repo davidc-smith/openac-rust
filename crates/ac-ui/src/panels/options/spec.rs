@@ -672,7 +672,7 @@ pub fn config_rows() -> Vec<ConfigRow> {
             "Potato Mode",
             def.potato_mode,
             display(DisplayField::PotatoMode),
-            "Everything at its cheapest, for running many clients on one machine: full detail only in the nearest landblocks, landscape draw distance 3, no anti-aliasing, plain texture filtering, no building detail textures, the plain render pack, retail particle range, and compact video-memory pools. Your other settings are kept and come back when this is off. Texture detail, anti-aliasing and the memory pools change at the next start.",
+            "Everything at its cheapest, for running many clients on one machine: full detail only in the nearest landblocks, landscape draw distance 3, no anti-aliasing, the lowest texture detail, plain texture filtering, no building detail textures, the plain render pack and retail particle range. Your other settings are kept and come back when this is off. It applies at once: the world's textures are made again at the new detail and replace the old ones over the next moments.",
         ),
         explicit_toggle(
             "UI Only",
