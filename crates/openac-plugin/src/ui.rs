@@ -194,6 +194,7 @@ impl PanelSpec {
                 markup: markup.to_owned(),
                 binding_type: "Bindings".to_owned(),
                 bindings: Vec::new(),
+                icon_file: None,
             },
             typed: Vec::new(),
             item_types: Vec::new(),
@@ -266,6 +267,15 @@ impl PanelSpec {
     #[must_use]
     pub fn icon(mut self, surface: u32) -> Self {
         self.registration.icon_surface_id = surface;
+        self
+    }
+
+    /// The dock slot's own picture: a `.png` in the plugin's folder, by a path
+    /// relative to it (API 1.4). It comes ahead of the plugin's `icon.png` and
+    /// [`Self::icon`].
+    #[must_use]
+    pub fn icon_file(mut self, path: &str) -> Self {
+        self.registration.icon_file = Some(path.to_owned());
         self
     }
 
@@ -1027,6 +1037,7 @@ impl Host<'_> {
                 binding_type: r.binding_type.clone(),
                 bindings: spec.typed.clone(),
                 item_types: spec.item_types.clone(),
+                icon_file: r.icon_file.clone(),
             }
             .to_bytes();
             let r = &request;

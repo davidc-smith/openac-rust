@@ -5,7 +5,8 @@
 //! `ui_theme` import answers (`ui_theme <kind> <name>`). It registers a loot
 //! classifier `rules` (answering nothing) so another plugin can ask it a
 //! question. `/rawpaint <version>` paints a canvas with bytes it encodes itself,
-//! as that API version knows them, so a test can see what the client reads from
+//! as that API version knows them, and `/rawpanel <version>` registers a window
+//! and a typed window the same way, so a test can see what the client reads from
 //! a plugin built for an older version.
 //!
 //! Its exports are written here instead of by `export_plugin!`: the SDK's
@@ -13,7 +14,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use ac_plugin_abi::ui::{CanvasPaint, PaintCmd};
+use ac_plugin_abi::ui::{CanvasPaint, PaintCmd, PanelRegistration, TypedPanelRegistration};
 use ac_plugin_abi::{ApiVersion, Wire};
 use openac_plugin::ui::{CanvasSpec, Color};
 use openac_plugin::{Host, Plugin, StartInfo};
@@ -30,6 +31,7 @@ impl Plugin for RawBytes {
         let canvas = host.register_canvas(&CanvasSpec::new("raw", 40, 40))?;
         CANVAS.store(canvas.id(), Ordering::Relaxed);
         host.register_command("rawpaint", "Paints the canvas as an API version (rawpaint 1.2)")?;
+        host.register_command("rawpanel", "Registers windows as an API version (rawpanel 1.3)")?;
         Ok(())
     }
 }
@@ -52,6 +54,58 @@ pub fn paint_as(version: &str) {
     };
     paint_raw(&paint.to_bytes_at(version));
 }
+
+/// `/rawpanel <version>`: a window and a typed window naming a dock icon, encoded
+/// as that version knows them.
+pub fn panels_as(version: &str) {
+    let Some(version) = ApiVersion::parse(version.trim()) else {
+        return;
+    };
+    let plain = PanelRegistration {
+        window_id: "raw".into(),
+        title: "Raw".into(),
+        icon_text: None,
+        icon_surface_id: 0,
+        start_visible: false,
+        show_in_side_panel: true,
+        markup: "<panel/>".into(),
+        binding_type: "Raw".into(),
+        bindings: Vec::new(),
+        icon_file: Some("raw.png".into()),
+    };
+    let typed = TypedPanelRegistration {
+        window_id: "rawtyped".into(),
+        title: "Raw Typed".into(),
+        icon_text: None,
+        icon_surface_id: 0,
+        start_visible: false,
+        show_in_side_panel: true,
+        markup: "<panel/>".into(),
+        binding_type: "Raw".into(),
+        bindings: Vec::new(),
+        item_types: Vec::new(),
+        icon_file: Some("rawtyped.png".into()),
+    };
+    register_raw(&plain.to_bytes_at(version), &typed.to_bytes_at(version));
+}
+
+/// Registers with bytes as they are.
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+fn register_raw(plain: &[u8], typed: &[u8]) {
+    #[link(wasm_import_module = "openac")]
+    unsafe extern "C" {
+        fn ui_panel_register(ptr: *const u8, len: usize) -> i32;
+        fn ui_panel_register_typed(ptr: *const u8, len: usize) -> i32;
+    }
+    // SAFETY: the client reads `len` bytes from `ptr`, which are each slice.
+    let _ = unsafe { ui_panel_register(plain.as_ptr(), plain.len()) };
+    // SAFETY: as above.
+    let _ = unsafe { ui_panel_register_typed(typed.as_ptr(), typed.len()) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn register_raw(_plain: &[u8], _typed: &[u8]) {}
 
 /// Paints with bytes as they are.
 #[cfg(target_arch = "wasm32")]
@@ -83,7 +137,7 @@ mod exports {
     use openac_plugin::__export;
     use openac_plugin::{CallbackAnswer, Event, Host, LogLevel};
 
-    use super::{RawBytes, hex, paint_as};
+    use super::{RawBytes, hex, paint_as, panels_as};
 
     std::thread_local! {
         static PLUGIN: RefCell<Option<RawBytes>> = const { RefCell::new(None) };
@@ -139,7 +193,11 @@ mod exports {
             &format!("ui_theme {:?} {}", theme.kind, theme.display_name),
         );
         if let Ok(Event::Command(call)) = Event::from_bytes(&bytes) {
-            paint_as(&call.arguments);
+            if call.verb == "rawpanel" {
+                panels_as(&call.arguments);
+            } else {
+                paint_as(&call.arguments);
+            }
         }
     }
 

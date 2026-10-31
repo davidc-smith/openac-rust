@@ -401,6 +401,9 @@ wire_record! {
         pub bindings: Vec<TypedBindingDecl>,
         /// The item type of every items list.
         pub item_types: Vec<ItemTypeDecl>,
+        /// The window's own dock icon: a `.png` in the plugin's folder, by a
+        /// path relative to it, tried ahead of the plugin's `icon.png`.
+        since (1, 4) pub icon_file: Option<String>,
     }
 }
 
@@ -805,6 +808,9 @@ wire_record! {
         pub binding_type: String,
         /// Every binding name the markup may use.
         pub bindings: Vec<BindingDecl>,
+        /// The window's own dock icon: a `.png` in the plugin's folder, by a
+        /// path relative to it, tried ahead of the plugin's `icon.png`.
+        since (1, 4) pub icon_file: Option<String>,
     }
 }
 
@@ -1728,6 +1734,7 @@ mod tests {
                     kind: BindingKind::TextList,
                 },
             ],
+            icon_file: Some("icons/demo.png".into()),
         };
         assert_eq!(
             PanelRegistration::from_bytes(&registration.to_bytes()),

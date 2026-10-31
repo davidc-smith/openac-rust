@@ -67,6 +67,9 @@ pub struct PanelDescriptor {
     pub start_visible: bool,
     /// Gets a button on the plugin dock.
     pub show_in_side_panel: bool,
+    /// The window's own dock icon: a `.png` in the plugin's folder, by a path
+    /// relative to it.
+    pub icon_file: Option<String>,
 }
 
 impl PanelDescriptor {
@@ -81,6 +84,7 @@ impl PanelDescriptor {
             icon_surface_id: 0,
             start_visible: true,
             show_in_side_panel: true,
+            icon_file: None,
         }
     }
 }

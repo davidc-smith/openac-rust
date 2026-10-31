@@ -382,7 +382,7 @@ pub fn handle(
     let id = owner.id.as_str();
     let reply = match import {
         Import::UiPanelRegister => {
-            let r = PanelRegistration::from_bytes(request).map_err(bad)?;
+            let r = PanelRegistration::from_bytes_at(request, version).map_err(bad)?;
             let mut schema = ui::BindingSchema::new(r.binding_type);
             for decl in r.bindings {
                 schema.declare(decl.name, kind(decl.kind));
@@ -394,6 +394,7 @@ pub fn handle(
                 icon_surface_id: r.icon_surface_id,
                 start_visible: r.start_visible,
                 show_in_side_panel: r.show_in_side_panel,
+                icon_file: r.icon_file,
             };
             state
                 .register_panel(owner, descriptor, &r.markup, schema)
@@ -413,7 +414,7 @@ pub fn handle(
             state.set_values(id, r.panel, values).to_bytes()
         }
         Import::UiPanelRegisterTyped => {
-            let r = abi::TypedPanelRegistration::from_bytes(request).map_err(bad)?;
+            let r = abi::TypedPanelRegistration::from_bytes_at(request, version).map_err(bad)?;
             let schema = typed_schema(r.binding_type, r.bindings, &r.item_types);
             let descriptor = PanelDescriptor {
                 window_id: r.window_id,
@@ -422,6 +423,7 @@ pub fn handle(
                 icon_surface_id: r.icon_surface_id,
                 start_visible: r.start_visible,
                 show_in_side_panel: r.show_in_side_panel,
+                icon_file: r.icon_file,
             };
             state
                 .register_panel(owner, descriptor, &r.markup, schema)

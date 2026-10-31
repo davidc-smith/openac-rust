@@ -1004,6 +1004,43 @@ fn an_older_plugins_canvas_text_reads_without_a_font() {
     }
 }
 
+/// A plugin built for API 1.2 or 1.3 registers windows without a dock icon of
+/// their own, through a real module, and the client reads the rest as sent; one
+/// built for this API sends the path.
+#[test]
+fn an_older_plugins_window_reads_without_an_icon_file() {
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-panel-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert!(plugins.handle_line(&format!("/rawpanel {version}"), &mut api));
+        plugins.pump(0.0, None, &mut api);
+        assert_eq!(
+            plugins.loaded_ids(),
+            ["openac.rawbytes"],
+            "{version}: {:?}",
+            api.logs
+        );
+        let files: Vec<(String, Option<String>)> = api
+            .ui
+            .panels()
+            .map(|p| (p.descriptor.title.clone(), p.descriptor.icon_file.clone()))
+            .collect();
+        let file = |path: &str| (version == API_CURRENT).then(|| path.to_owned());
+        assert_eq!(
+            files,
+            [
+                ("Raw".to_owned(), file("raw.png")),
+                ("Raw Typed".to_owned(), file("rawtyped.png")),
+            ],
+            "{version}"
+        );
+        plugins.shutdown(&mut api);
+    }
+}
+
 /// `uidemo` holds fonts through a real module: the bundled font in both
 /// weights, a CFF OpenType file of its own, a file that is no font refused
 /// without stopping it; a font held twice takes two releases; its text names
