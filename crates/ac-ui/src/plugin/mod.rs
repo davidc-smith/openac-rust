@@ -920,7 +920,8 @@ impl PluginPanelController {
             && let Some(b) = ui.widget_mut::<MarkupButton>(minimize)
         {
             // The shelf's "-" follows the window's theme as the bar's close
-            // button does: a flat face, edge and caption in the palette.
+            // button does: a button's face, edge and caption in the palette.
+            b.palette = palette;
             b.background = p.map_or(MINIMIZE_BACKGROUND, |p| p.field);
             b.border = p.map_or(MINIMIZE_BORDER, |p| p.border);
             b.text_color = p.map_or(Color::WHITE, |p| p.text);
@@ -1028,6 +1029,7 @@ impl PluginPanelController {
                         w.fill = fill.read_f32(values);
                         w.label = caption;
                         w.bar_color = bar_color;
+                        w.theme_palette = palette;
                     }
                 }
                 Markup::Label { text, color: c } => {
@@ -1142,13 +1144,14 @@ impl PluginPanelController {
                         .read_f32(values)
                         .map(|v| ((v - min) / (max - min)).clamp(0.0, 1.0));
                     if let Some(w) = ui.widget_mut::<Scrollbar>(el) {
-                        // OpenAC `PluginMarkupTheme`: themed, flat in the
-                        // theme's colours; Classic, as authored.
+                        // OpenAC `PluginMarkupTheme`: themed, the plain look
+                        // in the theme's colours; Classic, as authored.
                         let classic = Scrollbar::default();
                         w.retail_art = p.is_none() && *retail_art;
                         w.plain_track_color = p.map_or(classic.plain_track_color, |p| p.field);
                         w.plain_border_color = p.map_or(classic.plain_border_color, |p| p.border);
                         w.plain_nub_color = p.map_or(classic.plain_nub_color, |p| p.muted);
+                        w.theme_palette = palette;
                         if !w.is_dragging()
                             && let Some(position) = position
                         {
@@ -1177,6 +1180,9 @@ impl PluginPanelController {
                         w.inner.follow_bound_text(&bound);
                         w.inner.background_color = bg;
                         w.inner.text_color = col;
+                        w.inner.theme_palette = palette;
+                        w.inner.selection_color =
+                            p.map_or(Field::default().selection_color, |p| p.selected);
                         if let Some(f) = text_font {
                             w.inner.font.clone_from(f);
                         }
@@ -1219,7 +1225,9 @@ impl PluginPanelController {
                             p.map_or(classic.plain_triangle_color, |p| p.muted);
                         w.plain_selected_color =
                             p.map_or(classic.plain_selected_color, |p| p.selected);
-                        w.plain_hover_color = p.map_or(classic.plain_hover_color, |p| p.selected);
+                        w.plain_hover_color =
+                            p.map_or(classic.plain_hover_color, |p| style::hover(p, p.field));
+                        w.theme_palette = palette;
                         if let Some((text, caption)) = &fonts {
                             w.font.clone_from(text);
                             w.button_font.clone_from(caption);

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use ac_plugin_ui::list::{self, ColumnPress};
 use ac_plugin_ui::markup::{Column, ColumnHeader, ColumnKind};
 
-use super::style;
+use super::style::{self, PointerState};
 use crate::draw::{Color, DEFAULT_OUTLINE_COLOR, RenderContext, TextureRef};
 use crate::event::{Key, UiEvent, kind};
 use crate::font::UiFont;
@@ -134,7 +134,7 @@ impl Palette {
 }
 
 /// The check box OpenAC draws (`UiCheckLamp`, 11 pixels square), or the
-/// theme's flat box.
+/// theme's rounded one.
 pub fn draw_check(
     rc: &mut RenderContext<'_>,
     x: f32,
@@ -143,18 +143,7 @@ pub fn draw_check(
     palette: Option<&Palette>,
 ) {
     if let Some(p) = palette {
-        rc.fill(x, y, 11.0, 11.0, if checked { p.selected } else { p.field });
-        rc.rect_outline(
-            x,
-            y,
-            11.0,
-            11.0,
-            if checked { p.accent } else { p.border },
-            1.0,
-        );
-        if checked {
-            rc.fill(x + 3.0, y + 3.0, 5.0, 5.0, p.accent);
-        }
+        style::check(rc, p, x, y, checked);
         return;
     }
     let (outer, inner) = if checked {
@@ -409,6 +398,8 @@ pub struct MarkupButton {
     pub palette: Option<Palette>,
     /// It has keyboard focus as a tab stop.
     pub keyboard_focused: bool,
+    /// Where the pointer and left button are, for the themed look.
+    pub pointer: PointerState,
 }
 
 impl MarkupButton {
@@ -427,6 +418,7 @@ impl MarkupButton {
             tab_selected: None,
             palette: None,
             keyboard_focused: false,
+            pointer: PointerState::default(),
         }
     }
 
@@ -444,6 +436,9 @@ impl MarkupButton {
 
 impl Widget for MarkupButton {
     fn on_event(&mut self, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> bool {
+        if e.target == Some(me) {
+            self.pointer.observe(e);
+        }
         if let Some(activate) = tab_stop_event(ui, me, e, &mut self.keyboard_focused) {
             if activate {
                 ui.send_message(me, ElementMessage::Clicked { x: 0, y: 0 });
@@ -471,15 +466,35 @@ impl Widget for MarkupButton {
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
-        if self.background.a > 0.0 {
-            rc.fill(0.0, 0.0, w, h, self.background);
+        let live = enabled(ui, me);
+        if let Some(p) = &self.palette {
+            let look = self.pointer.look(live);
+            match self.tab_selected {
+                Some(selected) => style::tab(rc, p, w, h, selected, look),
+                None => style::button(rc, p, (0.0, 0.0, w, h), self.background, self.border, look),
+            }
+            if self.keyboard_focused {
+                style::focus_ring(rc, p, w, h, style::CONTROL_RADIUS);
+            }
+        } else {
+            if self.background.a > 0.0 {
+                rc.fill(0.0, 0.0, w, h, self.background);
+            }
+            if self.border.a > 0.0 {
+                rc.rect_outline(0.0, 0.0, w, h, self.border, 1.0);
+            }
+            if self.keyboard_focused {
+                rc.rect_outline(1.0, 1.0, w - 2.0, h - 2.0, KEYBOARD_FOCUS_OUTLINE, 1.0);
+            }
         }
-        if self.border.a > 0.0 {
-            rc.rect_outline(0.0, 0.0, w, h, self.border, 1.0);
-        }
-        if self.keyboard_focused {
-            rc.rect_outline(1.0, 1.0, w - 2.0, h - 2.0, KEYBOARD_FOCUS_OUTLINE, 1.0);
-        }
+        // A disabled themed control fades all of it, icon and caption too.
+        let fade = |c: Color| {
+            if self.palette.is_some() && !live {
+                style::faded(c)
+            } else {
+                c
+            }
+        };
         let mut icon_column = 0.0;
         if let Some(file) = &self.icon_file {
             file.record();
@@ -492,18 +507,22 @@ impl Widget for MarkupButton {
                 Some(false) => Color::rgba(1.0, 1.0, 1.0, INACTIVE_TAB_ICON_ALPHA),
                 _ => Color::WHITE,
             };
-            draw_icon_tinted(rc, icon, (3.0, (h - extent) * 0.5, extent, extent), tint);
+            draw_icon_tinted(
+                rc,
+                icon,
+                (3.0, (h - extent) * 0.5, extent, extent),
+                fade(tint),
+            );
         }
-        let color = match self.tab_selected {
-            None => self.text_color,
-            Some(_) if !enabled(ui, me) => Color::rgba(0.34, 0.33, 0.29, 1.0),
-            Some(true) => self
-                .palette
-                .map_or(Color::rgba(0.94, 0.76, 0.18, 1.0), |p| p.accent),
-            Some(false) => self
-                .palette
-                .map_or(Color::rgba(0.78, 0.76, 0.67, 1.0), |p| p.muted),
-        };
+        let color = fade(match (self.tab_selected, &self.palette) {
+            (None, _) => self.text_color,
+            (Some(_), Some(p)) if !live => p.muted,
+            (Some(_), None) if !live => Color::rgba(0.34, 0.33, 0.29, 1.0),
+            (Some(true), Some(p)) => p.text,
+            (Some(true), None) => Color::rgba(0.94, 0.76, 0.18, 1.0),
+            (Some(false), Some(p)) => p.muted,
+            (Some(false), None) => Color::rgba(0.78, 0.76, 0.67, 1.0),
+        });
         if !self.text.is_empty() {
             let tw = measure(self.font.as_ref(), &self.text);
             let area = (w - icon_column).max(0.0);
@@ -519,10 +538,8 @@ impl Widget for MarkupButton {
                 self.outline,
             );
         }
-        if self.tab_selected == Some(true) {
-            let underline = self
-                .palette
-                .map_or(Color::rgba(0.77, 0.59, 0.12, 1.0), |p| p.accent);
+        if self.tab_selected == Some(true) && self.palette.is_none() {
+            let underline = Color::rgba(0.77, 0.59, 0.12, 1.0);
             rc.fill(2.0, h - 2.0, (w - 4.0).max(0.0), 1.0, underline);
         }
     }
@@ -697,7 +714,8 @@ pub mod vertical_bar {
 const SCROLL_BUTTON: f32 = 16.0;
 
 /// Draws a vertical scrollbar at `x`, `width` wide, the element's height:
-/// retail art, or the theme's flat bar (OpenAC `UiMarkupList.DrawScrollbar`).
+/// retail art, or the theme's slim thumb with no track, `active` while it is
+/// held (OpenAC `UiMarkupList.DrawScrollbar`).
 fn draw_vbar(
     rc: &mut RenderContext<'_>,
     x: f32,
@@ -705,15 +723,12 @@ fn draw_vbar(
     height: f32,
     scroll: &Scrollable,
     palette: Option<&Palette>,
+    active: bool,
 ) {
     if let Some(p) = palette {
-        rc.fill(x, 0.0, width, height, p.field);
-        rc.rect_outline(x, 0.0, width, height, p.border, 1.0);
         let button = SCROLL_BUTTON.min(height / 2.0);
         let (top, extent) = thumb_rect(scroll, button, (height - 2.0 * button).max(0.0));
-        rc.fill(x + 3.0, top, width - 6.0, extent, p.muted);
-        rc.fill(x + 5.0, button / 2.0, width - 10.0, 1.0, p.muted);
-        rc.fill(x + 5.0, height - button / 2.0, width - 10.0, 1.0, p.muted);
+        style::scroll_thumb(rc, p, x, top, width, extent, active);
         return;
     }
     let dec = SCROLL_BUTTON.clamp(0.0, height);
@@ -1167,22 +1182,31 @@ impl MarkupList {
         };
         let (x, top, w, h) = self.button_rect(column, cell_x, cell_w, y);
         let p = self.palette;
-        let base = p.map_or(self.button_color, |p| p.background);
-        let mut border = p.map_or(self.button_border_color, |p| p.border);
-        let mut text_color = p.map_or(self.text_color, |p| p.text);
         let look = self.button_look(row, column, enabled);
-        let mut face = match look {
-            ButtonLook::Hovered => toward(base, border, 0.3),
-            ButtonLook::Pressed => toward(base, Color::rgba(0.0, 0.0, 0.0, 0.0), 0.25),
-            _ => base,
-        };
-        if look == ButtonLook::Disabled {
-            face = dimmed(face);
-            border = dimmed(border);
-            text_color = dimmed(text_color);
+        let mut text_color = p.map_or(self.text_color, |p| p.text);
+        if let Some(p) = &p {
+            // The list's own ground is the field colour, so its buttons take
+            // the window's.
+            style::button(rc, p, (x, top, w, h), p.background, p.border, look);
+            if look == ButtonLook::Disabled {
+                text_color = style::faded(text_color);
+            }
+        } else {
+            let base = self.button_color;
+            let mut border = self.button_border_color;
+            let mut face = match look {
+                ButtonLook::Hovered => toward(base, border, 0.3),
+                ButtonLook::Pressed => toward(base, Color::rgba(0.0, 0.0, 0.0, 0.0), 0.25),
+                _ => base,
+            };
+            if look == ButtonLook::Disabled {
+                face = dimmed(face);
+                border = dimmed(border);
+                text_color = dimmed(text_color);
+            }
+            rc.fill(x, top, w, h, face);
+            rc.rect_outline(x, top, w, h, border, 1.0);
         }
-        rc.fill(x, top, w, h, face);
-        rc.rect_outline(x, top, w, h, border, 1.0);
         rc.push_clip(x, top, w, h);
         let font = self.font.as_ref();
         text(
@@ -1326,14 +1350,15 @@ impl MarkupList {
         let p = self.palette;
         let border = p.map_or(self.border, |p| p.border);
         let text_color = p.map_or(self.text_color, |p| p.text);
-        rc.fill(
-            0.0,
-            0.0,
-            w,
-            super::list_ext::HEADER_HEIGHT,
-            p.map_or(self.background, |p| p.field),
-        );
-        rc.fill(0.0, super::list_ext::HEADER_HEIGHT - 1.0, w, 1.0, border);
+        let underline = super::list_ext::HEADER_HEIGHT - 1.0;
+        if p.is_some() {
+            // The header sits inside the list's rounded container.
+            let inset = style::ROW_INSET;
+            rc.fill(inset, underline, w - 2.0 * inset, 1.0, border);
+        } else {
+            rc.fill(0.0, 0.0, w, super::list_ext::HEADER_HEIGHT, self.background);
+            rc.fill(0.0, underline, w, 1.0, border);
+        }
         let font = self.font.clone();
         let Some(ext) = self.ext.as_mut() else {
             return;
@@ -1579,6 +1604,11 @@ impl Widget for MarkupList {
             self.top = list::reveal(self.top, shown_selected, count, visible);
         }
         let header_top = self.rows_top();
+        if let Some(p) = &self.palette {
+            let (outer_w, outer_h) = size(ui, me);
+            let radius = style::CONTAINER_RADIUS;
+            style::surface(rc, 0.0, 0.0, outer_w, outer_h, radius, p.field, p.border);
+        }
         if header_top > 0.0 {
             let content = self.content_width(w, h);
             let layout = list::column_layout(&self.columns, content);
@@ -1593,8 +1623,10 @@ impl Widget for MarkupList {
         let is_enabled = enabled(ui, me);
         let content = self.content_width(w, h);
         let p = self.palette;
-        rc.fill(0.0, 0.0, w, h, p.map_or(self.background, |p| p.field));
-        rc.rect_outline(0.0, 0.0, w, h, p.map_or(self.border, |p| p.border), 1.0);
+        if p.is_none() {
+            rc.fill(0.0, 0.0, w, h, self.background);
+            rc.rect_outline(0.0, 0.0, w, h, self.border, 1.0);
+        }
         let band = self.selection_band || p.is_some();
         let font = self.font.clone();
         let text_y = (self.row_height - line_height(font.as_ref())).max(0.0) * 0.5;
@@ -1619,20 +1651,23 @@ impl Widget for MarkupList {
             }
             let banded = match &self.ext {
                 Some(ext) if ext.multi => ext.banded(plugin),
-                Some(_) => self.selection_band && plugin as i32 == self.selected,
+                Some(_) => band && plugin as i32 == self.selected,
                 None => {
                     band && i32::try_from(index).ok() == Some(self.selected)
-                        && self.columns.is_empty()
+                        && (self.columns.is_empty() || p.is_some())
                 }
             };
             if banded {
-                rc.fill(
-                    1.0,
-                    y + 1.0,
-                    content - 2.0,
-                    self.row_height - 1.0,
-                    p.map_or(self.selected_color, |p| p.selected),
-                );
+                match &p {
+                    Some(p) => style::row(rc, 0.0, y, content, self.row_height, p.selected),
+                    None => rc.fill(
+                        1.0,
+                        y + 1.0,
+                        content - 2.0,
+                        self.row_height - 1.0,
+                        self.selected_color,
+                    ),
+                }
             }
             if self.columns.is_empty() {
                 if let Some(Some(icon)) = self.row_icons.as_ref().and_then(|icons| icons.get(index))
@@ -1731,6 +1766,7 @@ impl Widget for MarkupList {
                 h,
                 &self.scroll,
                 p.as_ref(),
+                self.dragging.is_some(),
             );
         }
         rc.pop_transform();
@@ -1966,10 +2002,13 @@ impl Widget for MarkupLog {
         let (w, h) = size(ui, me);
         self.refresh(w, h);
         let p = self.palette;
-        let background = Color::rgba(0.0, 0.0, 0.0, 0.92);
-        let border = Color::rgba(0.46, 0.37, 0.16, 1.0);
-        rc.fill(0.0, 0.0, w, h, p.map_or(background, |p| p.field));
-        rc.rect_outline(0.0, 0.0, w, h, p.map_or(border, |p| p.border), 1.0);
+        if let Some(p) = &p {
+            let radius = style::CONTAINER_RADIUS;
+            style::surface(rc, 0.0, 0.0, w, h, radius, p.field, p.border);
+        } else {
+            rc.fill(0.0, 0.0, w, h, Color::rgba(0.0, 0.0, 0.0, 0.92));
+            rc.rect_outline(0.0, 0.0, w, h, Color::rgba(0.46, 0.37, 0.16, 1.0), 1.0);
+        }
         let line = self.line_height();
         rc.push_clip(4.0, 4.0, (w - 25.0).max(0.0), (h - 8.0).max(0.0));
         let top = (self.scroll.scroll_y() / line).max(0) as usize;
@@ -1992,6 +2031,7 @@ impl Widget for MarkupLog {
                 (h - 2.0).max(0.0),
                 &self.scroll,
                 p.as_ref(),
+                self.dragging.is_some(),
             );
             rc.pop_transform();
         }
