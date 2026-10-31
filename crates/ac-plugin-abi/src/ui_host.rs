@@ -930,6 +930,18 @@ mod theme_tests {
     }
 
     #[test]
+    fn the_theme_metrics_are_the_same_on_both_sides() {
+        use abi::theme_metrics as sdk;
+        use ui::theme::metrics as client;
+        assert_eq!(sdk::WINDOW_RADIUS, client::WINDOW_RADIUS);
+        assert_eq!(sdk::CONTROL_RADIUS, client::CONTROL_RADIUS);
+        assert_eq!(sdk::HEADER_HEIGHT, client::HEADER_HEIGHT);
+        assert_eq!(sdk::SWITCH_WIDTH, client::SWITCH_WIDTH);
+        assert_eq!(sdk::SWITCH_HEIGHT, client::SWITCH_HEIGHT);
+        assert_eq!(sdk::SWITCH_KNOB, client::SWITCH_KNOB);
+    }
+
+    #[test]
     fn the_font_limits_are_the_same_on_both_sides() {
         use ui::fonts as f;
         assert_eq!(abi::FONT_MAXIMUM_COUNT as usize, f::MAXIMUM_COUNT);

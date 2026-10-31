@@ -91,6 +91,13 @@ goes through `Host`: game state, items, chat, movement and navigation, trade
 and vendors, storage, network, peers, and UI. `cargo doc -p openac-plugin
 --open` shows the whole surface with its documentation.
 
+**Drawing like a themed window.** A canvas paints its own pixels, so it reads
+the theme with `host.theme()`, hears each change as `Event::ThemeChanged`, and
+repaints. For the same look, use the theme's colours, the bundled font's
+SemiBold weight for titles (`host.font_bundled(14.0, FontWeight::SemiBold)`), and
+the sizes in `openac_plugin::ui::theme_metrics`: `WINDOW_RADIUS`, `CONTROL_RADIUS`,
+`HEADER_HEIGHT`, `SWITCH_WIDTH`, `SWITCH_HEIGHT` and `SWITCH_KNOB`.
+
 **Light and dark.** Parchment is a light theme. A literal colour can name a
 second colour for light themes, `color="#FFB6F0AE|light:#FF2E7D32"`, and a file
 icon can have `icons/sword.light.png` and `icons/sword.dark.png` beside

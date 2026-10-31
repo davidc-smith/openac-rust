@@ -7,6 +7,23 @@
 
 use crate::model::Color8;
 
+/// The sizes themed windows are drawn with, in interface pixels, so a canvas
+/// drawn to match uses the same ones.
+pub mod metrics {
+    /// The corner radius of a themed window.
+    pub const WINDOW_RADIUS: f32 = 10.0;
+    /// The corner radius of a button, input or other control.
+    pub const CONTROL_RADIUS: f32 = 6.0;
+    /// The height of a themed window's title band.
+    pub const HEADER_HEIGHT: f32 = 24.0;
+    /// The width of a switch's track.
+    pub const SWITCH_WIDTH: f32 = 26.0;
+    /// The height of a switch's track.
+    pub const SWITCH_HEIGHT: f32 = 14.0;
+    /// The diameter of a switch's knob.
+    pub const SWITCH_KNOB: f32 = 8.0;
+}
+
 /// A theme the Appearance picker offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ThemeKind {

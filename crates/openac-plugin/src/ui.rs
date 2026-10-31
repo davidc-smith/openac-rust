@@ -61,6 +61,7 @@ pub mod route;
 
 use std::collections::BTreeMap;
 
+pub use ac_plugin_abi::ui::theme_metrics;
 pub use ac_plugin_abi::ui::{
     ActionValue, BindingDecl, BindingKind, CanvasState, CodepointRange, Color, FONT_MAXIMUM_BYTES,
     FONT_MAXIMUM_COUNT, FONT_MAXIMUM_FILE_BYTES, FONT_MAXIMUM_GLYPHS, FONT_MAXIMUM_PIXEL_SIZE,

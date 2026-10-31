@@ -12,9 +12,9 @@ use crate::event::{UiEvent, kind};
 use crate::shapes::CornerRadii;
 
 /// A themed window's corner radius.
-pub const WINDOW_RADIUS: f32 = 10.0;
+pub const WINDOW_RADIUS: f32 = ac_plugin_ui::theme::metrics::WINDOW_RADIUS;
 /// A button's, input's or other control's corner radius.
-pub const CONTROL_RADIUS: f32 = 6.0;
+pub const CONTROL_RADIUS: f32 = ac_plugin_ui::theme::metrics::CONTROL_RADIUS;
 /// A small control's corner radius.
 pub const SMALL_RADIUS: f32 = 4.0;
 /// The close button's X, each way.
@@ -26,13 +26,13 @@ pub const ROW_RADIUS: f32 = 5.0;
 /// How far a row highlight sits in from its container's sides.
 pub const ROW_INSET: f32 = 3.0;
 /// The height of a themed window's title band.
-pub const HEADER_HEIGHT: f32 = 24.0;
+pub const HEADER_HEIGHT: f32 = ac_plugin_ui::theme::metrics::HEADER_HEIGHT;
 /// The width of a switch's track.
-pub const SWITCH_WIDTH: f32 = 26.0;
+pub const SWITCH_WIDTH: f32 = ac_plugin_ui::theme::metrics::SWITCH_WIDTH;
 /// The height of a switch's track.
-pub const SWITCH_HEIGHT: f32 = 14.0;
+pub const SWITCH_HEIGHT: f32 = ac_plugin_ui::theme::metrics::SWITCH_HEIGHT;
 /// The diameter of a switch's knob.
-pub const SWITCH_KNOB: f32 = 8.0;
+pub const SWITCH_KNOB: f32 = ac_plugin_ui::theme::metrics::SWITCH_KNOB;
 /// Between a switch and its caption.
 pub const SWITCH_CAPTION_GAP: f32 = 8.0;
 /// A check box's side.
