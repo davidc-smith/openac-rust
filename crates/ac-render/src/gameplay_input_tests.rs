@@ -14,24 +14,26 @@ use glam::Vec3;
 use super::*;
 use crate::camera::{CameraController, CameraMode, ChaseSubject, OrbitCamera};
 
-struct Rig {
-    input: GameplayInput,
-    cameras: CameraController,
-    buttons: u32,
-    modifiers: Modifiers,
-    want_keyboard: bool,
-    now: f32,
-    out: Vec<GameplayOutput>,
+pub(super) struct Rig {
+    pub(super) input: GameplayInput,
+    pub(super) cameras: CameraController,
+    pub(super) buttons: u32,
+    pub(super) modifiers: Modifiers,
+    pub(super) want_mouse: bool,
+    pub(super) want_keyboard: bool,
+    pub(super) now: f32,
+    pub(super) out: Vec<GameplayOutput>,
 }
 
 impl Rig {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut cameras = CameraController::new(OrbitCamera::default());
         cameras.follow_player(crate::camera::PlayerModeFacts {
             live_in_world: true,
             player_present: true,
             controller_ready: true,
             world_ready: true,
+            world_entry: 1,
         });
         cameras
             .chase
@@ -41,23 +43,24 @@ impl Rig {
             cameras,
             buttons: 0,
             modifiers: Modifiers::NONE,
+            want_mouse: false,
             want_keyboard: false,
             now: 1.0,
             out: Vec::new(),
         }
     }
 
-    fn state(&self) -> DeviceState<'static> {
+    pub(super) fn state(&self) -> DeviceState<'static> {
         DeviceState {
             keys: None,
             buttons: self.buttons,
             modifiers: self.modifiers,
-            want_mouse: false,
+            want_mouse: self.want_mouse,
             want_keyboard: self.want_keyboard,
         }
     }
 
-    fn key(&mut self, key: Key, pressed: bool) {
+    pub(super) fn key(&mut self, key: Key, pressed: bool) {
         let state = self.state();
         self.input.key(
             key,
@@ -69,12 +72,12 @@ impl Rig {
         );
     }
 
-    fn tap(&mut self, key: Key) {
+    pub(super) fn tap(&mut self, key: Key) {
         self.key(key, true);
         self.key(key, false);
     }
 
-    fn button(&mut self, button: u8, pressed: bool) {
+    pub(super) fn button(&mut self, button: u8, pressed: bool) {
         if pressed {
             self.buttons |= 1 << button;
         } else {
@@ -92,18 +95,18 @@ impl Rig {
         );
     }
 
-    fn tick(&mut self, dt: f32) -> FlyInput {
+    pub(super) fn tick(&mut self, dt: f32) -> FlyInput {
         self.now += dt;
         let state = self.state();
         self.input
             .tick(dt, self.now, &state, Some(&mut self.cameras), &mut self.out)
     }
 
-    fn take(&mut self) -> Vec<GameplayOutput> {
+    pub(super) fn take(&mut self) -> Vec<GameplayOutput> {
         std::mem::take(&mut self.out)
     }
 
-    fn movement(&mut self) -> Vec<MovementCommand> {
+    pub(super) fn movement(&mut self) -> Vec<MovementCommand> {
         self.take()
             .into_iter()
             .filter_map(|o| match o {

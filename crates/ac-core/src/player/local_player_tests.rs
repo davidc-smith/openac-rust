@@ -282,6 +282,29 @@ fn health_rounds_half_endurance_and_includes_gear() {
 }
 
 #[test]
+fn health_adds_two_per_enlightenment_before_vitae() {
+    let mut b = book(&[1]);
+    b.on_enchantment_added(vitae(1, 0.95));
+    let mut s = LocalPlayerState::new(Some(b));
+    s.on_int_properties(BTreeMap::from([(PropertyInt::ENLIGHTENMENT.0, 4)]));
+    s.on_vital_update(1, 100, 0, 0, 103);
+    s.on_vital_update(3, 100, 0, 0, 95);
+    // (100 + 4 x 2) x 0.95 = 102.6, shown as 103; stamina has no such term.
+    assert_eq!(s.get_base_max_approx(VitalKind::Health), Some(108));
+    assert_eq!(s.get_max_approx(VitalKind::Health), Some(103));
+    assert_eq!(s.get_max_approx(VitalKind::Stamina), Some(95));
+}
+
+#[test]
+fn gear_health_update_mid_session_moves_the_maximum() {
+    let mut s = LocalPlayerState::default();
+    s.on_int_properties(BTreeMap::new());
+    s.on_vital_update(1, 100, 0, 0, 100);
+    s.on_int_property_update(PropertyInt::GEAR_MAX_HEALTH.0, 12);
+    assert_eq!(s.get_max_approx(VitalKind::Health), Some(112));
+}
+
+#[test]
 fn vital_current_updates_only_current() {
     let mut s = LocalPlayerState::default();
     s.on_attribute_update(2, 50, 150, 0);

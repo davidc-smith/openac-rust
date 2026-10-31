@@ -560,11 +560,19 @@ impl VendorController {
             VendorViewReason::Opened => {
                 self.pending_split = None;
                 self.selected_category = None;
+                // Another shop: its row starts at the beginning.
+                self.scroll_item_list_to(ui, 0);
                 self.show_tab(ui, VendorTab::Items);
                 self.rebuild_categories(ui, items, icons);
                 ui.show_window(&self.window);
             }
-            VendorViewReason::Refreshed | VendorViewReason::Asked => {
+            // The open shop sent again (after a purchase or a sale): the
+            // window stays on the page the player was on.
+            VendorViewReason::Refreshed => {
+                self.rebuild_categories(ui, items, icons);
+                ui.show_window(&self.window);
+            }
+            VendorViewReason::Asked => {
                 self.show_tab(ui, VendorTab::Items);
                 self.rebuild_categories(ui, items, icons);
                 ui.show_window(&self.window);
@@ -592,6 +600,7 @@ impl VendorController {
     fn clear_content(&mut self, ui: &mut UiRoot) {
         self.categories.clear();
         self.selected_category = None;
+        self.scroll_item_list_to(ui, 0);
         if let Some(m) = ui.widget_mut::<Menu>(self.type_menu) {
             m.items.clear();
             m.selected = None;
@@ -630,12 +639,26 @@ impl VendorController {
         }
     }
 
+    /// Scroll the listing row sideways to `x` pixels, clamped to the row.
+    fn scroll_item_list_to(&self, ui: &mut UiRoot, x: i32) {
+        if let Some(l) = ui.widget_mut::<ItemList>(self.item_list) {
+            l.scroll.set_scroll_y(x);
+        }
+    }
+
+    /// Refill the category menu and the listing row from the shop. The row
+    /// keeps how far it was scrolled sideways (clamped to the refilled row),
+    /// so a shop sent again after a purchase or a sale stays where the
+    /// player was; a newly opened shop is scrolled to the start first.
     fn rebuild_categories(
         &mut self,
         ui: &mut UiRoot,
         items: &ItemsView<'_>,
         icons: &mut dyn IconSource,
     ) {
+        let scroll_x = ui
+            .widget::<ItemList>(self.item_list)
+            .map_or(0, |l| l.scroll.scroll_y());
         let listing = self.view.as_ref().map_or(&[][..], |v| &v.items[..]);
         self.categories = CATEGORY_FILTERS
             .iter()
@@ -654,6 +677,7 @@ impl VendorController {
         self.selected_category = usize::try_from(selected).ok().filter(|i| *i < count);
         self.refresh_menu(ui);
         self.rebuild_item_list(ui, items, icons, true);
+        self.scroll_item_list_to(ui, scroll_x);
     }
 
     fn refresh_menu(&self, ui: &mut UiRoot) {

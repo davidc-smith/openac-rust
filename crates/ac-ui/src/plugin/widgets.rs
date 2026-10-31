@@ -244,6 +244,14 @@ fn enabled(ui: &UiRoot, me: ElementId) -> bool {
     ui.element(me).is_some_and(|e| e.enabled)
 }
 
+/// Whether a multi-select list's pick adds to the selection (and A selects
+/// every row): Ctrl or the command key (Cmd on a Mac, the Windows key
+/// elsewhere), as in OpenAC `UiSelectModifiers`.
+fn adds_to_selection(modifiers: crate::event::Modifiers) -> bool {
+    use crate::event::Modifiers;
+    modifiers.contains(Modifiers::CTRL) || modifiers.contains(Modifiers::WIN)
+}
+
 /// The outline a tab stop with keyboard focus draws.
 pub(crate) const KEYBOARD_FOCUS_OUTLINE: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
 
@@ -1240,7 +1248,7 @@ impl MarkupList {
                     && live
                     && ext.multi
                     && e.key == Key::A
-                    && e.modifiers.contains(crate::event::Modifiers::CTRL) =>
+                    && adds_to_selection(e.modifiers) =>
             {
                 ext.select_all_rows();
                 Some(true)
@@ -1290,7 +1298,7 @@ impl MarkupList {
                         let ext = self.ext.as_mut()?;
                         ext.pick(
                             plugin as i32,
-                            e.modifiers.contains(crate::event::Modifiers::CTRL),
+                            adds_to_selection(e.modifiers),
                             e.modifiers.contains(crate::event::Modifiers::SHIFT),
                         );
                         return Some(true);

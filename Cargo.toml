@@ -48,8 +48,11 @@ ctrlc = { version = "3.5", features = ["termination"] }
 # rendering. Pure Rust, no build script.
 glam = { version = "0.34.1", default-features = false, features = ["std"] }
 # Windowing and GPU (ac-render). Features are chosen so nothing in the graph compiles C or C++;
-# keep it that way when changing them.
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+# keep it that way when changing them. On a Wayland desktop that leaves the title bar to the
+# program (GNOME), `wayland-csd-adwaita` draws it with the title's text, rasterised by the
+# pure-Rust `ab_glyph` in the desktop's font (found by running `fc-match`; nothing is linked) or
+# in the Cantarell font the decorations bundle (SIL OFL 1.1, see NOTICE.md).
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
 # Keeping the screen awake while fullscreen on Linux (ac-render): the Wayland idle-inhibit protocol
 # on the window's own connection, and the X11 screen saver through the Xlib loader. All three are
 # winit's own crates, already in the graph with these features; nothing is linked (libwayland and

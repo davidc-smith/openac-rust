@@ -13,6 +13,7 @@
 mod atlas_upload;
 pub(crate) mod atmosphere;
 mod detail;
+pub(crate) mod icon_probes;
 mod particles;
 pub(crate) mod pipelines;
 mod portal;
@@ -21,6 +22,7 @@ mod sink;
 mod viewport;
 mod world_lines;
 pub(crate) mod world_pipelines;
+mod world_triangles;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -438,6 +440,11 @@ fn held_draws(own_state: u32, holder_draws: bool) -> bool {
 
 /// The renderer. See the module documentation.
 pub(crate) struct WorldRenderer {
+    /// The texture detail the world's textures are made at.
+    texture_detail: crate::texture_detail::WorldTextureDetail,
+    /// The particle range setting's multiplier of every emitter's authored
+    /// degrade distance.
+    particle_range: f32,
     loader: Loader,
     failure: Option<String>,
     near_radius: u32,
@@ -572,6 +579,8 @@ pub(crate) struct WorldRenderer {
     portal_vertices_capacity: usize,
     /// The plugins' world lines as this frame draws them.
     world_lines: world_lines::WorldLinesGpu,
+    world_triangles: world_triangles::WorldTrianglesGpu,
+    icon_probes: icon_probes::IconProbes,
 
     models: crate::IdMap<u32, Option<Vec<MeshRef>>>,
     requested_models: crate::model_requests::ModelRequests,
@@ -828,10 +837,13 @@ impl WorldRenderer {
         // WebGPU guarantees four samples for half-float targets; the window
         // tells the adapter's own counts (`set_hdr_sample_counts`).
         let hdr_msaa_supported = msaa_supported.iter().copied().filter(|&n| n == 4).collect();
+        let texture_detail = crate::texture_detail::WorldTextureDetail::from_display(display);
         let mut renderer = Self {
+            texture_detail,
+            particle_range: crate::quality::particle_range_multiplier(display.particle_range),
             loader: Loader::spawn(
                 Arc::clone(&settings.content),
-                crate::texture_detail::WorldTextureDetail::from_display(display),
+                texture_detail,
                 device
                     .features()
                     .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
@@ -923,6 +935,8 @@ impl WorldRenderer {
             ),
             portal_vertices_capacity,
             world_lines: world_lines::WorldLinesGpu::default(),
+            world_triangles: world_triangles::WorldTrianglesGpu::default(),
+            icon_probes: icon_probes::IconProbes::default(),
             models: crate::IdMap::default(),
             requested_models: crate::model_requests::ModelRequests::default(),
             appearances: HashMap::new(),
@@ -1080,6 +1094,21 @@ impl WorldRenderer {
         self.stats
     }
 
+    /// Objects the loaded landblocks place: statics, scenery, buildings
+    /// and the statics of their interior cells (server objects not
+    /// included).
+    pub(crate) fn loaded_objects(&self) -> usize {
+        self.residents
+            .values()
+            .filter_map(|r| r.near.as_ref())
+            .map(|n| {
+                n.statics.len()
+                    + n.buildings.len()
+                    + n.cells.iter().map(|c| c.statics.len()).sum::<usize>()
+            })
+            .sum()
+    }
+
     /// Follow a new window size.
     pub(crate) fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size == (width, height) || width == 0 || height == 0 {
@@ -1092,15 +1121,24 @@ impl WorldRenderer {
     }
 
     /// Run with the quality `display` resolves to (the effective display
-    /// settings): the streaming window, the work budget, anti-aliasing and
-    /// the terrain's filtering follow at once (texture detail is fixed when
-    /// the world starts).
+    /// settings): the streaming window, the work budget, anti-aliasing, the
+    /// terrain's filtering, the particle range and the texture detail
+    /// follow at once (a new texture detail has the loader make the terrain
+    /// atlas and every world texture again, which replace the old ones as
+    /// they arrive).
     pub(crate) fn apply_display(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         display: &ac_host::settings::DisplaySettings,
     ) {
+        let texture_detail = crate::texture_detail::WorldTextureDetail::from_display(display);
+        if texture_detail != self.texture_detail {
+            self.texture_detail = texture_detail;
+            self.loader
+                .request(LoadRequest::TextureDetail(texture_detail));
+        }
+        self.particle_range = crate::quality::particle_range_multiplier(display.particle_range);
         self.degrade.degrade_distance = display.degrade_distance;
         self.detail
             .set_enabled(queue, display.building_detail_textures);
@@ -1191,9 +1229,10 @@ impl WorldRenderer {
         fly: FlyInput,
     ) {
         let started = Instant::now();
-        // The plugins' lines are set again for this frame's camera, after
-        // the camera has moved.
+        // The plugins' lines and triangles are set again for this frame's
+        // camera, after the camera has moved.
         self.world_lines.clear();
+        self.world_triangles.clear();
         self.pump_loader(device, queue);
         self.ensure_effects();
 
@@ -1224,6 +1263,7 @@ impl WorldRenderer {
                 .is_some_and(|m| m.body.is_some()),
             // Player mode waits for the end of the login presentation.
             world_ready: self.reveal.is_complete() && !self.presents_login(),
+            world_entry: scene.map_or(0, Scene::world_entries),
         });
         if let Some((pos, _)) = player {
             let block = LandblockCoord::of_cell(pos.cell_id);
@@ -2095,6 +2135,7 @@ impl WorldRenderer {
             sky_active: player_outdoors(scene),
             camera: eye,
             source,
+            particle_range: self.particle_range,
         });
     }
 
@@ -3640,6 +3681,17 @@ impl WorldRenderer {
         clear: wgpu::Color,
         timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
+        self.draw_passes(encoder, target, clear, timestamps);
+        self.icon_probes.resolve(encoder);
+    }
+
+    fn draw_passes(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        clear: wgpu::Color,
+        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+    ) {
         // The atmospheric rendering draws the world through its own
         // targets and composes it into `target`.
         if let Some(a) = self
@@ -3676,6 +3728,7 @@ impl WorldRenderer {
                 stencil_ops: None,
             }),
             timestamp_writes: timestamps,
+            occlusion_query_set: self.icon_probes.query_set(),
             ..Default::default()
         });
         // Behind portal space the frame is the tunnel's (built in place of
@@ -3688,6 +3741,8 @@ impl WorldRenderer {
         let pipelines = self.plain_pipelines();
         self.draw_steps(&mut pass, &pipelines);
         self.draw_world_lines(&mut pass, &pipelines);
+        self.draw_world_triangles(&mut pass, &pipelines);
+        self.draw_icon_probes(&mut pass, &pipelines);
     }
 
     /// The draw stream in order, with `p`'s pipelines.
@@ -4351,6 +4406,8 @@ impl RevealFacts for RevealState<'_> {
 mod atlas_upload_tests;
 #[cfg(test)]
 mod retirement_tests;
+#[cfg(test)]
+mod texture_detail_tests;
 
 #[cfg(test)]
 mod tests {

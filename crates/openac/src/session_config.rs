@@ -261,11 +261,7 @@ pub fn run(
     let (to_window, from_session) = mpsc::channel();
     tracker.attaching(&descriptor.id);
     if window
-        .attach_to_session(
-            prefs.window_spec("openAC".to_owned()),
-            from_session,
-            commands.clone(),
-        )
+        .attach_to_session(prefs.window_spec(), from_session, commands.clone())
         .is_err()
         || commands.send(SessionCommand::Attach(to_window)).is_err()
     {

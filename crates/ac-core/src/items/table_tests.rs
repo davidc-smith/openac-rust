@@ -1956,6 +1956,27 @@ fn a_house_owner_instance_id_update_sets_and_clears_the_owner() {
     assert_eq!(f.get(0x802).house_owner_id(), None);
 }
 
+// Swearing or breaking allegiance announces the new monarch with an
+// instance-id update (Monarch, 26); the object's monarch follows it, as the
+// one its description carries does, and 0 clears it. The radar's allegiance
+// square and the house entry gate both read it.
+#[test]
+fn a_monarch_instance_id_update_sets_and_clears_the_monarch() {
+    let mut f = Fixture::new();
+    f.ingest(full_weenie(0x802));
+    assert_eq!(f.get(0x802).monarch_id(), None);
+
+    let before = f.t.mutation_revision();
+    let monarch = crate::properties::PropertyInstanceId::MONARCH.0;
+    assert!(f.t.update_instance_id_property(0x802, monarch, 0x5000_0777, &mut f.ev));
+    assert_eq!(f.get(0x802).monarch_id(), Some(0x5000_0777));
+    // One for the monarch change, one for the update.
+    assert_eq!(f.t.mutation_revision(), before + 2);
+
+    assert!(f.t.update_instance_id_property(0x802, monarch, 0, &mut f.ev));
+    assert_eq!(f.get(0x802).monarch_id(), None);
+}
+
 #[test]
 fn house_authority_changes_advance_the_mutation_revision() {
     let mut f = Fixture::new();

@@ -25,7 +25,9 @@ use crate::surface::{AdapterSummary, AttachedWindow, GraphicsOptions};
 /// What to open on attach.
 #[derive(Debug, Clone)]
 pub struct WindowSpec {
-    /// The title bar text.
+    /// The title bar text until the window's first refresh; from then on
+    /// the window titles itself ([`crate::title`]: the character's name in
+    /// the world, else the program and its version).
     pub title: String,
     /// Inner width: pixels, points on macOS (as the resolution picks).
     pub width: u32,

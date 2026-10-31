@@ -35,9 +35,10 @@ use crate::lifetime::OrderedTeardown;
 use crate::pacing::DisplayPacing;
 use crate::platform::HostOs;
 use crate::portal_space::PortalCue;
-use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage, TitleFacts, format_title};
+use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage};
 use crate::renderer::{WorldRenderer, WorldSettings, WorldStats};
 use crate::scene::{SceneEffect, SceneSource};
+use crate::title::{TitleFacts, TitleStats, TitleSubject, format_title};
 use crate::ui::input::{self as ui_input, Routed, WorldInput};
 use crate::ui::{UiBatch, UiRenderer, WindowUi};
 use crate::ui_scale::UiScale;
@@ -294,6 +295,7 @@ pub(crate) struct AttachedWindow {
     clear_color: wgpu::Color,
     adapter: AdapterSummary,
     frames_presented: u64,
+    /// The title the window shows (set again only when it changes).
     title: String,
     scene: Option<Box<SceneSource>>,
     world_failure_reported: bool,
@@ -323,8 +325,12 @@ pub(crate) struct AttachedWindow {
     modifiers: ModifiersState,
     /// The last cursor position, for drags.
     cursor: Option<(f64, f64)>,
-    /// Framebuffer pixels per UI unit, as the window's monitor has it.
-    ui_scale: UiScale,
+    /// Framebuffer pixels per UI unit as the window's monitor has it,
+    /// before the player's UI Scale (see [`Self::ui_scale`]).
+    platform_scale: UiScale,
+    /// The UI Scale option in force, percent: it follows the settings once
+    /// a change settles (not while its slider is dragged).
+    ui_scale_percent: i32,
     /// Where this window publishes what a crash report wants.
     facts: SharedFacts,
     last_world: WorldOutcome,
@@ -391,10 +397,18 @@ impl AttachedWindow {
         // pixels elsewhere; the drawing surface follows in pixels.
         let attributes = Window::default_attributes()
             .with_title(spec.title.clone())
+            .with_active(true)
             .with_inner_size(
                 crate::display_mode::size_unit(HostOs::current()).request(spec.width, spec.height),
             );
         let window = Arc::new(event_loop.create_window(attributes)?);
+        // A window opened onto a running session (the console's or the
+        // launcher's switch to graphical) comes to the front with the
+        // keyboard, though this process was not the one in front. A
+        // compositor may refuse (Wayland grants focus only to a request it
+        // handed a token for; some X11 window managers prevent focus
+        // stealing): the window then opens behind, as it would without this.
+        window.focus_window();
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
         let mut display_lines = Vec::new();
@@ -497,12 +511,12 @@ impl AttachedWindow {
         // The retail UI reads its layouts, fonts and art from the dats; a
         // window without dats draws no UI.
         let choices = resolution_choices_of(&window);
-        let ui_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
+        let platform_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
         let ui = world.and_then(|world| {
             let built = world.content.ui_dats().and_then(|dats| {
                 WindowUi::build_with(
                     dats,
-                    ui_scale.ui_size((config.width, config.height)),
+                    platform_scale.ui_size((config.width, config.height)),
                     settings,
                     choices,
                 )
@@ -624,7 +638,8 @@ impl AttachedWindow {
             gameplay_tick: None,
             modifiers: ModifiersState::empty(),
             cursor: None,
-            ui_scale,
+            platform_scale,
+            ui_scale_percent: settings.display.ui_scale_percent,
             facts: options.facts.clone(),
             last_world: WorldOutcome::default(),
             frame_index: 0,
@@ -665,7 +680,7 @@ impl AttachedWindow {
     fn apply_camera_tuning(&mut self) {
         let tuning = ChaseTuning::from(&self.settings.camera);
         if let Some(world) = self.world.as_mut() {
-            world.cameras_mut().chase.tuning = tuning;
+            world.cameras_mut().chase.set_tuning(tuning);
         }
     }
 
@@ -729,6 +744,11 @@ impl AttachedWindow {
                     }
                     if o.fullscreen != n.fullscreen || o.resolution != n.resolution {
                         self.apply_window_mode(n);
+                    }
+                    // The UI takes its new size on its next frame, and the
+                    // windows are placed again on it as after a resize.
+                    if persist {
+                        self.ui_scale_percent = n.ui_scale_percent;
                     }
                     if let Some(world) = self.world.as_mut() {
                         world.apply_display(
@@ -869,7 +889,7 @@ impl AttachedWindow {
     /// The window moved or changed scale: it may be on another monitor.
     pub(crate) fn monitor_changed(&mut self) {
         // The UI follows on its next frame (its size comes from the scale).
-        self.ui_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
+        self.platform_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
         let policy = self
             .pacing
             .set_monitor_refresh(monitor_refresh_hz(&self.window));
@@ -1097,19 +1117,40 @@ impl AttachedWindow {
         self.notices.extend(notices);
     }
 
-    fn title_facts(&self) -> TitleFacts {
-        let objects = self.scene.as_ref().map_or(0, |s| s.scene().len());
+    /// The title for the last refresh interval's frame rate and `world`,
+    /// the last frame's landblocks.
+    fn window_title(&self, fps: f64, mean_ms: f64, world: &WorldOutcome) -> String {
+        let scene = self.scene.as_deref().map(SceneSource::scene);
+        let subject = TitleSubject::of(scene);
+        if subject == TitleSubject::BeforeWorld {
+            return crate::title::product();
+        }
         let stats = self
             .world
             .as_ref()
             .map(WorldRenderer::stats)
             .unwrap_or_default();
-        TitleFacts {
-            visible_landblocks: stats.landblocks_drawn,
-            total_landblocks: stats.landblocks,
-            objects,
-            drawn_objects: stats.objects_drawn,
-        }
+        let placed_server_objects =
+            scene.map_or(0, |s| s.objects().filter(|o| o.position.is_some()).count());
+        let facts = TitleFacts {
+            visible_landblocks: world.visible_landblocks,
+            total_landblocks: world.total_landblocks,
+            objects: self.world.as_ref().map_or(0, WorldRenderer::loaded_objects)
+                + placed_server_objects,
+            animated: stats.animated_objects,
+            calendar: self
+                .world
+                .as_ref()
+                .and_then(|w| w.calendar_date(scene, Instant::now())),
+        };
+        format_title(
+            subject,
+            &TitleStats {
+                fps,
+                mean_ms,
+                facts,
+            },
+        )
     }
 
     /// Record the world (or a clear) into `target`.
@@ -1478,6 +1519,9 @@ impl FramePhases for AttachedWindow {
         if let Some(timer) = self.gpu_timer.as_mut() {
             timer.submitted();
         }
+        if let Some(world) = self.world.as_mut() {
+            world.icon_probes_submitted();
+        }
         self.window.pre_present_notify();
         self.queue.present(frame.texture);
         self.frames_presented += 1;
@@ -1520,11 +1564,11 @@ impl FramePhases for AttachedWindow {
     fn publish(&mut self, input: &FrameInput, outcome: &FrameOutcome) -> Result<(), RenderError> {
         self.after_automation_frame(outcome);
         if let Some((fps, mean_ms)) = self.title_rate.frame(input.delta_seconds) {
-            let mut facts = self.title_facts();
-            facts.visible_landblocks = outcome.world.visible_landblocks;
-            facts.total_landblocks = outcome.world.total_landblocks;
-            self.window
-                .set_title(&format_title(&self.title, fps, mean_ms, facts));
+            let title = self.window_title(fps, mean_ms, &outcome.world);
+            if title != self.title {
+                self.window.set_title(&title);
+                self.title = title;
+            }
             self.publish_facts();
         }
         Ok(())
@@ -2225,6 +2269,10 @@ impl AttachedWindow {
     /// The modifier keys changed.
     pub(crate) fn modifiers_changed(&mut self, modifiers: ModifiersState) {
         self.modifiers = modifiers;
+        if let Some(ui) = self.ui.as_mut() {
+            ui.host_mut()
+                .set_modifiers(crate::ui::keys::ui_modifiers(modifiers));
+        }
     }
 
     /// The world's keys, after the UI: presses only when the UI let them
@@ -2376,10 +2424,10 @@ impl AttachedWindow {
         }
     }
 
-    /// The cursor is held by the window (fly camera or mouse look): the UI
-    /// gets no pointer input.
+    /// The cursor is held by the window (fly camera, mouse look or a modern
+    /// mouse turning drag): the UI gets no pointer input.
     fn cursor_held(&self) -> bool {
-        self.input.mouse_look() || self.gameplay.mouse_look_active()
+        self.input.mouse_look() || self.gameplay.holds_cursor()
     }
 
     /// The wheel turned `notches` (positive away from the user) and
@@ -2575,14 +2623,27 @@ impl AttachedWindow {
     /// [`Self::pick_object`] at a position the UI reports in its own units
     /// (points on macOS), which the world picks in pixels.
     fn pick_at_ui(&mut self, x: i32, y: i32) -> Option<(u32, u32)> {
-        let (x, y) = self.ui_scale.window_point(x, y);
+        let (x, y) = self.ui_scale().window_point(x, y);
         self.pick_object(x, y)
+    }
+
+    /// Framebuffer pixels per UI unit now: the monitor's, times the
+    /// player's UI Scale while in the game (the pre-game screens fill the
+    /// window on their own canvas and keep the monitor's).
+    fn ui_scale(&self) -> UiScale {
+        match self.ui.as_ref() {
+            Some(ui) if !ui.pregame_active() => {
+                self.platform_scale.with_user_percent(self.ui_scale_percent)
+            }
+            _ => self.platform_scale,
+        }
     }
 
     /// The cursor in whole UI units (the world picks in pixels).
     fn cursor_ui(&self) -> (i32, i32) {
+        let scale = self.ui_scale();
         self.cursor.map_or((0, 0), |(x, y)| {
-            let (x, y) = self.ui_scale.ui_point(x, y);
+            let (x, y) = scale.ui_point(x, y);
             (x as i32, y as i32)
         })
     }
@@ -2643,6 +2704,8 @@ impl AttachedWindow {
     /// Feed the UI from the scene, draw it, and upload what it draws; its
     /// requests go to the session.
     fn prepare_ui(&mut self) {
+        let scale = self.ui_scale();
+        let framebuffer = (self.config.width, self.config.height);
         let (Some(ui), Some(renderer)) = (self.ui.as_mut(), self.ui_renderer.as_mut()) else {
             return;
         };
@@ -2660,7 +2723,7 @@ impl AttachedWindow {
             // The 3-D viewports that show: drawn by the world renderer,
             // their textures handed to the UI before it draws.
             let (requests, controls) =
-                ui.viewport_requests(source.scene(), self.ui_scale.pixels_per_unit());
+                ui.viewport_requests(source.scene(), scale.pixels_per_unit());
             let flashes = ui.take_figure_flashes();
             if let Some(world) = self.world.as_mut() {
                 for (whole_figure, part_mask) in flashes {
@@ -2684,18 +2747,16 @@ impl AttachedWindow {
             }
         }
         // The UI, its overlays included, is laid out and drawn in UI units.
-        let size = self
-            .ui_scale
-            .ui_size((self.config.width, self.config.height));
+        let size = scale.ui_size(framebuffer);
         // The overlays project with the camera the world was last drawn
-        // with.
+        // with, onto the framebuffer in units.
         let (camera, target) = match (self.world.as_ref(), self.scene.as_deref()) {
             (Some(world), Some(source)) => crate::ui::overlays::world_view(
                 world,
                 source.scene(),
                 ui.dats(),
                 &ui.facts().objects,
-                size,
+                scale.overlay_viewport(framebuffer),
             ),
             _ => (None, None),
         };
@@ -2711,14 +2772,22 @@ impl AttachedWindow {
             self.world.as_ref(),
             self.scene.as_deref().map(SceneSource::scene),
         );
-        // The plugins' world lines are drawn in the world pass, with its
-        // depth (OpenAC `PluginWorldLineRenderer`).
+        // The plugins' world lines, triangles and ground shapes are drawn in
+        // the world pass, with its depth (lines as in OpenAC
+        // `PluginWorldLineRenderer`).
         if let Some(world) = self.world.as_mut() {
             world.set_plugin_lines(&self.device, &self.queue, ui.plugin_world_lines());
+            world.set_plugin_triangles(
+                &self.device,
+                &self.queue,
+                ui.plugin_world_triangles(),
+                ui.plugin_world_shapes(),
+            );
+            world.set_icon_probes(&self.device, &self.queue, ui.plugin_icon_probes());
         }
         // The object under the pointer (the world tooltip and the cursor's
         // "found" forms); none while the window holds the cursor.
-        let held = self.input.mouse_look() || self.gameplay.mouse_look_active();
+        let held = self.input.mouse_look() || self.gameplay.holds_cursor();
         let hover = match (self.cursor, self.world.as_mut()) {
             (Some((x, y)), Some(world)) if !held => {
                 let scene = self.scene.as_deref().map(SceneSource::scene);
@@ -2737,8 +2806,15 @@ impl AttachedWindow {
             ui.set_level_of_detail(fps, multiplier);
         }
         let list = ui.frame(Instant::now(), size);
-        let batch = UiBatch::build(&list);
-        renderer.prepare(&self.device, &self.queue, &batch, size, &mut ui.surfaces());
+        // Drawn in framebuffer pixels, on the whole-pixel grid.
+        let batch = UiBatch::build_scaled(&list, scale.pixels_per_unit());
+        renderer.prepare(
+            &self.device,
+            &self.queue,
+            &batch,
+            framebuffer,
+            &mut ui.surfaces(),
+        );
         for id in renderer.take_missing() {
             self.notices.push(format!(
                 "ui: render surface {id:#010x} is not in the dats; drawn as magenta"
@@ -2755,7 +2831,7 @@ impl AttachedWindow {
     pub(crate) fn cursor_moved(&mut self, x: f64, y: f64) {
         let previous = self.cursor.replace((x, y));
         let mouse_look = self.cursor_held();
-        let (ui_x, ui_y) = self.ui_scale.ui_point(x, y);
+        let (ui_x, ui_y) = self.ui_scale().ui_point(x, y);
         let routed = match self.ui.as_mut() {
             Some(ui) if self.input.is_accepting() => Some(ui_input::moved::<KeyCode>(
                 ui.host_mut(),

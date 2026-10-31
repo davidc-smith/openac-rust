@@ -177,6 +177,17 @@ pub fn effective_display(display: &DisplaySettings) -> DisplaySettings {
     }
 }
 
+/// How many times its authored degrade distance an emitter is drawn out to
+/// under the particle range setting: once for "Retail", twice for
+/// "Extended".
+#[must_use]
+pub fn particle_range_multiplier(range: ParticleRange) -> f32 {
+    match range {
+        ParticleRange::Retail => 1.0,
+        ParticleRange::Extended => ac_vfx::EXTENDED_RANGE_MULTIPLIER,
+    }
+}
+
 /// [`effective_display`] for a window with or without the keyboard focus:
 /// with "UI Only in Background" on, a window in the background runs
 /// interface-only (the stored switch is untouched).
