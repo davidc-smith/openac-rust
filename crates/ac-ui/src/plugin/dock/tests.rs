@@ -62,6 +62,8 @@ impl Rig {
     fn new(height: f32, theme: PluginTheme) -> Self {
         let mut host = UiHost::new();
         host.root.set_size(SCREEN.0, height);
+        // Locked, so a layout has no grip unless a test asks for one.
+        host.root.set_ui_locked(true);
         let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
         let mut dock = PluginDock::build(&mut host.root, None, None, Rc::clone(&outbox));
         let frame = dock.root;
@@ -364,6 +366,7 @@ fn after_scrolling_every_visible_slot_matches_a_fresh_layout() {
         DockMode::Floating,
         DockSize::Default,
         false,
+        false,
         &owners,
         longest,
         2,
@@ -393,6 +396,7 @@ fn a_plugin_going_leaves_every_other_slot_as_a_fresh_layout_has_it() {
     let fresh = layout::compute(
         DockMode::Floating,
         DockSize::Default,
+        false,
         false,
         &owners,
         longest,
@@ -538,6 +542,8 @@ fn closed_it_is_a_square_tile_in_every_mode_on_its_edge() {
         (DockMode::Bottom, 46.0),
     ] {
         let mut rig = Rig::in_mode(mode);
+        rig.host.root.set_ui_locked(true);
+        rig.tick();
         rig.press_tile();
         assert_eq!(rig.size(), (side, side), "{mode:?}");
         let (left, top) = rig.at();
@@ -624,30 +630,11 @@ fn a_closed_dock_drags_and_snaps_and_opens_as_the_rail_on_that_edge() {
     rig.drag(ON_HANDLE, (-(left as i32) + 2, 40));
     assert_eq!(rig.mode(), DockMode::Left);
     assert!(rig.closed());
-    assert_eq!(rig.size(), (46.0, 46.0));
+    assert_eq!(rig.size(), (46.0, 46.0 + layout::GRIP_LENGTH));
     rig.press_tile();
     assert_eq!(rig.size().0, layout::RAIL_THICKNESS);
-    assert!(rig.size().1 > 46.0);
+    assert!(rig.size().1 > 46.0 + layout::GRIP_LENGTH);
     assert_eq!(rig.at().0, 0.0);
-}
-
-#[test]
-fn a_press_that_wanders_a_little_is_a_press_and_the_dock_holds_still() {
-    let mut rig = Rig::in_mode(DockMode::Floating);
-    rig.host.root.move_window(WINDOW, 300.0, 100.0);
-    rig.tick();
-    let (x, y) = rig.grab(ON_HANDLE);
-    rig.move_to(x + 2, y + 2);
-    assert_eq!(rig.at(), (300.0, 100.0));
-    rig.release(x + 2, y + 2);
-    assert_eq!(rig.at(), (300.0, 100.0));
-    assert!(rig.closed());
-    // Past that it is a drag, and does not toggle.
-    let (x, y) = rig.grab(ON_HANDLE);
-    rig.move_to(x + 20, y);
-    rig.release(x + 20, y);
-    assert_eq!(rig.at(), (320.0, 100.0));
-    assert!(rig.closed());
 }
 
 #[test]
@@ -667,7 +654,8 @@ fn opening_near_the_far_end_slides_to_fit_and_closing_goes_back() {
     rig.host.root.move_window(WINDOW, 300.0, 600.0);
     rig.tick();
     let closed_at = rig.at();
-    assert_eq!(closed_at.1, 600.0 - layout::FLOATING_THICKNESS);
+    let (_, closed_height) = rig.size();
+    assert_eq!(closed_at.1, 600.0 - closed_height);
     rig.press_tile();
     let (_, h) = rig.size();
     assert_eq!(rig.at().1, 600.0 - h);
@@ -677,14 +665,150 @@ fn opening_near_the_far_end_slides_to_fit_and_closing_goes_back() {
 }
 
 #[test]
-fn hovering_the_tile_labels_it_and_holding_it_does_not() {
+fn hovering_the_tile_labels_it_and_the_grip_has_no_label() {
     let mut rig = Rig::in_mode(DockMode::Floating);
     let tile = rig.layout().tile;
     rig.hover(tile);
     assert_eq!(rig.label().unwrap().title, TILE_LABEL);
-    let (x, y) = rig.grab(ON_HANDLE);
-    rig.move_to(x, y);
+    let grip = rig.layout().grip.unwrap();
+    rig.hover(grip);
     assert!(rig.label().is_none());
+}
+
+// ── The grip ────────────────────────────────────────────────────────────
+
+impl Rig {
+    fn grip_shows(&mut self) -> bool {
+        let grip = self.with(|c, _| c.grip);
+        self.host.root.element(grip).unwrap().visible()
+    }
+
+    fn move_cursor_over(&mut self, r: Rect) -> bool {
+        self.hover(r);
+        self.host.root.hover_window_move()
+    }
+}
+
+#[test]
+fn the_grip_shows_only_while_windows_are_unlocked_and_the_dock_changes_to_fit() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    assert!(rig.grip_shows());
+    let (w, h) = rig.size();
+    let tile = rig.layout().tile;
+    assert_eq!(
+        rig.layout().grip,
+        Some(Rect::new(0.0, 0.0, w, layout::GRIP_LENGTH))
+    );
+
+    rig.host.root.set_ui_locked(true);
+    rig.tick();
+    assert!(!rig.grip_shows());
+    assert_eq!(rig.layout().grip, None);
+    assert_eq!(rig.size(), (w, h - layout::GRIP_LENGTH));
+    assert_eq!(rig.layout().tile.y, tile.y - layout::GRIP_LENGTH);
+    // The dock stays where it was, whichever way the lock goes.
+    assert_eq!(rig.at(), (300.0, 100.0));
+
+    rig.host.root.set_ui_locked(false);
+    rig.tick();
+    assert!(rig.grip_shows());
+    assert_eq!(rig.size(), (w, h));
+    assert_eq!(rig.at(), (300.0, 100.0));
+}
+
+#[test]
+fn only_the_grip_shows_the_move_cursor() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let (grip, tile) = {
+        let l = rig.layout();
+        (l.grip.unwrap(), l.tile)
+    };
+    assert!(rig.move_cursor_over(grip));
+    assert!(!rig.move_cursor_over(tile));
+    rig.press_tile();
+    let (grip, tile) = {
+        let l = rig.layout();
+        (l.grip.unwrap(), l.tile)
+    };
+    assert!(rig.move_cursor_over(grip));
+    assert!(!rig.move_cursor_over(tile));
+}
+
+#[test]
+fn the_grip_moves_the_dock_open_and_closed_and_never_opens_or_closes_it() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    rig.drag(ON_HANDLE, (20, 30));
+    assert_eq!(rig.at(), (320.0, 130.0));
+    assert!(!rig.closed());
+    // A press in place does nothing at all.
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.release(x, y);
+    assert_eq!(rig.at(), (320.0, 130.0));
+    assert!(!rig.closed());
+
+    rig.press_tile();
+    assert!(rig.closed());
+    rig.drag(ON_HANDLE, (-20, -30));
+    assert_eq!(rig.at(), (300.0, 100.0));
+    assert!(rig.closed());
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.release(x, y);
+    assert!(rig.closed());
+}
+
+#[test]
+fn the_tile_acts_the_same_locked_or_not_and_never_moves_the_dock() {
+    for locked in [false, true] {
+        let mut rig = Rig::in_mode(DockMode::Floating);
+        rig.host.root.move_window(WINDOW, 300.0, 100.0);
+        rig.host.root.set_ui_locked(locked);
+        rig.tick();
+        // Pressed, it opens and closes.
+        rig.press_tile();
+        assert!(rig.closed(), "locked {locked}");
+        rig.press_tile();
+        assert!(!rig.closed(), "locked {locked}");
+        // Dragged off itself, it leaves the dock where it is. A press and
+        // release on two places is not a click.
+        let tile = rig.layout().tile;
+        let (x, y) = rig.point(tile);
+        rig.host.mouse_move(x, y);
+        rig.host.mouse_down(MouseButton::Left, x, y, 0);
+        rig.move_to(x + 120, y + 90);
+        rig.release(x + 120, y + 90);
+        assert_eq!(rig.at(), (300.0, 100.0), "locked {locked}");
+        assert!(!rig.closed(), "locked {locked}");
+        assert_eq!(rig.mode(), DockMode::Floating);
+    }
+}
+
+#[test]
+fn the_grip_draws_its_dots_and_a_well_only_under_the_pointer() {
+    let p = PluginTheme::Moss.palette().unwrap();
+    let r = Rect::new(0.0, 0.0, 48.0, layout::GRIP_LENGTH);
+    let rest = drawn(|rc| style::grip(rc, &p, r, false, 4.0, ButtonLook::Normal));
+    let over = drawn(|rc| style::grip(rc, &p, r, false, 4.0, ButtonLook::Hovered));
+    assert!(has_color(&rest, p.muted));
+    assert!(!has_color(&rest, hover(&p, p.field)));
+    assert!(has_color(&over, p.text));
+    assert!(has_color(&over, hover(&p, p.field)));
+}
+
+#[test]
+fn a_horizontal_docks_grip_stands_across_it() {
+    let mut rig = Rig::in_mode(DockMode::Top);
+    let (w, h) = rig.size();
+    assert_eq!(
+        rig.layout().grip,
+        Some(Rect::new(0.0, 0.0, layout::GRIP_LENGTH, h))
+    );
+    rig.host.root.set_ui_locked(true);
+    rig.tick();
+    assert_eq!(rig.size(), (w - layout::GRIP_LENGTH, h));
 }
 
 // ── Peeking open ────────────────────────────────────────────────────────
@@ -712,8 +836,8 @@ impl Rig {
     }
 
     fn pointer_on_dock(&mut self) {
-        let (left, top) = self.at();
-        self.host.mouse_move(left as i32 + 10, top as i32 + 10);
+        let tile = self.layout().tile;
+        self.hover(tile);
     }
 }
 
@@ -842,6 +966,34 @@ fn the_wheel_scrolls_a_peeking_dock() {
 }
 
 #[test]
+fn the_grip_of_a_closed_dock_does_not_peek_it_open_and_it_moves_closed() {
+    let mut rig = Rig::hover_mode();
+    let grip = rig.layout().grip.unwrap();
+    rig.hover(grip);
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    rig.drag(ON_HANDLE, (20, 30));
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+    assert_eq!(rig.at(), (320.0, 130.0));
+}
+
+#[test]
+fn a_peeking_dock_stays_open_on_its_grip() {
+    let mut rig = Rig::hover_mode();
+    let tile = rig.layout().tile;
+    rig.hover(tile);
+    rig.pass(1.0);
+    assert!(!rig.closed_view());
+    let grip = rig.layout().grip.unwrap();
+    rig.hover(grip);
+    rig.pass(1.0);
+    assert!(!rig.closed_view());
+}
+
+#[test]
 fn turning_hover_off_ends_a_peek() {
     let mut rig = Rig::hover_mode();
     rig.pointer_on_dock();
@@ -895,9 +1047,11 @@ fn a_bigger_dock_too_long_for_the_screen_scrolls_sooner() {
 // ── Snapping ────────────────────────────────────────────────────────────
 
 impl Rig {
-    /// A dock of two windows of one plugin in `mode`, away from the corners.
+    /// A dock of two windows of one plugin in `mode`, away from the corners,
+    /// with windows unlocked so that it can be moved.
     fn in_mode(mode: DockMode) -> Self {
         let mut rig = Self::new(SCREEN.1, PluginTheme::Moss);
+        rig.host.root.set_ui_locked(false);
         rig.add("test", "Test", PanelDescriptor::new("a", "Window A"));
         rig.add("test", "Test", PanelDescriptor::new("b", "Window B"));
         rig.sync_plain();
@@ -910,7 +1064,7 @@ impl Rig {
         self.with(|c, _| c.mode())
     }
 
-    /// Presses on the tile, `offset` in from the dock's corner, and returns
+    /// Presses on the dock, `offset` in from its corner, and returns
     /// where.
     fn grab(&mut self, offset: (i32, i32)) -> (i32, i32) {
         let (left, top) = self.at();

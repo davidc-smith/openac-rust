@@ -4,11 +4,12 @@
 //!
 //! It works along the dock's main axis, the way its slots run, and across
 //! it, so a horizontal dock is the vertical one turned on its side. Along the
-//! main axis: the tile, a divider, the slots (a divider between two plugins, a
-//! gap between one plugin's windows), a divider, the gear slot and padding.
-//! When the slots do not fit, only those that do from the first one are laid
-//! out; the tile and the gear stay. Closed, the dock is only the tile, and the
-//! tile's art is in the same place either way.
+//! main axis: the grip while the dock can be moved, the tile, a divider, the
+//! slots (a divider between two plugins, a gap between one plugin's windows), a
+//! divider, the gear slot and padding. When the slots do not fit, only those
+//! that do from the first one are laid out; the grip, the tile and the gear
+//! stay. Closed, the dock is only the grip and the tile, and the tile's art is
+//! in the same place either way.
 
 use crate::geometry::Rect;
 
@@ -22,6 +23,8 @@ pub const GAP: f32 = 4.0;
 pub const ART: f32 = 24.0;
 /// A floating dock's thickness across its main axis at the default size.
 pub const FLOATING_THICKNESS: f32 = PADDING + SLOT + PADDING;
+/// How long the grip is along the main axis, at every size.
+pub const GRIP_LENGTH: f32 = 14.0;
 /// The space each side of a divider.
 pub const DIVIDER_SPACE: f32 = 4.0;
 /// How long a fade over cut-off slots is.
@@ -389,8 +392,10 @@ pub struct DockLayout {
     pub dividers: Vec<f32>,
     /// The gear's place; empty on a closed dock.
     pub gear: Rect,
-    /// The tile, which moves the dock and opens and closes it.
+    /// The tile, which opens and closes the dock.
     pub tile: Rect,
+    /// The grip, which moves the dock; none while it cannot be moved.
+    pub grip: Option<Rect>,
     /// The first slot laid out.
     pub first: usize,
     /// How many slots are laid out.
@@ -431,14 +436,15 @@ impl Axes {
     }
 }
 
-/// The layout of a dock in `mode` at `size`, minimized or not, with one slot per entry
-/// of `owners` (each slot's plugin), at most `max_length` long, scrolled to
-/// start at slot `first`.
+/// The layout of a dock in `mode` at `size`, minimized or not, with a grip or
+/// not, with one slot per entry of `owners` (each slot's plugin), at most
+/// `max_length` long, scrolled to start at slot `first`.
 #[must_use]
 pub fn compute(
     mode: DockMode,
     size: DockSize,
     minimized: bool,
+    grip: bool,
     owners: &[&str],
     max_length: f32,
     first: usize,
@@ -456,14 +462,18 @@ pub fn compute(
     } else {
         m.floating_thickness()
     };
+    let lead = if grip { GRIP_LENGTH } else { 0.0 };
+    let grip = grip.then(|| axes.rect(0.0, 0.0, GRIP_LENGTH, thickness));
     if minimized {
+        let (width, height) = axes.size(lead + thickness, thickness);
         return DockLayout {
-            width: thickness,
-            height: thickness,
+            width,
+            height,
             slots,
             dividers: Vec::new(),
             gear: Rect::new(0.0, 0.0, 0.0, 0.0),
-            tile: Rect::new(0.0, 0.0, thickness, thickness),
+            tile: axes.rect(lead, 0.0, thickness, thickness),
+            grip,
             first: 0,
             visible: 0,
             max_first: 0,
@@ -478,14 +488,14 @@ pub fn compute(
     // where it was.
     let (tile_start, slot_cross_at, slot_across, slot_along, gap) = if rail {
         (
-            (m.rail_thickness - m.rail_slot) / 2.0,
+            lead + (m.rail_thickness - m.rail_slot) / 2.0,
             0.0,
             m.rail_thickness,
             m.rail_slot,
             RAIL_GAP,
         )
     } else {
-        (m.padding, m.padding, m.slot, m.slot, m.gap)
+        (lead + m.padding, m.padding, m.slot, m.slot, m.gap)
     };
     let tile = axes.rect(tile_start, slot_cross_at, slot_along, slot_across);
     let list_start = tile_start + slot_along + DIVIDER_BLOCK;
@@ -496,8 +506,8 @@ pub fn compute(
             DIVIDER_BLOCK
         }
     };
-    // Everything that is not the slot list: the tile and divider before it, and
-    // the divider, gear and padding after it.
+    // Everything that is not the slot list: the grip, tile and divider before it,
+    // and the divider, gear and padding after it.
     let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
     let room = max_length - (list_start + divider + slot_along + m.padding);
 
@@ -557,6 +567,7 @@ pub fn compute(
         dividers,
         gear,
         tile,
+        grip,
         first,
         visible,
         max_first,
@@ -579,7 +590,15 @@ mod tests {
         max: f32,
         first: usize,
     ) -> DockLayout {
-        super::compute(mode, DockSize::Default, minimized, owners, max, first)
+        super::compute(
+            mode,
+            DockSize::Default,
+            minimized,
+            false,
+            owners,
+            max,
+            first,
+        )
     }
 
     fn floating(owners: &[&str], max: f32, first: usize) -> DockLayout {
@@ -694,20 +713,80 @@ mod tests {
         ] {
             let m = size.metrics();
             assert_eq!((m.slot, m.art), (slot, art), "{size:?}");
-            let free = super::compute(DockMode::Floating, size, false, &owners, 2000.0, 0);
+            let free = super::compute(DockMode::Floating, size, false, false, &owners, 2000.0, 0);
             assert_eq!(free.width, thick, "{size:?}");
             assert_eq!(free.height, height, "{size:?}");
             assert_eq!(free.tile.w, slot, "{size:?}");
-            let edge = super::compute(DockMode::Left, size, false, &owners, 2000.0, 0);
+            let edge = super::compute(DockMode::Left, size, false, false, &owners, 2000.0, 0);
             assert_eq!(edge.width, rail, "{size:?}");
-            let closed = super::compute(DockMode::Floating, size, true, &owners, 2000.0, 0);
+            let closed = super::compute(DockMode::Floating, size, true, false, &owners, 2000.0, 0);
             assert_eq!((closed.width, closed.height), (thick, thick), "{size:?}");
             for mode in DockMode::ALL {
                 let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-                let shut = super::compute(mode, size, true, &owners, 2000.0, 0);
-                let open = super::compute(mode, size, false, &owners, 2000.0, 0);
+                let shut = super::compute(mode, size, true, false, &owners, 2000.0, 0);
+                let open = super::compute(mode, size, false, false, &owners, 2000.0, 0);
                 assert_eq!(centre(shut.tile), centre(open.tile), "{size:?} {mode:?}");
             }
+        }
+    }
+
+    /// At the default size, with the grip.
+    fn with_grip(mode: DockMode, minimized: bool, owners: &[&str], max: f32) -> DockLayout {
+        super::compute(mode, DockSize::Default, minimized, true, owners, max, 0)
+    }
+
+    #[test]
+    fn the_grip_comes_first_and_everything_else_moves_along_by_its_length() {
+        for mode in DockMode::ALL {
+            for minimized in [false, true] {
+                let plain = compute(mode, minimized, &["a"], 2000.0, 0);
+                let l = with_grip(mode, minimized, &["a"], 2000.0);
+                assert_eq!(plain.grip, None);
+                let along = |r: Rect| {
+                    if mode.is_horizontal() {
+                        Rect::new(r.x + GRIP_LENGTH, r.y, r.w, r.h)
+                    } else {
+                        Rect::new(r.x, r.y + GRIP_LENGTH, r.w, r.h)
+                    }
+                };
+                let thick = plain.width.min(plain.height);
+                let grip = l.grip.unwrap();
+                if mode.is_horizontal() {
+                    assert_eq!(grip, Rect::new(0.0, 0.0, GRIP_LENGTH, thick));
+                    assert_eq!(l.width, plain.width + GRIP_LENGTH);
+                    assert_eq!(l.height, plain.height);
+                } else {
+                    assert_eq!(grip, Rect::new(0.0, 0.0, thick, GRIP_LENGTH));
+                    assert_eq!(l.height, plain.height + GRIP_LENGTH);
+                    assert_eq!(l.width, plain.width);
+                }
+                assert_eq!(l.tile, along(plain.tile), "{mode:?}");
+                if !minimized {
+                    assert_eq!(l.gear, along(plain.gear), "{mode:?}");
+                    assert_eq!(l.slots[0], plain.slots[0].map(along), "{mode:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_grip_takes_its_room_out_of_the_slots_and_the_dock_still_fits() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let plain = compute(DockMode::Floating, false, &owners, 240.0, 0);
+        assert_eq!(plain.visible, 3);
+        let l = with_grip(DockMode::Floating, false, &owners, 240.0);
+        assert_eq!(l.visible, 2);
+        assert!(l.height <= 240.0);
+    }
+
+    #[test]
+    fn with_the_grip_the_tiles_art_still_does_not_move_between_closed_and_open() {
+        for mode in DockMode::ALL {
+            let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let closed = with_grip(mode, true, &["a"], 500.0);
+            let open = with_grip(mode, false, &["a"], 500.0);
+            assert_eq!(centre(closed.tile), centre(open.tile), "{mode:?}");
         }
     }
 

@@ -46,6 +46,17 @@ pub const LABEL_RADIUS: f32 = 7.0;
 pub const BADGE_SIZE: f32 = 14.0;
 /// How far the count sits in from the tile's corner.
 pub const BADGE_INSET: f32 = 2.0;
+/// A grip dot, each way.
+pub const GRIP_DOT: f32 = 2.0;
+/// Between the grip's dots across the dock, centre to centre.
+pub const GRIP_DOT_PITCH: f32 = 5.0;
+/// Between the grip's two rows, centre to centre.
+pub const GRIP_DOT_ROWS: f32 = 4.0;
+/// How far the grip's well sits in from the dock's sides, clear of its largest
+/// rounded corners.
+pub const GRIP_WELL_SIDES: f32 = 9.0;
+/// How far the grip's well sits in along the dock.
+pub const GRIP_WELL_ENDS: f32 = 2.0;
 /// Colour art's alpha while its window is closed.
 pub const CLOSED_ART_ALPHA: f32 = 0.85;
 
@@ -166,6 +177,52 @@ pub fn slot_well(rc: &mut RenderContext<'_>, p: &Palette, r: Rect, radius: f32, 
         ButtonLook::Normal | ButtonLook::Disabled => return,
     };
     rc.fill_rounded_rect(r.x, r.y, r.w, r.h, CornerRadii::all(radius), face);
+}
+
+/// The grip's dots, two rows of four running across the dock, centred in `r`
+/// with a well behind them under the pointer or held.
+pub fn grip(
+    rc: &mut RenderContext<'_>,
+    p: &Palette,
+    r: Rect,
+    horizontal: bool,
+    radius: f32,
+    look: ButtonLook,
+) {
+    let (inset_x, inset_y) = if horizontal {
+        (GRIP_WELL_ENDS, GRIP_WELL_SIDES)
+    } else {
+        (GRIP_WELL_SIDES, GRIP_WELL_ENDS)
+    };
+    let well = Rect::new(
+        r.x + inset_x,
+        r.y + inset_y,
+        r.w - 2.0 * inset_x,
+        r.h - 2.0 * inset_y,
+    );
+    slot_well(rc, p, well, radius, look);
+    let color = if look == ButtonLook::Normal {
+        p.muted
+    } else {
+        p.text
+    };
+    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+    for row in [-0.5, 0.5] {
+        for dot in [-1.5, -0.5, 0.5, 1.5] {
+            let (dx, dy) = if horizontal {
+                (row * GRIP_DOT_ROWS, dot * GRIP_DOT_PITCH)
+            } else {
+                (dot * GRIP_DOT_PITCH, row * GRIP_DOT_ROWS)
+            };
+            rc.fill_ellipse(
+                cx + dx - GRIP_DOT / 2.0,
+                cy + dy - GRIP_DOT / 2.0,
+                GRIP_DOT,
+                GRIP_DOT,
+                color,
+            );
+        }
+    }
 }
 
 /// The small accent dot beside an open window's slot on a floating dock, on
