@@ -30,6 +30,11 @@ mod raw {
         pub(super) fn ui_canvas_available(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_canvas_remove(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_measure_text(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_font_bundled(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_font_load(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_font_measure(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_font_release(ptr: *const u8, len: usize) -> i32;
+        pub(super) fn ui_font_count(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_theme(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_image_client_art(ptr: *const u8, len: usize) -> i32;
         pub(super) fn ui_image_spell_icon(ptr: *const u8, len: usize) -> i32;
@@ -89,6 +94,11 @@ wrappers!(
     ui_canvas_available,
     ui_canvas_remove,
     ui_measure_text,
+    ui_font_bundled,
+    ui_font_load,
+    ui_font_measure,
+    ui_font_release,
+    ui_font_count,
     ui_theme,
     ui_image_client_art,
     ui_image_spell_icon,

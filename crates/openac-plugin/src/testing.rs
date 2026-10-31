@@ -461,6 +461,11 @@ impl Transport for FakeHost {
             | Import::UiCanvasAvailable
             | Import::UiCanvasRemove
             | Import::UiMeasureText
+            | Import::UiFontBundled
+            | Import::UiFontLoad
+            | Import::UiFontMeasure
+            | Import::UiFontRelease
+            | Import::UiFontCount
             | Import::UiTheme
             | Import::UiImageClientArt
             | Import::UiImageSpellIcon

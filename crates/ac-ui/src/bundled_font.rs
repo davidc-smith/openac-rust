@@ -20,13 +20,7 @@ use ttf_parser::{Face, GlyphId};
 use crate::draw::TextureRef;
 use crate::font::{Atlas, UiFont};
 
-/// The regular font file, compiled in.
-pub static NOTO_SANS_REGULAR: &[u8] =
-    include_bytes!("../../../assets/fonts/NotoSans/NotoSans-Regular.ttf");
-
-/// The SemiBold font file, compiled in.
-pub static NOTO_SANS_SEMIBOLD: &[u8] =
-    include_bytes!("../../../assets/fonts/NotoSans/NotoSans-SemiBold.ttf");
+pub use ac_plugin_ui::fonts::{NOTO_SANS_REGULAR, NOTO_SANS_SEMIBOLD};
 
 /// The weights of the bundled font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

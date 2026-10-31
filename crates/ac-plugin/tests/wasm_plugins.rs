@@ -975,6 +975,83 @@ fn a_new_theme_reaches_each_plugin_as_its_api_version_knows_it() {
     }
 }
 
+/// A plugin built for API 1.2 or 1.3 paints text without a font field, through a
+/// real module, and the client reads it in the interface font; one built for
+/// this API sends the field.
+#[test]
+fn an_older_plugins_canvas_text_reads_without_a_font() {
+    use ac_plugin_ui::PaintCmd;
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-paint-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert!(plugins.handle_line(&format!("/rawpaint {version}"), &mut api));
+        plugins.pump(0.0, None, &mut api);
+        assert_eq!(
+            plugins.loaded_ids(),
+            ["openac.rawbytes"],
+            "{version}: {:?}",
+            api.logs
+        );
+        let canvas = api.ui.canvases().next().unwrap().clone();
+        let [PaintCmd::Text { text, font, .. }] = canvas.paint.as_slice() else {
+            panic!("{version}: {:?}", canvas.paint);
+        };
+        assert_eq!((text.as_str(), *font), ("raw", 0), "{version}");
+        plugins.shutdown(&mut api);
+    }
+}
+
+/// `uidemo` holds fonts through a real module: the bundled font in both
+/// weights, a CFF OpenType file of its own, a file that is no font refused
+/// without stopping it; a font held twice takes two releases; its text names
+/// them; they go when it unloads.
+#[test]
+fn a_plugin_holds_fonts_through_a_real_module() {
+    use ac_plugin_ui::PaintCmd;
+    let root = Root::new("fonts");
+    install(&root.0, "uidemo");
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], Some(&["openac.uidemo"]));
+    plugins.start(&mut api);
+    assert_eq!(plugins.loaded_ids(), ["openac.uidemo"]);
+    let line = api
+        .logs
+        .iter()
+        .map(|(_, _, line)| line.as_str())
+        .find(|line| line.starts_with("uidemo fonts:"))
+        .expect("it reported its fonts");
+    assert!(
+        line.starts_with(
+            "uidemo fonts: heading=true body=true own=true bad=false released=true count=3 own_size="
+        ),
+        "{line}"
+    );
+    assert_eq!(api.ui.font_count("openac.uidemo"), 3);
+    plugins.pump(0.0, None, &mut api);
+    assert!(
+        api.logs
+            .iter()
+            .any(|(_, _, line)| line.contains("font 'fonts/bad.ttf'")),
+        "the bad file is reported: {:?}",
+        api.logs
+    );
+    let canvas = api.ui.canvases().next().unwrap().clone();
+    let fonts: Vec<u32> = canvas
+        .paint
+        .iter()
+        .filter_map(|c| match c {
+            PaintCmd::Text { font, .. } if *font != 0 => Some(*font),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fonts.len(), 3, "{:?}", canvas.paint);
+    plugins.shutdown(&mut api);
+    assert_eq!(api.ui.font_count("openac.uidemo"), 0);
+}
+
 /// A loot classifier question reaches the classifier's plugin exactly as
 /// its API version encodes it: `hello` asks `rawbytes`'s classifier, and a
 /// `rawbytes` built for API 1.1 is handed the item record without the house

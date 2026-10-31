@@ -168,7 +168,9 @@ dependencies = [
 name = "ac-plugin-ui"
 version = "0.1.9"
 dependencies = [
+ "fontdue",
  "roxmltree",
+ "ttf-parser",
 ]
 
 [[package]]

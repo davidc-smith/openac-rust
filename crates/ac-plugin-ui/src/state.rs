@@ -22,6 +22,7 @@ use crate::value::{BindingSchema, UiValue};
 
 mod dialogs;
 mod file_icons;
+mod fonts;
 pub use dialogs::{DEFAULT_DIALOG_BUTTONS, MAXIMUM_DIALOG_BUTTONS};
 pub use file_icons::{MAXIMUM_STEP_MS, RELEASE_AFTER_MS, RELEASE_CHECK_INTERVAL_MS};
 
@@ -222,6 +223,15 @@ pub struct PluginUi {
     /// The last image handle each plugin was given, kept after it goes so
     /// a reloaded plugin never gets a handle a window still knows.
     last_image_handles: BTreeMap<String, u32>,
+    /// Each plugin's fonts.
+    fonts: BTreeMap<String, crate::fonts::FontTable>,
+    /// The last font handle each plugin was given, kept after it goes.
+    last_font_handles: BTreeMap<String, u32>,
+    /// The bundled font's bakes, shared by every plugin.
+    bundled_fonts: crate::fonts::BundledBakes,
+    /// The framebuffer pixels a unit of the window's display: what the fonts'
+    /// sharper bakes follow.
+    font_density: f32,
     /// The file icon refusals already logged.
     file_reported: BTreeSet<String>,
     /// The session clock's last reading, milliseconds.
@@ -1467,6 +1477,7 @@ impl PluginUi {
         }
         self.action_listeners.retain(|o| !same_owner(o, owner));
         self.events.retain(|(o, _)| o != owner);
+        self.release_fonts(owner);
         self.file_icons.remove(owner);
         self.plugin_folders.remove(owner);
     }
@@ -1496,6 +1507,7 @@ impl PluginUi {
                     .map(|v| UiChange::ImageAdded(Box::new(v.clone()))),
             );
         }
+        out.extend(self.font_snapshot());
         out.extend(self.file_icon_snapshot());
         out.push(UiChange::Labels(self.merged_labels()));
         out.push(UiChange::Lines(self.merged_lines()));
@@ -1611,6 +1623,7 @@ impl PluginUi {
             }
             UiInput::DialogAnswered { handle, button } => self.answer_dialog(handle, button),
             UiInput::FileIconsShown { panel, paths } => self.file_icons_shown(panel, paths),
+            UiInput::DisplayDensity(density) => self.set_font_density(density),
         }
     }
 

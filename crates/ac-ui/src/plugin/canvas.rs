@@ -202,6 +202,7 @@ impl Widget for CanvasWidget {
                     at,
                     color: c,
                     outline,
+                    font: 0,
                 } => {
                     if let Some(font) = self.font.as_ref() {
                         rc.string_dat(
@@ -215,6 +216,7 @@ impl Widget for CanvasWidget {
                         );
                     }
                 }
+                PaintCmd::Text { .. } => {}
                 PaintCmd::Image { image, rect, tint } => {
                     if let Some((texture, _, _)) = self.images.get(image) {
                         rc.sprite(

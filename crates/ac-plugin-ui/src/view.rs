@@ -33,6 +33,8 @@ pub struct PluginUiView {
     pub file_icons: BTreeMap<(u32, String), u32>,
     /// Every image, by plugin and handle.
     pub images: BTreeMap<(String, u32), ImageView>,
+    /// Every font a plugin holds, by plugin and handle.
+    pub fonts: BTreeMap<(String, u32), crate::fonts::FontView>,
     /// The world labels.
     pub labels: Arc<Vec<WorldLabel>>,
     /// The world lines.
@@ -122,6 +124,7 @@ impl PluginUiView {
                 self.panels.clear();
                 self.canvases.clear();
                 self.images.clear();
+                self.fonts.clear();
                 self.file_icons.clear();
                 self.labels = Arc::default();
                 self.lines = Arc::default();
@@ -227,6 +230,12 @@ impl PluginUiView {
             UiChange::ImageRemoved { owner, handle } => {
                 self.images.remove(&(owner, handle));
                 self.dirty.images = true;
+            }
+            UiChange::FontAdded(font) => {
+                self.fonts.insert((font.owner.clone(), font.handle), *font);
+            }
+            UiChange::FontRemoved { owner, handle } => {
+                self.fonts.remove(&(owner, handle));
             }
             UiChange::Labels(labels) => self.labels = labels,
             UiChange::Lines(lines) => self.lines = lines,

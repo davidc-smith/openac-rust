@@ -14,17 +14,23 @@ use crate::wire_record;
 pub const EVENT_TAG: u32 = 100;
 
 /// Writes a fieldless-or-tuple enum's `Wire` from one list: each variant's
-/// tag and its fields in order.
+/// tag and its fields in order. A field a later API minor version added goes
+/// last, after a `;` and `since (MAJOR, MINOR)`: a plugin built for an older
+/// version writes and reads the variant without it, and it reads as its
+/// default ([`Wire::read_at`]), so such a plugin still loads.
 macro_rules! wire_enum {
     (
         $(#[$meta:meta])*
         pub enum $name:ident ($what:literal) {
-            $( $(#[$vmeta:meta])* $variant:ident $( ( $($field:ident : $ty:ty),* ) )? = $tag:literal ),* $(,)?
+            $( $(#[$vmeta:meta])* $variant:ident $( (
+                $($field:ident : $ty:ty),*
+                $(; since ($smaj:literal, $smin:literal) $later:ident : $lty:ty)?
+            ) )? = $tag:literal ),* $(,)?
         }
     ) => {
         $(#[$meta])*
         pub enum $name {
-            $( $(#[$vmeta])* $variant $( ( $($ty),* ) )?, )*
+            $( $(#[$vmeta])* $variant $( ( $($ty,)* $($lty)? ) )?, )*
         }
 
         impl Wire for $name {
@@ -32,24 +38,90 @@ macro_rules! wire_enum {
                 $(
                     .tag($tag as u64)
                     .name(stringify!($variant))
-                    $( $( .name(stringify!($field)).of(<$ty as Wire>::SHAPE) )* )?
+                    $(
+                        $( .name(stringify!($field)).of(<$ty as Wire>::SHAPE) )*
+                        $( .name(stringify!($later)).of(<$lty as Wire>::SHAPE) )?
+                    )?
                 )*
                 .finish();
             fn encode(&self, w: &mut Writer) {
                 match self {
-                    $( Self::$variant $( ( $($field),* ) )? => {
+                    $( Self::$variant $( ( $($field,)* $($later)? ) )? => {
                         ($tag as u8).encode(w);
-                        $( $( $field.encode(w); )* )?
+                        $(
+                            $( $field.encode(w); )*
+                            $( $later.encode(w); )?
+                        )?
                     } )*
                 }
             }
             fn read(r: &mut Reader<'_>) -> Self {
                 match u8::read(r) {
-                    $( $tag => Self::$variant $( ( $( <$ty as Wire>::read(r) ),* ) )?, )*
+                    $( $tag => Self::$variant $( (
+                        $( <$ty as Wire>::read(r), )*
+                        $( <$lty as Wire>::read(r) )?
+                    ) )?, )*
                     tag => {
                         r.fail(DecodeError::UnknownTag { what: $what, tag: u32::from(tag) });
                         // A stand-in: the first variant, read from the
                         // failed reader (no bytes left).
+                        wire_enum!(@first r; $( $variant $( ( $($field : $ty),* ) )? );*)
+                    }
+                }
+            }
+            const VERSIONED: bool = false
+                $( $(
+                    $( || <$ty as Wire>::VERSIONED )*
+                    $( || $crate::__wire_marked!(($smaj, $smin)) || <$lty as Wire>::VERSIONED )?
+                )? )*;
+            fn shape_at(version: $crate::ApiVersion) -> u64 {
+                let _ = version;
+                #[allow(unused_mut)]
+                let mut shape = $crate::wire::Shape::new("enum");
+                $(
+                    shape = shape.tag($tag as u64).name(stringify!($variant));
+                    $(
+                        $( shape = shape.name(stringify!($field)).of(<$ty as Wire>::shape_at(version)); )*
+                        $(
+                            if $crate::__wire_since!(($smaj, $smin)).is_at_most(version) {
+                                shape = shape.name(stringify!($later)).of(<$lty as Wire>::shape_at(version));
+                            }
+                        )?
+                    )?
+                )*
+                shape.finish()
+            }
+            fn encode_at(&self, version: $crate::ApiVersion, w: &mut Writer) {
+                let _ = version;
+                match self {
+                    $( Self::$variant $( ( $($field,)* $($later)? ) )? => {
+                        ($tag as u8).encode(w);
+                        $(
+                            $( $field.encode_at(version, w); )*
+                            $(
+                                if $crate::__wire_since!(($smaj, $smin)).is_at_most(version) {
+                                    $later.encode_at(version, w);
+                                }
+                            )?
+                        )?
+                    } )*
+                }
+            }
+            fn read_at(r: &mut Reader<'_>, version: $crate::ApiVersion) -> Self {
+                let _ = version;
+                match u8::read(r) {
+                    $( $tag => Self::$variant $( (
+                        $( <$ty as Wire>::read_at(r, version), )*
+                        $(
+                            if $crate::__wire_since!(($smaj, $smin)).is_at_most(version) {
+                                <$lty as Wire>::read_at(r, version)
+                            } else {
+                                ::core::default::Default::default()
+                            }
+                        )?
+                    ) )?, )*
+                    tag => {
+                        r.fail(DecodeError::UnknownTag { what: $what, tag: u32::from(tag) });
                         wire_enum!(@first r; $( $variant $( ( $($field : $ty),* ) )? );*)
                     }
                 }
@@ -883,8 +955,12 @@ wire_enum! {
         StrokeRect(rect: Rect, color: Color, thickness: f32) = 2,
         /// A line: from x, from y, to x, to y, colour, thickness.
         Line(x0: f32, y0: f32, x1: f32, y1: f32, color: Color, thickness: f32) = 3,
-        /// Text at x, y (top-left), colour, outline.
-        Text(text: String, x: f32, y: f32, color: Color, outline: bool) = 4,
+        /// Text at x, y (top-left), colour, outline, in one of the plugin's
+        /// fonts ([`crate::Import::UiFontBundled`], [`crate::Import::UiFontLoad`];
+        /// 0: the interface font). Text in a font the plugin no longer holds
+        /// draws nothing. The font came with API 1.4: an older plugin's text
+        /// is in the interface font.
+        Text(text: String, x: f32, y: f32, color: Color, outline: bool; since (1, 4) font: u32) = 4,
         /// An image handle over a rectangle, tinted.
         Image(image: u32, rect: Rect, tint: Color) = 5,
         /// An image over a rectangle turned (radians, clockwise) and scaled
@@ -1489,6 +1565,92 @@ impl ThemeInfo {
     }
 }
 
+wire_enum! {
+    /// The weights the client's bundled font comes in.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum FontWeight ("font weight") {
+        /// Body text.
+        #[default]
+        Regular = 0,
+        /// The weight themed window titles are set in.
+        SemiBold = 1,
+    }
+}
+
+/// The most distinct fonts one plugin may hold.
+pub const FONT_MAXIMUM_COUNT: u32 = 16;
+/// The most memory one plugin's own fonts may take: the files and their
+/// atlases, bytes.
+pub const FONT_MAXIMUM_BYTES: u64 = 16 * 1024 * 1024;
+/// The largest font file a plugin may hand over, bytes.
+pub const FONT_MAXIMUM_FILE_BYTES: usize = 15 * 1024 * 1024;
+/// The most characters one font may prepare.
+pub const FONT_MAXIMUM_GLYPHS: u32 = 2048;
+/// The smallest size a font may be asked for, pixels.
+pub const FONT_MINIMUM_PIXEL_SIZE: f32 = 6.0;
+/// The largest size a font may be asked for, pixels.
+pub const FONT_MAXIMUM_PIXEL_SIZE: f32 = 64.0;
+
+wire_record! {
+    /// The bundled font in a weight at a size ([`crate::Import::UiFontBundled`]).
+    pub struct BundledFontRequest {
+        /// The size, pixels.
+        pub pixel_size: f32,
+        /// The weight.
+        pub weight: FontWeight,
+    }
+}
+
+wire_record! {
+    /// An inclusive range of code points.
+    pub struct CodepointRange {
+        /// The first.
+        pub first: u32,
+        /// The last.
+        pub last: u32,
+    }
+}
+
+wire_record! {
+    /// A font the plugin ships ([`crate::Import::UiFontLoad`]).
+    pub struct FontLoadRequest {
+        /// The plugin's own name for the file, unique within the plugin.
+        pub name: String,
+        /// The TrueType or OpenType file.
+        pub bytes: Vec<u8>,
+        /// The size, pixels.
+        pub pixel_size: f32,
+        /// The characters to prepare, where the font has them; none: U+0020 to
+        /// U+024F, U+0370 to U+052F and U+2000 to U+206F.
+        pub ranges: Vec<CodepointRange>,
+    }
+}
+
+wire_record! {
+    /// What a font request is answered with; all zero when it was refused.
+    pub struct FontInfo {
+        /// The client's number for it; 0 means no font.
+        pub handle: u32,
+        /// The size prepared: the size asked for, to the nearest quarter
+        /// pixel.
+        pub pixel_size: f32,
+        /// How far apart two lines sit, pixels.
+        pub line_height: f32,
+        /// How far below the top of a line the baseline sits, pixels.
+        pub ascent: f32,
+    }
+}
+
+wire_record! {
+    /// Text to measure in a font ([`crate::Import::UiFontMeasure`]).
+    pub struct FontMeasure {
+        /// The font.
+        pub font: u32,
+        /// The text.
+        pub text: String,
+    }
+}
+
 wire_record! {
     /// A rebind ([`crate::Import::UiHotkeyRebind`]).
     pub struct HotkeyRebind {
@@ -1570,7 +1732,7 @@ mod tests {
                     },
                     1.5,
                 ),
-                PaintCmd::Text("hi".into(), 1.0, 2.0, Color::default(), true),
+                PaintCmd::Text("hi".into(), 1.0, 2.0, Color::default(), true, 9),
                 PaintCmd::ImageTransformed(
                     7,
                     Rect::default(),

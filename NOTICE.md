@@ -81,7 +81,7 @@ under their permissive terms (MIT).
 ## Noto Sans
 
 The game client embeds unmodified Noto Sans Regular and SemiBold from the Noto
-project (compiled into `crates/ac-ui`). Copyright 2018 The Noto Project Authors.
+project (compiled into `crates/ac-plugin-ui`). Copyright 2018 The Noto Project Authors.
 Licensed under the SIL Open Font License 1.1. See
 [the full license](assets/fonts/NotoSans/OFL.txt) and
 [the pinned source and checksum](assets/fonts/NotoSans/README.md). Release

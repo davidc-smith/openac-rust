@@ -270,6 +270,11 @@ pub(crate) fn handle_import(
         | Import::UiCanvasAvailable
         | Import::UiCanvasRemove
         | Import::UiMeasureText
+        | Import::UiFontBundled
+        | Import::UiFontLoad
+        | Import::UiFontMeasure
+        | Import::UiFontRelease
+        | Import::UiFontCount
         | Import::UiTheme
         | Import::UiImageClientArt
         | Import::UiImageSpellIcon

@@ -99,6 +99,26 @@ icon can have `icons/sword.light.png` and `icons/sword.dark.png` beside
 else, Classic included, and a version that is missing or cannot be used falls
 back to the named file. For a bound colour, read `host.theme().is_light()`.
 
+**Fonts.** Canvas text is drawn in the interface font unless a plugin names
+one of its own (API 1.4). `host.font_bundled(16.0, FontWeight::SemiBold)` gives
+the client's Noto Sans in the weight themed window titles use, and
+`host.font_load("Inter-Bold.ttf", include_bytes!("../fonts/Inter-Bold.ttf"), 22.0, &[])`
+prepares a TrueType or OpenType font the plugin ships. Each size of each font is
+its own `Font`, carrying its `pixel_size`, `line_height` and `ascent`, and sizes
+are prepared to the nearest quarter pixel. Draw with `painter.text_in(font, ...)`
+and measure with `host.font_measure(font, text)`, which includes kerning. Asking
+twice for the same font holds it twice, and `host.font_release(font)` lets go of
+one hold.
+
+Name characters beyond the default set in the last argument, so an icon font
+can name the private-use area. A plugin may hold 16 fonts, sized from 6 to 64
+pixels, each of at most 2048 characters. Its own fonts may take 16 MB, counting
+the files and their atlases, and the bundled font costs nothing against that. A
+request past a limit, or a file that is not a usable font, answers `Font::NONE`
+and is logged once; text in such a font, or a released one, draws nothing.
+Preparing a font takes some milliseconds, so ask up front rather than on every
+paint.
+
 **UI.** Windows are written in OpenAC's panel markup with `{Binding}`s; the
 plugin registers a window with `ui::PanelSpec`, pushes values to its
 bindings, and hears its buttons as `Event::Ui`. The window's state lives in

@@ -18,6 +18,7 @@ pub mod color;
 pub mod control_state;
 pub mod file_images;
 pub mod flex;
+pub mod fonts;
 pub mod hotkeys;
 pub mod images;
 pub mod list;

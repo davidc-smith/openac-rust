@@ -265,6 +265,9 @@ pub enum PaintCmd {
         color: Color8,
         /// A dark outline around the glyphs.
         outline: bool,
+        /// One of the plugin's fonts ([`crate::fonts`]); 0: the interface
+        /// font. A font it no longer holds draws nothing.
+        font: u32,
     },
     /// An image stretched over a rectangle (a released image draws
     /// nothing).
@@ -971,6 +974,15 @@ pub enum UiChange {
     /// The bound plugin hotkeys, in registration order (all of them, each
     /// time the table changes).
     Hotkeys(Arc<Vec<crate::hotkeys::BoundHotkey>>),
+    /// A plugin holds a font, or its sharper bake changed.
+    FontAdded(Box<crate::fonts::FontView>),
+    /// A plugin let go of a font.
+    FontRemoved {
+        /// The plugin.
+        owner: String,
+        /// The handle.
+        handle: u32,
+    },
     /// A plugin asked the player a question (or a snapshot carries one).
     DialogAdded(Box<DialogView>),
     /// A dialog was answered or withdrawn: it goes.
@@ -1082,6 +1094,9 @@ pub enum UiInput {
         /// The paths, as its markup gives them.
         paths: Vec<String>,
     },
+    /// How many framebuffer pixels a unit the window's display has, sent when
+    /// it changes.
+    DisplayDensity(f32),
     /// The player answered a dialog (the button's index).
     DialogAnswered {
         /// The dialog.

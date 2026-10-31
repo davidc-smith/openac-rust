@@ -202,7 +202,7 @@ mod tests {
     /// commit; when an existing record changed shape (not only a new
     /// import, event or `since`-marked field), say in the commit message
     /// which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0x2d70_1037_7761_bdc8;
+    const PUBLISHED: u64 = 0x3516_2e19_fdba_52ec;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -232,7 +232,7 @@ mod tests {
     /// The import shapes an API 1.1 SDK wrote for the calls whose records
     /// API 1.2 gave a field (the house hook's item types on the inventory
     /// and world-object records); every other import is as it was.
-    const API_1_1_IMPORTS: [(Import, u64); 8] = [
+    const API_1_1_IMPORTS: [(Import, u64); 9] = [
         (Import::WorldObjects, 0x001b_e2ad_09b2_7238),
         (Import::WorldObject, 0x1579_5703_0d8b_7bcc),
         (Import::ItemsOwned, 0xed66_6352_01bd_02ed),
@@ -241,6 +241,7 @@ mod tests {
         (Import::LootNeedsIdentification, 0x99d6_7d8a_8f61_8fa8),
         (Import::LootNotifyLooted, 0x4014_883b_f67a_6245),
         (Import::UiTheme, API_1_3_UI_THEME),
+        (Import::UiCanvasPaint, API_1_3_UI_CANVAS_PAINT),
     ];
 
     #[test]
@@ -253,7 +254,8 @@ mod tests {
             assert_ne!(import.shape(), shape, "{import:?}");
         }
         for import in Import::ALL {
-            if !API_1_1_IMPORTS.iter().any(|(i, _)| i == import) {
+            if import.since().is_at_most(v1_1) && !API_1_1_IMPORTS.iter().any(|(i, _)| i == import)
+            {
                 assert_eq!(import.shape_at(v1_1), import.shape(), "{import:?}");
             }
         }
@@ -266,6 +268,19 @@ mod tests {
     /// The shape an API 1.3 SDK wrote for the call that answers the theme,
     /// whose kind API 1.4 gave more variants.
     const API_1_3_UI_THEME: u64 = 0x93b3_e387_5bf3_f44c;
+
+    /// The shape an API 1.3 SDK wrote for painting a canvas, whose text API
+    /// 1.4 gave a font.
+    const API_1_3_UI_CANVAS_PAINT: u64 = 0xf6ff_2420_525c_7a85;
+
+    /// The imports API 1.4 added: not in an older plugin's section at all.
+    const API_1_4_FONTS: [Import; 5] = [
+        Import::UiFontBundled,
+        Import::UiFontLoad,
+        Import::UiFontMeasure,
+        Import::UiFontRelease,
+        Import::UiFontCount,
+    ];
 
     /// API 1.3 added only imports (the world triangles and markers): an API
     /// 1.2 plugin's section leaves those out, and its other shapes are an API
@@ -285,14 +300,20 @@ mod tests {
         ];
         let section = PluginLayout::parse(&section_at(v1_2)).unwrap();
         for import in Import::ALL {
-            let expected = (!new_imports.contains(import)).then(|| import.shape_at(v1_2));
+            let absent = new_imports.contains(import) || API_1_4_FONTS.contains(import);
+            let expected = (!absent).then(|| import.shape_at(v1_2));
             assert_eq!(section.import_shape(import.name()), expected, "{import:?}");
         }
         assert_eq!(Import::UiTheme.shape_at(v1_2), API_1_3_UI_THEME);
+        assert_eq!(
+            Import::UiCanvasPaint.shape_at(v1_2),
+            API_1_3_UI_CANVAS_PAINT
+        );
     }
 
-    /// API 1.4 gave the theme's kind more variants, which changes the core
-    /// shape and the call that answers the theme: an API 1.3 plugin keeps both.
+    /// API 1.4 gave the theme's kind more variants and a canvas's text a font,
+    /// which changes the core shape and two calls: an API 1.3 plugin keeps
+    /// those, and has no font imports.
     #[test]
     fn api_1_3_plugins_keep_their_core_and_import_shapes() {
         let v1_3 = ApiVersion::new(1, 3);
@@ -300,8 +321,16 @@ mod tests {
         assert_ne!(CORE_SHAPE, API_1_3_CORE);
         assert_eq!(Import::UiTheme.shape_at(v1_3), API_1_3_UI_THEME);
         assert_ne!(Import::UiTheme.shape(), API_1_3_UI_THEME);
+        assert_eq!(
+            Import::UiCanvasPaint.shape_at(v1_3),
+            API_1_3_UI_CANVAS_PAINT
+        );
+        assert_ne!(Import::UiCanvasPaint.shape(), API_1_3_UI_CANVAS_PAINT);
+        let section = PluginLayout::parse(&section_at(v1_3)).unwrap();
         for import in Import::ALL {
-            if *import != Import::UiTheme {
+            if API_1_4_FONTS.contains(import) {
+                assert_eq!(section.import_shape(import.name()), None, "{import:?}");
+            } else if *import != Import::UiTheme && *import != Import::UiCanvasPaint {
                 assert_eq!(import.shape_at(v1_3), import.shape(), "{import:?}");
             }
         }

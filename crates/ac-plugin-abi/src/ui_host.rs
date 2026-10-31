@@ -276,11 +276,12 @@ fn paint(command: abi::PaintCmd) -> PaintCmd {
             color: color(c),
             thickness,
         },
-        abi::PaintCmd::Text(text, x, y, c, outline) => PaintCmd::Text {
+        abi::PaintCmd::Text(text, x, y, c, outline, font) => PaintCmd::Text {
             text,
             at: (x, y),
             color: color(c),
             outline,
+            font,
         },
         abi::PaintCmd::Image(image, r, tint) => PaintCmd::Image {
             image,
@@ -327,6 +328,16 @@ fn image_info((handle, width, height): (u32, u32, u32)) -> Vec<u8> {
         handle,
         width,
         height,
+    }
+    .to_bytes()
+}
+
+fn font_info(info: ui::fonts::FontInfo) -> Vec<u8> {
+    abi::FontInfo {
+        handle: info.handle,
+        pixel_size: info.pixel_size,
+        line_height: info.line_height,
+        ascent: info.ascent,
     }
     .to_bytes()
 }
@@ -508,7 +519,7 @@ pub fn handle(
             state.register_canvas(owner, descriptor).to_bytes()
         }
         Import::UiCanvasPaint => {
-            let r = CanvasPaint::from_bytes(request).map_err(bad)?;
+            let r = CanvasPaint::from_bytes_at(request, version).map_err(bad)?;
             let commands = r.commands.into_iter().map(paint).collect();
             state.paint_canvas(id, r.canvas, commands).to_bytes()
         }
@@ -556,6 +567,31 @@ pub fn handle(
             let (width, height) = state.measure_text(&text);
             TextSize { width, height }.to_bytes()
         }
+        Import::UiFontBundled => {
+            let r = abi::BundledFontRequest::from_bytes(request).map_err(bad)?;
+            let weight = match r.weight {
+                abi::FontWeight::Regular => ui::fonts::FontWeight::Regular,
+                abi::FontWeight::SemiBold => ui::fonts::FontWeight::SemiBold,
+            };
+            font_info(state.font_bundled(id, r.pixel_size, weight))
+        }
+        Import::UiFontLoad => {
+            let r = abi::FontLoadRequest::from_bytes(request).map_err(bad)?;
+            let ranges: Vec<(u32, u32)> = r.ranges.iter().map(|c| (c.first, c.last)).collect();
+            font_info(state.font_load(id, &r.name, &r.bytes, r.pixel_size, &ranges))
+        }
+        Import::UiFontMeasure => {
+            let r = abi::FontMeasure::from_bytes(request).map_err(bad)?;
+            let (width, height) = state.font_measure(id, r.font, &r.text);
+            TextSize { width, height }.to_bytes()
+        }
+        Import::UiFontRelease => {
+            let handle = u32::from_bytes(request).map_err(bad)?;
+            state.font_release(id, handle).to_bytes()
+        }
+        Import::UiFontCount => u32::try_from(state.font_count(id))
+            .unwrap_or(u32::MAX)
+            .to_bytes(),
         Import::UiTheme => {
             <()>::from_bytes(request).map_err(bad)?;
             theme_info(state.theme()).to_bytes_at(version)
@@ -891,6 +927,54 @@ mod theme_tests {
             assert_eq!(sent.palette, info.palette);
             assert_eq!(info.to_bytes_at(crate::API_CURRENT), info.to_bytes());
         }
+    }
+
+    #[test]
+    fn the_font_limits_are_the_same_on_both_sides() {
+        use ui::fonts as f;
+        assert_eq!(abi::FONT_MAXIMUM_COUNT as usize, f::MAXIMUM_COUNT);
+        assert_eq!(abi::FONT_MAXIMUM_BYTES, f::MAXIMUM_BYTES);
+        assert_eq!(abi::FONT_MAXIMUM_FILE_BYTES, f::MAXIMUM_FILE_BYTES);
+        assert_eq!(abi::FONT_MAXIMUM_GLYPHS as usize, f::MAXIMUM_GLYPHS);
+        assert_eq!(abi::FONT_MINIMUM_PIXEL_SIZE, f::MINIMUM_PIXEL_SIZE);
+        assert_eq!(abi::FONT_MAXIMUM_PIXEL_SIZE, f::MAXIMUM_PIXEL_SIZE);
+    }
+
+    // What a plugin built before fonts paints reads with the interface font,
+    // and its bytes are the old ones.
+    #[test]
+    fn an_older_plugins_text_has_no_font_field() {
+        let older = ApiVersion::new(1, 3);
+        let paint = abi::CanvasPaint {
+            canvas: 1,
+            commands: vec![abi::PaintCmd::Text(
+                "hi".into(),
+                1.0,
+                2.0,
+                abi::Color::default(),
+                true,
+                7,
+            )],
+        };
+        let bytes = paint.to_bytes_at(older);
+        assert_eq!(bytes.len() + 4, paint.to_bytes().len());
+        let read = abi::CanvasPaint::from_bytes_at(&bytes, older).unwrap();
+        assert_eq!(
+            read.commands,
+            [abi::PaintCmd::Text(
+                "hi".into(),
+                1.0,
+                2.0,
+                abi::Color::default(),
+                true,
+                0
+            )]
+        );
+        assert_eq!(
+            abi::CanvasPaint::from_bytes_at(&paint.to_bytes(), crate::API_CURRENT).unwrap(),
+            paint
+        );
+        assert!(abi::CanvasPaint::from_bytes_at(&paint.to_bytes(), older).is_err());
     }
 
     #[test]

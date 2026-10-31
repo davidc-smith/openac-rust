@@ -4,22 +4,69 @@
 //! older API version is sent. With each event it also logs the theme the
 //! `ui_theme` import answers (`ui_theme <kind> <name>`). It registers a loot
 //! classifier `rules` (answering nothing) so another plugin can ask it a
-//! question.
+//! question. `/rawpaint <version>` paints a canvas with bytes it encodes itself,
+//! as that API version knows them, so a test can see what the client reads from
+//! a plugin built for an older version.
 //!
 //! Its exports are written here instead of by `export_plugin!`: the SDK's
 //! own would decode the bytes as this SDK's records first.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use ac_plugin_abi::ui::{CanvasPaint, PaintCmd};
+use ac_plugin_abi::{ApiVersion, Wire};
+use openac_plugin::ui::{CanvasSpec, Color};
 use openac_plugin::{Host, Plugin, StartInfo};
+
+/// The canvas `/rawpaint` paints.
+static CANVAS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Default)]
 pub struct RawBytes;
 
 impl Plugin for RawBytes {
-    fn enable(&mut self, host: &mut Host<'_>, _info: &StartInfo) -> Result<(), String> {
+    fn enable(&mut self, host: &mut Host<'_>, info: &StartInfo) -> Result<(), String> {
         host.register_loot_classifier("rules", "Raw Rules")?;
+        let canvas = host.register_canvas(&CanvasSpec::new("raw", 40, 40))?;
+        CANVAS.store(canvas.id(), Ordering::Relaxed);
+        host.register_command("rawpaint", "Paints the canvas as an API version (rawpaint 1.2)")?;
         Ok(())
     }
 }
+
+/// `/rawpaint <version>`: one line of text, encoded as that version knows it.
+pub fn paint_as(version: &str) {
+    let Some(version) = ApiVersion::parse(version.trim()) else {
+        return;
+    };
+    let paint = CanvasPaint {
+        canvas: CANVAS.load(Ordering::Relaxed),
+        commands: vec![PaintCmd::Text(
+            "raw".into(),
+            1.0,
+            2.0,
+            Color::default(),
+            false,
+            0,
+        )],
+    };
+    paint_raw(&paint.to_bytes_at(version));
+}
+
+/// Paints with bytes as they are.
+#[cfg(target_arch = "wasm32")]
+#[allow(unsafe_code)]
+fn paint_raw(bytes: &[u8]) {
+    #[link(wasm_import_module = "openac")]
+    unsafe extern "C" {
+        fn ui_canvas_paint(ptr: *const u8, len: usize) -> i32;
+    }
+    // SAFETY: the client reads `len` bytes from `ptr`, which are `bytes`.
+    let _ = unsafe { ui_canvas_paint(bytes.as_ptr(), bytes.len()) };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn paint_raw(_bytes: &[u8]) {}
 
 /// `bytes` as lower-case hex.
 #[must_use]
@@ -34,9 +81,9 @@ mod exports {
 
     use ac_plugin_abi::Wire;
     use openac_plugin::__export;
-    use openac_plugin::{CallbackAnswer, Host, LogLevel};
+    use openac_plugin::{CallbackAnswer, Event, Host, LogLevel};
 
-    use super::{RawBytes, hex};
+    use super::{RawBytes, hex, paint_as};
 
     std::thread_local! {
         static PLUGIN: RefCell<Option<RawBytes>> = const { RefCell::new(None) };
@@ -91,6 +138,9 @@ mod exports {
             LogLevel::Info,
             &format!("ui_theme {:?} {}", theme.kind, theme.display_name),
         );
+        if let Ok(Event::Command(call)) = Event::from_bytes(&bytes) {
+            paint_as(&call.arguments);
+        }
     }
 
     #[unsafe(no_mangle)]

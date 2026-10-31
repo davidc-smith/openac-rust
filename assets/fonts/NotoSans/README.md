@@ -9,5 +9,5 @@ the Regular is the same file OpenAC bundles (`assets/fonts/NotoSans/` there).
 | NotoSans-SemiBold.ttf | https://github.com/notofonts/noto-fonts/blob/ffebf8c1ee449e544955a7e813c54f9b73848eac/hinted/ttf/NotoSans/NotoSans-SemiBold.ttf | 87a8b90ece1e89746b544e4e086f85a3710e41485a8078f9be874837dfad45d5 |
 
 Full licence: `OFL.txt` beside this file. The fonts are compiled into the
-`ac-ui` crate (`include_bytes!` in `crates/ac-ui/src/bundled_font.rs`), so they
+`ac-plugin-ui` crate (`include_bytes!` in `crates/ac-plugin-ui/src/fonts.rs`), so they
 ship inside the `openac` executable; a release ships `OFL.txt` with them.
