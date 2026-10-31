@@ -1478,6 +1478,17 @@ impl OptionsWindowController {
             Color::WHITE
         };
         for binding in &self.pages[OptionsPage::Configuration.index()].rows {
+            // Both Mouse Buttons Run Forward needs modern mouse turning.
+            if binding.key == OptionKey::Camera(CameraField::BothMouseButtonsRunForward)
+                && let Widget::Checkbox(checkbox) = binding.widget
+            {
+                let color = if spec::unavailable(binding.key, &self.live.settings) {
+                    STORE_ONLY_CAPTION_COLOR
+                } else {
+                    Color::WHITE
+                };
+                ui.with::<Button, _>(checkbox, |b, _| b.label_color = color);
+            }
             let Some(caption) = binding.dimmed_caption else {
                 continue;
             };
@@ -1795,6 +1806,16 @@ impl PanelController for OptionsWindowController {
         let Some(value) = self.row_value(ui, page, row, message) else {
             return false;
         };
+        // A row the settings make unavailable keeps its value: the widget
+        // that flipped itself shows it again.
+        if let Some(binding) = self.pages[page].rows.get(row)
+            && spec::unavailable(binding.key, &self.live.settings)
+        {
+            if let Some(current) = self.pages[page].model.current(row).cloned() {
+                show(ui, &binding.widget, &current);
+            }
+            return true;
+        }
         self.with_page(ui, page, |m, h| m.set_current(row, value, h));
         true
     }

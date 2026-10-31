@@ -675,7 +675,7 @@ impl AttachedWindow {
     fn apply_camera_tuning(&mut self) {
         let tuning = ChaseTuning::from(&self.settings.camera);
         if let Some(world) = self.world.as_mut() {
-            world.cameras_mut().chase.tuning = tuning;
+            world.cameras_mut().chase.set_tuning(tuning);
         }
     }
 
@@ -2407,10 +2407,10 @@ impl AttachedWindow {
         }
     }
 
-    /// The cursor is held by the window (fly camera or mouse look): the UI
-    /// gets no pointer input.
+    /// The cursor is held by the window (fly camera, mouse look or a modern
+    /// mouse turning drag): the UI gets no pointer input.
     fn cursor_held(&self) -> bool {
-        self.input.mouse_look() || self.gameplay.mouse_look_active()
+        self.input.mouse_look() || self.gameplay.holds_cursor()
     }
 
     /// The wheel turned `notches` (positive away from the user) and
@@ -2749,7 +2749,7 @@ impl AttachedWindow {
         }
         // The object under the pointer (the world tooltip and the cursor's
         // "found" forms); none while the window holds the cursor.
-        let held = self.input.mouse_look() || self.gameplay.mouse_look_active();
+        let held = self.input.mouse_look() || self.gameplay.holds_cursor();
         let hover = match (self.cursor, self.world.as_mut()) {
             (Some((x, y)), Some(world)) if !held => {
                 let scene = self.scene.as_deref().map(SceneSource::scene);
