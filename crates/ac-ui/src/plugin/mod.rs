@@ -12,6 +12,7 @@ pub mod color;
 pub mod content_size;
 pub mod controls;
 pub mod dialog;
+pub mod dock;
 pub mod flex_box;
 pub mod fold;
 pub mod hotkeys;
