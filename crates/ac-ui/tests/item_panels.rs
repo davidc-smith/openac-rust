@@ -3070,6 +3070,9 @@ fn the_figure_flashes_the_parts_the_selected_item_covers() {
 
 mod real_dats {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use ac_ui::content::DatContent;
     use ac_ui::font::DEFAULT_FONT_ID;
     use ac_ui::icons::{IconComposer, IconUploader, Rgba};
@@ -3097,6 +3100,40 @@ mod real_dats {
             self.0.push(image.clone());
             TextureRef::Runtime(self.0.len() as u32)
         }
+    }
+
+    /// [`Uploads`] the test can still read once the composer holds it.
+    struct SharedUploads(Rc<RefCell<Uploads>>);
+
+    impl IconUploader for SharedUploads {
+        fn upload(&mut self, image: &Rgba) -> TextureRef {
+            self.0.borrow_mut().upload(image)
+        }
+    }
+
+    /// The image MossTank and MosswartMassacre name as their dock icon has an
+    /// opaque white outline, which keying replaces.
+    #[test]
+    #[ignore = "needs the retail dat files"]
+    fn a_keyed_plugin_icon_has_no_opaque_white_left() {
+        const OPAQUE_WHITE: [u8; 4] = [255, 255, 255, 255];
+        const ICON: u32 = 0x0600_2C41;
+        let c = content();
+        let uploads = Rc::new(RefCell::new(Uploads::default()));
+        let mut composer = IconComposer::new(
+            c.dats().clone(),
+            Box::new(SharedUploads(Rc::clone(&uploads))),
+        );
+        let raw = composer.surface(ICON).expect("the icon decodes");
+        let white = |pixels: &[u8]| pixels.chunks(4).filter(|p| *p == OPAQUE_WHITE).count();
+        assert!(white(&raw.pixels) > 0, "the art has its white outline");
+
+        let texture = composer.keyed_icon(ICON).expect("the icon is keyed");
+        let uploads = uploads.borrow();
+        let keyed = &uploads.0[0];
+        assert_eq!(texture, TextureRef::Runtime(1));
+        assert_eq!((keyed.width, keyed.height), (raw.width, raw.height));
+        assert_eq!(white(&keyed.pixels), 0);
     }
 
     // ItemListCellTemplateTests.

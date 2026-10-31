@@ -350,9 +350,18 @@ fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
     Some((TextureRef::Surface(id), w as f32, h as f32))
 }
 
+/// An icon a plugin names by its image id, its pure white keyed out as the
+/// item icons' is (OpenAC `IMarkupIconResolver`): such art has opaque white
+/// where an item's underlay would show.
+fn keyed_surface_icon(content: &DatContent, icons: &mut IconComposer, id: u32) -> Option<Icon> {
+    let (w, h) = content.sprite_size(id)?;
+    Some((icons.keyed_icon(id)?, w as f32, h as f32))
+}
+
 /// The shelf's button images: the window's art and its runtime textures.
 struct WindowShelfIcons<'a> {
     content: &'a DatContent,
+    icons: &'a mut IconComposer,
     images: &'a super::icons::RuntimeImages,
     file_icons: &'a mut HashMap<String, (Arc<Vec<u8>>, Icon)>,
 }
@@ -376,13 +385,13 @@ impl shelf::ShelfIcons for WindowShelfIcons<'_> {
     }
 
     fn surface(&mut self, id: u32) -> Option<Icon> {
-        surface_icon(self.content, id)
+        keyed_surface_icon(self.content, self.icons, id)
     }
 }
 
 impl MarkupIcons for WindowIcons<'_> {
     fn surface(&mut self, id: u32) -> Option<Icon> {
-        surface_icon(self.content, id)
+        keyed_surface_icon(self.content, self.icons, id)
     }
 
     fn spell(&mut self, spell: u32) -> Option<Icon> {
@@ -901,6 +910,7 @@ impl WindowUi {
         if plugins.shelf {
             let mut shelf_icons = WindowShelfIcons {
                 content,
+                icons: &mut *markup_icons.icons,
                 images,
                 file_icons: &mut plugins.file_icons,
             };
