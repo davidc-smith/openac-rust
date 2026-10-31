@@ -301,6 +301,7 @@ pub struct UiRoot {
     fixed_canvases: Vec<(u64, (f32, f32))>,
     fixed_canvas: Option<(f32, f32)>,
     media_seconds: f64,
+    pixels_per_unit: f32,
 
     pub(crate) windows: WindowManager,
     output: Vec<UiOutput>,
@@ -383,6 +384,7 @@ impl UiRoot {
             fixed_canvases: Vec::new(),
             fixed_canvas: None,
             media_seconds: 0.0,
+            pixels_per_unit: 1.0,
             windows: WindowManager::default(),
             output: Vec::new(),
             window_blocks: HashMap::new(),
@@ -943,6 +945,12 @@ impl UiRoot {
             Some((cw, ch)) if cw > 0.0 && ch > 0.0 && w > 0.0 && h > 0.0 => (w / cw, h / ch),
             _ => (1.0, 1.0),
         }
+    }
+
+    /// Tell the UI how many framebuffer pixels one of its screen units covers
+    /// (two on a Retina Mac), for the width of a shape's soft edge.
+    pub fn set_pixels_per_unit(&mut self, pixels: f32) {
+        self.pixels_per_unit = pixels;
     }
 
     fn map_window_to_canvas(&self, x: i32, y: i32) -> (i32, i32) {
@@ -1508,7 +1516,12 @@ impl UiRoot {
             ..DrawList::default()
         };
         let media = self.media_seconds;
-        let mut rc = RenderContext::new(&mut list, screen, sprites).with_media_seconds(media);
+        // A fixed canvas stretched unevenly has no one pixel size; the larger
+        // scale keeps a soft edge from going wider than a pixel.
+        let (sx, sy) = self.canvas_scale();
+        let mut rc = RenderContext::new(&mut list, screen, sprites)
+            .with_media_seconds(media)
+            .with_pixels_per_unit(self.pixels_per_unit * sx.max(sy));
         let root = self.root;
         self.draw_tree(root, &mut rc);
         rc.begin_overlay();
