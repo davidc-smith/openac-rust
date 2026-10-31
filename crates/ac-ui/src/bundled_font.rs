@@ -70,6 +70,15 @@ pub const ATLAS_SIZE: u32 = 512;
 /// general punctuation and super/subscripts (U+2000..U+206F).
 pub const RANGES: [(u32, u32); 3] = [(32, 560), (0x370, 448), (0x2000, 112)];
 
+/// The smallest size [`bake`] accepts, pixels.
+pub const MINIMUM_PIXEL_HEIGHT: f32 = 8.0;
+
+/// The largest size [`bake`] accepts, pixels.
+pub const MAXIMUM_PIXEL_HEIGHT: f32 = 32.0;
+
+/// A sharper bake's scale goes up in steps this size.
+const SHARP_SCALE_STEP: f32 = 0.25;
+
 /// What a character without a glyph draws as.
 pub const FALLBACK_CHARACTER: char = '?';
 
@@ -150,13 +159,28 @@ pub struct ModernFonts {
     pub semibold: Arc<UiFont>,
 }
 
+/// The scale a sharper bake of a font of `pixel_height` is made at for a
+/// display with `pixels_per_unit`: that density rounded down to a quarter step,
+/// so each texel lands on one framebuffer pixel, and no larger than the largest
+/// bake allows. 1 or below means no sharper bake.
+#[must_use]
+pub fn sharp_scale_for(pixel_height: f32, pixels_per_unit: f32) -> f32 {
+    if !pixels_per_unit.is_finite() {
+        return 1.0;
+    }
+    let limit = pixels_per_unit.min(MAXIMUM_PIXEL_HEIGHT / pixel_height);
+    (limit / SHARP_SCALE_STEP + 1e-3).floor() * SHARP_SCALE_STEP
+}
+
 /// Bakes the bundled font at `pixel_height` (8..=32 pixels) in `weight`.
 ///
 /// # Errors
 ///
 /// The size is out of range, or the atlas or a glyph record cannot hold it.
 pub fn bake(pixel_height: f32, weight: Weight) -> Result<BakedFont, BundledFontError> {
-    if !pixel_height.is_finite() || !(8.0..=32.0).contains(&pixel_height) {
+    if !pixel_height.is_finite()
+        || !(MINIMUM_PIXEL_HEIGHT..=MAXIMUM_PIXEL_HEIGHT).contains(&pixel_height)
+    {
         return Err(BundledFontError::SizeOutOfRange(pixel_height));
     }
     let file = weight.file();

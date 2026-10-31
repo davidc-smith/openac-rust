@@ -8,9 +8,11 @@
 //! tooltip show/hide) is queued as [`UiOutput`] and drained by the host.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::draw::{Color, DrawList, RenderContext, SpriteSizes};
 use crate::event::{DragPayload, Key, Modifiers, MouseButton, UiEvent, kind};
+use crate::font::SharpFonts;
 use crate::geometry::{
     AnchorEdges, PixelRect, Rect, ResizeEdges, clamp, compute_anchored_rect, resize_rect,
 };
@@ -304,6 +306,7 @@ pub struct UiRoot {
     fixed_canvas: Option<(f32, f32)>,
     media_seconds: f64,
     pixels_per_unit: f32,
+    sharp_fonts: Option<Arc<SharpFonts>>,
 
     pub(crate) windows: WindowManager,
     output: Vec<UiOutput>,
@@ -388,6 +391,7 @@ impl UiRoot {
             fixed_canvas: None,
             media_seconds: 0.0,
             pixels_per_unit: 1.0,
+            sharp_fonts: None,
             windows: WindowManager::default(),
             output: Vec::new(),
             window_blocks: HashMap::new(),
@@ -954,6 +958,18 @@ impl UiRoot {
     /// (two on a Retina Mac), for the width of a shape's soft edge.
     pub fn set_pixels_per_unit(&mut self, pixels: f32) {
         self.pixels_per_unit = pixels;
+    }
+
+    /// Tell the UI which sharper font bakes to draw from on this display. The
+    /// fonts themselves are untouched, so nothing measures differently.
+    pub fn set_sharp_fonts(&mut self, fonts: Option<Arc<SharpFonts>>) {
+        self.sharp_fonts = fonts;
+    }
+
+    /// The sharper font bakes the UI draws from on this display, if any.
+    #[must_use]
+    pub fn sharp_fonts(&self) -> Option<&SharpFonts> {
+        self.sharp_fonts.as_deref()
     }
 
     fn map_window_to_canvas(&self, x: i32, y: i32) -> (i32, i32) {
@@ -1526,7 +1542,8 @@ impl UiRoot {
         let (sx, sy) = self.canvas_scale();
         let mut rc = RenderContext::new(&mut list, screen, sprites)
             .with_media_seconds(media)
-            .with_pixels_per_unit(self.pixels_per_unit * sx.max(sy));
+            .with_pixels_per_unit(self.pixels_per_unit * sx.max(sy))
+            .with_sharp_fonts(self.sharp_fonts.clone());
         let root = self.root;
         self.draw_tree(root, &mut rc);
         rc.begin_overlay();

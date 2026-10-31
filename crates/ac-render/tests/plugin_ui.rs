@@ -262,6 +262,46 @@ impl ac_plugin_ui::FileImageLoader for SquareFiles {
     }
 }
 
+/// The window bakes a sharper bundled font in each weight the first time it
+/// is on a high-density display, keeps the bakes when it moves back and forth
+/// between displays, and draws from none on a standard one.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_window_follows_the_displays_density_with_sharper_fonts() {
+    let mut ui = WindowUi::build(dats(), (1280, 720)).expect("the UI builds");
+    ui.set_pixels_per_unit(1.0);
+    assert!(ui.host().root.sharp_fonts().is_none());
+
+    let textures = |ui: &WindowUi| {
+        let mut bakes: Vec<_> = ui
+            .host()
+            .root
+            .sharp_fonts()
+            .expect("sharper bakes")
+            .values()
+            .map(|s| {
+                assert_eq!(s.scale, 2.0);
+                s.font.foreground.texture
+            })
+            .collect();
+        bakes.sort_by_key(|t| format!("{t:?}"));
+        bakes
+    };
+    ui.set_pixels_per_unit(2.0);
+    let first = textures(&ui);
+    assert_eq!(first.len(), 2);
+    assert_ne!(first[0], first[1]);
+
+    ui.set_pixels_per_unit(1.0);
+    assert!(ui.host().root.sharp_fonts().is_none());
+    ui.set_pixels_per_unit(2.0);
+    assert_eq!(textures(&ui), first, "no second bake");
+
+    // Past what the largest bake allows, the scale stops at two.
+    ui.set_pixels_per_unit(3.0);
+    assert_eq!(textures(&ui), first);
+}
+
 fn runtime_sprites(list: &ac_ui::draw::DrawList) -> usize {
     list.main
         .iter()

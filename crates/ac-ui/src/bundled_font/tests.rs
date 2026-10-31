@@ -208,3 +208,49 @@ fn each_weight_and_size_has_its_own_font_id() {
     let unique: std::collections::HashSet<u32> = ids.into_iter().collect();
     assert_eq!(unique.len(), 4, "{ids:x?}");
 }
+
+#[test]
+fn a_sharper_bake_is_made_at_the_display_density_where_it_fits() {
+    for (pixel_height, density, expected) in [
+        (16.0, 1.0, 1.0),
+        (16.0, 1.25, 1.25),
+        (16.0, 1.5, 1.5),
+        (16.0, 2.0, 2.0),
+        // 48 pixels is past the largest bake.
+        (16.0, 3.0, 2.0),
+        // 32 / 12, down to a quarter step.
+        (12.0, 3.0, 2.5),
+        (16.0, 1.6, 1.5),
+        (16.0, 0.5, 0.5),
+        (16.0, f32::NAN, 1.0),
+    ] {
+        assert_eq!(
+            sharp_scale_for(pixel_height, density),
+            expected,
+            "{pixel_height} at {density}"
+        );
+    }
+}
+
+/// The largest sharper bake, in both weights, has every glyph of the font's
+/// own bake that has an image, so no text mixes the two.
+#[test]
+fn the_sharper_bake_has_an_image_for_every_glyph_of_the_usual_size() {
+    for weight in [Weight::Regular, Weight::SemiBold] {
+        let own = bake(DEFAULT_PIXEL_HEIGHT, weight).unwrap();
+        let sharp = bake(MAXIMUM_PIXEL_HEIGHT, weight).unwrap();
+        let missing: Vec<u16> = own
+            .glyphs
+            .iter()
+            .filter(|g| g.width > 0 && g.height > 0)
+            .filter(|g| {
+                !sharp
+                    .glyphs
+                    .iter()
+                    .any(|f| f.unicode == g.unicode && f.width > 0 && f.height > 0)
+            })
+            .map(|g| g.unicode)
+            .collect();
+        assert!(missing.is_empty(), "{weight:?}: {missing:x?}");
+    }
+}

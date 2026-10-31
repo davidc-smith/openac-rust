@@ -529,6 +529,71 @@ fn theme_font_switch_restores_classic_font() {
     assert!(same(field_font(&host).as_ref(), &classic));
 }
 
+/// On a high-density display a themed window's text draws from the sharper
+/// bake and nothing moves; a Classic window's text draws exactly as it does
+/// without one.
+#[test]
+fn only_a_themed_windows_text_takes_the_sharper_bake_and_nothing_moves() {
+    use crate::bundled_font::{Weight, bake};
+    use crate::draw::{DrawCmd, DrawList, NoSprites};
+    use crate::font::{SharpFont, SharpFonts};
+
+    const MARKUP: &str = r#"<panel theme="plugin" x="10" y="10" w="200" h="100" title="Title">
+  <label name="L" x="1" y="20" text="Buff Bot" />
+  <button name="B" x="1" y="40" w="80" h="24" text="Go" />
+</panel>"#;
+    const SHARP: TextureRef = TextureRef::Runtime(9);
+    let (modern, classic) = bundled_fonts();
+    let twin = bake(32.0, Weight::Regular).unwrap().create_font(SHARP);
+    let fonts = Arc::new(SharpFonts::from([(
+        modern.id,
+        SharpFont {
+            font: Arc::new(twin),
+            scale: 2.0,
+        },
+    )]));
+    let textures = |list: &DrawList| -> Vec<TextureRef> {
+        list.commands()
+            .filter_map(|c| match c {
+                DrawCmd::Glyphs { texture, .. } => Some(*texture),
+                _ => None,
+            })
+            .collect()
+    };
+    let screen = (640.0, 480.0);
+
+    let (mut host, mut c, view) = font_window(MARKUP, &classic, &modern);
+    c.sync(&mut host.root, &view, 1, &mut NoIcons, PluginTheme::Moss);
+    let places = |host: &UiHost, c: &PluginPanelController| {
+        ["L", "B"].map(|n| {
+            let id = named(&host.root, c.root, n).unwrap();
+            let e = host.root.element(id).unwrap();
+            (e.left, e.top, e.width, e.height)
+        })
+    };
+    host.root.draw(screen, &NoSprites);
+    let before = places(&host, &c);
+    let standard = host.root.draw(screen, &NoSprites);
+    assert!(!textures(&standard).is_empty());
+    assert!(!textures(&standard).contains(&SHARP));
+
+    host.root.set_sharp_fonts(Some(Arc::clone(&fonts)));
+    // Told of the bake, a standard display still draws the font's own glyphs.
+    assert_eq!(host.root.draw(screen, &NoSprites), standard);
+    host.root.set_pixels_per_unit(2.0);
+    let dense = host.root.draw(screen, &NoSprites);
+    assert!(textures(&dense).iter().all(|t| *t == SHARP));
+    assert_eq!(places(&host, &c), before);
+
+    // Under Classic the window keeps its own font, which has no sharper bake.
+    c.sync(&mut host.root, &view, 2, &mut NoIcons, PluginTheme::Classic);
+    let with_bake = host.root.draw(screen, &NoSprites);
+    host.root.set_sharp_fonts(None);
+    let without = host.root.draw(screen, &NoSprites);
+    assert_eq!(with_bake, without);
+    assert!(!textures(&with_bake).contains(&SHARP));
+}
+
 /// OpenAC `MarkupDocument.Build`: the title label takes `controls.ini`'s
 /// `[title] color` (white without it), and `PluginMarkupTheme` gives a
 /// themed window's title the theme's text colour under a modern theme and

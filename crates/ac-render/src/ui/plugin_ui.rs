@@ -27,7 +27,7 @@ use ac_runtime::session::SessionCommand;
 use ac_ui::DatContent;
 use ac_ui::bundled_font::{self, BundledFontError, ModernFonts, Weight};
 use ac_ui::draw::{Color, SpriteSizes, TextureRef};
-use ac_ui::font::{DEFAULT_FONT_ID, UiFont};
+use ac_ui::font::{DEFAULT_FONT_ID, SharpFont, SharpFonts, UiFont};
 use ac_ui::icons::{IconComposer, IconSource, Rgba};
 use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
@@ -129,6 +129,12 @@ pub struct PluginWindowUi {
     /// The bundled sans font the modern themes draw opted-in windows in
     /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
     modern_fonts: Option<ModernFonts>,
+    /// The display density the sharper bakes of those fonts were last chosen
+    /// for.
+    sharp_density: Option<f32>,
+    /// Those sharper bakes by regular and SemiBold font and scale in quarter
+    /// steps, kept so a window moved between displays bakes each only once.
+    sharp_bakes: HashMap<(u32, u32), SharpFont>,
     /// A markup window's title colour without a theme, from the player's
     /// `controlsntrols.ini` (`[title] color`); white without one.
     title_color: Option<Color>,
@@ -428,10 +434,13 @@ impl WindowUi {
     pub(super) fn mount_plugin_ui(&mut self) {
         // The bundled sans font of the modern themes, baked into an atlas
         // texture of this window (OpenAC `BundledUiFont.Load`).
-        match self.bake_bundled_font(Weight::Regular).and_then(|regular| {
-            let semibold = self.bake_bundled_font(Weight::SemiBold)?;
-            Ok(ModernFonts { regular, semibold })
-        }) {
+        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+        match self
+            .bake_bundled_font(size, Weight::Regular)
+            .and_then(|regular| {
+                let semibold = self.bake_bundled_font(size, Weight::SemiBold)?;
+                Ok(ModernFonts { regular, semibold })
+            }) {
             Ok(fonts) => self.plugins.modern_fonts = Some(fonts),
             Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
         }
@@ -471,10 +480,67 @@ impl WindowUi {
         self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
     }
 
-    /// The bundled font in `weight` at its usual size, as a font over a new
+    /// The sharper bakes of the bundled font for a display with `pixels` a
+    /// UI unit, made the first time a display of that density is used. On a
+    /// standard display there are none.
+    pub(super) fn follow_display_density(&mut self, pixels: f32) {
+        if self.plugins.sharp_density == Some(pixels) {
+            return;
+        }
+        self.plugins.sharp_density = Some(pixels);
+        let Some(fonts) = self.plugins.modern_fonts.clone() else {
+            return;
+        };
+        let mut chosen = SharpFonts::new();
+        for (font, weight) in [
+            (&fonts.regular, Weight::Regular),
+            (&fonts.semibold, Weight::SemiBold),
+        ] {
+            match self.sharp_bake(font, weight, pixels) {
+                Ok(Some(sharp)) => {
+                    chosen.insert(font.id, sharp);
+                }
+                Ok(None) => {}
+                Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
+            }
+        }
+        let chosen = (!chosen.is_empty()).then(|| Arc::new(chosen));
+        self.host.root.set_sharp_fonts(chosen);
+    }
+
+    /// The sharper bake of `font` for `pixels` a UI unit: none where it would
+    /// be no sharper.
+    fn sharp_bake(
+        &mut self,
+        font: &UiFont,
+        weight: Weight,
+        pixels: f32,
+    ) -> Result<Option<SharpFont>, BundledFontError> {
+        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+        let scale = bundled_font::sharp_scale_for(size, pixels);
+        if scale <= 1.0 {
+            return Ok(None);
+        }
+        let key = (font.id, (scale * 4.0) as u32);
+        if let Some(sharp) = self.plugins.sharp_bakes.get(&key) {
+            return Ok(Some(sharp.clone()));
+        }
+        let sharp = SharpFont {
+            font: self.bake_bundled_font(size * scale, weight)?,
+            scale,
+        };
+        self.plugins.sharp_bakes.insert(key, sharp.clone());
+        Ok(Some(sharp))
+    }
+
+    /// The bundled font in `weight` at `pixel_height`, as a font over a new
     /// atlas texture.
-    fn bake_bundled_font(&self, weight: Weight) -> Result<Arc<UiFont>, BundledFontError> {
-        let mut atlas = bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT, weight)?;
+    fn bake_bundled_font(
+        &self,
+        pixel_height: f32,
+        weight: Weight,
+    ) -> Result<Arc<UiFont>, BundledFontError> {
+        let mut atlas = bundled_font::bake(pixel_height, weight)?;
         let coverage = std::mem::take(&mut atlas.coverage);
         let texture = self
             .images
