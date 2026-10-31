@@ -416,7 +416,7 @@ fn hello_runs_its_verb_chat_tick_and_window_events() {
     assert_eq!(
         api.messages("openac.hello"),
         vec![
-            "hello openac.hello enabled on API 1.3 (client 0.1.0), window attached: false",
+            "hello openac.hello enabled on API 1.4 (client 0.1.0), window attached: false",
             "plugin loaded: openac.hello (Hello)",
         ]
     );
@@ -625,13 +625,13 @@ fn a_listed_plugin_that_is_missing_or_unreadable_is_reported() {
 fn an_api_version_this_client_does_not_support_is_refused() {
     let root = Root::new("api");
     let folder = install(&root.0, "probe");
-    edit_manifest(&folder, r#""apiVersion": "1.3""#, r#""apiVersion": "1.4""#);
+    edit_manifest(&folder, r#""apiVersion": "1.4""#, r#""apiVersion": "1.5""#);
     let mut api = FakeSession::default();
     let mut plugins = session(&[&root.0], None);
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.probe").unwrap(),
-        "plugin 'openac.probe' declares apiVersion 1.4, but this build supports 1.0..1.3"
+        "plugin 'openac.probe' declares apiVersion 1.5, but this build supports 1.0..1.4"
     );
 }
 
@@ -680,7 +680,7 @@ fn a_status_notice_reaches_only_plugins_built_for_api_1_1() {
 
     let root = Root::new("status-1-0");
     let folder = install(&root.0, "hello");
-    edit_manifest(&folder, r#""apiVersion": "1.3""#, r#""apiVersion": "1.0""#);
+    edit_manifest(&folder, r#""apiVersion": "1.4""#, r#""apiVersion": "1.0""#);
     let wasm = folder.join("hello.wasm");
     let layout = section_at(ApiVersion::new(1, 0));
     let built = std::fs::read(&wasm).unwrap();
@@ -794,7 +794,7 @@ fn load_probe_built_for(tag: &str, version: &str, layout: &[u8]) -> (Vec<String>
     let folder = install(&root.0, "probe");
     edit_manifest(
         &folder,
-        r#""apiVersion": "1.3""#,
+        r#""apiVersion": "1.4""#,
         &format!(r#""apiVersion": "{version}""#),
     );
     let wasm = folder.join("probe.wasm");
@@ -836,6 +836,15 @@ fn a_plugin_built_for_api_1_1_loads_with_the_records_it_knew() {
 fn a_plugin_built_for_api_1_2_still_loads() {
     let v1_2 = ApiVersion::new(1, 2);
     let (loaded, error) = load_probe_built_for("probe-1-2", "1.2", &section_at(v1_2));
+    assert_eq!((loaded, error), (vec!["openac.probe".to_owned()], None));
+}
+
+/// API 1.4 gave the theme's kind more variants: `probe` as an API 1.3 SDK
+/// built it still loads.
+#[test]
+fn a_plugin_built_for_api_1_3_still_loads() {
+    let v1_3 = ApiVersion::new(1, 3);
+    let (loaded, error) = load_probe_built_for("probe-1-3", "1.3", &section_at(v1_3));
     assert_eq!((loaded, error), (vec!["openac.probe".to_owned()], None));
 }
 
@@ -922,6 +931,47 @@ fn an_object_change_reaches_each_plugin_in_its_api_versions_encoding() {
             };
             assert_eq!(read.current.map(|o| o.hook_item_types), Some(0));
         }
+    }
+}
+
+/// A theme change reaches each plugin as its API version knows it, through
+/// a real module: under Ember, `rawbytes` built for API 1.2 or 1.3 is handed
+/// a kind it knows with Ember's name and colours, and reads the same from the
+/// `ui_theme` import; built for this API it hears Ember itself.
+#[test]
+fn a_new_theme_reaches_each_plugin_as_its_api_version_knows_it() {
+    use ac_plugin_ui::{ThemeKind, UiInput};
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-theme-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert_eq!(plugins.loaded_ids(), ["openac.rawbytes"], "{version}");
+        api.ui.input(UiInput::Theme(ThemeKind::Ember));
+        plugins.pump(0.0, None, &mut api);
+        plugins.shutdown(&mut api);
+        let info = ac_plugin::abi::ui_host::theme_info(ThemeKind::Ember);
+        let event = Event::ThemeChanged(info.clone());
+        let handed = raw_handed(&api, "event");
+        assert_eq!(handed, [event.to_bytes_at(version)], "{version}");
+        let Ok(Event::ThemeChanged(read)) = Event::from_bytes_at(&handed[0], version) else {
+            panic!("{version}: a theme change");
+        };
+        let kind = if version == API_CURRENT {
+            ac_plugin::abi::ui::ThemeKind::Ember
+        } else {
+            ac_plugin::abi::ui::ThemeKind::Moss
+        };
+        assert_eq!(read.kind, kind, "{version}");
+        assert_eq!(read.display_name, "Ember", "{version}");
+        assert_eq!(read.palette, info.palette, "{version}");
+        assert!(
+            api.logs.iter().any(|(id, _, line)| id == "openac.rawbytes"
+                && *line == format!("ui_theme {kind:?} Ember")),
+            "{version}: {:?}",
+            api.logs
+        );
     }
 }
 
@@ -1052,7 +1102,7 @@ fn an_import_this_client_does_not_have_is_named_at_load() {
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.future").unwrap(),
-        "imports openac.teleport_anywhere, which API 1.3 of this client does not have (the plugin was \
+        "imports openac.teleport_anywhere, which API 1.4 of this client does not have (the plugin was \
          built for API 1.0)"
     );
 }
@@ -2112,7 +2162,7 @@ fn a_new_copy_this_client_cannot_run_leaves_the_running_copy_alone() {
             "requires openAC 9.0.0 or newer (this is 0.1.20)",
         ),
         (
-            r#""apiVersion": "1.3""#,
+            r#""apiVersion": "1.4""#,
             r#""apiVersion": "99.0""#,
             "needs plugin API version 99.0",
         ),

@@ -261,7 +261,7 @@ impl PluginWindowUi {
 
 /// The Appearance window (OpenAC `RetailUiRuntime.ShowPluginAppearance`):
 /// the client's own markup window, built from a plugin UI of its own that
-/// only this window holds, offering the three themes.
+/// only this window holds, offering the themes.
 #[derive(Debug)]
 struct Appearance {
     ui: ac_plugin_ui::PluginUi,
@@ -279,7 +279,7 @@ const APPEARANCE_VIEW: &str = "appearance";
 /// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
 const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="140" title="Plugin appearance" theme="plugin">
   <label x="12" y="33" text="Theme" />
-  <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="3" />
+  <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="8" />
   <button x="226" y="102" w="72" h="24" text="Close" onclick="{Close}" />
 </panel>"#;
 

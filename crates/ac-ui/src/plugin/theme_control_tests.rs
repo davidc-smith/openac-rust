@@ -909,3 +909,26 @@ fn a_classic_expander_has_no_frame() {
     assert!(!has_color(&v, frame));
     assert!(v.iter().all(|(_, y, _)| *y < 8.0 + 20.0), "only its arrow");
 }
+
+#[test]
+fn every_theme_draws_in_the_colours_plugins_read() {
+    for kind in ac_plugin_ui::ThemeKind::ALL {
+        let drawn = PluginTheme::from(kind).palette();
+        let read = kind.palette();
+        assert_eq!(drawn.is_some(), read.is_some(), "{kind:?}");
+        let (Some(drawn), Some(read)) = (drawn, read) else {
+            continue;
+        };
+        for (color, byte) in [
+            (drawn.background, read.background),
+            (drawn.field, read.field),
+            (drawn.border, read.border),
+            (drawn.text, read.text),
+            (drawn.muted, read.muted),
+            (drawn.accent, read.accent),
+            (drawn.selected, read.selected),
+        ] {
+            assert_eq!(color, super::color(byte.to_rgba()), "{kind:?}");
+        }
+    }
+}

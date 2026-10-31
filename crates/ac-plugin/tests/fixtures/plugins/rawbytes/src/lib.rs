@@ -1,8 +1,10 @@
 //! `rawbytes`: logs the bytes of every event and callback the client hands
 //! it, as they arrived and without decoding them (`event <hex>`,
 //! `callback <hex>`), so a test can see exactly what a plugin built for an
-//! older API version is sent. It registers a loot classifier `rules`
-//! (answering nothing) so another plugin can ask it a question.
+//! older API version is sent. With each event it also logs the theme the
+//! `ui_theme` import answers (`ui_theme <kind> <name>`). It registers a loot
+//! classifier `rules` (answering nothing) so another plugin can ask it a
+//! question.
 //!
 //! Its exports are written here instead of by `export_plugin!`: the SDK's
 //! own would decode the bytes as this SDK's records first.
@@ -82,7 +84,13 @@ mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn openac_event(ptr: i32, len: i32) {
         let bytes = take(ptr, len);
-        Host::wasm().log(LogLevel::Info, &format!("event {}", hex(&bytes)));
+        let mut host = Host::wasm();
+        host.log(LogLevel::Info, &format!("event {}", hex(&bytes)));
+        let theme = host.theme();
+        host.log(
+            LogLevel::Info,
+            &format!("ui_theme {:?} {}", theme.kind, theme.display_name),
+        );
     }
 
     #[unsafe(no_mangle)]

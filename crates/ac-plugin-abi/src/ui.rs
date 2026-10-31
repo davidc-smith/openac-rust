@@ -1332,18 +1332,103 @@ wire_record! {
     }
 }
 
-wire_enum! {
-    /// A plugin theme the player can pick under Appearance (OpenAC
-    /// `PluginUiThemeKind`).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-    pub enum ThemeKind ("theme kind") {
-        /// The client's own black and gold; themed windows draw unthemed.
-        #[default]
-        Classic = 0,
-        /// Charcoal with moss-green accents.
-        Moss = 1,
-        /// Warm graphite with brass accents.
-        Brass = 2,
+/// A plugin theme the player can pick under Appearance (OpenAC
+/// `PluginUiThemeKind`). The kinds after [`Self::Brass`] came with API 1.4:
+/// a plugin built for an older version is told [`Self::Moss`] under any of
+/// them, with the theme's real name and colours, so it still draws in them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeKind {
+    /// The client's own black and gold; themed windows draw unthemed.
+    #[default]
+    Classic,
+    /// Charcoal with moss-green accents.
+    Moss,
+    /// Warm graphite with brass accents.
+    Brass,
+    /// Dark violet with lavender accents.
+    LavenderDusk,
+    /// Blue slate with orange accents.
+    Ember,
+    /// Dark warm grey with coral-red accents.
+    Bloodmoon,
+    /// Blue-black with icy cyan accents.
+    Glacier,
+    /// A light theme: paper with ink text and rust accents.
+    Parchment,
+}
+
+/// The API version that added the theme kinds after [`ThemeKind::Brass`].
+const THEME_KINDS_SINCE: crate::ApiVersion = crate::ApiVersion::new(1, 4);
+
+impl ThemeKind {
+    /// The kind a plugin built for API `version` reads for this one.
+    #[must_use]
+    pub fn known_at(self, version: crate::ApiVersion) -> Self {
+        match self {
+            Self::Classic | Self::Moss | Self::Brass => self,
+            _ if THEME_KINDS_SINCE.is_at_most(version) => self,
+            _ => Self::Moss,
+        }
+    }
+}
+
+impl Wire for ThemeKind {
+    const SHAPE: u64 = crate::wire::Shape::new("enum")
+        .tag(0)
+        .name("Classic")
+        .tag(1)
+        .name("Moss")
+        .tag(2)
+        .name("Brass")
+        .tag(3)
+        .name("LavenderDusk")
+        .tag(4)
+        .name("Ember")
+        .tag(5)
+        .name("Bloodmoon")
+        .tag(6)
+        .name("Glacier")
+        .tag(7)
+        .name("Parchment")
+        .finish();
+    const VERSIONED: bool = true;
+    fn shape_at(version: crate::ApiVersion) -> u64 {
+        if THEME_KINDS_SINCE.is_at_most(version) {
+            return Self::SHAPE;
+        }
+        crate::wire::Shape::new("enum")
+            .tag(0)
+            .name("Classic")
+            .tag(1)
+            .name("Moss")
+            .tag(2)
+            .name("Brass")
+            .finish()
+    }
+    fn encode(&self, w: &mut Writer) {
+        (*self as u8).encode(w);
+    }
+    fn read(r: &mut Reader<'_>) -> Self {
+        match u8::read(r) {
+            0 => Self::Classic,
+            1 => Self::Moss,
+            2 => Self::Brass,
+            3 => Self::LavenderDusk,
+            4 => Self::Ember,
+            5 => Self::Bloodmoon,
+            6 => Self::Glacier,
+            7 => Self::Parchment,
+            tag => {
+                r.fail(DecodeError::UnknownTag {
+                    what: "theme kind",
+                    tag: u32::from(tag),
+                });
+                Self::Classic
+            }
+        }
+    }
+    fn encode_at(&self, version: crate::ApiVersion, w: &mut Writer) {
+        self.known_at(version).encode(w);
     }
 }
 
@@ -1368,6 +1453,16 @@ wire_record! {
     }
 }
 
+impl ThemePalette {
+    /// Whether the face is pale: a light palette, meant for dark text and
+    /// art.
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        let b = &self.background;
+        0.2126 * f64::from(b.r) + 0.7152 * f64::from(b.g) + 0.0722 * f64::from(b.b) > 127.5
+    }
+}
+
 wire_record! {
     /// The plugin theme the player picked ([`crate::Import::UiTheme`],
     /// [`crate::Event::ThemeChanged`]; OpenAC `PluginUiThemeInfo`), so a
@@ -1376,11 +1471,21 @@ wire_record! {
         /// Which theme.
         pub kind: ThemeKind,
         /// What the Appearance picker calls it: "Classic", "Charcoal +
-        /// moss" or "Warm graphite + brass".
+        /// moss", "Warm graphite + brass", "Lavender Dusk", "Ember",
+        /// "Bloodmoon", "Glacier" or "Parchment".
         pub display_name: String,
         /// Its colours; none under Classic, where themed windows draw
         /// unthemed.
         pub palette: Option<ThemePalette>,
+    }
+}
+
+impl ThemeInfo {
+    /// Whether the theme is light: a pale face meant for dark text and art.
+    /// False under Classic.
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        self.palette.as_ref().is_some_and(ThemePalette::is_light)
     }
 }
 

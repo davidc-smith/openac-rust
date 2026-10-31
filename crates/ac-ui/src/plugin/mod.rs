@@ -83,6 +83,16 @@ pub enum PluginTheme {
     Moss,
     /// Warm graphite and brass.
     Brass,
+    /// Dark violet and lavender.
+    LavenderDusk,
+    /// Blue slate and orange.
+    Ember,
+    /// Dark warm grey and coral red.
+    Bloodmoon,
+    /// Blue-black and icy cyan.
+    Glacier,
+    /// Paper and ink, the one light theme.
+    Parchment,
 }
 
 impl From<ac_plugin_ui::ThemeKind> for PluginTheme {
@@ -91,6 +101,11 @@ impl From<ac_plugin_ui::ThemeKind> for PluginTheme {
             ac_plugin_ui::ThemeKind::Classic => Self::Classic,
             ac_plugin_ui::ThemeKind::Moss => Self::Moss,
             ac_plugin_ui::ThemeKind::Brass => Self::Brass,
+            ac_plugin_ui::ThemeKind::LavenderDusk => Self::LavenderDusk,
+            ac_plugin_ui::ThemeKind::Ember => Self::Ember,
+            ac_plugin_ui::ThemeKind::Bloodmoon => Self::Bloodmoon,
+            ac_plugin_ui::ThemeKind::Glacier => Self::Glacier,
+            ac_plugin_ui::ThemeKind::Parchment => Self::Parchment,
         }
     }
 }
@@ -103,6 +118,11 @@ impl PluginTheme {
             Self::Classic => None,
             Self::Moss => Some(Palette::MOSS),
             Self::Brass => Some(Palette::BRASS),
+            Self::LavenderDusk => Some(Palette::LAVENDER_DUSK),
+            Self::Ember => Some(Palette::EMBER),
+            Self::Bloodmoon => Some(Palette::BLOODMOON),
+            Self::Glacier => Some(Palette::GLACIER),
+            Self::Parchment => Some(Palette::PARCHMENT),
         }
     }
 }

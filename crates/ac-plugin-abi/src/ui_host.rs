@@ -12,7 +12,7 @@ use crate::ui::{
     LineSet, MarkerAnchor, PanelRegistration, PanelValues, PointerEvent, RgbaImage, ShapeSet,
     TextSize, TriangleSet, UiAction, UiValue, ViewShow,
 };
-use crate::{DecodeError, Event, Import, Wire};
+use crate::{ApiVersion, DecodeError, Event, Import, Wire};
 use ac_plugin_ui::{
     self as ui, CanvasAnchor, CanvasDescriptor, ClientWindow, ClientWindowAction, Color8, MapPoint,
     PaintCmd, PaintRect, PanelDescriptor, PluginUi, PointerKind, UiOwner,
@@ -230,6 +230,11 @@ pub fn theme_info(kind: ui::ThemeKind) -> abi::ThemeInfo {
             ui::ThemeKind::Classic => abi::ThemeKind::Classic,
             ui::ThemeKind::Moss => abi::ThemeKind::Moss,
             ui::ThemeKind::Brass => abi::ThemeKind::Brass,
+            ui::ThemeKind::LavenderDusk => abi::ThemeKind::LavenderDusk,
+            ui::ThemeKind::Ember => abi::ThemeKind::Ember,
+            ui::ThemeKind::Bloodmoon => abi::ThemeKind::Bloodmoon,
+            ui::ThemeKind::Glacier => abi::ThemeKind::Glacier,
+            ui::ThemeKind::Parchment => abi::ThemeKind::Parchment,
         },
         display_name: kind.display_name().to_owned(),
         palette: kind.palette().map(|p| abi::ThemePalette {
@@ -346,8 +351,9 @@ pub fn world_query(import: Import, request: &[u8]) -> Option<WorldQuery> {
     }
 }
 
-/// Carries out UI `import` for plugin `owner` on `state`; `answer` is the
-/// session's answer to the call's [`world_query`], if it has one.
+/// Carries out UI `import` for plugin `owner`, built for API `version`, on
+/// `state`; `answer` is the session's answer to the call's [`world_query`],
+/// if it has one.
 ///
 /// # Errors
 /// A request that does not decode, or an import that is not a UI call (the
@@ -358,6 +364,7 @@ pub fn handle(
     owner: &UiOwner,
     state: &mut PluginUi,
     answer: Option<u32>,
+    version: ApiVersion,
 ) -> Result<Vec<u8>, String> {
     let bad =
         |error: DecodeError| format!("its request to {} is malformed: {error}", import.name());
@@ -551,7 +558,7 @@ pub fn handle(
         }
         Import::UiTheme => {
             <()>::from_bytes(request).map_err(bad)?;
-            theme_info(state.theme()).to_bytes()
+            theme_info(state.theme()).to_bytes_at(version)
         }
         Import::UiImageClientArt => {
             let surface = u32::from_bytes(request).map_err(bad)?;
@@ -854,6 +861,41 @@ mod theme_tests {
         // Over the wire and back.
         let bytes = moss.to_bytes();
         assert_eq!(abi::ThemeInfo::from_bytes(&bytes).unwrap(), moss);
+    }
+
+    #[test]
+    fn every_theme_goes_over_the_wire_and_only_parchment_is_light() {
+        for kind in ui::ThemeKind::ALL {
+            let info = theme_info(kind);
+            assert_eq!(info.display_name, kind.display_name());
+            assert_eq!(abi::ThemeInfo::from_bytes(&info.to_bytes()).unwrap(), info);
+            assert_eq!(info.is_light(), kind == ui::ThemeKind::Parchment);
+        }
+    }
+
+    // A plugin built before the new kinds cannot read their tags: it is told
+    // a kind it knows, with the theme's real name and colours.
+    #[test]
+    fn an_older_plugin_is_told_a_kind_it_knows_with_the_real_colours() {
+        let older = ApiVersion::new(1, 3);
+        for kind in ui::ThemeKind::ALL {
+            let info = theme_info(kind);
+            let sent = abi::ThemeInfo::from_bytes(&info.to_bytes_at(older)).unwrap();
+            let expected = match kind {
+                ui::ThemeKind::Classic => abi::ThemeKind::Classic,
+                ui::ThemeKind::Brass => abi::ThemeKind::Brass,
+                _ => abi::ThemeKind::Moss,
+            };
+            assert_eq!(sent.kind, expected, "{kind:?}");
+            assert_eq!(sent.display_name, info.display_name);
+            assert_eq!(sent.palette, info.palette);
+            assert_eq!(info.to_bytes_at(crate::API_CURRENT), info.to_bytes());
+        }
+    }
+
+    #[test]
+    fn an_unknown_theme_kind_is_refused() {
+        assert!(abi::ThemeKind::from_bytes(&[8]).is_err());
     }
 
     #[test]

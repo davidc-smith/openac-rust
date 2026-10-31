@@ -202,7 +202,7 @@ mod tests {
     /// commit; when an existing record changed shape (not only a new
     /// import, event or `since`-marked field), say in the commit message
     /// which plugins must be rebuilt.
-    const PUBLISHED: u64 = 0xc074_52ab_2f97_0c8e;
+    const PUBLISHED: u64 = 0x2d70_1037_7761_bdc8;
 
     #[test]
     fn the_fingerprint_is_the_published_one() {
@@ -232,7 +232,7 @@ mod tests {
     /// The import shapes an API 1.1 SDK wrote for the calls whose records
     /// API 1.2 gave a field (the house hook's item types on the inventory
     /// and world-object records); every other import is as it was.
-    const API_1_1_IMPORTS: [(Import, u64); 7] = [
+    const API_1_1_IMPORTS: [(Import, u64); 8] = [
         (Import::WorldObjects, 0x001b_e2ad_09b2_7238),
         (Import::WorldObject, 0x1579_5703_0d8b_7bcc),
         (Import::ItemsOwned, 0xed66_6352_01bd_02ed),
@@ -240,6 +240,7 @@ mod tests {
         (Import::LootClassify, 0x62f1_8b7c_4679_4184),
         (Import::LootNeedsIdentification, 0x99d6_7d8a_8f61_8fa8),
         (Import::LootNotifyLooted, 0x4014_883b_f67a_6245),
+        (Import::UiTheme, API_1_3_UI_THEME),
     ];
 
     #[test]
@@ -258,13 +259,21 @@ mod tests {
         }
     }
 
-    /// API 1.3 added only imports (the world triangles and markers): an API 1.2
-    /// plugin's core and import shapes are this build's, and its section
-    /// leaves the new imports out.
+    /// The core shape every plugin built for API 1.2 or 1.3 carries (the
+    /// theme kinds as they were then).
+    const API_1_3_CORE: u64 = 0xd3a8_7cd5_8663_029c;
+
+    /// The shape an API 1.3 SDK wrote for the call that answers the theme,
+    /// whose kind API 1.4 gave more variants.
+    const API_1_3_UI_THEME: u64 = 0x93b3_e387_5bf3_f44c;
+
+    /// API 1.3 added only imports (the world triangles and markers): an API
+    /// 1.2 plugin's section leaves those out, and its other shapes are an API
+    /// 1.3 plugin's.
     #[test]
     fn api_1_2_plugins_keep_their_core_and_import_shapes() {
         let v1_2 = ApiVersion::new(1, 2);
-        assert_eq!(core_shape(v1_2), CORE_SHAPE);
+        assert_eq!(core_shape(v1_2), API_1_3_CORE);
         let new_imports = [
             Import::UiTrianglesCreate,
             Import::UiTrianglesSet,
@@ -276,8 +285,25 @@ mod tests {
         ];
         let section = PluginLayout::parse(&section_at(v1_2)).unwrap();
         for import in Import::ALL {
-            let expected = (!new_imports.contains(import)).then(|| import.shape());
+            let expected = (!new_imports.contains(import)).then(|| import.shape_at(v1_2));
             assert_eq!(section.import_shape(import.name()), expected, "{import:?}");
+        }
+        assert_eq!(Import::UiTheme.shape_at(v1_2), API_1_3_UI_THEME);
+    }
+
+    /// API 1.4 gave the theme's kind more variants, which changes the core
+    /// shape and the call that answers the theme: an API 1.3 plugin keeps both.
+    #[test]
+    fn api_1_3_plugins_keep_their_core_and_import_shapes() {
+        let v1_3 = ApiVersion::new(1, 3);
+        assert_eq!(core_shape(v1_3), API_1_3_CORE);
+        assert_ne!(CORE_SHAPE, API_1_3_CORE);
+        assert_eq!(Import::UiTheme.shape_at(v1_3), API_1_3_UI_THEME);
+        assert_ne!(Import::UiTheme.shape(), API_1_3_UI_THEME);
+        for import in Import::ALL {
+            if *import != Import::UiTheme {
+                assert_eq!(import.shape_at(v1_3), import.shape(), "{import:?}");
+            }
         }
     }
 

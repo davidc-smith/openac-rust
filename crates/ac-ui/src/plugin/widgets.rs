@@ -117,6 +117,56 @@ impl Palette {
         accent: rgb(0xC9_A665),
         selected: rgb(0x51_442D),
     };
+    /// "Lavender Dusk".
+    pub const LAVENDER_DUSK: Self = Self {
+        background: rgb(0x17_141F),
+        field: rgb(0x10_0E17),
+        border: rgb(0x35_2C4A),
+        text: rgb(0xEE_EAF6),
+        muted: rgb(0xA6_9EBA),
+        accent: rgb(0xBB_A0FF),
+        selected: rgb(0x51_2F4A),
+    };
+    /// "Ember".
+    pub const EMBER: Self = Self {
+        background: rgb(0x15_1A21),
+        field: rgb(0x0E_1218),
+        border: rgb(0x2C_3644),
+        text: rgb(0xE8_ECF1),
+        muted: rgb(0x9A_A6B5),
+        accent: rgb(0xFF_9447),
+        selected: rgb(0x1E_3B44),
+    };
+    /// "Bloodmoon".
+    pub const BLOODMOON: Self = Self {
+        background: rgb(0x1C_1617),
+        field: rgb(0x14_0F10),
+        border: rgb(0x43_302F),
+        text: rgb(0xF2_E9E7),
+        muted: rgb(0xB8_A3A0),
+        accent: rgb(0xFF_6B6B),
+        selected: rgb(0x4D_2327),
+    };
+    /// "Glacier".
+    pub const GLACIER: Self = Self {
+        background: rgb(0x11_161C),
+        field: rgb(0x0A_0E13),
+        border: rgb(0x26_323F),
+        text: rgb(0xE4_EEF4),
+        muted: rgb(0x93_A4B3),
+        accent: rgb(0x5E_D6E8),
+        selected: rgb(0x1F_3554),
+    };
+    /// "Parchment", the one light theme.
+    pub const PARCHMENT: Self = Self {
+        background: rgb(0xED_E7DC),
+        field: rgb(0xFA_F7F1),
+        border: rgb(0xC9_BFAE),
+        text: rgb(0x2A_2520),
+        muted: rgb(0x65_5C50),
+        accent: rgb(0xB4_471F),
+        selected: rgb(0xDD_CFB6),
+    };
 
     /// A theme colour by its markup name.
     #[must_use]
