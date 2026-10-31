@@ -932,3 +932,46 @@ fn every_theme_draws_in_the_colours_plugins_read() {
         }
     }
 }
+
+#[test]
+fn a_colour_pair_follows_a_light_theme_only_in_a_themed_window() {
+    let dark = Color::rgba(
+        0x11 as f32 / 255.0,
+        0x22 as f32 / 255.0,
+        0x33 as f32 / 255.0,
+        1.0,
+    );
+    let light = Color::rgba(
+        0x44 as f32 / 255.0,
+        0x55 as f32 / 255.0,
+        0x66 as f32 / 255.0,
+        1.0,
+    );
+    for (attribute, theme, expected) in [
+        ("theme=\"plugin\"", PluginTheme::Parchment, light),
+        ("theme=\"plugin\"", PluginTheme::Moss, dark),
+        ("theme=\"plugin\"", PluginTheme::Classic, dark),
+        ("", PluginTheme::Parchment, dark),
+    ] {
+        let mut g = Gallery::of(
+            &format!(
+                r##"<panel x="100" y="100" w="200" h="120" {attribute}><group x="0" y="20" w="50" h="50" background="#FF112233|light:#FF445566"/></panel>"##
+            ),
+            theme,
+        );
+        let v = corners(&g.draw());
+        assert!(has_color(&v, expected), "{attribute} {theme:?}");
+    }
+}
+
+#[test]
+fn a_palette_is_light_only_under_parchment() {
+    for kind in ac_plugin_ui::ThemeKind::ALL {
+        let palette = PluginTheme::from(kind).palette();
+        assert_eq!(
+            palette.is_some_and(|p| p.is_light()),
+            kind == ac_plugin_ui::ThemeKind::Parchment,
+            "{kind:?}"
+        );
+    }
+}

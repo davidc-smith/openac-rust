@@ -91,6 +91,14 @@ goes through `Host`: game state, items, chat, movement and navigation, trade
 and vendors, storage, network, peers, and UI. `cargo doc -p openac-plugin
 --open` shows the whole surface with its documentation.
 
+**Light and dark.** Parchment is a light theme. A literal colour can name a
+second colour for light themes, `color="#FFB6F0AE|light:#FF2E7D32"`, and a file
+icon can have `icons/sword.light.png` and `icons/sword.dark.png` beside
+`icons/sword.png`. The light one is used under a light theme in a
+`theme="plugin"` window. The first colour and the dark file are used everywhere
+else, Classic included, and a version that is missing or cannot be used falls
+back to the named file. For a bound colour, read `host.theme().is_light()`.
+
 **UI.** Windows are written in OpenAC's panel markup with `{Binding}`s; the
 plugin registers a window with `ui::PanelSpec`, pushes values to its
 bindings, and hears its buttons as `Event::Ui`. The window's state lives in

@@ -557,6 +557,10 @@ impl FileImageLoader for PluginFileImageLoader {
         read
     }
 
+    fn has_file(&self, directory: &Path, path: &str) -> bool {
+        resolve_image_path(directory, &normalize(path)).is_ok()
+    }
+
     fn is_current(&self, image: &FileImage) -> bool {
         image
             .full_path

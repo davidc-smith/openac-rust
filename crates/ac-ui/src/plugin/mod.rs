@@ -170,12 +170,17 @@ fn anchors(a: Anchors) -> AnchorEdges {
 }
 
 fn read_color(src: &ColorSource, values: &dyn Values, palette: Option<&Palette>) -> Color {
-    if let ColorSource::Theme { token, classic } = src {
-        return palette
+    match src {
+        ColorSource::Theme { token, classic } => palette
             .and_then(|p| p.token(token))
-            .unwrap_or_else(|| color(*classic));
+            .unwrap_or_else(|| color(*classic)),
+        ColorSource::Paired { dark, light } => color(if palette.is_some_and(Palette::is_light) {
+            *light
+        } else {
+            *dark
+        }),
+        _ => color(src.read(values)),
     }
-    color(src.read(values))
 }
 
 fn texts(values: &dyn Values, name: &str) -> Vec<String> {

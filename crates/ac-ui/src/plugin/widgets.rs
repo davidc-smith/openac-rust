@@ -168,6 +168,13 @@ impl Palette {
         selected: rgb(0xDD_CFB6),
     };
 
+    /// Whether the face is pale: a light theme, meant for dark text and art.
+    #[must_use]
+    pub fn is_light(&self) -> bool {
+        let b = self.background;
+        0.2126 * b.r + 0.7152 * b.g + 0.0722 * b.b > 0.5
+    }
+
     /// A theme colour by its markup name.
     #[must_use]
     pub fn token(&self, name: &str) -> Option<Color> {

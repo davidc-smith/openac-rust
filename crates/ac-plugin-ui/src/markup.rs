@@ -20,8 +20,8 @@ pub use flex_attrs::{FlexContainer, FlexItem};
 mod flex_attrs;
 
 use crate::value::{
-    BindingKind, BindingSchema, Rgba, UiValue, bound_color, parse_bool, parse_color, parse_float,
-    parse_hex, parse_int,
+    BindingKind, BindingSchema, Rgba, UiValue, bound_color, light_color, parse_bool, parse_color,
+    parse_float, parse_hex, parse_int,
 };
 
 /// Why markup cannot become a panel.
@@ -172,6 +172,14 @@ pub enum ColorSource {
     /// A literal (`#AARRGGBB`, white when unreadable, or the element's
     /// default when the attribute is absent).
     Literal(Rgba),
+    /// `#AARRGGBB|light:#AARRGGBB`: the first colour, or the second in a
+    /// themed window under a light theme.
+    Paired {
+        /// Under Classic, every dark theme, and in an unthemed window.
+        dark: Rgba,
+        /// Under a light theme, in a themed window.
+        light: Rgba,
+    },
     /// A declared binding read as a colour.
     Bound(String),
     /// `theme:token|#fallback`: the plugin theme's colour on a themed
@@ -186,12 +194,13 @@ pub enum ColorSource {
 }
 
 impl ColorSource {
-    /// The colour now (a theme colour reads its classic fallback; the
-    /// window picks the theme's when one applies).
+    /// The colour now (a theme colour reads its classic fallback and a pair
+    /// its first colour; the window picks the theme's when one applies).
     #[must_use]
     pub fn read(&self, values: &dyn Values) -> Rgba {
         match self {
             Self::Literal(c) => *c,
+            Self::Paired { dark, .. } => *dark,
             Self::Bound(name) => bound_color(values.value(name)),
             Self::Theme { classic, .. } => *classic,
         }
@@ -1365,6 +1374,12 @@ impl<'a> Parser<'a> {
             return Ok(Some(ColorSource::Theme {
                 token: token.to_owned(),
                 classic: parse_color(Some(a)),
+            }));
+        }
+        if let Some(light) = light_color(a) {
+            return Ok(Some(ColorSource::Paired {
+                dark: parse_color(Some(a)),
+                light,
             }));
         }
         if is_binding(a) && self.kind(inner(a)).is_some() {
