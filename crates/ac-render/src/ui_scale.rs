@@ -544,7 +544,15 @@ mod tests {
         let mut layer = CanvasLayer::mount(&mut ui, &mut band);
         let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
         let mut no_image = |_: &str, _: u32| None;
-        layer.sync(&mut ui, &band, &view, &mut no_image, None, &outbox);
+        layer.sync(
+            &mut ui,
+            &band,
+            &view,
+            &mut no_image,
+            &mut |_| unreachable!("no fonts"),
+            None,
+            &outbox,
+        );
         let at = |offset| canvas_origin(CanvasAnchor::BottomRight, offset, size, layer_units);
         // At units (980, 570), window pixels (1470, 855).
         assert_eq!(at((-200.0, -100.0)), (980.0, 570.0));
@@ -601,7 +609,15 @@ mod tests {
             to_window.push_back(state.take_changes());
             if to_window.len() > 1 {
                 view.apply_all(to_window.pop_front().unwrap());
-                layer.sync(&mut ui, &band, &view, &mut no_image, None, &outbox);
+                layer.sync(
+                    &mut ui,
+                    &band,
+                    &view,
+                    &mut no_image,
+                    &mut |_| unreachable!("no fonts"),
+                    None,
+                    &outbox,
+                );
             }
             // Moving up and left, ahead means further up or left than the
             // grabbed point under the pointer.

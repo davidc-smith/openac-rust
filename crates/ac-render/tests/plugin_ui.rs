@@ -317,6 +317,95 @@ fn runtime_sprites(list: &ac_ui::draw::DrawList) -> usize {
         .count()
 }
 
+/// The textures canvas text was drawn from with a plugin's font.
+fn runtime_glyph_textures(list: &ac_ui::draw::DrawList) -> Vec<ac_ui::draw::TextureRef> {
+    list.commands()
+        .filter_map(|c| match c {
+            ac_ui::draw::DrawCmd::Glyphs { texture, .. }
+                if matches!(texture, ac_ui::draw::TextureRef::Runtime(_)) =>
+            {
+                Some(*texture)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A plugin's font in the real window: canvas text in it draws from an atlas
+/// this window uploaded, from a sharper one once the window says its display is
+/// dense, and not at all once the plugin lets go.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn a_plugins_font_draws_on_its_canvas_and_sharper_on_a_dense_display() {
+    use ac_plugin_ui::fonts::FontWeight;
+    use ac_plugin_ui::{CanvasAnchor, CanvasDescriptor, Color8, PaintCmd};
+    let size = (1280, 720);
+    let owner = UiOwner::new("test.font", "Font");
+    let mut state = PluginUi::new();
+    state.set_window_attached(true);
+    let canvas = state
+        .register_canvas(
+            &owner,
+            CanvasDescriptor {
+                canvas_id: "c".into(),
+                width: 200,
+                height: 60,
+                anchor: CanvasAnchor::from_index(0).unwrap(),
+                offset: (100.0, 100.0),
+                start_visible: true,
+                accepts_pointer_input: false,
+            },
+        )
+        .unwrap();
+    let font = state.font_bundled("test.font", 16.0, FontWeight::SemiBold);
+    assert_ne!(font.handle, 0);
+    state
+        .paint_canvas(
+            "test.font",
+            canvas,
+            vec![PaintCmd::Text {
+                text: "Golem".into(),
+                at: (4.0, 4.0),
+                color: Color8::new(255, 255, 255, 255),
+                outline: false,
+                font: font.handle,
+            }],
+        )
+        .unwrap();
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    ui.set_pixels_per_unit(1.0);
+    let mut scene = Scene::default();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.snapshot(),
+    )));
+    ui.feed(&mut scene);
+    let plain = runtime_glyph_textures(&ui.frame(Instant::now(), size));
+    assert_eq!(plain.len(), 1, "one run from one atlas");
+    deliver(&mut state, ui.drain());
+
+    ui.set_pixels_per_unit(2.0);
+    let commands = ui.drain();
+    assert!(commands.iter().any(|c| matches!(
+        c,
+        SessionCommand::PluginUi(UiInput::DisplayDensity(d)) if *d == 2.0
+    )));
+    deliver(&mut state, commands);
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.take_changes(),
+    )));
+    ui.feed(&mut scene);
+    let sharp = runtime_glyph_textures(&ui.frame(Instant::now(), size));
+    assert_eq!(sharp.len(), 1);
+    assert_ne!(sharp, plain, "the sharper atlas");
+
+    assert!(state.font_release("test.font", font.handle));
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.take_changes(),
+    )));
+    ui.feed(&mut scene);
+    assert!(runtime_glyph_textures(&ui.frame(Instant::now(), size)).is_empty());
+}
+
 /// A plugin window's file icon: the window tells the session the path it
 /// draws, the session holds the image and says which, the window draws
 /// it; hidden, the window draws nothing and says so.

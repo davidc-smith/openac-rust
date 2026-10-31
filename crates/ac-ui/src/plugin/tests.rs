@@ -734,7 +734,15 @@ fn a_canvas_holds_the_pointer_from_press_to_release_and_reports_a_lost_press() {
     let mut layer = canvas::CanvasLayer::mount(&mut host.root, &mut band);
     let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
     let mut no_image = |_: &str, _: u32| None;
-    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+    layer.sync(
+        &mut host.root,
+        &band,
+        &view,
+        &mut no_image,
+        &mut |_| unreachable!("no fonts"),
+        None,
+        &outbox,
+    );
     host.mouse_down(MouseButton::Left, 210, 110, 0);
     host.mouse_move(400, 300);
     host.mouse_up(MouseButton::Left, 400, 300, 0);
@@ -760,7 +768,15 @@ fn a_canvas_holds_the_pointer_from_press_to_release_and_reports_a_lost_press() {
     host.mouse_down(MouseButton::Left, 210, 110, 0);
     assert!(state.release_canvas_pointer("test.canvas", id));
     view.apply_all(state.take_changes());
-    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+    layer.sync(
+        &mut host.root,
+        &band,
+        &view,
+        &mut no_image,
+        &mut |_| unreachable!("no fonts"),
+        None,
+        &outbox,
+    );
     host.mouse_up(MouseButton::Left, 210, 110, 0);
     let kinds: Vec<PointerKind> = outbox
         .borrow_mut()
@@ -775,7 +791,15 @@ fn a_canvas_holds_the_pointer_from_press_to_release_and_reports_a_lost_press() {
     host.mouse_down(MouseButton::Left, 210, 110, 0);
     assert!(state.place_canvas("test.canvas", id, Some(false), None, None));
     view.apply_all(state.take_changes());
-    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+    layer.sync(
+        &mut host.root,
+        &band,
+        &view,
+        &mut no_image,
+        &mut |_| unreachable!("no fonts"),
+        None,
+        &outbox,
+    );
     host.pump();
     let kinds: Vec<PointerKind> = outbox
         .borrow_mut()
@@ -818,7 +842,15 @@ fn a_canvas_is_told_which_modifier_keys_each_pointer_event_came_with() {
     let mut layer = canvas::CanvasLayer::mount(&mut host.root, &mut band);
     let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
     let mut no_image = |_: &str, _: u32| None;
-    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+    layer.sync(
+        &mut host.root,
+        &band,
+        &view,
+        &mut no_image,
+        &mut |_| unreachable!("no fonts"),
+        None,
+        &outbox,
+    );
 
     // A Ctrl+drag, ending with Ctrl let go before the button comes up.
     host.set_modifiers(Modifiers::CTRL);
@@ -890,7 +922,15 @@ fn a_canvas_dragged_through_the_session_follows_the_pointer_without_overshooting
     let mut layer = canvas::CanvasLayer::mount(&mut host.root, &mut band);
     let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
     let mut no_image = |_: &str, _: u32| None;
-    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+    layer.sync(
+        &mut host.root,
+        &band,
+        &view,
+        &mut no_image,
+        &mut |_| unreachable!("no fonts"),
+        None,
+        &outbox,
+    );
 
     let mut to_session: VecDeque<Vec<UiInput>> = VecDeque::new();
     let mut to_window: VecDeque<Vec<UiChange>> = VecDeque::new();
@@ -926,7 +966,15 @@ fn a_canvas_dragged_through_the_session_follows_the_pointer_without_overshooting
         to_window.push_back(state.take_changes());
         if to_window.len() > 1 {
             view.apply_all(to_window.pop_front().unwrap());
-            layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+            layer.sync(
+                &mut host.root,
+                &band,
+                &view,
+                &mut no_image,
+                &mut |_| unreachable!("no fonts"),
+                None,
+                &outbox,
+            );
         }
         // The canvas keeps the grabbed point under the pointer, at most late.
         let target = (pointer.0 as f32 - 10.0, pointer.1 as f32 - 10.0);

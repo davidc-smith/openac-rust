@@ -32,7 +32,7 @@ use ac_ui::icons::{IconComposer, IconSource, Rgba};
 use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
-use ac_ui::plugin::canvas::CanvasLayer;
+use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
 use ac_ui::plugin::fold::SharedControlState;
 use ac_ui::plugin::shelf::{self, PluginShelf};
 use ac_ui::plugin::{
@@ -132,6 +132,9 @@ pub struct PluginWindowUi {
     /// The display density the sharper bakes of those fonts were last chosen
     /// for.
     sharp_density: Option<f32>,
+    /// The atlases of the fonts plugins hold, by bake: a bake the bundled font
+    /// shares between plugins is one texture.
+    font_textures: HashMap<usize, (Arc<ac_plugin_ui::fonts::FontBake>, TextureRef)>,
     /// Those sharper bakes by regular and SemiBold font and scale in quarter
     /// steps, kept so a window moved between displays bakes each only once.
     sharp_bakes: HashMap<(u32, u32), SharpFont>,
@@ -488,6 +491,11 @@ impl WindowUi {
             return;
         }
         self.plugins.sharp_density = Some(pixels);
+        // The session bakes plugins' fonts for this density too.
+        self.plugins
+            .outbox
+            .borrow_mut()
+            .push(UiInput::DisplayDensity(pixels));
         let Some(fonts) = self.plugins.modern_fonts.clone() else {
             return;
         };
@@ -1053,6 +1061,46 @@ impl WindowUi {
             plugins.images.insert(key, (icon, owned));
             Some(icon)
         };
+        // A font's atlases go when no font the plugins hold uses them.
+        let in_use = |key: usize| {
+            view.fonts.values().any(|f| {
+                Arc::as_ptr(&f.font) as usize == key
+                    || f.sharp
+                        .as_ref()
+                        .is_some_and(|s| Arc::as_ptr(&s.font) as usize == key)
+            })
+        };
+        plugins.font_textures.retain(|key, (_, texture)| {
+            let kept = in_use(*key);
+            if !kept {
+                images.release(*texture);
+            }
+            kept
+        });
+        let font_textures = &mut plugins.font_textures;
+        let mut font_of = |view: &ac_plugin_ui::fonts::FontView| {
+            let mut upload = |font: &Arc<ac_plugin_ui::fonts::FontBake>| {
+                font_textures
+                    .entry(Arc::as_ptr(font) as usize)
+                    .or_insert_with(|| {
+                        let texture = images.add_coverage(
+                            font.atlas_width,
+                            font.atlas_height,
+                            font.coverage.clone(),
+                        );
+                        (Arc::clone(font), texture)
+                    })
+                    .1
+            };
+            CanvasFont {
+                texture: upload(&view.font),
+                font: Arc::clone(&view.font),
+                sharp: view
+                    .sharp
+                    .as_ref()
+                    .map(|s| (s.scale, Arc::clone(&s.font), upload(&s.font))),
+            }
+        };
         let font = content.font(DEFAULT_FONT_ID);
         if let Some(layer) = plugins.canvases.as_mut() {
             layer.sync(
@@ -1060,6 +1108,7 @@ impl WindowUi {
                 band,
                 view,
                 &mut image,
+                &mut font_of,
                 font.as_ref(),
                 &plugins.outbox,
             );

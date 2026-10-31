@@ -1267,6 +1267,39 @@ impl<'a> RenderContext<'a> {
         self.sharp_fonts.as_ref()?.get(&font.id).cloned()
     }
 
+    /// Framebuffer pixels one unit of this context covers.
+    #[must_use]
+    pub fn pixels_per_unit(&self) -> f32 {
+        1.0 / self.device_pixel
+    }
+
+    /// One pass of glyphs a caller laid out: `(x, y, w, h, uv)` from this
+    /// context's origin, each snapped to a grid of `grid` cells a unit.
+    pub fn placed_glyphs(
+        &mut self,
+        texture: TextureRef,
+        tint: Color,
+        grid: f32,
+        glyphs: impl IntoIterator<Item = (f32, f32, f32, f32, (f32, f32, f32, f32))>,
+    ) {
+        let (ox, oy) = self.origin;
+        let mut quads = Vec::new();
+        for (x, y, w, h, uv) in glyphs {
+            if w > 0.0 && h > 0.0 {
+                let (x, y) = (snap_to_grid(ox + x, grid), snap_to_grid(oy + y, grid));
+                self.push_glyph(&mut quads, x, y, w, h, uv);
+            }
+        }
+        if !quads.is_empty() {
+            let tint = self.apply_alpha(tint);
+            self.emit(DrawCmd::Glyphs {
+                texture,
+                tint,
+                quads,
+            });
+        }
+    }
+
     fn push_glyph(
         &self,
         quads: &mut Vec<Quad>,
