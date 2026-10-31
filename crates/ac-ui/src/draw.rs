@@ -2,12 +2,13 @@
 //! through (origin, clip and opacity stacks).
 //!
 //! The UI never touches a GPU. A frame is a [`DrawList`]: fills, textured
-//! quads, convex polygons and glyph runs in screen pixels, already clipped,
-//! in the order they must be painted. Textures are named, not uploaded: a
+//! quads, convex polygons, coloured triangles and glyph runs in screen
+//! pixels, already clipped, in the order they must be painted. Textures are named, not uploaded: a
 //! [`TextureRef::Surface`] is a dat render surface id the renderer decodes
 //! and caches.
 
 use crate::font::UiFont;
+use crate::shapes::{self, CornerRadii, ShapeOutcome};
 
 /// A colour, straight (not premultiplied) alpha, components 0..=1.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -50,6 +51,18 @@ impl Color {
             f32::from(c.green) / 255.0,
             f32::from(c.blue) / 255.0,
             a,
+        )
+    }
+
+    /// The colour `t` of the way from `self` to `to`.
+    #[must_use]
+    pub fn lerp(self, to: Self, t: f32) -> Self {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        Self::rgba(
+            mix(self.r, to.r),
+            mix(self.g, to.g),
+            mix(self.b, to.b),
+            mix(self.a, to.a),
         )
     }
 }
@@ -120,6 +133,26 @@ impl Vertex {
     }
 }
 
+/// A corner of an untextured triangle: screen position and its own colour,
+/// blended across the triangle.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ColorVertex {
+    /// X.
+    pub x: f32,
+    /// Y.
+    pub y: f32,
+    /// Colour (straight alpha).
+    pub color: Color,
+}
+
+impl ColorVertex {
+    /// A corner.
+    #[must_use]
+    pub const fn new(x: f32, y: f32, color: Color) -> Self {
+        Self { x, y, color }
+    }
+}
+
 /// One drawing command, in screen pixels, already clipped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DrawCmd {
@@ -156,6 +189,12 @@ pub enum DrawCmd {
         vertices: Vec<Vertex>,
         /// Colour or tint (opacity applied).
         color: Color,
+    },
+    /// Untextured triangles, three corners each, with a colour at every
+    /// corner (gradients, soft edges).
+    Triangles {
+        /// The corners (opacity applied).
+        vertices: Vec<ColorVertex>,
     },
     /// Glyphs of one pass of one string: same atlas, same tint, sampled
     /// nearest.
@@ -269,18 +308,56 @@ impl ClipRect {
         }
         let mut current = polygon.to_vec();
         for edge in [Edge::Left, Edge::Top, Edge::Right, Edge::Bottom] {
-            let boundary = match edge {
-                Edge::Left => self.left,
-                Edge::Top => self.top,
-                Edge::Right => self.right,
-                Edge::Bottom => self.bottom,
-            };
-            current = clip_against(edge, boundary, &current);
+            current = clip_against(edge, self.boundary(edge), &current);
             if current.is_empty() {
                 return current;
             }
         }
         current
+    }
+
+    /// Append what is left of a triangle inside the clip to `out`, as
+    /// triangles: a corner made by a cut has the colour blended to match
+    /// where the cut fell, so a gradient or a soft edge keeps its look.
+    /// Most triangles are wholly inside or outside and need no cutting.
+    pub fn clip_triangle(&self, triangle: [ColorVertex; 3], out: &mut Vec<ColorVertex>) {
+        if self.is_empty() {
+            return;
+        }
+        let [a, b, c] = triangle;
+        if (a.x < self.left && b.x < self.left && c.x < self.left)
+            || (a.x > self.right && b.x > self.right && c.x > self.right)
+            || (a.y < self.top && b.y < self.top && c.y < self.top)
+            || (a.y > self.bottom && b.y > self.bottom && c.y > self.bottom)
+        {
+            return;
+        }
+        let inside = |v: &ColorVertex| {
+            v.x >= self.left && v.x <= self.right && v.y >= self.top && v.y <= self.bottom
+        };
+        if triangle.iter().all(inside) {
+            out.extend_from_slice(&triangle);
+            return;
+        }
+        let mut current = triangle.to_vec();
+        for edge in [Edge::Left, Edge::Top, Edge::Right, Edge::Bottom] {
+            current = clip_against(edge, self.boundary(edge), &current);
+            if current.is_empty() {
+                return;
+            }
+        }
+        for i in 1..current.len().saturating_sub(1) {
+            out.extend_from_slice(&[current[0], current[i], current[i + 1]]);
+        }
+    }
+
+    fn boundary(&self, edge: Edge) -> f32 {
+        match edge {
+            Edge::Left => self.left,
+            Edge::Top => self.top,
+            Edge::Right => self.right,
+            Edge::Bottom => self.bottom,
+        }
     }
 }
 
@@ -292,16 +369,55 @@ enum Edge {
     Bottom,
 }
 
-fn signed_distance(edge: Edge, boundary: f32, v: &Vertex) -> f32 {
-    match edge {
-        Edge::Left => v.x - boundary,
-        Edge::Top => v.y - boundary,
-        Edge::Right => boundary - v.x,
-        Edge::Bottom => boundary - v.y,
+/// A corner a clip edge can cut between: where it is, and what lies a share
+/// of the way to another.
+trait ClipCorner: Copy {
+    fn position(&self) -> (f32, f32);
+    fn toward(self, to: Self, t: f32) -> Self;
+}
+
+impl ClipCorner for Vertex {
+    fn position(&self) -> (f32, f32) {
+        (self.x, self.y)
+    }
+
+    fn toward(self, to: Self, t: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        Vertex::new(
+            lerp(self.x, to.x),
+            lerp(self.y, to.y),
+            lerp(self.u, to.u),
+            lerp(self.v, to.v),
+        )
     }
 }
 
-fn clip_against(edge: Edge, boundary: f32, input: &[Vertex]) -> Vec<Vertex> {
+impl ClipCorner for ColorVertex {
+    fn position(&self) -> (f32, f32) {
+        (self.x, self.y)
+    }
+
+    fn toward(self, to: Self, t: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        ColorVertex::new(
+            lerp(self.x, to.x),
+            lerp(self.y, to.y),
+            self.color.lerp(to.color, t),
+        )
+    }
+}
+
+fn signed_distance<V: ClipCorner>(edge: Edge, boundary: f32, v: &V) -> f32 {
+    let (x, y) = v.position();
+    match edge {
+        Edge::Left => x - boundary,
+        Edge::Top => y - boundary,
+        Edge::Right => boundary - x,
+        Edge::Bottom => boundary - y,
+    }
+}
+
+fn clip_against<V: ClipCorner>(edge: Edge, boundary: f32, input: &[V]) -> Vec<V> {
     let n = input.len();
     let mut out = Vec::with_capacity(n + 1);
     for i in 0..n {
@@ -323,7 +439,7 @@ fn clip_against(edge: Edge, boundary: f32, input: &[Vertex]) -> Vec<Vertex> {
     out
 }
 
-fn crossing(from: Vertex, to: Vertex, from_d: f32, to_d: f32) -> Vertex {
+fn crossing<V: ClipCorner>(from: V, to: V, from_d: f32, to_d: f32) -> V {
     let span = from_d - to_d;
     // The ends straddle the edge, so the span is non-zero except for the
     // degenerate case of both distances exactly zero.
@@ -332,13 +448,7 @@ fn crossing(from: Vertex, to: Vertex, from_d: f32, to_d: f32) -> Vertex {
     } else {
         0.0
     };
-    let lerp = |a: f32, b: f32| a + (b - a) * t;
-    Vertex::new(
-        lerp(from.x, to.x),
-        lerp(from.y, to.y),
-        lerp(from.u, to.u),
-        lerp(from.v, to.v),
-    )
+    from.toward(to, t)
 }
 
 /// Widgets draw through this: it keeps the origin, clip and opacity of the
@@ -356,6 +466,7 @@ pub struct RenderContext<'a> {
     alphas: Vec<f32>,
     sprite_sizes: &'a dyn SpriteSizes,
     media_seconds: f64,
+    device_pixel: f32,
 }
 
 /// Pixel sizes of render surfaces, so widgets can tile UI art. `None` for an
@@ -394,7 +505,21 @@ impl<'a> RenderContext<'a> {
             alphas: Vec::new(),
             sprite_sizes,
             media_seconds: 0.0,
+            device_pixel: 1.0,
         }
+    }
+
+    /// With how many framebuffer pixels one unit of this context covers, for
+    /// the width of a shape's soft edge. Anything but a positive number
+    /// counts as one.
+    #[must_use]
+    pub fn with_pixels_per_unit(mut self, pixels: f32) -> Self {
+        self.device_pixel = if pixels.is_finite() && pixels > 0.0 {
+            1.0 / pixels
+        } else {
+            1.0
+        };
+        self
     }
 
     /// With the UI media clock (seconds) animated media is sampled at.
@@ -727,6 +852,222 @@ impl<'a> RenderContext<'a> {
             vertices,
             color,
         });
+    }
+
+    /// Local triangles, three corners each with its own colour, following
+    /// the origin, the opacity and the clip like every other primitive.
+    pub fn triangles(&mut self, triangles: &[ColorVertex]) {
+        if self.current_clip_is_empty() {
+            return;
+        }
+        let mut vertices = Vec::with_capacity(triangles.len());
+        for t in triangles.chunks_exact(3) {
+            let placed = [self.place(t[0]), self.place(t[1]), self.place(t[2])];
+            match self.clip {
+                Some(clip) => clip.clip_triangle(placed, &mut vertices),
+                None => vertices.extend_from_slice(&placed),
+            }
+        }
+        if !vertices.is_empty() {
+            self.emit(DrawCmd::Triangles { vertices });
+        }
+    }
+
+    fn place(&self, v: ColorVertex) -> ColorVertex {
+        ColorVertex::new(
+            self.origin.0 + v.x,
+            self.origin.1 + v.y,
+            self.apply_alpha(v.color),
+        )
+    }
+
+    /// A rectangle with rounded corners and a smooth edge; zero radii give
+    /// square corners.
+    pub fn fill_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        color: Color,
+    ) {
+        let mut shape = Vec::new();
+        shapes::fill_rounded_rect((x, y, w, h), radii, color, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+    }
+
+    /// A rounded rectangle's outline `thickness` wide, centred on the
+    /// outline.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_rounded_rect(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        color: Color,
+        thickness: f32,
+    ) {
+        let mut shape = Vec::new();
+        shapes::stroke_rounded_rect(
+            (x, y, w, h),
+            radii,
+            color,
+            thickness,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+    }
+
+    /// An ellipse filling a local rectangle.
+    pub fn fill_ellipse(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let mut shape = Vec::new();
+        shapes::fill_ellipse((x, y, w, h), color, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+    }
+
+    /// The outline, `thickness` wide, of an ellipse filling a local
+    /// rectangle.
+    pub fn stroke_ellipse(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color, thickness: f32) {
+        let mut shape = Vec::new();
+        shapes::stroke_ellipse(
+            (x, y, w, h),
+            color,
+            thickness,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+    }
+
+    /// A convex polygon with a colour at each corner and a smooth edge; what
+    /// it came to says why nothing was drawn.
+    pub fn fill_convex_polygon(&mut self, corners: &[ColorVertex]) -> ShapeOutcome {
+        let mut shape = Vec::new();
+        let outcome = shapes::fill_convex_polygon(corners, self.device_pixel, &mut shape);
+        self.triangles(&shape);
+        outcome
+    }
+
+    /// A straight segment `thickness` wide with smooth sides and square,
+    /// flush ends.
+    pub fn smooth_line(
+        &mut self,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        color: Color,
+        thickness: f32,
+    ) {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length.is_nan() || length <= 0.0 || thickness.is_nan() || thickness <= 0.0 {
+            return;
+        }
+        let nx = -dy / length * thickness * 0.5;
+        let ny = dx / length * thickness * 0.5;
+        self.fill_convex_polygon(&[
+            ColorVertex::new(x0 + nx, y0 + ny, color),
+            ColorVertex::new(x1 + nx, y1 + ny, color),
+            ColorVertex::new(x1 - nx, y1 - ny, color),
+            ColorVertex::new(x0 - nx, y0 - ny, color),
+        ]);
+    }
+
+    /// A rounded rectangle whose colour runs from `top` to `bottom`. Each
+    /// corner of the shape takes the colour at its height; the soft edge
+    /// keeps its own transparency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_vertical_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        top: Color,
+        bottom: Color,
+    ) {
+        let mut shape = Vec::new();
+        shapes::fill_rounded_rect(
+            (x, y, w, h),
+            radii,
+            Color::WHITE,
+            self.device_pixel,
+            &mut shape,
+        );
+        for v in &mut shape {
+            let c = top.lerp(bottom, ((v.y - y) / h).clamp(0.0, 1.0));
+            v.color = Color {
+                a: c.a * v.color.a,
+                ..c
+            };
+        }
+        self.triangles(&shape);
+    }
+
+    /// The soft shadow of an opaque rounded rectangle at (`x`, `y`), dropped
+    /// `drop` below it: as dark as six stacked fills, each grown by a further
+    /// sixth of `spread`, so the darkness fades outwards. Only what the
+    /// caster leaves showing is drawn: the bands round the dropped rectangle,
+    /// and the dropped rectangle itself from where the caster's bottom
+    /// corners start to round off. Drawn with the clip lifted to the whole
+    /// screen, because a shadow lies outside the element that casts it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn soft_shadow(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        drop: f32,
+        spread: f32,
+        color: Color,
+    ) {
+        const LAYERS: u32 = 6;
+        if color.a.is_nan() || color.a <= 0.0 {
+            return;
+        }
+        let layer = Color {
+            a: color.a / LAYERS as f32,
+            ..color
+        };
+        let radii = CornerRadii::all(radius);
+        let top = y + drop.max(0.0);
+        let rect = (x, top, w, h);
+        self.push_clip_unbounded();
+        let mut shape = Vec::new();
+        shapes::shadow_bands(
+            rect,
+            radii,
+            (spread, LAYERS),
+            layer,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+
+        // Above the caster's bottom corners its straight sides cover the
+        // dropped rectangle edge to edge.
+        let shown = y + h - radius.min(h * 0.5);
+        self.push_clip(x, shown, w, top + h - shown);
+        shape.clear();
+        shapes::shadow_core(
+            rect,
+            radii,
+            (spread, LAYERS),
+            layer,
+            self.device_pixel,
+            &mut shape,
+        );
+        self.triangles(&shape);
+        self.pop_clip();
+        self.pop_clip();
     }
 
     /// Draw `text` with a dat font at local (`x`, `y`) (the line top):
@@ -1379,6 +1720,255 @@ mod tests {
         let q = glyphs(&list.main[0]).2;
         assert_eq!((q[0].x, q[0].y), (1.0, 7.0));
         assert_eq!((q[1].x, q[1].y), (7.0, 7.0));
+    }
+
+    const RED: Color = Color::rgba(1.0, 0.0, 0.0, 1.0);
+    const BLUE: Color = Color::rgba(0.0, 0.0, 1.0, 1.0);
+    const PURPLE: Color = Color::rgba(0.5, 0.0, 0.5, 1.0);
+
+    fn cv(x: f32, y: f32, color: Color) -> ColorVertex {
+        ColorVertex::new(x, y, color)
+    }
+
+    fn cut(clip: ClipRect, triangle: [ColorVertex; 3]) -> Vec<ColorVertex> {
+        let mut out = Vec::new();
+        clip.clip_triangle(triangle, &mut out);
+        out
+    }
+
+    fn assert_near(actual: ColorVertex, expected: ColorVertex) {
+        let c = (actual.color, expected.color);
+        let far = [
+            actual.x - expected.x,
+            actual.y - expected.y,
+            c.0.r - c.1.r,
+            c.0.g - c.1.g,
+            c.0.b - c.1.b,
+            c.0.a - c.1.a,
+        ]
+        .iter()
+        .any(|d| d.abs() > 1e-4);
+        assert!(!far, "{actual:?} is not {expected:?}");
+    }
+
+    #[test]
+    fn a_triangle_wholly_inside_the_clip_comes_back_unchanged() {
+        let t = [cv(1.0, 1.0, RED), cv(9.0, 1.0, BLUE), cv(1.0, 9.0, RED)];
+        assert_eq!(cut(ClipRect::new(0.0, 0.0, 10.0, 10.0), t), t);
+    }
+
+    #[test]
+    fn a_triangle_wholly_outside_or_an_empty_clip_leaves_nothing() {
+        let outside = [cv(20.0, 1.0, RED), cv(29.0, 1.0, BLUE), cv(20.0, 9.0, RED)];
+        assert!(cut(ClipRect::new(0.0, 0.0, 10.0, 10.0), outside).is_empty());
+        let inside = [cv(1.0, 1.0, RED), cv(2.0, 1.0, RED), cv(1.0, 2.0, RED)];
+        assert!(cut(ClipRect::new(0.0, 0.0, 0.0, 10.0), inside).is_empty());
+    }
+
+    #[test]
+    fn a_cut_gains_corners_on_the_edge_with_the_colour_blended() {
+        let out = cut(
+            ClipRect::new(0.0, 0.0, 10.0, 100.0),
+            [cv(0.0, 0.0, RED), cv(20.0, 0.0, BLUE), cv(0.0, 20.0, RED)],
+        );
+        // Four corners left, as two triangles from the first.
+        assert_eq!(out.len(), 6);
+        let expected = [
+            cv(0.0, 0.0, RED),
+            cv(10.0, 0.0, PURPLE),
+            cv(10.0, 10.0, PURPLE),
+            cv(0.0, 0.0, RED),
+            cv(10.0, 10.0, PURPLE),
+            cv(0.0, 20.0, RED),
+        ];
+        for (actual, expected) in out.iter().zip(expected) {
+            assert_near(*actual, expected);
+        }
+    }
+
+    #[test]
+    fn a_triangle_cut_on_every_edge_has_seven_corners_all_inside() {
+        let out = cut(
+            ClipRect::new(0.0, 0.0, 20.0, 20.0),
+            [cv(-5.0, -5.0, RED), cv(25.0, 5.0, BLUE), cv(5.0, 25.0, RED)],
+        );
+        // Seven corners make five triangles.
+        assert_eq!(out.len(), 15);
+        for v in out {
+            assert!((-1e-4..=20.0 + 1e-4).contains(&v.x), "{v:?}");
+            assert!((-1e-4..=20.0 + 1e-4).contains(&v.y), "{v:?}");
+        }
+    }
+
+    fn triangle() -> [ColorVertex; 3] {
+        [cv(0.0, 0.0, RED), cv(20.0, 0.0, BLUE), cv(0.0, 20.0, RED)]
+    }
+
+    fn triangles(list: &DrawList) -> &[ColorVertex] {
+        match &list.main[0] {
+            DrawCmd::Triangles { vertices } => vertices,
+            other => panic!("not triangles: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn triangles_move_with_the_origin_and_fade_with_the_opacity() {
+        let list = with_ctx(|c| {
+            c.push_transform(10.0, 20.0);
+            c.push_alpha(0.5);
+            c.triangles(&triangle());
+        });
+        let v = triangles(&list);
+        assert_eq!(v.len(), 3);
+        assert_eq!((v[0].x, v[0].y), (10.0, 20.0));
+        assert_eq!((v[1].x, v[1].y), (30.0, 20.0));
+        assert_eq!((v[0].color.a, v[1].color.a, v[2].color.a), (0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn a_clip_cuts_triangles_and_blends_the_colour_at_the_cut() {
+        let list = with_ctx(|c| {
+            c.push_clip(0.0, 0.0, 10.0, 100.0);
+            c.triangles(&triangle());
+        });
+        let v = triangles(&list);
+        assert_eq!(v.len(), 6);
+        for p in v {
+            assert!(p.x <= 10.0 + 1e-4);
+            if (p.x - 10.0).abs() < 1e-4 {
+                assert!((p.color.r - 0.5).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn triangles_outside_the_clip_or_under_an_empty_one_draw_nothing() {
+        let list = with_ctx(|c| {
+            c.push_clip(50.0, 50.0, 10.0, 10.0);
+            c.triangles(&triangle());
+            c.pop_clip();
+            c.push_clip(0.0, 0.0, 0.0, 10.0);
+            c.triangles(&triangle());
+        });
+        assert!(list.main.is_empty());
+    }
+
+    #[test]
+    fn a_shape_moves_with_the_origin_and_is_cut_by_the_clip() {
+        let list = with_ctx(|c| {
+            c.push_transform(100.0, 100.0);
+            c.push_clip(0.0, 0.0, 10.0, 40.0);
+            c.fill_rounded_rect(0.0, 0.0, 20.0, 20.0, CornerRadii::all(4.0), RED);
+        });
+        for v in triangles(&list) {
+            assert!(v.x >= 99.5 && v.x <= 110.0 + 1e-4, "{v:?}");
+            assert!(v.y >= 99.5 && v.y <= 120.5, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_shapes_soft_edge_is_one_device_pixel_wide() {
+        let rim = |pixels: f32| {
+            let mut list = DrawList::default();
+            let mut c = RenderContext::new(&mut list, (800.0, 600.0), &NoSprites)
+                .with_pixels_per_unit(pixels);
+            c.fill_rounded_rect(10.0, 10.0, 20.0, 20.0, CornerRadii::default(), RED);
+            triangles(&list)
+                .iter()
+                .map(|v| v.x)
+                .fold(f32::MAX, f32::min)
+        };
+        assert_eq!(rim(1.0), 9.5);
+        assert_eq!(rim(2.0), 9.75);
+        // A scale that means nothing counts as one.
+        assert_eq!(rim(0.0), 9.5);
+        assert_eq!(rim(f32::NAN), 9.5);
+    }
+
+    #[test]
+    fn a_polygon_says_what_it_came_to_and_draws_only_when_it_drew() {
+        let list = with_ctx(|c| {
+            let line = [cv(0.0, 0.0, RED), cv(10.0, 0.0, RED), cv(20.0, 0.0, RED)];
+            assert_eq!(c.fill_convex_polygon(&line), ShapeOutcome::Nothing);
+            assert_eq!(
+                c.fill_convex_polygon(&line[..2]),
+                ShapeOutcome::TooFewPoints
+            );
+        });
+        assert!(list.main.is_empty());
+        let list = with_ctx(|c| {
+            assert_eq!(c.fill_convex_polygon(&triangle()), ShapeOutcome::Drawn);
+        });
+        assert_eq!(list.main.len(), 1);
+    }
+
+    #[test]
+    fn a_smooth_line_has_soft_sides_round_its_thickness() {
+        let list = with_ctx(|c| c.smooth_line(10.0, 20.0, 110.0, 20.0, RED, 4.0));
+        let ys: Vec<f32> = triangles(&list).iter().map(|v| v.y).collect();
+        assert_eq!(ys.iter().copied().fold(f32::MAX, f32::min), 17.5);
+        assert_eq!(ys.iter().copied().fold(f32::MIN, f32::max), 22.5);
+        let list = with_ctx(|c| {
+            c.smooth_line(5.0, 5.0, 5.0, 5.0, RED, 3.0);
+            c.smooth_line(0.0, 0.0, 50.0, 0.0, RED, 0.0);
+        });
+        assert!(list.main.is_empty());
+    }
+
+    #[test]
+    fn a_gradient_takes_the_colour_at_its_height_and_keeps_its_soft_edge() {
+        let list = with_ctx(|c| {
+            c.fill_vertical_gradient(0.0, 100.0, 50.0, 100.0, CornerRadii::default(), RED, BLUE);
+        });
+        let v = triangles(&list);
+        let solid_top = v
+            .iter()
+            .find(|p| p.y == 100.5 && p.color.a == 1.0)
+            .expect("the solid ring's top");
+        assert!((solid_top.color.r - 0.995).abs() < 1e-4);
+        let solid_bottom = v
+            .iter()
+            .find(|p| p.y == 199.5 && p.color.a == 1.0)
+            .expect("the solid ring's bottom");
+        assert!((solid_bottom.color.b - 0.995).abs() < 1e-4);
+        // The rim beyond the shape holds the end colour, faded out.
+        let rim = v.iter().find(|p| p.y == 99.5).expect("the top rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..RED });
+    }
+
+    #[test]
+    fn a_shadow_escapes_the_clip_and_leaves_the_stacks_as_they_were() {
+        let black = Color::rgba(0.0, 0.0, 0.0, 0.5);
+        let mut list = DrawList::default();
+        let mut c = RenderContext::new(&mut list, (800.0, 600.0), &NoSprites);
+        c.push_clip(100.0, 100.0, 40.0, 40.0);
+        let before = c.depths();
+        c.soft_shadow(100.0, 100.0, 40.0, 40.0, 6.0, 4.0, 14.0, black);
+        assert_eq!(c.depths(), before);
+        let reach = list.commands().flat_map(|cmd| match cmd {
+            DrawCmd::Triangles { vertices } => vertices.iter().map(|v| v.x).collect(),
+            _ => Vec::new(),
+        });
+        assert!(reach.fold(f32::MAX, f32::min) < 100.0);
+        // The bands, then the strip of the dropped rectangle showing below
+        // the caster.
+        assert_eq!(list.main.len(), 2);
+        let DrawCmd::Triangles { vertices } = &list.main[1] else {
+            panic!("the strip is triangles");
+        };
+        for v in vertices {
+            assert!(v.y >= 134.0 - 1e-3 && v.y <= 144.0 + 1e-3, "{v:?}");
+            assert!(v.x >= 100.0 - 1e-3 && v.x <= 140.0 + 1e-3, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn a_shadow_with_no_colour_draws_nothing() {
+        let list = with_ctx(|c| {
+            c.soft_shadow(0.0, 0.0, 10.0, 10.0, 2.0, 2.0, 4.0, Color::TRANSPARENT);
+            c.soft_shadow(0.0, 0.0, 10.0, 10.0, 2.0, 2.0, 0.0, Color::BLACK);
+        });
+        assert!(list.main.is_empty());
     }
 
     #[test]

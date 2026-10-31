@@ -2751,6 +2751,7 @@ impl AttachedWindow {
             let (fps, multiplier) = world.level_of_detail();
             ui.set_level_of_detail(fps, multiplier);
         }
+        ui.set_pixels_per_unit(self.ui_scale.pixels_per_unit());
         let list = ui.frame(Instant::now(), size);
         let batch = UiBatch::build(&list);
         renderer.prepare(&self.device, &self.queue, &batch, size, &mut ui.surfaces());
