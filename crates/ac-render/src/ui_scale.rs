@@ -487,6 +487,136 @@ mod tests {
         assert_eq!(picked, vec![2]);
     }
 
+    /// A plugin's Ctrl+drag of its canvas at 150% on 1920 x 1080 pixels.
+    /// The UI is 1280 x 720 units and a canvas pixel is one unit, drawn at
+    /// 1.5 window pixels: the plugin hears the pointer in canvas pixels
+    /// (window pixels / 1.5, from the canvas's corner), with Ctrl held, and
+    /// the window's place is in units, the same rectangle the session
+    /// measures from. The plugin moves its canvas (anchored bottom-right,
+    /// so the layer's size matters) by where the pointer is from the
+    /// grabbed point; the session and the window each see the other's news
+    /// a frame late. The canvas never runs ahead of the pointer and ends
+    /// with the grabbed point under it.
+    #[test]
+    fn a_canvas_ctrl_dragged_at_one_hundred_fifty_percent_follows_the_pointer() {
+        use ac_plugin_ui::{
+            CanvasAnchor, CanvasDescriptor, PluginUi, PluginUiView, PointerKind, UiChange, UiEvent,
+            UiInput, UiOwner, canvas_origin,
+        };
+        use ac_ui::event::Modifiers;
+        use ac_ui::overlay::OverlayHost;
+        use ac_ui::plugin::PluginOutbox;
+        use ac_ui::plugin::canvas::CanvasLayer;
+        use ac_ui::{MouseButton, UiRoot};
+        use std::cell::RefCell;
+        use std::collections::VecDeque;
+        use std::rc::Rc;
+
+        let framebuffer = (1920, 1080);
+        let scale = UiScale::ONE.with_user_percent(150);
+        let (w, h) = scale.ui_size(framebuffer);
+        assert_eq!((w, h), (1280, 720));
+        let layer_units = (w as f32, h as f32);
+        let mut state = PluginUi::new();
+        let owner = UiOwner::new("test.canvas", "Canvas");
+        let size = (100.0, 50.0);
+        let id = state
+            .register_canvas(
+                &owner,
+                CanvasDescriptor {
+                    canvas_id: "hud".into(),
+                    width: 100,
+                    height: 50,
+                    anchor: CanvasAnchor::BottomRight,
+                    offset: (-200.0, -100.0),
+                    start_visible: true,
+                    accepts_pointer_input: true,
+                },
+            )
+            .unwrap();
+        assert!(state.listen_canvas("test.canvas", id, true));
+        let mut view = PluginUiView::new();
+        view.apply_all(state.snapshot());
+        state.take_changes();
+        let mut ui = UiRoot::new();
+        ui.set_size(layer_units.0, layer_units.1);
+        let mut band = OverlayHost::mount(&mut ui);
+        let mut layer = CanvasLayer::mount(&mut ui, &mut band);
+        let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
+        let mut no_image = |_: &str, _: u32| None;
+        layer.sync(&mut ui, &band, &view, &mut no_image, None, &outbox);
+        let at = |offset| canvas_origin(CanvasAnchor::BottomRight, offset, size, layer_units);
+        // At units (980, 570), window pixels (1470, 855).
+        assert_eq!(at((-200.0, -100.0)), (980.0, 570.0));
+
+        let pointer_at = |px: f64, py: f64| {
+            let (x, y) = scale.ui_point(px, py);
+            (x as i32, y as i32)
+        };
+        let mut to_session: VecDeque<Vec<UiInput>> = VecDeque::new();
+        let mut to_window: VecDeque<Vec<UiChange>> = VecDeque::new();
+        let mut offset = (-200.0_f32, -100.0_f32);
+        let mut grab = None;
+        let mut heard = 0;
+        let mut worst = f32::MIN;
+        ui.set_modifiers(Modifiers::CTRL);
+        // Pixels (1485, 870): units (990, 580), canvas pixels (10, 10).
+        let (x, y) = pointer_at(1485.0, 870.0);
+        ui.on_mouse_down(MouseButton::Left, x, y, 0);
+        let mut pointer = (x, y);
+        for frame in 0..120 {
+            // Moving left and up for a second (5 and 3 pixels a frame, not
+            // whole units), then held still.
+            let step = f64::from(frame.min(60));
+            pointer = pointer_at(1485.0 - step * 5.0, 870.0 - step * 3.0);
+            ui.on_mouse_move(pointer.0, pointer.1);
+            to_session.push_back(outbox.borrow_mut().drain(..).collect());
+            if to_session.len() > 1 {
+                for input in to_session.pop_front().unwrap() {
+                    if let UiInput::Pointer { place, .. } = &input {
+                        let place = place.expect("the window measured it");
+                        assert_eq!(place.layer, layer_units, "the layer is in units");
+                    }
+                    state.input(input);
+                }
+            }
+            for (_, event) in state.take_events() {
+                let UiEvent::Pointer { event, .. } = state.pointer_as_placed_now(event) else {
+                    continue;
+                };
+                heard += 1;
+                assert_eq!(event.modifiers, 2, "Ctrl is held");
+                match (event.kind, grab) {
+                    (PointerKind::Down, _) => {
+                        assert_eq!((event.x, event.y), (10.0, 10.0), "canvas pixels");
+                        grab = Some((event.x, event.y));
+                    }
+                    (PointerKind::Move, Some((gx, gy))) => {
+                        offset = (offset.0 + event.x - gx, offset.1 + event.y - gy);
+                        assert!(state.place_canvas("test.canvas", id, None, None, Some(offset)));
+                    }
+                    _ => {}
+                }
+            }
+            to_window.push_back(state.take_changes());
+            if to_window.len() > 1 {
+                view.apply_all(to_window.pop_front().unwrap());
+                layer.sync(&mut ui, &band, &view, &mut no_image, None, &outbox);
+            }
+            // Moving up and left, ahead means further up or left than the
+            // grabbed point under the pointer.
+            let origin = at(offset);
+            let target = (pointer.0 as f32 - 10.0, pointer.1 as f32 - 10.0);
+            worst = worst.max(target.0 - origin.0).max(target.1 - origin.1);
+        }
+        assert!(heard > 60, "{heard}");
+        assert_eq!(worst, 0.0, "the canvas ran ahead of the pointer");
+        assert_eq!(
+            at(offset),
+            (pointer.0 as f32 - 10.0, pointer.1 as f32 - 10.0)
+        );
+    }
+
     /// The overlays' screen is the framebuffer in units, not the UI's
     /// rounded size: at 110% a 1001-pixel-wide window is 910 units, and
     /// the world's right edge is at unit 910 exactly.

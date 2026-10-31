@@ -1632,7 +1632,8 @@ impl PluginUi {
     /// not from where the window still had it. A plugin that moves its canvas
     /// by how far the pointer is from a grabbed point would otherwise count
     /// each step again until the window caught up, and overshoot. A press
-    /// stays as the player saw it.
+    /// stays as the player saw it, and so does an event whose place is not
+    /// known.
     #[must_use]
     pub fn pointer_as_placed_now(&self, event: UiEvent) -> UiEvent {
         let UiEvent::Pointer {
@@ -1643,7 +1644,8 @@ impl PluginUi {
         else {
             return event;
         };
-        if matches!(pointer.kind, PointerKind::Move | PointerKind::Up)
+        if let Some(place) = place
+            && matches!(pointer.kind, PointerKind::Move | PointerKind::Up)
             && let Some(c) = self.canvases.iter().find(|c| c.id == canvas)
         {
             let size = (c.descriptor.width as f32, c.descriptor.height as f32);
