@@ -1779,6 +1779,43 @@ fn typed_bool_and_uint_actions_reach_a_real_plugin() {
     plugins.shutdown(&mut api);
 }
 
+/// A window's own dock icon, through a real module: a file in the plugin's
+/// folder reaches the window's view, with its light version; one that breaks the
+/// rules leaves the slot to the next icon and says why; both go with the plugin.
+#[test]
+fn a_windows_own_icon_file_reaches_its_view() {
+    let pixels = vec![200_u8; 64 * 64 * 4];
+    let good = ac_bits::png::encode_rgba(64, 64, &pixels);
+    let wrong_size = ac_bits::png::encode_rgba(8, 8, &[200_u8; 8 * 8 * 4]);
+    let root = Root::new("window-icon");
+    let folder = install(&root.0, "rawbytes");
+    std::fs::write(folder.join("raw.png"), &good).unwrap();
+    std::fs::write(folder.join("raw.light.png"), &good).unwrap();
+    std::fs::write(folder.join("rawtyped.png"), &wrong_size).unwrap();
+    let mut api = FakeSession::default();
+    api.ui.set_file_images(Some(std::sync::Arc::new(
+        ac_plugin::file_image::PluginFileImageLoader::new(),
+    )));
+    let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+    plugins.start(&mut api);
+    assert!(plugins.handle_line(&format!("/rawpanel {API_CURRENT}"), &mut api));
+    plugins.pump(0.0, None, &mut api);
+    let panels: Vec<_> = api.ui.panels().cloned().collect();
+    let icon = panels[0].window_icon.as_ref().expect("the file was read");
+    assert_eq!(icon.named.as_ref().map(|i| i.width), Some(64));
+    assert!(icon.light.is_some() && icon.dark.is_none());
+    assert_eq!(panels[1].window_icon, None);
+    assert!(
+        api.logs
+            .iter()
+            .any(|(_, _, line)| line.contains("plugin icon 'openac.rawbytes/rawtyped.png' ignored")),
+        "{:?}",
+        api.logs
+    );
+    plugins.shutdown(&mut api);
+    assert_eq!(api.ui.panels().count(), 0);
+}
+
 /// A plugin installed with an `icon.png` has it on its windows. dock
 /// buttons (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`); one without,
 /// or with a file the icon rules refuse, has none and the dock falls back

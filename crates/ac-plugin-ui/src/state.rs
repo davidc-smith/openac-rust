@@ -23,6 +23,7 @@ use crate::value::{BindingSchema, UiValue};
 mod dialogs;
 mod file_icons;
 mod fonts;
+mod window_icons;
 pub use dialogs::{DEFAULT_DIALOG_BUTTONS, MAXIMUM_DIALOG_BUTTONS};
 pub use file_icons::{MAXIMUM_STEP_MS, RELEASE_AFTER_MS, RELEASE_CHECK_INTERVAL_MS};
 
@@ -218,6 +219,8 @@ pub struct PluginUi {
     /// Each running plugin's install folder, where the file icons of its
     /// windows are read.
     plugin_folders: BTreeMap<String, PathBuf>,
+    /// The dock icon files each plugin's windows named, by plugin and path.
+    window_icons: BTreeMap<String, BTreeMap<String, PluginIcon>>,
     /// What each plugin window holds of the file icons it draws.
     panel_files: BTreeMap<u32, file_icons::PanelFiles>,
     /// The last image handle each plugin was given, kept after it goes so
@@ -374,6 +377,10 @@ impl PluginUi {
         }
         let document = markup::parse(markup, &schema).map_err(|e| e.0)?;
         let id = self.next_id();
+        let window_icon = descriptor
+            .icon_file
+            .as_deref()
+            .and_then(|path| self.read_window_icon(&owner.id, path));
         let view = PanelView {
             id,
             owner: owner.clone(),
@@ -384,6 +391,7 @@ impl PluginUi {
             label_overrides: BTreeMap::new(),
             visible_overrides: BTreeMap::new(),
             file_icon: self.file_icons.get(&owner.id).cloned(),
+            window_icon,
         };
         self.changes
             .push(UiChange::PanelAdded(Box::new(view.clone())));
@@ -1479,6 +1487,7 @@ impl PluginUi {
         self.events.retain(|(o, _)| o != owner);
         self.release_fonts(owner);
         self.file_icons.remove(owner);
+        self.window_icons.remove(owner);
         self.plugin_folders.remove(owner);
     }
 

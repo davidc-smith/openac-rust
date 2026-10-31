@@ -381,6 +381,99 @@ impl ac_plugin_ui::FileImageLoader for SquareFiles {
     }
 }
 
+/// A reader that hands out one 64 x 64 dock icon, filled by the file's name.
+#[derive(Debug)]
+struct DockIconFiles;
+
+impl ac_plugin_ui::FileImageLoader for DockIconFiles {
+    fn load(&self, _directory: &std::path::Path, _path: &str) -> ac_plugin_ui::FileImageRead {
+        ac_plugin_ui::FileImageRead::finished(Err("not used here".to_owned()))
+    }
+
+    fn read_dock_icon(
+        &self,
+        _directory: &std::path::Path,
+        path: &str,
+    ) -> Result<Option<ac_plugin_ui::PluginIcon>, String> {
+        let fill = match path {
+            "icons/a.png" => 40,
+            "icons/b.png" => 80,
+            _ => return Ok(None),
+        };
+        Ok(Some(ac_plugin_ui::PluginIcon {
+            width: 64,
+            height: 64,
+            rgba: Arc::new(vec![fill; 64 * 64 * 4]),
+        }))
+    }
+}
+
+/// Three windows name two files: the dock draws them from two textures, as a
+/// picture uploads once however many slots show it. When the plugin goes, the
+/// window gives both textures back.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_dock_uploads_each_windows_picture_once_and_gives_it_back() {
+    let size = (1280, 720);
+    let owner = UiOwner::new("test.files", "Files");
+    let mut state = PluginUi::new();
+    state.set_window_attached(true);
+    state.set_file_images(Some(Arc::new(DockIconFiles)));
+    state.set_plugin_folder("test.files", Some(PathBuf::from("plugin")));
+    for (window, file) in [
+        ("one", "icons/a.png"),
+        ("two", "icons/a.png"),
+        ("three", "icons/b.png"),
+    ] {
+        let descriptor = PanelDescriptor {
+            icon_file: Some(file.to_owned()),
+            start_visible: false,
+            ..PanelDescriptor::new(window, window)
+        };
+        state
+            .register_panel(&owner, descriptor, "<panel/>", BindingSchema::new("Files"))
+            .unwrap();
+    }
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = Scene::default();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.snapshot(),
+    )));
+    ui.feed(&mut scene);
+    let list = ui.frame(Instant::now(), size);
+    let mut textures: Vec<u32> = list
+        .main
+        .iter()
+        .filter_map(|c| match c {
+            ac_ui::draw::DrawCmd::Sprite {
+                texture: ac_ui::draw::TextureRef::Runtime(id),
+                ..
+            } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(textures.len(), 4, "the tile and three slots");
+    textures.sort_unstable();
+    textures.dedup();
+    assert_eq!(textures.len(), 3, "the tile and two pictures");
+
+    state.release("test.files");
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.take_changes(),
+    )));
+    ui.feed(&mut scene);
+    let _ = ui.frame(Instant::now(), size);
+    let released = ac_render::ui::UiTextureSource::released(&mut ui.surfaces());
+    assert_eq!(
+        released
+            .iter()
+            .filter(|t| matches!(t, ac_ui::draw::TextureRef::Runtime(id) if textures.contains(id)))
+            .count(),
+        2,
+        "{released:?}"
+    );
+}
+
 /// The window bakes a sharper bundled font in each weight the first time it
 /// is on a high-density display, keeps the bakes when it moves back and forth
 /// between displays, and draws from none on a standard one.

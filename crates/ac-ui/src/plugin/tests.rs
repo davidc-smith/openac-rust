@@ -43,7 +43,7 @@ impl MarkupIcons for NoIcons {
 struct NoDockIcons;
 
 impl dock::DockIcons for NoDockIcons {
-    fn file(&mut self, _owner: &str, _icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
+    fn file(&mut self, _icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
         None
     }
     fn surface(&mut self, _id: u32) -> Option<Icon> {

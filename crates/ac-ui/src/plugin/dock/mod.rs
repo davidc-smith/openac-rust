@@ -1,10 +1,11 @@
 //! The plugin dock: a tile that opens and closes it, one slot per plugin window
 //! that asked for one, a gear that opens and closes the Appearance window, and
-//! while windows are unlocked a grip that moves it. A slot shows its plugin's `icon.png` (else its window's icon, else
-//! a monogram) and opens or closes the window. It floats running either way,
-//! or snaps to a screen edge as a rail. It draws the same shape in every theme,
-//! in the theme's colours or its own under Classic; where things go is worked
-//! out by [`layout`] and how they look by [`style`].
+//! while windows are unlocked a grip that moves it. A slot opens or closes its
+//! window and shows the first of these it can use: the window's own PNG, its
+//! plugin's `icon.png`, the window's render surface, a monogram. It floats
+//! running either way, or snaps to a screen edge as a rail. It draws the same
+//! shape in every theme, in the theme's colours or its own under Classic; where
+//! things go is worked out by [`layout`] and how they look by [`style`].
 //!
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
@@ -59,10 +60,25 @@ pub const PEEK_CLOSE_SECONDS: f32 = 0.5;
 
 /// Where the dock's slot images come from: the window's textures.
 pub trait DockIcons {
-    /// Plugin `owner`'s decoded `icon.png` as a texture.
-    fn file(&mut self, owner: &str, icon: &PluginIcon) -> Option<Icon>;
+    /// A decoded PNG a plugin ships as a texture.
+    fn file(&mut self, icon: &PluginIcon) -> Option<Icon>;
     /// A render surface (a full image id) as a texture.
     fn surface(&mut self, id: u32) -> Option<Icon>;
+}
+
+/// The picture on a window's slot, for a dock in a light theme or not: the first
+/// of the window's own PNG, its plugin's `icon.png` and its render surface that
+/// gives a texture. A file is drawn without asking for what comes after it.
+fn slot_icon(panel: &PanelView, light: bool, icons: &mut dyn DockIcons) -> Option<Icon> {
+    let own = panel.window_icon.as_ref().and_then(|w| w.for_theme(light));
+    if let Some(icon) = own.and_then(|file| icons.file(file)) {
+        return Some(icon);
+    }
+    if let Some(icon) = panel.file_icon.as_ref().and_then(|file| icons.file(file)) {
+        return Some(icon);
+    }
+    let surface = normalize_icon(panel.descriptor.icon_surface_id);
+    (surface != 0).then(|| icons.surface(surface)).flatten()
 }
 
 /// The letters a slot shows without an icon, two at most: the plugin's own,
@@ -155,6 +171,8 @@ pub struct PluginDock {
     art: DockArt,
     outbox: PluginOutbox,
     theme: PluginTheme,
+    /// Whether the slots' icons were last picked for a light theme.
+    icons_light: bool,
     first: usize,
     layout: DockLayout,
     screen: (f32, f32),
@@ -234,6 +252,7 @@ impl PluginDock {
             art: DockArt::default(),
             outbox,
             theme: PluginTheme::Classic,
+            icons_light: false,
             first: 0,
             layout,
             screen: ui.size(),
@@ -428,9 +447,9 @@ impl PluginDock {
     }
 
     /// The panels with a slot: the windows that asked for one, in
-    /// registration order, each open or not, with its icon: the plugin's
-    /// `icon.png`, else the descriptor's render surface, else a monogram
-    /// (OpenAC `PluginShelfButton`).
+    /// registration order, each open or not, with its icon ([`slot_icon`]). A
+    /// change between a light theme and a dark one draws each window's PNG in
+    /// its version for the theme.
     pub fn sync(&mut self, ui: &mut UiRoot, panels: &[PanelView], icons: &mut dyn DockIcons) {
         let wanted: Vec<&PanelView> = panels
             .iter()
@@ -448,19 +467,11 @@ impl PluginDock {
             for panel in &wanted {
                 let mut e = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
                 e.name = Some(format!("PluginDockSlot:{}", panel.window_name()));
-                let surface = normalize_icon(panel.descriptor.icon_surface_id);
-                // A file icon is shown without asking for the surface.
-                let icon = match &panel.file_icon {
-                    Some(file) => icons.file(&panel.owner.id, file),
-                    None => None,
-                }
-                .or_else(|| (surface != 0).then(|| icons.surface(surface)).flatten());
                 let letters = initials(
                     panel.descriptor.icon_text.as_deref(),
                     &panel.descriptor.title,
                 );
                 let slot = DockSlot {
-                    icon,
                     letters,
                     hue: style::monogram_hue(&panel.owner.id),
                     ..DockSlot::default()
@@ -478,9 +489,18 @@ impl PluginDock {
                 });
             }
         }
+        let light = self.palette().is_light();
+        let resolve = !same || self.icons_light != light;
+        self.icons_light = light;
         for (entry, panel) in self.entries.iter_mut().zip(&wanted) {
             entry.open = panel.shown();
             entry.title.clone_from(&panel.descriptor.title);
+            if resolve {
+                let icon = slot_icon(panel, light, icons);
+                if let Some(slot) = ui.widget_mut::<DockSlot>(entry.slot) {
+                    slot.icon = icon;
+                }
+            }
         }
         self.reflow(ui);
     }

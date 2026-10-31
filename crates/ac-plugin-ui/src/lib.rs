@@ -41,8 +41,8 @@ pub use model::{
     ActionValue, CanvasAnchor, CanvasDescriptor, CanvasPlace, CanvasView, ClientWindow,
     ClientWindowAction, Color8, DialogView, GroundShape, GroundShapeKind, ImageSource, ImageView,
     MapPoint, MarkerAnchor, PaintCmd, PaintRect, PanelDescriptor, PanelView, PluginIcon,
-    PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner, WorldIcon,
-    WorldIconEntry, WorldLabel, WorldLine, WorldTriangle, canvas_origin, window_name,
+    PointerEvent, PointerKind, ProjectileSample, UiChange, UiEvent, UiInput, UiOwner, WindowIcon,
+    WorldIcon, WorldIconEntry, WorldLabel, WorldLine, WorldTriangle, canvas_origin, window_name,
 };
 pub use state::{
     DEFAULT_DIALOG_BUTTONS, MAXIMUM_CANVASES, MAXIMUM_DIALOG_BUTTONS, MAXIMUM_ICON_SIZE,

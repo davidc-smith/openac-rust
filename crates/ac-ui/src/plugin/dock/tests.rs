@@ -36,7 +36,7 @@ impl StubIcons {
 }
 
 impl DockIcons for StubIcons {
-    fn file(&mut self, _owner: &str, icon: &PluginIcon) -> Option<Icon> {
+    fn file(&mut self, icon: &PluginIcon) -> Option<Icon> {
         Some((FILE_TEXTURE, icon.width as f32, icon.height as f32))
     }
 
@@ -1895,4 +1895,161 @@ fn the_classic_dock_uses_its_own_colours_and_is_still_the_black_and_gold() {
         has_color(&draw_corners(&list), p.border)
             || has_color(&draw_corners(&list), mix(p.border, p.text, 0.08))
     );
+}
+
+// ── A window's own PNG ──────────────────────────────────────────────────
+
+/// A file icon uploads as a texture named after its first byte, so a test can
+/// tell which picture a slot draws; the surface resolver answers `SURFACE`.
+#[derive(Default)]
+struct FillIcons {
+    surface_calls: usize,
+}
+
+const SURFACE: TextureRef = TextureRef::Surface(0x0600_0165);
+
+impl DockIcons for FillIcons {
+    fn file(&mut self, icon: &PluginIcon) -> Option<Icon> {
+        let texture = TextureRef::Runtime(u32::from(icon.rgba[0]));
+        Some((texture, icon.width as f32, icon.height as f32))
+    }
+
+    fn surface(&mut self, _id: u32) -> Option<Icon> {
+        self.surface_calls += 1;
+        Some((SURFACE, 32.0, 32.0))
+    }
+}
+
+fn filled(fill: u8) -> PluginIcon {
+    PluginIcon {
+        width: 64,
+        height: 64,
+        rgba: Arc::new(vec![fill; 64 * 64 * 4]),
+    }
+}
+
+/// A rig with one window, its plugin's `icon.png` filled with 1, and its own
+/// file as `window_icon`.
+fn panels_with(window_icon: Option<ac_plugin_ui::WindowIcon>) -> (Vec<PanelView>, Rig) {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Classic);
+    rig.ui.set_file_icon("acdream.test", Some(filled(1)));
+    let descriptor = PanelDescriptor {
+        icon_surface_id: 0x165,
+        ..PanelDescriptor::new("main", "Test Plugin")
+    };
+    rig.add("acdream.test", "Test Plugin", descriptor);
+    let mut panels: Vec<PanelView> = rig.ui.panels().cloned().collect();
+    panels[0].window_icon = window_icon;
+    (panels, rig)
+}
+
+/// Syncs the dock with `panels` and the sprites that draws from the files.
+fn drawn_fills(rig: &mut Rig, panels: &[PanelView], icons: &mut FillIcons) -> Vec<u32> {
+    rig.host.with_controller::<PluginDock, _>(WINDOW, |c, ui| {
+        c.sync(ui, panels, icons);
+    });
+    rig.tick();
+    let list = rig.draw();
+    list.main
+        .iter()
+        .chain(list.overlay.iter())
+        .filter_map(|cmd| match cmd {
+            DrawCmd::Sprite {
+                texture: TextureRef::Runtime(fill),
+                ..
+            } if *fill < 100 => Some(*fill),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_windows_own_png_comes_ahead_of_the_plugins_and_the_surface() {
+    let icon = ac_plugin_ui::WindowIcon {
+        named: Some(filled(2)),
+        ..Default::default()
+    };
+    let (panels, mut rig) = panels_with(Some(icon));
+    let mut icons = FillIcons::default();
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [2]);
+    assert_eq!(icons.surface_calls, 0);
+}
+
+#[test]
+fn with_no_own_png_the_order_goes_on_to_the_plugins_then_the_surface() {
+    let (panels, mut rig) = panels_with(None);
+    let mut icons = FillIcons::default();
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [1]);
+    assert_eq!(icons.surface_calls, 0);
+
+    let (mut panels, mut rig) = panels_with(None);
+    panels[0].file_icon = None;
+    let mut icons = FillIcons::default();
+    assert!(drawn_fills(&mut rig, &panels, &mut icons).is_empty());
+    assert_eq!(icons.surface_calls, 1);
+    let list = rig.draw();
+    assert_eq!(sprites_of(&list, SURFACE).len(), 1);
+}
+
+#[test]
+fn a_version_for_one_theme_alone_leaves_the_other_to_the_next_icon() {
+    let icon = ac_plugin_ui::WindowIcon {
+        light: Some(filled(3)),
+        ..Default::default()
+    };
+    let (panels, mut rig) = panels_with(Some(icon));
+    let mut icons = FillIcons::default();
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [1]);
+    rig.with(|c, ui| c.set_theme(ui, PluginTheme::Parchment));
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [3]);
+}
+
+#[test]
+fn a_change_of_theme_swaps_the_version_only_between_light_and_dark() {
+    let icon = ac_plugin_ui::WindowIcon {
+        named: Some(filled(2)),
+        light: Some(filled(3)),
+        dark: Some(filled(4)),
+    };
+    let (panels, mut rig) = panels_with(Some(icon));
+    let mut icons = FillIcons::default();
+    // Classic's dock is dark, and so is Moss.
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [4]);
+    rig.with(|c, ui| c.set_theme(ui, PluginTheme::Moss));
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [4]);
+    rig.with(|c, ui| c.set_theme(ui, PluginTheme::Parchment));
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [3]);
+    rig.with(|c, ui| c.set_theme(ui, PluginTheme::Classic));
+    assert_eq!(drawn_fills(&mut rig, &panels, &mut icons), [4]);
+}
+
+#[test]
+fn a_windows_own_png_dims_while_its_window_is_closed() {
+    let icon = ac_plugin_ui::WindowIcon {
+        named: Some(filled(2)),
+        ..Default::default()
+    };
+    let (mut panels, mut rig) = panels_with(Some(icon));
+    let alpha_of = |rig: &mut Rig, panels: &[PanelView]| {
+        let mut icons = FillIcons::default();
+        rig.host.with_controller::<PluginDock, _>(WINDOW, |c, ui| {
+            c.sync(ui, panels, &mut icons);
+        });
+        rig.tick();
+        rig.draw()
+            .main
+            .iter()
+            .find_map(|cmd| match cmd {
+                DrawCmd::Sprite {
+                    texture: TextureRef::Runtime(2),
+                    tint,
+                    ..
+                } => Some(tint.a),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(alpha_of(&mut rig, &panels), 1.0);
+    panels[0].requested_visible = false;
+    assert_eq!(alpha_of(&mut rig, &panels), style::CLOSED_ART_ALPHA);
 }

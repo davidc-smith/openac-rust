@@ -9,6 +9,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::icon::PluginIcon;
 use crate::images::DecodedImage;
 
 /// `path` with `.light` or `.dark` put before the file's extension, or after
@@ -126,6 +127,17 @@ pub trait FileImageLoader: fmt::Debug + Send + Sync {
     fn has_file(&self, directory: &Path, path: &str) -> bool {
         let _ = (directory, path);
         false
+    }
+
+    /// Reads `path` in plugin folder `directory` as a window's dock icon, at
+    /// once: it follows the rules of a plugin's `icon.png`, so it is small.
+    /// None when there is no such file (a reader that cannot tell has none).
+    ///
+    /// # Errors
+    /// Why a file that is there cannot be used.
+    fn read_dock_icon(&self, directory: &Path, path: &str) -> Result<Option<PluginIcon>, String> {
+        let _ = (directory, path);
+        Ok(None)
     }
 
     /// Whether `image` is still what is on disk: its file's version now is

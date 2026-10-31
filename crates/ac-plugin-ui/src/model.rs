@@ -40,6 +40,33 @@ pub struct PluginIcon {
     pub rgba: Arc<Vec<u8>>,
 }
 
+/// What a plugin's folder holds for the dock icon one of its windows names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowIcon {
+    /// The file as named.
+    pub named: Option<PluginIcon>,
+    /// Its version for a light theme.
+    pub light: Option<PluginIcon>,
+    /// Its version for every other theme.
+    pub dark: Option<PluginIcon>,
+}
+
+impl WindowIcon {
+    /// The picture for a dock in a light theme or not: its version when there
+    /// is one, else the named file.
+    #[must_use]
+    pub fn for_theme(&self, light: bool) -> Option<&PluginIcon> {
+        let version = if light { &self.light } else { &self.dark };
+        version.as_ref().or(self.named.as_ref())
+    }
+
+    /// Nothing there could be used.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.named.is_none() && self.light.is_none() && self.dark.is_none()
+    }
+}
+
 impl std::fmt::Debug for PluginIcon {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PluginIcon")
@@ -114,6 +141,9 @@ pub struct PanelView {
     /// Its plugin's `icon.png`, when the plugin's folder has one that
     /// decodes: the dock slot shows it ahead of the descriptor's icon.
     pub file_icon: Option<PluginIcon>,
+    /// The file its descriptor names, when any of it could be used: the dock
+    /// slot shows it ahead of the plugin's `icon.png`.
+    pub window_icon: Option<WindowIcon>,
 }
 
 impl PanelView {

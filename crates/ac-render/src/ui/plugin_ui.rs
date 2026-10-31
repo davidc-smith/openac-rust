@@ -28,7 +28,7 @@ use ac_ui::DatContent;
 use ac_ui::bundled_font::{self, BundledFontError, ModernFonts, Weight};
 use ac_ui::draw::{Color, SpriteSizes, TextureRef};
 use ac_ui::font::{DEFAULT_FONT_ID, SharpFont, SharpFonts, UiFont};
-use ac_ui::icons::{IconComposer, IconSource, Rgba};
+use ac_ui::icons::{IconComposer, IconSource};
 use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
@@ -122,10 +122,11 @@ pub struct PluginWindowUi {
     /// whether this window uploaded it (and gives it back when the plugin
     /// lets go of the image).
     images: HashMap<(String, u32), (Icon, bool)>,
-    /// Each plugin's `icon.png` as a texture, uploaded once per plugin
-    /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
-    /// was made from: a reloaded plugin's new file uploads again.
-    file_icons: HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    /// The PNGs on the plugin dock as textures, uploaded once per picture
+    /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), by the pixels each was
+    /// made from, which an entry keeps alive so its key stays that picture's. A
+    /// picture nothing holds any more is let go.
+    file_icons: HashMap<usize, (Arc<Vec<u8>>, Icon)>,
     /// The file icons each plugin window draws, as the session was last
     /// told them.
     files_shown: HashMap<u32, Vec<String>>,
@@ -377,28 +378,40 @@ fn keyed_surface_icon(content: &DatContent, icons: &mut IconComposer, id: u32) -
 }
 
 /// The dock's slot images: the window's art and its runtime textures.
+/// A picture for the plugin dock as a texture, smaller copies and all, as it is
+/// drawn below its size.
+fn plugin_icon_texture(
+    images: &super::icons::RuntimeImages,
+    icon: &ac_plugin_ui::PluginIcon,
+) -> Icon {
+    let (w, h) = (icon.width, icon.height);
+    let levels = ac_plugin_ui::mips::build(icon.rgba.as_ref().clone(), w, h)
+        .into_iter()
+        .map(|l| ac_dat::texture::DecodedTexture {
+            width: l.width,
+            height: l.height,
+            rgba: l.rgba,
+        })
+        .collect();
+    (images.add_plugin_image(levels), w as f32, h as f32)
+}
+
 struct WindowDockIcons<'a> {
     content: &'a DatContent,
     icons: &'a mut IconComposer,
     images: &'a super::icons::RuntimeImages,
-    file_icons: &'a mut HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    file_icons: &'a mut HashMap<usize, (Arc<Vec<u8>>, Icon)>,
 }
 
 impl dock::DockIcons for WindowDockIcons<'_> {
-    fn file(&mut self, owner: &str, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
-        if let Some((pixels, texture)) = self.file_icons.get(owner)
-            && Arc::ptr_eq(pixels, &icon.rgba)
-        {
+    fn file(&mut self, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
+        let key = Arc::as_ptr(&icon.rgba) as usize;
+        if let Some((_, texture)) = self.file_icons.get(&key) {
             return Some(*texture);
         }
-        let rgba = Rgba::new(icon.width, icon.height, icon.rgba.as_ref().clone());
-        let texture = (
-            self.images.uploader().upload(&rgba),
-            icon.width as f32,
-            icon.height as f32,
-        );
+        let texture = plugin_icon_texture(self.images, icon);
         self.file_icons
-            .insert(owner.to_owned(), (Arc::clone(&icon.rgba), texture));
+            .insert(key, (Arc::clone(&icon.rgba), texture));
         Some(texture)
     }
 
@@ -520,24 +533,14 @@ impl WindowUi {
         self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
     }
 
-    /// OpenAC's icon as a texture, smaller copies and all, as it is drawn far
-    /// below its size.
+    /// OpenAC's icon as a texture.
     fn dock_app_icon(&mut self) -> Option<Icon> {
         let Some(icon) = ac_plugin_ui::icon::decode_png(APP_ICON_PNG) else {
             self.notices
                 .push("ui: the OpenAC icon does not decode".to_owned());
             return None;
         };
-        let (w, h) = (icon.width, icon.height);
-        let levels = ac_plugin_ui::mips::build(icon.rgba.as_ref().clone(), w, h)
-            .into_iter()
-            .map(|l| ac_dat::texture::DecodedTexture {
-                width: l.width,
-                height: l.height,
-                rgba: l.rgba,
-            })
-            .collect();
-        Some((self.images.add_plugin_image(levels), w as f32, h as f32))
+        Some(plugin_icon_texture(&self.images, &icon))
     }
 
     /// The bundled SemiBold at one of the dock's sizes.
@@ -1149,6 +1152,14 @@ impl WindowUi {
             };
             host.with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
                 c.sync(ui, &facts.plugin_ui.panels, &mut dock_icons);
+            });
+            // The window's copy of the panels holds what is still on the dock.
+            plugins.file_icons.retain(|_, (pixels, (texture, _, _))| {
+                let held = Arc::strong_count(pixels) > 1;
+                if !held {
+                    images.release(*texture);
+                }
+                held
             });
         }
     }

@@ -111,6 +111,17 @@ icon can have `icons/sword.light.png` and `icons/sword.dark.png` beside
 else, Classic included, and a version that is missing or cannot be used falls
 back to the named file. For a bound colour, read `host.theme().is_light()`.
 
+**Dock icons.** A window's slot on the plugin dock shows the first of these it
+can use: the window's own file (`PanelSpec::icon_file("icons/combat.png")`, API
+1.4), the plugin's `icon.png`, the render surface from `PanelSpec::icon`, and
+two letters from `icon_text` or the title. The window's file follows the rules
+of `icon.png`: a PNG by name and by signature, exactly 64 x 64 pixels, at most
+64 KiB and not animated, with a path relative to the plugin's folder that stays
+inside it. It keeps its own colours and dims while the window is closed. It may
+have `icons/combat.light.png` and `icons/combat.dark.png` beside it, each under
+the same rules: the dock draws the one for its theme when it is there. A file
+that cannot be used is logged once, and the next icon is drawn.
+
 **Fonts.** Canvas text is drawn in the interface font unless a plugin names
 one of its own (API 1.4). `host.font_bundled(16.0, FontWeight::SemiBold)` gives
 the client's Noto Sans in the weight themed window titles use, and
