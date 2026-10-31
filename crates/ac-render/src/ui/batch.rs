@@ -13,13 +13,13 @@
 //! - with a fixed canvas every position is multiplied by the canvas scale,
 //!   and the glyph atlases, sampled nearest at 1 : 1, are sampled linear
 //!   (OpenAC's "linear twin" of a nearest texture);
-//! - a solid fill or an untextured polygon samples a 1 x 1 white texture,
-//!   so everything goes through one pipeline;
+//! - a solid fill, an untextured polygon or coloured triangles sample a
+//!   1 x 1 white texture, so everything goes through one pipeline;
 //! - a render surface id of 0 names nothing and draws nothing (never a
 //!   placeholder: a 0 resolved to the magenta texture is the 1-pixel
 //!   magenta edge bug).
 
-use ac_ui::draw::{Color, DrawCmd, DrawList, Filter, Quad, TextureRef, Vertex};
+use ac_ui::draw::{Color, ColorVertex, DrawCmd, DrawList, Filter, Quad, TextureRef, Vertex};
 
 /// One corner as the GPU reads it: screen pixels, texture coordinate,
 /// colour (straight alpha).
@@ -37,7 +37,8 @@ pub struct UiVertex {
 /// What a run samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UiTexture {
-    /// The 1 x 1 white texture (fills, untextured polygons).
+    /// The 1 x 1 white texture (fills, untextured polygons, coloured
+    /// triangles).
     White,
     /// A texture the draw list named.
     Named(TextureRef),
@@ -146,6 +147,7 @@ impl UiBatch {
                 };
                 self.fan(key, vertices, *color, scale);
             }
+            DrawCmd::Triangles { vertices } => self.triangles(vertices, scale),
             DrawCmd::Glyphs {
                 texture,
                 tint,
@@ -219,6 +221,20 @@ impl UiBatch {
             added += 3;
         }
         self.run(key, added);
+    }
+
+    fn triangles(&mut self, corners: &[ColorVertex], (sx, sy): (f32, f32)) {
+        let whole = corners.len() - corners.len() % 3;
+        if whole == 0 {
+            return;
+        }
+        self.vertices
+            .extend(corners[..whole].iter().map(|p| UiVertex {
+                position: [p.x * sx, p.y * sy],
+                uv: [0.0, 0.0],
+                color: [p.color.r, p.color.g, p.color.b, p.color.a],
+            }));
+        self.run(white(), u32::try_from(whole).unwrap_or(u32::MAX));
     }
 }
 
@@ -433,6 +449,40 @@ mod tests {
         let batch = UiBatch::build(&list(vec![fill, poly], vec![], (1.0, 1.0)));
         assert_eq!(keys(&batch), [(UiTexture::White, Filter::Nearest, 9)]);
         assert_eq!(batch.vertices[0].color, [1.0, 0.0, 0.0, 0.5]);
+    }
+
+    #[test]
+    fn triangles_keep_each_corners_colour_and_join_the_white_run() {
+        let red = Color::rgba(1.0, 0.0, 0.0, 1.0);
+        let clear = Color::rgba(0.0, 0.0, 1.0, 0.0);
+        let fill = DrawCmd::Fill {
+            x: 0.0,
+            y: 0.0,
+            w: 2.0,
+            h: 2.0,
+            color: Color::WHITE,
+        };
+        let triangles = DrawCmd::Triangles {
+            vertices: vec![
+                ColorVertex::new(1.0, 2.0, red),
+                ColorVertex::new(3.0, 2.0, clear),
+                ColorVertex::new(1.0, 4.0, red),
+            ],
+        };
+        let batch = UiBatch::build(&list(vec![fill, triangles], vec![], (2.0, 3.0)));
+        assert_eq!(keys(&batch), [(UiTexture::White, Filter::Nearest, 9)]);
+        assert_eq!(batch.vertices[6].position, [2.0, 6.0]);
+        assert_eq!(batch.vertices[7].position, [6.0, 6.0]);
+        assert_eq!(batch.vertices[7].color, [0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_partial_triangle_is_dropped() {
+        let two_corners = DrawCmd::Triangles {
+            vertices: vec![ColorVertex::default(); 2],
+        };
+        let batch = UiBatch::build(&list(vec![two_corners], vec![], (1.0, 1.0)));
+        assert!(batch.is_empty() && batch.runs.is_empty());
     }
 
     #[test]
