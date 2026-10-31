@@ -325,8 +325,12 @@ pub(crate) struct AttachedWindow {
     modifiers: ModifiersState,
     /// The last cursor position, for drags.
     cursor: Option<(f64, f64)>,
-    /// Framebuffer pixels per UI unit, as the window's monitor has it.
-    ui_scale: UiScale,
+    /// Framebuffer pixels per UI unit as the window's monitor has it,
+    /// before the player's UI Scale (see [`Self::ui_scale`]).
+    platform_scale: UiScale,
+    /// The UI Scale option in force, percent: it follows the settings once
+    /// a change settles (not while its slider is dragged).
+    ui_scale_percent: i32,
     /// Where this window publishes what a crash report wants.
     facts: SharedFacts,
     last_world: WorldOutcome,
@@ -507,12 +511,12 @@ impl AttachedWindow {
         // The retail UI reads its layouts, fonts and art from the dats; a
         // window without dats draws no UI.
         let choices = resolution_choices_of(&window);
-        let ui_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
+        let platform_scale = UiScale::for_window(HostOs::current(), window.scale_factor());
         let ui = world.and_then(|world| {
             let built = world.content.ui_dats().and_then(|dats| {
                 WindowUi::build_with(
                     dats,
-                    ui_scale.ui_size((config.width, config.height)),
+                    platform_scale.ui_size((config.width, config.height)),
                     settings,
                     choices,
                 )
@@ -634,7 +638,8 @@ impl AttachedWindow {
             gameplay_tick: None,
             modifiers: ModifiersState::empty(),
             cursor: None,
-            ui_scale,
+            platform_scale,
+            ui_scale_percent: settings.display.ui_scale_percent,
             facts: options.facts.clone(),
             last_world: WorldOutcome::default(),
             frame_index: 0,
@@ -739,6 +744,11 @@ impl AttachedWindow {
                     }
                     if o.fullscreen != n.fullscreen || o.resolution != n.resolution {
                         self.apply_window_mode(n);
+                    }
+                    // The UI takes its new size on its next frame, and the
+                    // windows are placed again on it as after a resize.
+                    if persist {
+                        self.ui_scale_percent = n.ui_scale_percent;
                     }
                     if let Some(world) = self.world.as_mut() {
                         world.apply_display(
@@ -879,7 +889,7 @@ impl AttachedWindow {
     /// The window moved or changed scale: it may be on another monitor.
     pub(crate) fn monitor_changed(&mut self) {
         // The UI follows on its next frame (its size comes from the scale).
-        self.ui_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
+        self.platform_scale = UiScale::for_window(HostOs::current(), self.window.scale_factor());
         let policy = self
             .pacing
             .set_monitor_refresh(monitor_refresh_hz(&self.window));
@@ -2606,14 +2616,27 @@ impl AttachedWindow {
     /// [`Self::pick_object`] at a position the UI reports in its own units
     /// (points on macOS), which the world picks in pixels.
     fn pick_at_ui(&mut self, x: i32, y: i32) -> Option<(u32, u32)> {
-        let (x, y) = self.ui_scale.window_point(x, y);
+        let (x, y) = self.ui_scale().window_point(x, y);
         self.pick_object(x, y)
+    }
+
+    /// Framebuffer pixels per UI unit now: the monitor's, times the
+    /// player's UI Scale while in the game (the pre-game screens fill the
+    /// window on their own canvas and keep the monitor's).
+    fn ui_scale(&self) -> UiScale {
+        match self.ui.as_ref() {
+            Some(ui) if !ui.pregame_active() => {
+                self.platform_scale.with_user_percent(self.ui_scale_percent)
+            }
+            _ => self.platform_scale,
+        }
     }
 
     /// The cursor in whole UI units (the world picks in pixels).
     fn cursor_ui(&self) -> (i32, i32) {
+        let scale = self.ui_scale();
         self.cursor.map_or((0, 0), |(x, y)| {
-            let (x, y) = self.ui_scale.ui_point(x, y);
+            let (x, y) = scale.ui_point(x, y);
             (x as i32, y as i32)
         })
     }
@@ -2674,6 +2697,8 @@ impl AttachedWindow {
     /// Feed the UI from the scene, draw it, and upload what it draws; its
     /// requests go to the session.
     fn prepare_ui(&mut self) {
+        let scale = self.ui_scale();
+        let framebuffer = (self.config.width, self.config.height);
         let (Some(ui), Some(renderer)) = (self.ui.as_mut(), self.ui_renderer.as_mut()) else {
             return;
         };
@@ -2691,7 +2716,7 @@ impl AttachedWindow {
             // The 3-D viewports that show: drawn by the world renderer,
             // their textures handed to the UI before it draws.
             let (requests, controls) =
-                ui.viewport_requests(source.scene(), self.ui_scale.pixels_per_unit());
+                ui.viewport_requests(source.scene(), scale.pixels_per_unit());
             let flashes = ui.take_figure_flashes();
             if let Some(world) = self.world.as_mut() {
                 for (whole_figure, part_mask) in flashes {
@@ -2715,18 +2740,16 @@ impl AttachedWindow {
             }
         }
         // The UI, its overlays included, is laid out and drawn in UI units.
-        let size = self
-            .ui_scale
-            .ui_size((self.config.width, self.config.height));
+        let size = scale.ui_size(framebuffer);
         // The overlays project with the camera the world was last drawn
-        // with.
+        // with, onto the framebuffer in units.
         let (camera, target) = match (self.world.as_ref(), self.scene.as_deref()) {
             (Some(world), Some(source)) => crate::ui::overlays::world_view(
                 world,
                 source.scene(),
                 ui.dats(),
                 &ui.facts().objects,
-                size,
+                scale.overlay_viewport(framebuffer),
             ),
             _ => (None, None),
         };
@@ -2768,8 +2791,15 @@ impl AttachedWindow {
             ui.set_level_of_detail(fps, multiplier);
         }
         let list = ui.frame(Instant::now(), size);
-        let batch = UiBatch::build(&list);
-        renderer.prepare(&self.device, &self.queue, &batch, size, &mut ui.surfaces());
+        // Drawn in framebuffer pixels, on the whole-pixel grid.
+        let batch = UiBatch::build_scaled(&list, scale.pixels_per_unit());
+        renderer.prepare(
+            &self.device,
+            &self.queue,
+            &batch,
+            framebuffer,
+            &mut ui.surfaces(),
+        );
         for id in renderer.take_missing() {
             self.notices.push(format!(
                 "ui: render surface {id:#010x} is not in the dats; drawn as magenta"
@@ -2786,7 +2816,7 @@ impl AttachedWindow {
     pub(crate) fn cursor_moved(&mut self, x: f64, y: f64) {
         let previous = self.cursor.replace((x, y));
         let mouse_look = self.cursor_held();
-        let (ui_x, ui_y) = self.ui_scale.ui_point(x, y);
+        let (ui_x, ui_y) = self.ui_scale().ui_point(x, y);
         let routed = match self.ui.as_mut() {
             Some(ui) if self.input.is_accepting() => Some(ui_input::moved::<KeyCode>(
                 ui.host_mut(),

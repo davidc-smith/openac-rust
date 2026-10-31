@@ -268,12 +268,13 @@ fn binding_builds_every_page_and_shows_gameplay() {
     assert!(b.c.page(OptionsPage::Gameplay).is_empty());
     assert_eq!(b.c.page(OptionsPage::Character).len(), 50);
     assert_eq!(b.c.page(OptionsPage::Chat).len(), 7);
-    // The game's 39 and the Graphics Enhancements section's 21.
-    assert_eq!(b.c.page(OptionsPage::Configuration).len(), 60);
-    // 6 headers, 50 toggles, 6 separators; 6 + 36 + 6 and 1 + 21 + 1;
+    // The game's 39, the UI Scale row and the Graphics Enhancements
+    // section's 21.
+    assert_eq!(b.c.page(OptionsPage::Configuration).len(), 61);
+    // 6 headers, 50 toggles, 6 separators; 6 + 37 + 6 and 1 + 21 + 1;
     // 1 + 2 + 1 + 5 x 3.
     assert_eq!(list_rows(&b, options::CHARACTER_LIST_ID).len(), 62);
-    assert_eq!(list_rows(&b, options::CONFIG_LIST_ID).len(), 71);
+    assert_eq!(list_rows(&b, options::CONFIG_LIST_ID).len(), 72);
     assert_eq!(list_rows(&b, options::CHAT_LIST_ID).len(), 19);
     let notices = b.c.take_notices();
     assert!(notices.is_empty(), "{notices:?}");
@@ -751,6 +752,59 @@ fn the_opacity_sliders_drag_each_other_and_save_when_the_drag_ends() {
         out,
         vec![Out::Opt(OptionsOutput::Changed {
             section: Section::Chat,
+            persist: true
+        })]
+    );
+}
+
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_ui_scale_row_follows_potato_mode_and_shows_its_percent() {
+    let c = content();
+    let mut b = bind_with(&c, live());
+    b.c.show_page(&mut b.ui, OptionsPage::Configuration);
+    pump(&mut b);
+    // The row's caption carries the value; it is the slider after Potato
+    // Mode's checkbox.
+    let rows = list_rows(&b, options::CONFIG_LIST_ID);
+    let labelled = |row: ElementId, label: &str| {
+        let mut stack = vec![row];
+        while let Some(id) = stack.pop() {
+            if b.ui
+                .widget::<Button>(id)
+                .is_some_and(|w| w.label.as_deref() == Some(label))
+            {
+                return true;
+            }
+            stack.extend(b.ui.children(id));
+        }
+        false
+    };
+    let potato = rows
+        .iter()
+        .position(|r| labelled(*r, "Potato Mode"))
+        .expect("the potato mode row");
+    let row = rows[potato + 1];
+    let caption = b.ui.find_descendant(row, 0x1000_021B).expect("its caption");
+    assert_eq!(text_of(&b.ui, caption), "UI Scale (100%)");
+    let slider = b.ui.find_descendant(row, 0x1000_021C).expect("its slider");
+    // 50..300 in tens: 0.41 of the way is 152.5, which snaps to 150.
+    let out = send(&mut b, slider, ElementMessage::ScalarChanged(0.41));
+    assert_eq!(
+        out,
+        vec![Out::Opt(OptionsOutput::Changed {
+            section: Section::Display,
+            persist: true
+        })]
+    );
+    assert_eq!(b.c.live().settings.display.ui_scale_percent, 150);
+    assert_eq!(text_of(&b.ui, caption), "UI Scale (150%)");
+    // The end of a drag settles the scale: it applies and saves.
+    let out = send(&mut b, slider, ElementMessage::DragCompleted);
+    assert_eq!(
+        out,
+        vec![Out::Opt(OptionsOutput::Changed {
+            section: Section::Display,
             persist: true
         })]
     );

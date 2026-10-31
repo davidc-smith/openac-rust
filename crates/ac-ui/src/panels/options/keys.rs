@@ -57,6 +57,7 @@ pub enum DisplayField {
     KeepDistantBuildings,
     Quality,
     PotatoMode,
+    UiScale,
     UiOnly,
     UiOnlyWhenUnfocused,
     LandscapeTextureDetail,
@@ -250,6 +251,7 @@ impl LiveValues {
                     DisplayField::KeepDistantBuildings => Bool(d.keep_distant_buildings),
                     DisplayField::Quality => Text(quality_name(d.quality).to_owned()),
                     DisplayField::PotatoMode => Bool(d.potato_mode),
+                    DisplayField::UiScale => Float(d.ui_scale_percent as f32),
                     DisplayField::UiOnly => Bool(d.ui_only),
                     DisplayField::UiOnlyWhenUnfocused => Bool(d.ui_only_when_unfocused),
                     DisplayField::LandscapeTextureDetail => Int(d.landscape_texture_detail),
@@ -348,6 +350,9 @@ impl LiveValues {
                     }
                     (DisplayField::Quality, Text(x)) => d.quality = quality_by_name(x)?,
                     (DisplayField::PotatoMode, Bool(x)) => d.potato_mode = *x,
+                    (DisplayField::UiScale, Float(x)) => {
+                        d.ui_scale_percent = ac_host::settings::ui_scale_percent(x.round() as i32);
+                    }
                     (DisplayField::UiOnly, Bool(x)) => d.ui_only = *x,
                     (DisplayField::UiOnlyWhenUnfocused, Bool(x)) => d.ui_only_when_unfocused = *x,
                     (DisplayField::LandscapeTextureDetail, Int(x)) => {
