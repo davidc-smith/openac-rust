@@ -101,9 +101,11 @@ a session without a window answers the same.
 positions, and icons and ground shapes (`Host::create_marker_layer`, API 1.3)
 over objects or at positions. Lines, triangles and markers live in layers the
 plugin owns: setting a layer replaces its contents, and removing it, or
-unloading the plugin, takes them down. Labels and markers also go when the
-character leaves the world, since the objects they sat on go with it; a marker
-layer stays usable, so set its markers again on the next stay.
+unloading the plugin, takes them down. Labels, and markers over objects, also
+go when the character leaves the world, since the objects they sat on go with
+it and their ids mean nothing on the next stay; a marker layer stays usable,
+so set them again on the next stay. Lines, triangles and markers at a fixed
+position stay, since a position is the same place in the world after a relog.
 
 *Triangles* are flat between their three corners and see-through by their
 colour's alpha (`0xRRGGBBAA`, one per corner, blended across the face). They
@@ -111,9 +113,10 @@ are drawn from both sides and unlit. Walls and hills in front hide them, but
 overlapping triangles blend rather than hide each other. A triangle does not
 follow the ground, so lift one meant to lie on it by about 0.1 m. The client
 draws what is within 250 m of the camera and in view, nearest first when a
-frame holds more than about twelve thousand. A layer keeps at most 65,536
-triangles; send a few thousand at a time, a few times a second, not every
-frame.
+frame holds more than about twelve thousand. A plugin holds at most 65,536
+triangles across its layers; a set that goes over is refused, and the layer
+keeps what it had. Send a few thousand at a time, a few times a second, not
+every frame.
 
 *Markers* are pinned by a `MarkerAnchor`: an object by its id, which they
 follow, or a `MapPoint` and whether it is on the landscape. A marker over an
@@ -124,7 +127,8 @@ nothing, or with values that are not usable, are dropped from the set.
 
 *Icons* (`MarkerLayer::set_icons`, `ui::world_icon`) hang one of the plugin's
 own images in the world at a constant size on the screen, 8 to 128 interface
-points (pixels, except on macOS).
+points: they grow and shrink with the player's UI Scale like the rest of the
+interface, and at 100% a point is a pixel (two on a Retina Mac).
 They are drawn after the world, under the labels' text, so walls and hills do
 not hide them, unless `hidden_by_world` is set. Then the whole icon goes while
 anything in the world stands between the camera and its anchor, a frame or two

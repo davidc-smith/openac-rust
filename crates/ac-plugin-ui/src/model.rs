@@ -616,7 +616,7 @@ pub struct WorldIcon {
     pub anchor: MarkerAnchor,
     /// The plugin's own image.
     pub image: u32,
-    /// The side of the square the image is fitted into, pixels.
+    /// The side of the square the image is fitted into, interface points.
     pub size: f32,
     /// Multiplied into the image, `0xRRGGBBAA`.
     pub tint_rgba: u32,

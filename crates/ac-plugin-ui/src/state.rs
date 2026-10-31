@@ -14,9 +14,9 @@ use crate::images::{ImageBudget, ImageTable};
 use crate::markup::{self, normalize_icon};
 use crate::model::{
     CanvasDescriptor, CanvasView, ClientWindow, ClientWindowAction, GroundShape, GroundShapeKind,
-    ImageSource, PaintCmd, PanelDescriptor, PanelView, PluginIcon, PointerKind, ProjectileSample,
-    UiChange, UiEvent, UiInput, UiOwner, WorldIcon, WorldIconEntry, WorldLabel, WorldLine,
-    WorldTriangle, canvas_origin,
+    ImageSource, MarkerAnchor, PaintCmd, PanelDescriptor, PanelView, PluginIcon, PointerKind,
+    ProjectileSample, UiChange, UiEvent, UiInput, UiOwner, WorldIcon, WorldIconEntry, WorldLabel,
+    WorldLine, WorldTriangle, canvas_origin,
 };
 use crate::value::{BindingSchema, UiValue};
 
@@ -34,8 +34,9 @@ pub const MAXIMUM_LABEL_TEXT: usize = 128;
 pub const MAXIMUM_CANVASES: usize = 8;
 /// The most lines one layer keeps (more are cut off).
 pub const MAXIMUM_LINES_PER_LAYER: usize = 16_384;
-/// The most triangles one layer keeps (more are cut off).
-pub const MAXIMUM_TRIANGLES_PER_LAYER: usize = 65_536;
+/// The most triangles one plugin may have set at once, across its layers:
+/// every one is placed in the world each frame before any is culled.
+pub const MAXIMUM_TRIANGLES: usize = 65_536;
 /// The most icons one plugin may have set at once, across its layers.
 pub const MAXIMUM_ICONS: usize = 256;
 /// The smallest an icon is drawn, pixels.
@@ -1089,23 +1090,34 @@ impl PluginUi {
         id
     }
 
-    /// Replaces a layer's triangles (the first
-    /// [`MAXIMUM_TRIANGLES_PER_LAYER`]); false when `owner` has no such
-    /// layer.
+    /// Replaces a layer's triangles. False, and nothing changed, when
+    /// `owner` has no such layer, or when the triangles given and those on
+    /// the plugin's other layers come to more than [`MAXIMUM_TRIANGLES`].
     pub fn set_triangles(
         &mut self,
         owner: &str,
         layer: u32,
-        mut triangles: Vec<WorldTriangle>,
+        triangles: Vec<WorldTriangle>,
     ) -> bool {
-        let Some(l) = self
+        if !self
             .triangle_layers
-            .iter_mut()
-            .find(|l| l.id == layer && l.owner == owner)
-        else {
+            .iter()
+            .any(|l| l.id == layer && l.owner == owner)
+        {
+            return false;
+        }
+        let others: usize = self
+            .triangle_layers
+            .iter()
+            .filter(|l| l.owner == owner && l.id != layer)
+            .map(|l| l.triangles.len())
+            .sum();
+        if triangles.len() + others > MAXIMUM_TRIANGLES {
+            return false;
+        }
+        let Some(l) = self.triangle_layers.iter_mut().find(|l| l.id == layer) else {
             return false;
         };
-        triangles.truncate(MAXIMUM_TRIANGLES_PER_LAYER);
         l.triangles = triangles;
         self.changes
             .push(UiChange::Triangles(self.merged_triangles()));
@@ -1226,20 +1238,23 @@ impl PluginUi {
         self.changes.push(UiChange::Shapes(self.merged_shapes()));
     }
 
-    /// Empties every plugin's marker layers: the character left the world,
-    /// and with it the objects the markers sat on. The layers stay, so a
-    /// plugin sets its markers again on the next stay without a new layer.
-    pub fn clear_markers(&mut self) {
-        if self
-            .marker_layers
-            .iter()
-            .all(|l| l.icons.is_empty() && l.shapes.is_empty())
-        {
+    /// Takes every plugin's markers over objects down: the character left
+    /// the world, and with it the objects they sat on, whose ids mean
+    /// nothing on the next stay. Markers at fixed positions stay, as lines
+    /// and triangles do: a position is the same place in the world after a
+    /// relog. The layers stay, so a plugin sets its markers again on the
+    /// next stay without a new layer.
+    pub fn clear_object_markers(&mut self) {
+        let on_object = |anchor: &MarkerAnchor| matches!(anchor, MarkerAnchor::Object(_));
+        if !self.marker_layers.iter().any(|l| {
+            l.icons.iter().any(|i| on_object(&i.anchor))
+                || l.shapes.iter().any(|s| on_object(&s.anchor))
+        }) {
             return;
         }
         for layer in &mut self.marker_layers {
-            layer.icons.clear();
-            layer.shapes.clear();
+            layer.icons.retain(|i| !on_object(&i.anchor));
+            layer.shapes.retain(|s| !on_object(&s.anchor));
         }
         self.push_markers();
     }

@@ -58,9 +58,32 @@ fn a_plugin_hangs_icons_in_layers_it_owns() {
     assert!(!host.with_host(|h| second.set_icons(h, &many)));
     assert_eq!(host.ui.merged_icons().len(), 1);
 
-    // Leaving the world empties the layer; it stays usable.
-    host.ui.clear_markers();
-    assert!(host.ui.merged_icons().is_empty());
+    // Leaving the world takes icons over objects down and keeps those at
+    // fixed positions; the layer stays usable.
+    let spot = MarkerAnchor::Position(
+        MapPoint {
+            east_west: 10.0,
+            north_south: 20.0,
+            elevation: 0.5,
+        },
+        true,
+    );
+    assert!(host.with_host(|h| {
+        second.set_icons(
+            h,
+            &[
+                world_icon(MarkerAnchor::Object(1), ART),
+                world_icon(spot, ART),
+            ],
+        )
+    }));
+    host.ui.clear_object_markers();
+    let left = host.ui.merged_icons();
+    assert_eq!(left.len(), 1);
+    assert!(matches!(
+        left[0].icon.anchor,
+        ac_plugin_ui::MarkerAnchor::Position { .. }
+    ));
     assert!(
         host.with_host(|h| { second.set_icons(h, &[world_icon(MarkerAnchor::Object(1), ART)]) })
     );
