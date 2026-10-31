@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use super::layout::DockMode;
+use super::layout::{DockMode, Metrics};
 use crate::draw::{Color, DEFAULT_OUTLINE_COLOR, RenderContext};
 use crate::font::UiFont;
 use crate::geometry::Rect;
@@ -12,16 +12,10 @@ use crate::plugin::style::{hover, mix, pressed, surface, with_alpha};
 use crate::plugin::widgets::{ButtonLook, Palette};
 use crate::shapes::CornerRadii;
 
-/// A floating dock's corner radius.
-pub const RADIUS: f32 = 14.0;
-/// A rail's inner corner radius.
-pub const RAIL_RADIUS: f32 = 12.0;
 /// How far a divider sits in from the dock's sides.
 pub const DIVIDER_INSET: f32 = 8.0;
 /// How far a divider's colour moves from the border toward the fill.
 pub const DIVIDER_FADE: f32 = 0.6;
-/// A slot's hover well's corner radius.
-pub const SLOT_RADIUS: f32 = 9.0;
 /// The dot beside an open window's slot, each way.
 pub const OPEN_DOT: f32 = 3.0;
 /// How far that dot sits in from the dock's edge.
@@ -48,8 +42,6 @@ pub const LABEL_PAD_X: f32 = 9.0;
 pub const LABEL_PAD_Y: f32 = 5.0;
 /// A hover label's corner radius.
 pub const LABEL_RADIUS: f32 = 7.0;
-/// A monogram's corner radius.
-pub const MONOGRAM_RADIUS: f32 = 6.0;
 /// The count on a closed tile: its height, and how far it sits from the corner.
 pub const BADGE_SIZE: f32 = 14.0;
 /// How far the count sits in from the tile's corner.
@@ -95,10 +87,10 @@ pub enum DockSide {
 /// The dock's corners: all four when floating, only the two inner ones on a
 /// rail.
 #[must_use]
-pub const fn corners(mode: DockMode) -> CornerRadii {
-    let r = RAIL_RADIUS;
+pub const fn corners(mode: DockMode, m: &Metrics) -> CornerRadii {
+    let r = m.rail_radius;
     match mode {
-        DockMode::Floating | DockMode::FloatingHorizontal => CornerRadii::all(RADIUS),
+        DockMode::Floating | DockMode::FloatingHorizontal => CornerRadii::all(m.radius),
         DockMode::Left => CornerRadii::new(0.0, r, r, 0.0),
         DockMode::Right => CornerRadii::new(r, 0.0, 0.0, r),
         DockMode::Top => CornerRadii::new(0.0, 0.0, r, r),
@@ -108,9 +100,9 @@ pub const fn corners(mode: DockMode) -> CornerRadii {
 
 /// The dock's body: shadow, fill, a faint sheen along its top and a rim, which
 /// a rail leaves off its screen-edge side.
-pub fn body(rc: &mut RenderContext<'_>, p: &Palette, mode: DockMode, w: f32, h: f32) {
+pub fn body(rc: &mut RenderContext<'_>, p: &Palette, mode: DockMode, m: &Metrics, w: f32, h: f32) {
     let rail = mode.is_rail();
-    let radius = if rail { RAIL_RADIUS } else { RADIUS };
+    let radius = if rail { m.rail_radius } else { m.radius };
     let shadow = with_alpha(Color::BLACK, 0.42);
     rc.soft_shadow(
         0.0,
@@ -122,7 +114,7 @@ pub fn body(rc: &mut RenderContext<'_>, p: &Palette, mode: DockMode, w: f32, h: 
         14.0,
         shadow,
     );
-    let radii = corners(mode);
+    let radii = corners(mode, m);
     rc.fill_rounded_rect(0.0, 0.0, w, h, radii, p.background);
     let sheen = with_alpha(p.text, 0.04);
     rc.fill_vertical_gradient(
@@ -167,13 +159,13 @@ pub const fn slot_well_rect(mode: DockMode, w: f32, h: f32) -> Rect {
 
 /// The well behind a slot while it is under the pointer or held; nothing at
 /// rest.
-pub fn slot_well(rc: &mut RenderContext<'_>, p: &Palette, r: Rect, look: ButtonLook) {
+pub fn slot_well(rc: &mut RenderContext<'_>, p: &Palette, r: Rect, radius: f32, look: ButtonLook) {
     let face = match look {
         ButtonLook::Hovered => hover(p, p.field),
         ButtonLook::Pressed => pressed(hover(p, p.field)),
         ButtonLook::Normal | ButtonLook::Disabled => return,
     };
-    rc.fill_rounded_rect(r.x, r.y, r.w, r.h, CornerRadii::all(SLOT_RADIUS), face);
+    rc.fill_rounded_rect(r.x, r.y, r.w, r.h, CornerRadii::all(radius), face);
 }
 
 /// The small accent dot beside an open window's slot on a floating dock, on
@@ -321,7 +313,7 @@ pub fn monogram(
         y,
         size,
         size,
-        CornerRadii::all(MONOGRAM_RADIUS),
+        CornerRadii::all(size / 4.0),
         with_alpha(top, alpha),
         with_alpha(hue, alpha),
     );

@@ -33,7 +33,7 @@ use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
-use ac_ui::plugin::dock::{self, DockMode, PluginDock};
+use ac_ui::plugin::dock::{self, DockArt, DockMode, DockSize, PluginDock};
 use ac_ui::plugin::fold::SharedControlState;
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
@@ -69,6 +69,10 @@ pub const FALLBACK_LABEL_HEIGHT: f32 = 1.1;
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../../assets/icons/launcher-256.png");
 /// The size of the count on the dock's tile, pixels.
 const DOCK_COUNT_FONT_SIZE: f32 = 10.0;
+/// The size of a monogram's letters on the smaller dock, pixels.
+const DOCK_SMALLER_LETTERS: f32 = 12.0;
+/// The size of a monogram's letters on the bigger dock, pixels.
+const DOCK_BIGGER_LETTERS: f32 = 20.0;
 
 /// The size composed item and spell icons are drawn at, pixels.
 const ICON_SIZE: f32 = 32.0;
@@ -134,8 +138,8 @@ pub struct PluginWindowUi {
     /// The bundled sans font the modern themes draw opted-in windows in
     /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
     modern_fonts: Option<ModernFonts>,
-    /// The font of the count on the dock's tile.
-    dock_count_font: Option<Arc<UiFont>>,
+    /// The dock's own sizes of the bundled SemiBold, each with its size.
+    dock_fonts: Vec<(Arc<UiFont>, f32)>,
     /// The display density the sharper bakes of those fonts were last chosen
     /// for.
     sharp_density: Option<f32>,
@@ -287,12 +291,14 @@ const APPEARANCE_OWNER: &str = "openac";
 const APPEARANCE_VIEW: &str = "appearance";
 
 /// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
-const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="196" title="Plugin appearance" theme="plugin">
+const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="252" title="Plugin appearance" theme="plugin">
   <label x="12" y="33" text="Theme" />
   <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="8" />
   <label x="12" y="89" text="Dock" />
   <menu x="12" y="111" w="286" h="24" items="{Docks}" selected="{SelectedDock}" onchange="{SelectDock}" rows="6" />
-  <button x="226" y="158" w="72" h="24" text="Close" onclick="{Close}" />
+  <label x="12" y="145" text="Dock size" />
+  <menu x="12" y="167" w="286" h="24" items="{DockSizes}" selected="{SelectedDockSize}" onchange="{SelectDockSize}" rows="3" />
+  <button x="226" y="214" w="72" h="24" text="Close" onclick="{Close}" />
 </panel>"#;
 
 /// Markup with no images to resolve.
@@ -472,9 +478,14 @@ impl WindowUi {
         let frame = dock.root;
         let top = self.host.root.root();
         self.host.root.add_child(top, frame);
-        let (icon, count_font) = (self.dock_app_icon(), self.dock_count_font());
+        let art = DockArt {
+            icon: self.dock_app_icon(),
+            count_font: self.dock_font(DOCK_COUNT_FONT_SIZE),
+            smaller_letters: self.dock_font(DOCK_SMALLER_LETTERS),
+            bigger_letters: self.dock_font(DOCK_BIGGER_LETTERS),
+        };
         let mut dock = dock;
-        dock.set_art(&mut self.host.root, icon, count_font);
+        dock.set_art(&mut self.host.root, art);
         match self
             .host
             .root
@@ -526,11 +537,11 @@ impl WindowUi {
         Some((self.images.add_plugin_image(levels), w as f32, h as f32))
     }
 
-    /// The font of the count on the dock's tile.
-    fn dock_count_font(&mut self) -> Option<Arc<UiFont>> {
-        match self.bake_bundled_font(DOCK_COUNT_FONT_SIZE, Weight::SemiBold) {
+    /// The bundled SemiBold at one of the dock's sizes.
+    fn dock_font(&mut self, size: f32) -> Option<Arc<UiFont>> {
+        match self.bake_bundled_font(size, Weight::SemiBold) {
             Ok(font) => {
-                self.plugins.dock_count_font = Some(Arc::clone(&font));
+                self.plugins.dock_fonts.push((Arc::clone(&font), size));
                 Some(font)
             }
             Err(e) => {
@@ -561,8 +572,8 @@ impl WindowUi {
             (fonts.regular, Weight::Regular, size),
             (fonts.semibold, Weight::SemiBold, size),
         ];
-        if let Some(count) = self.plugins.dock_count_font.clone() {
-            bakes.push((count, Weight::SemiBold, DOCK_COUNT_FONT_SIZE));
+        for (font, size) in self.plugins.dock_fonts.clone() {
+            bakes.push((font, Weight::SemiBold, size));
         }
         let mut chosen = SharpFonts::new();
         for (font, weight, size) in &bakes {
@@ -691,11 +702,28 @@ impl WindowUi {
             .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_mode(ui, mode));
     }
 
-    /// The saved place of the dock is applied, when it differs.
+    /// The player picked a size for the dock in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock_size(&mut self, size: DockSize) {
+        size.saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock_size);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_size(ui, size));
+    }
+
+    /// The saved place and size of the dock are applied, when they differ.
     pub(super) fn follow_plugin_dock_setting(&mut self) {
         let saved = DockMode::from_saved(&self.settings.plugin_ui.dock);
+        let size = DockSize::from_saved(&self.settings.plugin_ui.dock_size);
         self.host
-            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_mode(ui, saved));
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
+                c.set_mode(ui, saved);
+                c.set_size(ui, size);
+            });
     }
 
     /// Open the Appearance window, building it the first time, or close it
@@ -711,6 +739,9 @@ impl WindowUi {
                 .with("Docks", ac_plugin_ui::BindingKind::TextList)
                 .with("SelectedDock", ac_plugin_ui::BindingKind::Text)
                 .with("SelectDock", ac_plugin_ui::BindingKind::TextAction)
+                .with("DockSizes", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDockSize", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDockSize", ac_plugin_ui::BindingKind::TextAction)
                 .with("Close", ac_plugin_ui::BindingKind::Action);
             let mut descriptor =
                 ac_plugin_ui::PanelDescriptor::new(APPEARANCE_VIEW, "Plugin appearance");
@@ -780,6 +811,10 @@ impl WindowUi {
         let theme = self.plugins.theme;
         let kind = self.plugins.theme_kind;
         let mode = self.plugin_dock_mode();
+        let size = self
+            .host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.size())
+            .unwrap_or_default();
         let Some(a) = self.plugins.appearance.as_mut() else {
             return;
         };
@@ -809,6 +844,19 @@ impl WindowUi {
                     "SelectedDock".into(),
                     ac_plugin_ui::UiValue::Text(mode.display_name().to_owned()),
                 ),
+                (
+                    "DockSizes".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockSize::ALL
+                            .iter()
+                            .map(|s| s.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDockSize".into(),
+                    ac_plugin_ui::UiValue::Text(size.display_name().to_owned()),
+                ),
             ],
         );
         a.revision += 1;
@@ -835,6 +883,7 @@ impl WindowUi {
         }
         let mut picked = None;
         let mut picked_dock = None;
+        let mut picked_size = None;
         for input in inputs {
             match &input {
                 UiInput::Action {
@@ -847,6 +896,13 @@ impl WindowUi {
                     value: ac_plugin_ui::ActionValue::Text(name),
                     ..
                 } if handler == "SelectDock" => picked_dock = DockMode::from_display_name(name),
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDockSize" => {
+                    picked_size = DockSize::from_display_name(name);
+                }
                 UiInput::Action { handler, .. } if handler == "Close" => {
                     a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, false);
                 }
@@ -858,6 +914,9 @@ impl WindowUi {
         }
         if let Some(mode) = picked_dock {
             self.pick_plugin_dock(mode);
+        }
+        if let Some(size) = picked_size {
+            self.pick_plugin_dock_size(size);
         }
         self.sync_appearance();
     }

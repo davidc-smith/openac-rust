@@ -317,9 +317,15 @@ fn the_dock_takes_its_saved_place_and_a_drag_is_saved_when_it_ends() {
 
     let mut saved = PlayerSettings::default();
     saved.plugin_ui.dock = "top".to_owned();
+    saved.plugin_ui.dock_size = "bigger".to_owned();
     ui.settings_changed_elsewhere(&saved);
     ui.frame(Instant::now(), size);
     assert_eq!(mode(&mut ui), DockMode::Top);
+    assert_eq!(
+        ui.host_mut()
+            .with_controller::<PluginDock, _>(WINDOW, |c, _| c.size()),
+        Some(ac_ui::plugin::dock::DockSize::Bigger)
+    );
     let frame = ui.host().root.window(WINDOW).unwrap().frame;
     let at = |ui: &WindowUi| {
         let e = ui.host().root.element(frame).unwrap();
@@ -393,18 +399,18 @@ fn the_window_follows_the_displays_density_with_sharper_fonts() {
     };
     ui.set_pixels_per_unit(2.0);
     let first = textures(&ui);
-    // The regular and SemiBold fonts, and the count on the dock's tile.
-    assert_eq!(first.len(), 3);
-    assert_ne!(first[0], first[1]);
-    assert_ne!(first[1], first[2]);
+    // The regular and SemiBold fonts, and the dock's count and two sizes of
+    // letters.
+    assert_eq!(first.len(), 5);
+    assert!(first.windows(2).all(|t| t[0] != t[1]));
 
     ui.set_pixels_per_unit(1.0);
     assert!(ui.host().root.sharp_fonts().is_none());
     ui.set_pixels_per_unit(2.0);
     assert_eq!(textures(&ui), first, "no second bake");
 
-    // Past what the largest bake allows, the scale stops at two for the text
-    // fonts. The count's smaller font has room for three.
+    // No bake goes past what the largest allows, so a bigger font stops sooner
+    // and a smaller one has room for more.
     ui.set_pixels_per_unit(3.0);
     let mut scales: Vec<f32> = ui
         .host()
@@ -415,9 +421,9 @@ fn the_window_follows_the_displays_density_with_sharper_fonts() {
         .map(|s| s.scale)
         .collect();
     scales.sort_by(f32::total_cmp);
-    assert_eq!(scales, [2.0, 2.0, 3.0]);
+    assert_eq!(scales, [1.5, 2.0, 2.0, 2.5, 3.0]);
     let at_three = textures(&ui);
-    assert_eq!(first.iter().filter(|t| at_three.contains(t)).count(), 2);
+    assert_eq!(first.iter().filter(|t| at_three.contains(t)).count(), 3);
 }
 
 fn runtime_sprites(list: &ac_ui::draw::DrawList) -> usize {

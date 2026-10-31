@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use ac_plugin_ui::{BindingSchema, PanelDescriptor, PluginUi, UiOwner};
 
-use super::layout::{self, DockLayout};
+use super::layout::{self, ART, DockLayout};
 use super::*;
 use crate::draw::{DrawCmd, DrawList, NoSprites, TextureRef};
 use crate::event::MouseButton;
@@ -360,7 +360,14 @@ fn after_scrolling_every_visible_slot_matches_a_fresh_layout() {
     let owners: Vec<String> = (0..12).map(|i| format!("test.{i}")).collect();
     let owners: Vec<&str> = owners.iter().map(String::as_str).collect();
     let longest = layout::max_length(DockMode::Floating, SCREEN.0, 300.0);
-    let fresh = layout::compute(DockMode::Floating, false, &owners, longest, 2);
+    let fresh = layout::compute(
+        DockMode::Floating,
+        DockSize::Default,
+        false,
+        &owners,
+        longest,
+        2,
+    );
     assert_eq!(fresh.first, 2);
     for (slot, want) in rig.slot_rects().iter().zip(&fresh.slots) {
         let (x, y, visible) = slot.unwrap();
@@ -383,7 +390,14 @@ fn a_plugin_going_leaves_every_other_slot_as_a_fresh_layout_has_it() {
     let owners: Vec<String> = (1..12).map(|i| format!("test.{i}")).collect();
     let owners: Vec<&str> = owners.iter().map(String::as_str).collect();
     let longest = layout::max_length(DockMode::Floating, SCREEN.0, 300.0);
-    let fresh = layout::compute(DockMode::Floating, false, &owners, longest, 0);
+    let fresh = layout::compute(
+        DockMode::Floating,
+        DockSize::Default,
+        false,
+        &owners,
+        longest,
+        0,
+    );
     assert_eq!(rig.layout(), fresh);
     assert_eq!(rig.with(|c, _| c.entry_count()), 11);
 }
@@ -545,7 +559,15 @@ fn the_tile_shows_the_icon_open_and_closed() {
     let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
     rig.add_plugins(1);
     rig.sync_plain();
-    rig.with(|c, ui| c.set_art(ui, Some((ICON, 256.0, 256.0)), None));
+    rig.with(|c, ui| {
+        c.set_art(
+            ui,
+            DockArt {
+                icon: Some((ICON, 256.0, 256.0)),
+                ..DockArt::default()
+            },
+        )
+    });
     rig.tick();
     assert_eq!(sprites_of(&rig.draw(), ICON).len(), 1);
     rig.press_tile();
@@ -663,6 +685,47 @@ fn hovering_the_tile_labels_it_and_holding_it_does_not() {
     let (x, y) = rig.grab(ON_HANDLE);
     rig.move_to(x, y);
     assert!(rig.label().is_none());
+}
+
+// ── Sizes ───────────────────────────────────────────────────────────────
+
+#[test]
+fn a_size_changes_the_dock_and_its_art_and_keeps_its_edge() {
+    const FILE: TextureRef = FILE_TEXTURE;
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.ui.set_file_icon("acdream.test", Some(icon_file()));
+    rig.add("acdream.test", "Test", PanelDescriptor::new("main", "Test"));
+    rig.sync_plain();
+    assert_eq!(rig.size().0, 48.0);
+    for (size, thick, art) in [
+        (DockSize::Smaller, 38.0, 18.0),
+        (DockSize::Bigger, 58.0, 32.0),
+        (DockSize::Default, 48.0, 24.0),
+    ] {
+        rig.with(|c, ui| c.set_size(ui, size));
+        rig.tick();
+        assert_eq!(rig.size().0, thick, "{size:?}");
+        let drawn = sprites_of(&rig.draw(), FILE);
+        assert_eq!((drawn[0].0, drawn[0].1), (art, art), "{size:?}");
+    }
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Right));
+    rig.with(|c, ui| c.set_size(ui, DockSize::Bigger));
+    rig.tick();
+    assert_eq!(rig.at().0, 800.0 - 56.0);
+}
+
+#[test]
+fn a_bigger_dock_too_long_for_the_screen_scrolls_sooner() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(10);
+    rig.sync_plain();
+    let at_default = rig.layout().visible;
+    rig.with(|c, ui| c.set_size(ui, DockSize::Bigger));
+    rig.tick();
+    let bigger = rig.layout();
+    assert!(bigger.visible < at_default);
+    assert!(bigger.fade_end);
+    assert!(bigger.height <= 600.0 - 2.0 * layout::FLOATING_MARGIN);
 }
 
 // ── Snapping ────────────────────────────────────────────────────────────
@@ -1298,7 +1361,14 @@ fn a_floating_body_fills_in_the_background_with_a_rim_and_a_shadow_below() {
     let moss = Palette::MOSS;
     let corners = drawn(|rc| {
         rc.push_transform(100.0, 100.0);
-        style::body(rc, &moss, DockMode::Floating, 48.0, 200.0);
+        style::body(
+            rc,
+            &moss,
+            DockMode::Floating,
+            &DockSize::Default.metrics(),
+            48.0,
+            200.0,
+        );
     });
     assert!(has_color(&corners, moss.background));
     assert!(has_color(&corners, mix(moss.border, moss.text, 0.08)));
@@ -1307,26 +1377,27 @@ fn a_floating_body_fills_in_the_background_with_a_rim_and_a_shadow_below() {
 
 #[test]
 fn a_rail_is_square_on_its_edge_side() {
-    let r = style::RAIL_RADIUS;
+    let m = DockSize::Default.metrics();
+    let r = m.rail_radius;
     assert_eq!(
-        style::corners(DockMode::Left),
+        style::corners(DockMode::Left, &m),
         CornerRadii::new(0.0, r, r, 0.0)
     );
     assert_eq!(
-        style::corners(DockMode::Right),
+        style::corners(DockMode::Right, &m),
         CornerRadii::new(r, 0.0, 0.0, r)
     );
     assert_eq!(
-        style::corners(DockMode::Top),
+        style::corners(DockMode::Top, &m),
         CornerRadii::new(0.0, 0.0, r, r)
     );
     assert_eq!(
-        style::corners(DockMode::Bottom),
+        style::corners(DockMode::Bottom, &m),
         CornerRadii::new(r, r, 0.0, 0.0)
     );
     assert_eq!(
-        style::corners(DockMode::Floating),
-        CornerRadii::all(style::RADIUS)
+        style::corners(DockMode::Floating, &m),
+        CornerRadii::all(m.radius)
     );
 }
 
@@ -1412,8 +1483,8 @@ fn an_open_dot_sits_on_the_side_facing_the_screen_edge() {
 fn a_slot_well_is_empty_at_rest_and_filled_under_the_pointer() {
     let moss = Palette::MOSS;
     let r = Rect::new(0.0, 0.0, 36.0, 36.0);
-    assert!(drawn(|rc| style::slot_well(rc, &moss, r, ButtonLook::Normal)).is_empty());
-    let hovered = drawn(|rc| style::slot_well(rc, &moss, r, ButtonLook::Hovered));
+    assert!(drawn(|rc| style::slot_well(rc, &moss, r, 9.0, ButtonLook::Normal)).is_empty());
+    let hovered = drawn(|rc| style::slot_well(rc, &moss, r, 9.0, ButtonLook::Hovered));
     assert!(has_color(&hovered, hover(&moss, moss.field)));
 }
 

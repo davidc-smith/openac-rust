@@ -339,6 +339,9 @@ pub struct PluginUiSettings {
     /// `floating-horizontal`, `left`, `right`, `top`, `bottom`); the reader of
     /// the name decides what an unknown one means.
     pub dock: String,
+    /// The plugin dock's size, as saved (`smaller`, `default`, `bigger`); the
+    /// reader of the name decides what an unknown one means.
+    pub dock_size: String,
 }
 
 impl Default for PluginUiSettings {
@@ -346,6 +349,7 @@ impl Default for PluginUiSettings {
         Self {
             theme: "Classic".to_owned(),
             dock: "floating".to_owned(),
+            dock_size: "default".to_owned(),
         }
     }
 }
@@ -354,6 +358,7 @@ fn read_plugin_ui(m: &[Member]) -> Result<PluginUiSettings, Unreadable> {
     Ok(PluginUiSettings {
         theme: crate::settings::read_string(m, "theme", "Classic"),
         dock: crate::settings::read_string(m, "dock", "floating"),
+        dock_size: crate::settings::read_string(m, "dockSize", "default"),
     })
 }
 
@@ -621,9 +626,11 @@ impl SettingsStore {
         crate::json::write_string(&mut theme, &p.theme);
         let mut dock = String::new();
         crate::json::write_string(&mut dock, &p.dock);
+        let mut dock_size = String::new();
+        crate::json::write_string(&mut dock_size, &p.dock_size);
         self.save_section(
             "pluginUi",
-            &object_text(&[("theme", theme), ("dock", dock)]),
+            &object_text(&[("theme", theme), ("dock", dock), ("dockSize", dock_size)]),
         )
     }
 

@@ -12,29 +12,26 @@
 
 use crate::geometry::Rect;
 
-/// The padding round a floating dock's slots.
+/// The padding round a floating dock's slots at the default size.
 pub const PADDING: f32 = 6.0;
-/// A floating dock's slot, each way.
+/// A floating dock's slot, each way, at the default size.
 pub const SLOT: f32 = 36.0;
-/// Between a floating dock's slots of one plugin.
+/// Between a floating dock's slots of one plugin at the default size.
 pub const GAP: f32 = 4.0;
-/// A slot's art, each way.
+/// A slot's art, each way, at the default size.
 pub const ART: f32 = 24.0;
-/// A floating dock's thickness across its main axis.
+/// A floating dock's thickness across its main axis at the default size.
 pub const FLOATING_THICKNESS: f32 = PADDING + SLOT + PADDING;
 /// The space each side of a divider.
 pub const DIVIDER_SPACE: f32 = 4.0;
 /// How long a fade over cut-off slots is.
 pub const FADE_LENGTH: f32 = 12.0;
-/// A rail's thickness across its main axis.
+/// A rail's thickness across its main axis at the default size.
 pub const RAIL_THICKNESS: f32 = 46.0;
-/// A rail's slot along its main axis.
+/// A rail's slot along its main axis at the default size.
 pub const RAIL_SLOT: f32 = 38.0;
 /// Between a rail's slots of one plugin.
 pub const RAIL_GAP: f32 = 2.0;
-/// Where a rail's tile starts along its main axis, which centres it in the
-/// square a closed rail is.
-pub const RAIL_TILE_START: f32 = (RAIL_THICKNESS - RAIL_SLOT) / 2.0;
 /// How far a floating dock's longest stays from each end of the screen, so
 /// that one which fills the screen is not touching an edge wherever it is
 /// dragged.
@@ -46,6 +43,130 @@ pub const SNAP_IN: f32 = 8.0;
 pub const SNAP_OUT: f32 = 32.0;
 
 const DIVIDER_BLOCK: f32 = DIVIDER_SPACE * 2.0 + 1.0;
+
+/// How big the dock is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DockSize {
+    /// Smaller than the default.
+    Smaller,
+    /// The default.
+    #[default]
+    Default,
+    /// Bigger than the default. A dat icon's 32 pixels are its art's own size
+    /// on a standard screen.
+    Bigger,
+}
+
+impl DockSize {
+    /// Every size, in the order the Appearance window lists them.
+    pub const ALL: [Self; 3] = [Self::Smaller, Self::Default, Self::Bigger];
+
+    /// The name it is saved under.
+    #[must_use]
+    pub const fn saved_name(self) -> &'static str {
+        match self {
+            Self::Smaller => "smaller",
+            Self::Default => "default",
+            Self::Bigger => "bigger",
+        }
+    }
+
+    /// The size saved as `name`, in any case; an unknown name is the default.
+    #[must_use]
+    pub fn from_saved(name: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|s| s.saved_name().eq_ignore_ascii_case(name))
+            .unwrap_or_default()
+    }
+
+    /// Its name in the Appearance window.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Smaller => "Smaller",
+            Self::Default => "Default",
+            Self::Bigger => "Bigger",
+        }
+    }
+
+    /// The size with this name in the Appearance window.
+    #[must_use]
+    pub fn from_display_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.display_name() == name)
+    }
+
+    /// Its measurements.
+    #[must_use]
+    pub const fn metrics(self) -> Metrics {
+        match self {
+            Self::Smaller => Metrics {
+                padding: 5.0,
+                slot: 28.0,
+                gap: 3.0,
+                art: 18.0,
+                rail_thickness: 36.0,
+                rail_slot: 30.0,
+                radius: 12.0,
+                rail_radius: 10.0,
+                well_radius: 7.0,
+            },
+            Self::Default => Metrics {
+                padding: PADDING,
+                slot: SLOT,
+                gap: GAP,
+                art: ART,
+                rail_thickness: RAIL_THICKNESS,
+                rail_slot: RAIL_SLOT,
+                radius: 14.0,
+                rail_radius: 12.0,
+                well_radius: 9.0,
+            },
+            Self::Bigger => Metrics {
+                padding: 7.0,
+                slot: 44.0,
+                gap: 5.0,
+                art: 32.0,
+                rail_thickness: 56.0,
+                rail_slot: 46.0,
+                radius: 16.0,
+                rail_radius: 14.0,
+                well_radius: 11.0,
+            },
+        }
+    }
+}
+
+/// The measurements of a dock of one size, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Metrics {
+    /// The padding round a floating dock's slots.
+    pub padding: f32,
+    /// A floating dock's slot, each way.
+    pub slot: f32,
+    /// Between a floating dock's slots of one plugin.
+    pub gap: f32,
+    /// A slot's art, each way.
+    pub art: f32,
+    /// A rail's thickness across its main axis.
+    pub rail_thickness: f32,
+    /// A rail's slot along its main axis.
+    pub rail_slot: f32,
+    /// A floating dock's corner radius.
+    pub radius: f32,
+    /// A rail's inner corner radius.
+    pub rail_radius: f32,
+    /// A slot's hover well's corner radius.
+    pub well_radius: f32,
+}
+
+impl Metrics {
+    /// A floating dock's thickness across its main axis.
+    #[must_use]
+    pub const fn floating_thickness(&self) -> f32 {
+        self.padding + self.slot + self.padding
+    }
+}
 
 /// Where the dock is and which way it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -262,12 +383,13 @@ impl Axes {
     }
 }
 
-/// The layout of a dock in `mode`, minimized or not, with one slot per entry
+/// The layout of a dock in `mode` at `size`, minimized or not, with one slot per entry
 /// of `owners` (each slot's plugin), at most `max_length` long, scrolled to
 /// start at slot `first`.
 #[must_use]
 pub fn compute(
     mode: DockMode,
+    size: DockSize,
     minimized: bool,
     owners: &[&str],
     max_length: f32,
@@ -280,10 +402,11 @@ pub fn compute(
     let count = owners.len();
     let mut slots = vec![None; count];
 
+    let m = size.metrics();
     let thickness = if rail {
-        RAIL_THICKNESS
+        m.rail_thickness
     } else {
-        FLOATING_THICKNESS
+        m.floating_thickness()
     };
     if minimized {
         return DockLayout {
@@ -303,10 +426,18 @@ pub fn compute(
         };
     }
 
+    // A rail's tile is centred in the square a closed rail is, so its art stays
+    // where it was.
     let (tile_start, slot_cross_at, slot_across, slot_along, gap) = if rail {
-        (RAIL_TILE_START, 0.0, RAIL_THICKNESS, RAIL_SLOT, RAIL_GAP)
+        (
+            (m.rail_thickness - m.rail_slot) / 2.0,
+            0.0,
+            m.rail_thickness,
+            m.rail_slot,
+            RAIL_GAP,
+        )
     } else {
-        (PADDING, PADDING, SLOT, SLOT, GAP)
+        (m.padding, m.padding, m.slot, m.slot, m.gap)
     };
     let tile = axes.rect(tile_start, slot_cross_at, slot_along, slot_across);
     let list_start = tile_start + slot_along + DIVIDER_BLOCK;
@@ -320,7 +451,7 @@ pub fn compute(
     // Everything that is not the slot list: the tile and divider before it, and
     // the divider, gear and padding after it.
     let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
-    let room = max_length - (list_start + divider + slot_along + PADDING);
+    let room = max_length - (list_start + divider + slot_along + m.padding);
 
     // At least one slot, however little room there is.
     let mut fit_backward = 0;
@@ -370,7 +501,7 @@ pub fn compute(
         at += DIVIDER_BLOCK;
     }
     let gear = axes.rect(at, slot_cross_at, slot_along, slot_across);
-    let (width, height) = axes.size(at + slot_along + PADDING, thickness);
+    let (width, height) = axes.size(at + slot_along + m.padding, thickness);
     DockLayout {
         width,
         height,
@@ -391,6 +522,17 @@ pub fn compute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// At the default size.
+    fn compute(
+        mode: DockMode,
+        minimized: bool,
+        owners: &[&str],
+        max: f32,
+        first: usize,
+    ) -> DockLayout {
+        super::compute(mode, DockSize::Default, minimized, owners, max, first)
+    }
 
     fn floating(owners: &[&str], max: f32, first: usize) -> DockLayout {
         compute(DockMode::Floating, false, owners, max, first)
@@ -492,6 +634,44 @@ mod tests {
             let open = compute(mode, false, &["a"], 500.0, 0);
             assert_eq!(centre(closed.tile), centre(open.tile), "{mode:?}");
         }
+    }
+
+    #[test]
+    fn the_three_sizes_measure_as_agreed_and_the_default_is_unchanged() {
+        let owners = ["a", "b", "c", "d"];
+        for (size, slot, art, thick, rail, height) in [
+            (DockSize::Smaller, 28.0, 18.0, 38.0, 36.0, 223.0),
+            (DockSize::Default, 36.0, 24.0, 48.0, 46.0, 273.0),
+            (DockSize::Bigger, 44.0, 32.0, 58.0, 56.0, 323.0),
+        ] {
+            let m = size.metrics();
+            assert_eq!((m.slot, m.art), (slot, art), "{size:?}");
+            let free = super::compute(DockMode::Floating, size, false, &owners, 2000.0, 0);
+            assert_eq!(free.width, thick, "{size:?}");
+            assert_eq!(free.height, height, "{size:?}");
+            assert_eq!(free.tile.w, slot, "{size:?}");
+            let edge = super::compute(DockMode::Left, size, false, &owners, 2000.0, 0);
+            assert_eq!(edge.width, rail, "{size:?}");
+            let closed = super::compute(DockMode::Floating, size, true, &owners, 2000.0, 0);
+            assert_eq!((closed.width, closed.height), (thick, thick), "{size:?}");
+            for mode in DockMode::ALL {
+                let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+                let shut = super::compute(mode, size, true, &owners, 2000.0, 0);
+                let open = super::compute(mode, size, false, &owners, 2000.0, 0);
+                assert_eq!(centre(shut.tile), centre(open.tile), "{size:?} {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn size_names_round_trip_and_an_unknown_one_is_the_default() {
+        for size in DockSize::ALL {
+            assert_eq!(DockSize::from_saved(size.saved_name()), size);
+            assert_eq!(DockSize::from_display_name(size.display_name()), Some(size));
+        }
+        assert_eq!(DockSize::from_saved("BIGGER"), DockSize::Bigger);
+        assert_eq!(DockSize::from_saved("huge"), DockSize::Default);
+        assert_eq!(DockSize::from_saved(""), DockSize::Default);
     }
 
     #[test]

@@ -25,8 +25,8 @@ use std::sync::Arc;
 use ac_plugin_ui::markup::normalize_icon;
 use ac_plugin_ui::{PanelView, PluginIcon, UiInput};
 
-pub use self::layout::DockMode;
-use self::layout::{ART, DockLayout, FADE_LENGTH};
+use self::layout::{DockLayout, FADE_LENGTH, Metrics};
+pub use self::layout::{DockMode, DockSize};
 use self::style::DockSide;
 use super::style::PointerState;
 use super::widgets::ButtonLook;
@@ -110,6 +110,20 @@ struct Entry {
     open: bool,
 }
 
+/// What the window gives the dock to draw with: the tile's icon, the font of its
+/// count, and the letters' fonts for the sizes that do not use the title font.
+#[derive(Debug, Clone, Default)]
+pub struct DockArt {
+    /// The OpenAC icon.
+    pub icon: Option<Icon>,
+    /// The count on a closed tile.
+    pub count_font: Option<Arc<UiFont>>,
+    /// Monograms on the smaller dock.
+    pub smaller_letters: Option<Arc<UiFont>>,
+    /// Monograms on the bigger dock.
+    pub bigger_letters: Option<Arc<UiFont>>,
+}
+
 /// The dock's controller: its entries and how it lays them out.
 #[derive(Debug)]
 pub struct PluginDock {
@@ -119,6 +133,7 @@ pub struct PluginDock {
     gear: ElementId,
     entries: Vec<Entry>,
     mode: DockMode,
+    size: DockSize,
     minimized: bool,
     /// The player hid it (Toggle Plugin Manager).
     hidden: bool,
@@ -126,10 +141,7 @@ pub struct PluginDock {
     covered: bool,
     font: Option<Arc<UiFont>>,
     modern: Option<ModernFonts>,
-    /// The tile's art.
-    app_icon: Option<Icon>,
-    /// The font of the count on the tile.
-    count_font: Option<Arc<UiFont>>,
+    art: DockArt,
     outbox: PluginOutbox,
     theme: PluginTheme,
     first: usize,
@@ -162,7 +174,7 @@ impl PluginDock {
         outbox: PluginOutbox,
     ) -> Self {
         let mode = DockMode::default();
-        let layout = layout::compute(mode, false, &[], f32::INFINITY, 0);
+        let layout = layout::compute(mode, DockSize::default(), false, &[], f32::INFINITY, 0);
         let mut e = Element::at(DEFAULT_LEFT, DEFAULT_TOP, layout.width, layout.height)
             .with_anchors(AnchorEdges::NONE)
             .with_visible(false);
@@ -185,13 +197,13 @@ impl PluginDock {
             gear,
             entries: Vec::new(),
             mode,
+            size: DockSize::default(),
             minimized: false,
             hidden: false,
             covered: false,
             font,
             modern,
-            app_icon: None,
-            count_font: None,
+            art: DockArt::default(),
             outbox,
             theme: PluginTheme::Classic,
             first: 0,
@@ -208,16 +220,24 @@ impl PluginDock {
         dock
     }
 
-    /// The tile's art and the font of its count.
-    pub fn set_art(
-        &mut self,
-        ui: &mut UiRoot,
-        icon: Option<Icon>,
-        count_font: Option<Arc<UiFont>>,
-    ) {
-        self.app_icon = icon;
-        self.count_font = count_font;
+    /// What it draws with.
+    pub fn set_art(&mut self, ui: &mut UiRoot, art: DockArt) {
+        self.art = art;
         self.reflow(ui);
+    }
+
+    /// How big it is drawn.
+    #[must_use]
+    pub fn size(&self) -> DockSize {
+        self.size
+    }
+
+    /// Draws it at `size`.
+    pub fn set_size(&mut self, ui: &mut UiRoot, size: DockSize) {
+        if self.size != size {
+            self.size = size;
+            self.reflow(ui);
+        }
     }
 
     /// Whether the dock shows: it has a window to offer and the player has
@@ -340,6 +360,18 @@ impl PluginDock {
         }
     }
 
+    /// The font for a monogram's letters, which fits the art at this size.
+    fn letters_font(&self) -> Option<Arc<UiFont>> {
+        let sized = match self.size {
+            DockSize::Smaller => self.art.smaller_letters.clone(),
+            DockSize::Default => None,
+            DockSize::Bigger => self.art.bigger_letters.clone(),
+        };
+        sized
+            .filter(|_| self.theme != PluginTheme::Classic)
+            .or_else(|| self.title_font())
+    }
+
     /// The font for the line under a label's title.
     fn body_font(&self) -> Option<Arc<UiFont>> {
         match (&self.modern, self.theme) {
@@ -412,10 +444,18 @@ impl PluginDock {
         self.screen = ui.size();
         let owners: Vec<&str> = self.entries.iter().map(|e| e.owner.as_str()).collect();
         let longest = layout::max_length(self.mode, self.screen.0, self.screen.1);
-        let l = layout::compute(self.mode, self.minimized, &owners, longest, self.first);
+        let l = layout::compute(
+            self.mode,
+            self.size,
+            self.minimized,
+            &owners,
+            longest,
+            self.first,
+        );
         self.first = l.first;
         let palette = self.palette();
-        let title_font = self.title_font();
+        let metrics = self.size.metrics();
+        let letters = self.letters_font();
         for (entry, slot) in self.entries.iter().zip(&l.slots) {
             if let Some(r) = slot {
                 place(ui, entry.slot, *r);
@@ -425,7 +465,8 @@ impl PluginDock {
                 w.palette = palette;
                 w.mode = self.mode;
                 w.open = entry.open;
-                w.font.clone_from(&title_font);
+                w.metrics = metrics;
+                w.font.clone_from(&letters);
                 // A slot put away is not left looking hovered for when it
                 // comes back.
                 if slot.is_none() {
@@ -441,10 +482,11 @@ impl PluginDock {
             e.height = l.height;
         }
         let open_count = self.entries.iter().filter(|e| e.open).count();
-        let (app_icon, count_font) = (self.app_icon, self.count_font.clone());
+        let (app_icon, count_font) = (self.art.icon, self.art.count_font.clone());
         if let Some(w) = ui.widget_mut::<DockTile>(self.tile) {
             w.palette = palette;
             w.mode = self.mode;
+            w.metrics = metrics;
             w.icon = app_icon;
             w.count_font = count_font;
             w.count = if self.minimized { open_count } else { 0 };
@@ -453,10 +495,12 @@ impl PluginDock {
         if let Some(w) = ui.widget_mut::<DockGear>(self.gear) {
             w.palette = palette;
             w.mode = self.mode;
+            w.metrics = metrics;
         }
         if let Some(frame) = ui.widget_mut::<DockFrame>(self.root) {
             frame.palette = palette;
             frame.mode = self.mode;
+            frame.metrics = metrics;
             frame.minimized = self.minimized;
             frame.dividers.clone_from(&l.dividers);
             frame.fades = (l.fade_start, l.fade_end);
@@ -907,6 +951,7 @@ struct HoverLabel {
 struct DockFrame {
     palette: Palette,
     mode: DockMode,
+    metrics: Metrics,
     side: DockSide,
     minimized: bool,
     dividers: Vec<f32>,
@@ -921,6 +966,7 @@ impl Default for DockFrame {
         Self {
             palette: Palette::CLASSIC_DOCK,
             mode: DockMode::default(),
+            metrics: DockSize::default().metrics(),
             side: DockSide::default(),
             minimized: false,
             dividers: Vec::new(),
@@ -953,7 +999,7 @@ impl Widget for DockFrame {
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let size = element_size(ui, me);
-        style::body(rc, &self.palette, self.mode, size.0, size.1);
+        style::body(rc, &self.palette, self.mode, &self.metrics, size.0, size.1);
         for at in &self.dividers {
             style::divider(rc, &self.palette, self.mode, size, *at);
         }
@@ -1051,6 +1097,7 @@ struct TileHold {
 struct DockTile {
     palette: Palette,
     mode: DockMode,
+    metrics: Metrics,
     hovered: bool,
     held: Option<TileHold>,
     closed: bool,
@@ -1064,6 +1111,7 @@ impl Default for DockTile {
         Self {
             palette: Palette::CLASSIC_DOCK,
             mode: DockMode::default(),
+            metrics: DockSize::default().metrics(),
             hovered: false,
             held: None,
             closed: false,
@@ -1121,13 +1169,14 @@ impl Widget for DockTile {
         } else {
             style::slot_well_rect(self.mode, w, h)
         };
-        style::slot_well(rc, &self.palette, well, look);
+        style::slot_well(rc, &self.palette, well, self.metrics.well_radius, look);
         if let Some((texture, iw, ih)) = self.icon
             && iw > 0.0
             && ih > 0.0
         {
-            let (x, y) = ((w - ART) / 2.0, (h - ART) / 2.0);
-            rc.sprite(texture, x, y, ART, ART, (0.0, 0.0, 1.0, 1.0), Color::WHITE);
+            let art = self.metrics.art;
+            let (x, y) = ((w - art) / 2.0, (h - art) / 2.0);
+            rc.sprite(texture, x, y, art, art, (0.0, 0.0, 1.0, 1.0), Color::WHITE);
         }
         if self.count > 0 {
             style::count_badge(rc, &self.palette, self.count_font.as_ref(), w, self.count);
@@ -1142,6 +1191,7 @@ struct DockGear {
     palette: Palette,
     pointer: PointerState,
     mode: DockMode,
+    metrics: Metrics,
 }
 
 impl Default for DockGear {
@@ -1150,6 +1200,7 @@ impl Default for DockGear {
             palette: Palette::CLASSIC_DOCK,
             pointer: PointerState::default(),
             mode: DockMode::default(),
+            metrics: DockSize::default().metrics(),
         }
     }
 }
@@ -1167,13 +1218,15 @@ impl Widget for DockGear {
         let (w, h) = element_size(ui, me);
         let p = &self.palette;
         let look = self.pointer.look(true);
-        style::slot_well(rc, p, style::slot_well_rect(self.mode, w, h), look);
+        let radius = self.metrics.well_radius;
+        style::slot_well(rc, p, style::slot_well_rect(self.mode, w, h), radius, look);
         let color = if look == ButtonLook::Normal {
             p.muted
         } else {
             p.text
         };
-        style::gear(rc, (w - ART) / 2.0, (h - ART) / 2.0, ART, color);
+        let art = self.metrics.art;
+        style::gear(rc, (w - art) / 2.0, (h - art) / 2.0, art, color);
     }
 }
 
@@ -1184,6 +1237,7 @@ struct DockSlot {
     palette: Palette,
     pointer: PointerState,
     mode: DockMode,
+    metrics: Metrics,
     open: bool,
     icon: Option<Icon>,
     letters: String,
@@ -1197,6 +1251,7 @@ impl Default for DockSlot {
             palette: Palette::CLASSIC_DOCK,
             pointer: PointerState::default(),
             mode: DockMode::default(),
+            metrics: DockSize::default().metrics(),
             open: false,
             icon: None,
             letters: String::new(),
@@ -1222,6 +1277,7 @@ impl Widget for DockSlot {
             rc,
             &self.palette,
             style::slot_well_rect(self.mode, w, h),
+            self.metrics.well_radius,
             look,
         );
         let alpha = if self.open || look != ButtonLook::Normal {
@@ -1229,11 +1285,12 @@ impl Widget for DockSlot {
         } else {
             style::CLOSED_ART_ALPHA
         };
-        let (x, y) = ((w - ART) / 2.0, (h - ART) / 2.0);
+        let art = self.metrics.art;
+        let (x, y) = ((w - art) / 2.0, (h - art) / 2.0);
         match self.icon {
             Some((texture, iw, ih)) if iw > 0.0 && ih > 0.0 => {
                 let tint = Color::rgba(1.0, 1.0, 1.0, alpha);
-                rc.sprite(texture, x, y, ART, ART, (0.0, 0.0, 1.0, 1.0), tint);
+                rc.sprite(texture, x, y, art, art, (0.0, 0.0, 1.0, 1.0), tint);
             }
             _ => style::monogram(
                 rc,
@@ -1242,7 +1299,7 @@ impl Widget for DockSlot {
                 self.hue,
                 x,
                 y,
-                ART,
+                art,
                 alpha,
             ),
         }
