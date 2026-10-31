@@ -454,7 +454,7 @@ pub struct WorldIcon {
     /// art the client cannot find) the icon keeps its place but draws
     /// nothing.
     pub image: Option<Icon>,
-    /// The side of the square the image is fitted into, pixels.
+    /// The side of the square the image is fitted into, UI units.
     pub size: f32,
     /// Multiplied into the image.
     pub tint: Color,

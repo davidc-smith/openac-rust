@@ -1138,7 +1138,8 @@ wire_record! {
         /// released is not drawn.
         pub image: u32,
         /// The side of the square the image is fitted into, interface points
-        /// (pixels, except on macOS), kept to 8..=128; an icon whose size is
+        /// (scaled with the interface by the player's UI Scale; at 100% a
+        /// pixel, two on a Retina Mac), kept to 8..=128; an icon whose size is
         /// not a finite number is dropped.
         pub size: f32,
         /// Multiplied into the image, `0xRRGGBBAA`: white leaves it as it

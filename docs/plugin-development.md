@@ -127,7 +127,8 @@ nothing, or with values that are not usable, are dropped from the set.
 
 *Icons* (`MarkerLayer::set_icons`, `ui::world_icon`) hang one of the plugin's
 own images in the world at a constant size on the screen, 8 to 128 interface
-points (pixels, except on macOS).
+points: they grow and shrink with the player's UI Scale like the rest of the
+interface, and at 100% a point is a pixel (two on a Retina Mac).
 They are drawn after the world, under the labels' text, so walls and hills do
 not hide them, unless `hidden_by_world` is set. Then the whole icon goes while
 anything in the world stands between the camera and its anchor, a frame or two

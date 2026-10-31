@@ -254,6 +254,153 @@ mod tests {
         assert!(!near(pixel_min * ppu, pixel_min));
     }
 
+    /// The plugins' world icons and labels at 150%, on a Retina Mac (two
+    /// pixels a point) and both together: placed in units on the overlay
+    /// viewport, like the target bracket, and drawn at the UI's scale, an
+    /// icon at a position is centred on the pixel where the world draws
+    /// that position, and an object's label and first row of icons are
+    /// centred over the pixel of its head, one label line and a gap apart.
+    /// Their sizes scale with the UI, as the labels' text does: a 24-point
+    /// icon is 36 pixels at 150%. (The world pass, which draws the ground
+    /// shapes and triangles and tests the icons' anchors, is in pixels and
+    /// never sees the UI's scale.)
+    #[test]
+    fn plugin_icons_and_labels_land_on_their_anchors_at_any_ui_scale() {
+        use crate::ui::batch::{UiBatch, UiTexture};
+        use ac_ui::UiRoot;
+        use ac_ui::draw::{Color, NoSprites, TextureRef};
+        use ac_ui::overlay::{
+            ICON_GAP, OverlayCamera, OverlayHost, WorldIcon, WorldIconAnchor, WorldIconOverlay,
+            WorldLabel, WorldLabelAnchor, place_labels, project_sphere,
+        };
+        use glam::{Vec2, Vec3};
+
+        const LINE_HEIGHT: f32 = 16.0;
+        const SIZE: f32 = 24.0;
+        const ART: TextureRef = TextureRef::Runtime(1);
+        let framebuffer = (1920, 1080);
+        // At the origin looking north (+y) with +z up.
+        let camera = |viewport: (f32, f32)| OverlayCamera {
+            view: glam::camera::rh::view::look_at_mat4(Vec3::ZERO, Vec3::Y, Vec3::Z),
+            projection: glam::camera::rh::proj::directx::perspective(
+                1.0,
+                1920.0 / 1080.0,
+                0.1,
+                1000.0,
+            ),
+            viewport,
+        };
+        let pixels = camera((1920.0, 1080.0));
+        let pixel_of = |p: Vec3| {
+            let r = project_sphere(p, 0.0, &pixels, 0.0).expect("in view");
+            (r.min + r.max) * 0.5
+        };
+        // A spot 12 m ahead, right and a little below the eye; a creature
+        // 15 m ahead and to the left, 1.8 m tall, with one label.
+        let spot = Vec3::new(3.0, 12.0, -1.0);
+        let creature = WorldLabelAnchor {
+            base: Vec3::new(-2.0, 15.0, -1.5),
+            height: 1.8,
+        };
+        let anchor = |id: u32| (id == 7).then_some(creature);
+        let icon = |anchor| WorldIcon {
+            anchor,
+            image: Some((ART, 32.0, 32.0)),
+            size: SIZE,
+            tint: Color::WHITE,
+            border: None,
+            max_range: 60.0,
+        };
+        let icons = [
+            icon(WorldIconAnchor::Point(spot)),
+            icon(WorldIconAnchor::Object(7)),
+        ];
+        let labels = [WorldLabel {
+            object_id: 7,
+            text: "name".to_owned(),
+            color: Color::WHITE,
+            height_offset: 0.0,
+            line: 0,
+            max_range: 60.0,
+            outline: false,
+        }];
+        let spot_pixel = pixel_of(spot);
+        let head_pixel = pixel_of(creature.base + Vec3::Z * creature.height);
+
+        let retina = UiScale::for_window(HostOs::MacOs, 2.0);
+        for scale in [
+            UiScale::ONE,
+            UiScale::ONE.with_user_percent(150),
+            retina,
+            retina.with_user_percent(150),
+        ] {
+            let ppu = scale.pixels_per_unit();
+            // Whole units, then whole pixels: within a unit and a pixel.
+            let slack = ppu + 1.0;
+            let near = |a: Vec2, b: Vec2| (a - b).abs().max_element() <= slack;
+            let units = camera(scale.overlay_viewport(framebuffer));
+
+            // The labels, placed as the label overlay does.
+            let mut placed = Vec::new();
+            place_labels(
+                &labels,
+                &anchor,
+                &units,
+                LINE_HEIGHT,
+                &|_| 40.0,
+                &mut placed,
+            );
+            let label = placed[0];
+            let label_bottom = Vec2::new(label.x + 20.0, label.y + LINE_HEIGHT) * ppu;
+            assert!(near(label_bottom, head_pixel), "{ppu}: {label_bottom}");
+
+            // The icons, placed and drawn through the overlay and the UI's
+            // batch, in framebuffer pixels.
+            let (w, h) = scale.ui_size(framebuffer);
+            let mut ui = UiRoot::new();
+            ui.set_size(w as f32, h as f32);
+            let mut host = OverlayHost::mount(&mut ui);
+            let mut overlay = WorldIconOverlay::mount(&mut ui, &mut host, LINE_HEIGHT);
+            overlay.tick(&mut ui, &icons, &anchor, &labels, Some(&units));
+            let batch = UiBatch::build_scaled(&ui.draw((w as f32, h as f32), &NoSprites), ppu);
+            let squares: Vec<(Vec2, Vec2)> = batch
+                .runs
+                .iter()
+                .filter(|r| r.key.texture == UiTexture::Named(ART))
+                .flat_map(|r| {
+                    let run = &batch.vertices[r.first as usize..(r.first + r.count) as usize];
+                    run.chunks(6)
+                        .map(|quad| {
+                            let corners = quad.iter().map(|v| Vec2::from_array(v.position));
+                            let min = corners.clone().fold(Vec2::MAX, Vec2::min);
+                            (min, corners.fold(Vec2::MIN, Vec2::max))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            assert_eq!(squares.len(), 2, "{ppu}");
+            for (min, max) in &squares {
+                let side = *max - *min;
+                assert!(near(side, Vec2::splat(SIZE * ppu)), "{ppu}: {side}");
+            }
+            let at_spot = squares
+                .iter()
+                .any(|(min, max)| near((*min + *max) * 0.5, spot_pixel));
+            assert!(at_spot, "{ppu}: {squares:?} {spot_pixel}");
+            let row_bottom = head_pixel - Vec2::new(0.0, (LINE_HEIGHT + ICON_GAP) * ppu);
+            let over_head = squares
+                .iter()
+                .any(|(min, max)| near(Vec2::new((min.x + max.x) * 0.5, max.y), row_bottom));
+            assert!(over_head, "{ppu}: {squares:?} {row_bottom}");
+
+            // Placed on the framebuffer's pixels instead, the icons would be
+            // drawn away from their anchors at any scale but one.
+            if ppu != 1.0 {
+                assert!(!near(spot_pixel * ppu, spot_pixel));
+            }
+        }
+    }
+
     /// A drop-down at 50% on a 1280 x 720 window: the UI is 2560 x 1440
     /// units; a popup too wide for the room right of its button shifts
     /// left to end at the screen's right edge in units, is drawn inside the
