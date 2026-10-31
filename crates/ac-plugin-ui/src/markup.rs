@@ -753,6 +753,9 @@ pub enum Element {
         open: bool,
         /// Header caption colour.
         color: Option<ColorSource>,
+        /// Framed like a group box under a modern theme (`border`, default
+        /// true).
+        framed: bool,
     },
     /// Two panes with a bar between them the player drags.
     Split {
@@ -2839,6 +2842,9 @@ impl<'a> Parser<'a> {
                 let open = Self::strict_bool(el, "open", true, |other| {
                     format!("<expander open=\"{other}\"> must be true or false")
                 })?;
+                let framed = Self::strict_bool(el, "border", true, |other| {
+                    format!("<expander border=\"{other}\"> must be true or false")
+                })?;
                 let onchange = self.optional_action(
                     attr(el, "onchange"),
                     "expander onchange",
@@ -2862,6 +2868,7 @@ impl<'a> Parser<'a> {
                         onchange,
                         open,
                         color,
+                        framed,
                     },
                     common,
                     rect(el),

@@ -1467,6 +1467,7 @@ impl PluginPanelController {
                     let bound = expanded.as_ref().map(|e| bool_value(values, e));
                     let header = ui.widget_mut::<fold::MarkupExpander>(el).map(|w| {
                         w.bound = bound;
+                        w.palette = palette;
                         w.header
                     });
                     if let Some(h) = header.and_then(|h| ui.widget_mut::<fold::ExpanderHeader>(h)) {

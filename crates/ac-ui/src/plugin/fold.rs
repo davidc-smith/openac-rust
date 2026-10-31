@@ -112,7 +112,8 @@ pub type Shifts = Rc<RefCell<HashMap<ElementId, f32>>>;
 /// A header that folds away the content below it (OpenAC
 /// `UiMarkupExpander`). Folded, the siblings at or below its bottom move up
 /// by the height it gave up (stretched ones grow instead) and come back when
-/// it opens.
+/// it opens. Under a modern theme it is framed like a group box, with a band
+/// behind the header; Classic draws no frame.
 #[derive(Debug)]
 pub struct MarkupExpander {
     /// The header element.
@@ -125,6 +126,10 @@ pub struct MarkupExpander {
     pub open_by_default: bool,
     /// A flex container places it: folding only hides the content.
     pub flex_placed: bool,
+    /// The markup's `border`: a theme draws the frame and header band.
+    pub framed: bool,
+    /// The theme on a themed panel.
+    pub palette: Option<Palette>,
     host: Option<bool>,
     remembered: Remembered,
     laid_out: bool,
@@ -155,6 +160,8 @@ impl MarkupExpander {
             bound: None,
             open_by_default,
             flex_placed: false,
+            framed: true,
+            palette: None,
             host: None,
             remembered,
             laid_out: true,
@@ -187,6 +194,16 @@ impl MarkupExpander {
     #[must_use]
     pub fn laid_out_expanded(&self) -> bool {
         self.laid_out
+    }
+
+    /// How tall the frame is in a box `height` tall: folded it is just the
+    /// header, even where a flex container keeps the height.
+    fn frame_height(&self, height: f32) -> f32 {
+        if self.laid_out {
+            height
+        } else {
+            height.min(EXPANDER_HEADER_HEIGHT)
+        }
     }
 
     /// A header click or Enter/Space.
@@ -341,6 +358,46 @@ impl Widget for MarkupExpander {
     fn tick(&mut self, ui: &mut UiRoot, me: ElementId, _dt: f64) {
         let expanded = self.expanded();
         self.apply_layout(ui, me, expanded);
+    }
+
+    fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
+        let (w, h) = size(ui, me);
+        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+            return;
+        };
+        let h = self.frame_height(h);
+        let is_live = live(ui, me);
+        let r = style::CONTROL_RADIUS;
+        let radii = if h > EXPANDER_HEADER_HEIGHT {
+            CornerRadii::new(r, r, 0.0, 0.0)
+        } else {
+            CornerRadii::all(r)
+        };
+        rc.fill_vertical_gradient(
+            0.0,
+            0.0,
+            w,
+            h.min(EXPANDER_HEADER_HEIGHT),
+            radii,
+            fade(style::mix(p.background, p.text, 0.08), is_live),
+            fade(style::mix(p.background, p.text, 0.04), is_live),
+        );
+    }
+
+    // The border goes over the children, so content placed at the edge
+    // cannot hide it.
+    fn draw_after_children(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
+        let (w, h) = size(ui, me);
+        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+            return;
+        };
+        let h = self.frame_height(h);
+        let edge = fade(p.border, live(ui, me));
+        let radius = style::CONTROL_RADIUS;
+        style::surface(rc, 0.0, 0.0, w, h, radius, Color::TRANSPARENT, edge);
+        if h > EXPANDER_HEADER_HEIGHT {
+            rc.fill(1.0, EXPANDER_HEADER_HEIGHT - 1.0, w - 2.0, 1.0, edge);
+        }
     }
 }
 

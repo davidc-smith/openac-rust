@@ -850,3 +850,62 @@ fn a_themed_list_header_is_in_the_title_weight_and_classics_is_not() {
     let runs = text_runs(&element_list(&mut g, "l"));
     assert!(!runs.iter().any(|(t, _, _)| *t == semibold));
 }
+
+const EXPANDER: &str = r#"<expander name="x" x="8" y="8" w="200" h="100" text="Advanced"><label x="4" y="4" text="In"/></expander>"#;
+
+#[test]
+fn a_themed_expander_is_framed_round_its_content_with_a_band_and_a_divider() {
+    let mut g = control(EXPANDER);
+    let v = element_corners(&mut g, "x");
+    let edge: Vec<_> = v
+        .iter()
+        .filter(|(_, _, c)| c.a > 0.05 && same_rgb(*c, P.border))
+        .collect();
+    assert!(
+        span(edge.iter().map(|p| p.1)).1 > 8.0 + 90.0,
+        "reaches round the content"
+    );
+    assert!(
+        has_color(&v, style::mix(P.background, P.text, 0.08)),
+        "the band"
+    );
+    let divider = 8.0 + ac_plugin_ui::markup::EXPANDER_HEADER_HEIGHT - 1.0;
+    assert!(edge.iter().any(|(_, y, _)| *y == divider), "the divider");
+}
+
+#[test]
+fn a_folded_themed_expanders_frame_is_just_the_header() {
+    let mut g = control(EXPANDER);
+    let at = g.centre("x");
+    let header_y = 8 + 9;
+    g.click(MouseButton::Left, (at.0, header_y));
+    g.draw();
+    let v = element_corners(&mut g, "x");
+    let (_, bottom) = span(
+        v.iter()
+            .filter(|(_, _, c)| same_rgb(*c, P.border))
+            .map(|p| p.1),
+    );
+    let header = ac_plugin_ui::markup::EXPANDER_HEADER_HEIGHT;
+    assert!(bottom <= 8.0 + header + 0.51, "{bottom}");
+}
+
+#[test]
+fn a_themed_expander_with_border_false_has_no_frame() {
+    let mut g = control(
+        r#"<expander name="x" x="8" y="8" w="200" h="100" text="Advanced" border="false"/>"#,
+    );
+    let v = element_corners(&mut g, "x");
+    assert!(!has_color(&v, P.border));
+    assert!(!has_color(&v, style::mix(P.background, P.text, 0.08)));
+}
+
+#[test]
+fn a_classic_expander_has_no_frame() {
+    let mut g = control(EXPANDER);
+    g.set_theme(PluginTheme::Classic);
+    let v = element_corners(&mut g, "x");
+    let frame = super::controls::UNLIT_INNER;
+    assert!(!has_color(&v, frame));
+    assert!(v.iter().all(|(_, y, _)| *y < 8.0 + 20.0), "only its arrow");
+}
