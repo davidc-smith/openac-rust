@@ -479,7 +479,7 @@ fn spawn_console(
                 let command = match (console::parse(&line, &[]), &window) {
                     (ConsoleInput::Window { .. }, Some(host)) => {
                         let (to_window, from_session) = std::sync::mpsc::channel();
-                        let spec = prefs.window_spec("openAC".to_owned());
+                        let spec = prefs.window_spec();
                         if host
                             .attach_to_session(spec, from_session, commands.clone())
                             .is_err()

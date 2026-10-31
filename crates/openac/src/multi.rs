@@ -810,7 +810,7 @@ pub(crate) fn spawn_console(
                             let _ = old_session.send(SessionCommand::Detach);
                         }
                         let (to_window, from_session) = mpsc::channel();
-                        let spec = prefs.window_spec(format!("openAC - {id}"));
+                        let spec = prefs.window_spec();
                         tracker.attaching(&id);
                         if host
                             .attach_to_session(spec, from_session, s.clone())

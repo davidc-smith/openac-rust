@@ -1080,6 +1080,21 @@ impl WorldRenderer {
         self.stats
     }
 
+    /// Objects the loaded landblocks place: statics, scenery, buildings
+    /// and the statics of their interior cells (server objects not
+    /// included).
+    pub(crate) fn loaded_objects(&self) -> usize {
+        self.residents
+            .values()
+            .filter_map(|r| r.near.as_ref())
+            .map(|n| {
+                n.statics.len()
+                    + n.buildings.len()
+                    + n.cells.iter().map(|c| c.statics.len()).sum::<usize>()
+            })
+            .sum()
+    }
+
     /// Follow a new window size.
     pub(crate) fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.size == (width, height) || width == 0 || height == 0 {
