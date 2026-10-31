@@ -14,10 +14,12 @@ use std::sync::Arc;
 use ac_plugin_ui::list::{self, ColumnPress};
 use ac_plugin_ui::markup::{Column, ColumnHeader, ColumnKind};
 
+use super::style;
 use crate::draw::{Color, DEFAULT_OUTLINE_COLOR, RenderContext, TextureRef};
 use crate::event::{Key, UiEvent, kind};
 use crate::font::UiFont;
 use crate::root::{ElementMessage, UiRoot};
+use crate::shapes::CornerRadii;
 use crate::text::Scrollable;
 use crate::tree::{Element, ElementId, Widget};
 use crate::widgets::NineSliceFrame;
@@ -631,15 +633,17 @@ impl Widget for MarkupIcon {
     }
 }
 
-/// The panel's frame: the retail nine-piece chrome, or on a themed panel
-/// the theme's fill and border (OpenAC `UiNineSlicePanel`,
-/// `UiPluginMarkupPanel`).
+/// The panel's frame: the retail nine-piece chrome, or on a themed panel a
+/// rounded, shadowed window in the theme's colours, with a band behind its
+/// title (OpenAC `UiNineSlicePanel`, `UiPluginMarkupPanel`).
 #[derive(Debug, Clone, Default)]
 pub struct MarkupFrame {
     /// The retail chrome.
     pub chrome: NineSliceFrame,
     /// The theme in force on a themed panel.
     pub palette: Option<Palette>,
+    /// It has a title, which a theme draws a band behind.
+    pub has_title: bool,
 }
 
 impl Widget for MarkupFrame {
@@ -647,7 +651,12 @@ impl Widget for MarkupFrame {
         match self.palette {
             Some(p) => {
                 let (w, h) = size(ui, me);
-                rc.fill(0.0, 0.0, w, h, p.background);
+                style::window_shadow(rc, w, h);
+                let radii = CornerRadii::all(style::WINDOW_RADIUS);
+                rc.fill_rounded_rect(0.0, 0.0, w, h, radii, p.background);
+                if self.has_title {
+                    style::header(rc, &p, w, style::HEADER_HEIGHT);
+                }
             }
             None => self.chrome.draw(ui, me, rc),
         }
@@ -657,9 +666,10 @@ impl Widget for MarkupFrame {
         match self.palette {
             Some(p) => {
                 let (w, h) = size(ui, me);
-                rc.rect_outline(0.0, 0.0, w, h, p.border, 1.0);
+                let radii = CornerRadii::all(style::WINDOW_RADIUS - 0.5);
+                rc.stroke_rounded_rect(0.5, 0.5, w - 1.0, h - 1.0, radii, p.border, 1.0);
                 if ui.element(me).is_some_and(|e| e.resizable) {
-                    rc.fill(w - 7.0, h - 3.0, 5.0, 1.0, p.muted);
+                    style::resize_grip(rc, &p, w, h);
                 }
             }
             None => self.chrome.draw_after_children(ui, me, rc),

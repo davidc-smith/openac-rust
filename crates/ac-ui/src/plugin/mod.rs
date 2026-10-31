@@ -432,6 +432,7 @@ pub fn build_panel_with_state(
                 ..crate::widgets::NineSliceFrame::default()
             },
             palette: None,
+            has_title: false,
         },
     );
     // A window with chrome or a flex layout has a content area inside the
@@ -462,7 +463,7 @@ pub fn build_panel_with_state(
         None
     } else {
         spec.title.as_ref().map(|t| {
-            let mut e = Element::at(8.0, 4.0, 0.0, 0.0);
+            let mut e = Element::at(LEGACY_TITLE_LEFT, LEGACY_TITLE_TOP, 0.0, 0.0);
             e.click_through = true;
             let mut label = MarkupLabel::new(font.clone());
             label.text.clone_from(t);
@@ -640,6 +641,11 @@ pub fn build_panel_with_state(
     ui.capture_authored_anchor_baselines(root);
     controller
 }
+
+/// Where the legacy title label sits in Classic.
+const LEGACY_TITLE_LEFT: f32 = 8.0;
+/// Its top.
+const LEGACY_TITLE_TOP: f32 = 4.0;
 
 /// The shelf's minimize button's fill in Classic.
 const MINIMIZE_BACKGROUND: Color = Color::rgba(0.02, 0.02, 0.015, 0.94);
@@ -866,27 +872,42 @@ impl PluginPanelController {
             None => (self.classic_font.clone(), None),
         });
         let text_font = fonts.as_ref().map(|(text, _)| text);
+        // The title weight under a theme; Classic's own font under Classic.
+        let title_font = match (&self.modern_fonts, p) {
+            (Some(modern), Some(_)) => Some(Arc::clone(&modern.semibold)),
+            _ => text_font
+                .cloned()
+                .unwrap_or_else(|| self.classic_font.clone()),
+        };
+        let has_title = self.title.is_some() || self.title_bar.is_some();
         if let Some(frame) = ui.widget_mut::<MarkupFrame>(self.root) {
             frame.palette = palette;
+            frame.has_title = has_title;
         }
-        if let Some(title) = self.title
-            && let Some(label) = ui.widget_mut::<MarkupLabel>(title)
-        {
-            label.color = p.map_or(self.title_color, |p| p.text);
-            label.outline = p.is_none();
-            if let Some(f) = text_font {
-                label.font.clone_from(f);
+        if let Some(title) = self.title {
+            let line = title_font.as_ref().map_or(14.0, |f| f.line_height);
+            if let Some(label) = ui.widget_mut::<MarkupLabel>(title) {
+                label.color = p.map_or(self.title_color, |p| p.text);
+                label.outline = p.is_none();
+                label.font.clone_from(&title_font);
+            }
+            // Under a theme the title sits in the header band.
+            let at = match p {
+                Some(_) => (
+                    title_bar::THEMED_TEXT_LEFT,
+                    ((style::HEADER_HEIGHT - line) / 2.0).round().max(0.0),
+                ),
+                None => (LEGACY_TITLE_LEFT, LEGACY_TITLE_TOP),
+            };
+            if let Some(e) = ui.element_mut(title)
+                && (e.left, e.top) != at
+            {
+                (e.left, e.top) = at;
+                ui.capture_current_anchor_baseline(title);
             }
         }
         if let Some(bar) = self.title_bar {
-            // The theme's font and text colour without outline under a
-            // theme; Classic's own font, title colour and outline back
-            // under Classic. The themed close button's "x" takes the
-            // theme's font.
-            let font = text_font
-                .cloned()
-                .unwrap_or_else(|| self.classic_font.clone());
-            title_bar::TitleBar::set_palette(ui, bar, palette, font, self.title_color);
+            title_bar::TitleBar::set_palette(ui, bar, palette, title_font, self.title_color);
         }
         if let Some(content) = self.content
             && let Some(area) = ui
@@ -1819,5 +1840,7 @@ mod list_button_tests;
 mod repeat_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod theme_control_tests;
 #[cfg(test)]
 mod theme_tests;

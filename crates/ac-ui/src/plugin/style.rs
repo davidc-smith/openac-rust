@@ -482,4 +482,4 @@ pub fn resize_grip(rc: &mut RenderContext<'_>, p: &Palette, w: f32, h: f32) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

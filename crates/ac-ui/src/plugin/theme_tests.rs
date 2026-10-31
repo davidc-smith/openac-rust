@@ -21,9 +21,9 @@ use crate::event::{Key, Modifiers, MouseButton};
 use crate::font::Atlas;
 use crate::host::UiHost;
 
-const CLASSIC_TEXTURE: u32 = 0x0600_0001;
-const REGULAR_TEXTURE: u32 = 0x0600_0002;
-const SEMIBOLD_TEXTURE: u32 = 0x0600_0003;
+pub(super) const CLASSIC_TEXTURE: u32 = 0x0600_0001;
+pub(super) const REGULAR_TEXTURE: u32 = 0x0600_0002;
+pub(super) const SEMIBOLD_TEXTURE: u32 = 0x0600_0003;
 
 /// A font with a glyph for every printable ASCII character, seven pixels
 /// apart on 14-pixel lines, so its measurements are the same on every machine.
@@ -186,8 +186,8 @@ const BODY: &str = r##"
 "##;
 
 /// One window under test.
-struct Gallery {
-    host: UiHost,
+pub(super) struct Gallery {
+    pub(super) host: UiHost,
     state: PluginUi,
     panel: u32,
     revision: u64,
@@ -195,17 +195,24 @@ struct Gallery {
 }
 
 impl Gallery {
-    /// The window with `attributes` on its root, under `theme`.
+    /// The gallery with `attributes` on its root, under `theme`.
     fn new(attributes: &str, theme: PluginTheme) -> Self {
+        Self::of(
+            &format!(
+                r#"<panel x="10" y="10" w="600" h="510" title="Gallery" resizable="true" {attributes}>{BODY}</panel>"#
+            ),
+            theme,
+        )
+    }
+
+    /// The window `markup` describes, under `theme`.
+    pub(super) fn of(markup: &str, theme: PluginTheme) -> Self {
         let mut state = PluginUi::new();
-        let markup = format!(
-            r#"<panel x="10" y="10" w="600" h="510" title="Gallery" resizable="true" {attributes}>{BODY}</panel>"#
-        );
         let panel = state
             .register_panel(
                 &UiOwner::new("test.gallery", "Gallery"),
                 PanelDescriptor::new("main", "Gallery"),
-                &markup,
+                markup,
                 schema(),
             )
             .unwrap();
@@ -263,29 +270,29 @@ impl Gallery {
         self.tick();
     }
 
-    fn set_theme(&mut self, theme: PluginTheme) {
+    pub(super) fn set_theme(&mut self, theme: PluginTheme) {
         self.theme = theme;
         self.sync();
     }
 
-    fn set(&mut self, name: &str, value: UiValue) {
+    pub(super) fn set(&mut self, name: &str, value: UiValue) {
         self.state
             .set_values("test.gallery", self.panel, vec![(name.to_owned(), value)])
             .unwrap();
         self.sync();
     }
 
-    fn tick(&mut self) {
+    pub(super) fn tick(&mut self) {
         self.host.tick(0.016, 16, None);
     }
 
-    fn draw(&mut self) -> DrawList {
+    pub(super) fn draw(&mut self) -> DrawList {
         self.tick();
         self.host.draw((1024.0, 768.0), &EverySprite)
     }
 
     /// The screen centre of the named element.
-    fn centre(&self, name: &str) -> (i32, i32) {
+    pub(super) fn centre(&self, name: &str) -> (i32, i32) {
         let ui = &self.host.root;
         let found = find_named(ui, ui.root(), name).unwrap();
         let (x, y) = ui.screen_position(found);
@@ -293,14 +300,14 @@ impl Gallery {
         ((x + e.width / 2.0) as i32, (y + e.height / 2.0) as i32)
     }
 
-    fn click(&mut self, button: MouseButton, (x, y): (i32, i32)) {
+    pub(super) fn click(&mut self, button: MouseButton, (x, y): (i32, i32)) {
         self.host.mouse_move(x, y);
         self.host.mouse_down(button, x, y, 0);
         self.host.mouse_up(button, x, y, 0);
     }
 }
 
-fn find_named(ui: &UiRoot, start: ElementId, name: &str) -> Option<ElementId> {
+pub(super) fn find_named(ui: &UiRoot, start: ElementId, name: &str) -> Option<ElementId> {
     if ui.element(start)?.name.as_deref() == Some(name) {
         return Some(start);
     }
