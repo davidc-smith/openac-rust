@@ -28,6 +28,8 @@ fn typed(
     let operation = match bucket {
         1 => MULTIPLICATIVE,
         2 => ADDITIVE,
+        // Vitae records carry the multiplicative bit.
+        4 => MULTIPLICATIVE,
         _ => 0,
     };
     ActiveEnchantmentRecord {
@@ -647,6 +649,7 @@ fn spells_scale_first_and_add_second() {
 fn vitae_scales_the_augmented_skill() {
     let mut b = book(&[1]);
     b.on_enchantment_added(ActiveEnchantmentRecord {
+        stat_mod_type: Some(MULTIPLICATIVE),
         stat_mod_value: Some(0.95),
         bucket: 4,
         ..ActiveEnchantmentRecord::new(1, 1, 0.0, 0)
