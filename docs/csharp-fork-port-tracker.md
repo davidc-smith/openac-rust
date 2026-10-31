@@ -24,6 +24,43 @@ don't apply, or are dropped.
   Sizes are S (under a day), M (a few days) and L (a week or more). The IDs
   are used in the Needs column and in the suggested order.
 
+## Current focus
+
+Decided 2026-10-31. The work now is what plugins need to draw world art, and
+plugin HUDs that take clicks and move with Ctrl+drag. The Modern HUD decks are
+a separate project from these ports and are parked: no code that replaces
+retail UI goes in yet.
+
+Evidence for what plugins need comes from the Aethrix plugin: its world drawing
+and its five HUDs (status, XP, map, Vision, Wayfinder). Every item is in one of
+these groups:
+
+| Group | Items | Why |
+| --- | --- | --- |
+| **Focus: world art** | Done: F1 (awaiting Erik), F2, W1-W5, W11. To do: W6 | Vision's terrain drawing reads landblock terrain with W6, then draws it with triangles and lines |
+| **Focus: plugin HUDs** | F3, F4, P8, P9, P10, P15, P16, P18 | The five HUDs use all of these: remembered position (P18), screen size and outside presses for menus (P15), resize (P16), layers (P10), polygons, rounded rects and ellipses (F3, P9), fonts and SemiBold (F4, P8) |
+| **Parked: replaces retail UI** | F6, H1-H13 | Includes H5, even though it is logic only, because nothing uses it until H6 |
+| **Other C# ports, not now** | Plugin windows and dock: F5, P1-P7, P13, P14, P19. Canvas extras with no use found in the five HUDs: P11, P12, P17. Data for navigation: W7-W9. Levels: W10. Walks and live checks: G1-G8. Mac: M1 | Still to port, but no focus item needs them. P1 and P2 restyle plugin windows and the dock, not retail windows |
+
+**Clicks and Ctrl+drag already work in the API.** A canvas gets press, release,
+move, wheel and cancel events with the Shift, Ctrl and Alt bits, keeps the
+pointer until the button comes up, and can change its anchor and offset. Moving
+a HUD is plugin code, as `HudDrag.cs` does it in Aethrix, so no host work is
+needed for the move itself. This has not been tried live in Rust yet. On a Mac
+the bit means the physical Ctrl key; Command is not sent to plugins.
+
+Not in the C# fork, so not a port: a canvas setting the mouse cursor, so that
+holding Ctrl shows it can move (Aethrix `docs/api-gaps.md` #56, still open).
+
+Order within the focus:
+
+1. **Live check, no new code:** a test plugin's canvas takes clicks and moves
+   with Ctrl+drag, on the Mac and with Rust's real input path.
+2. **F3, then P9:** F3 adds no ABI and can start now. P9 waits for PR #51.
+3. **P18, P15, P16 and W6, after PR #51:** each adds to the ABI, so they would
+   conflict with it until it merges. P10 follows.
+4. **F4, then P8:** the largest piece, and it comes last.
+
 ## Shared foundations
 
 Build these six pieces first. Most features below depend on one of them, and
@@ -41,9 +78,9 @@ F1 has to be settled with Erik before any ABI change.
 ## World rendering and plugin world APIs
 
 World drawing is done on `main`: labels, lines, filled triangles, icons and
-ground shapes. All of it goes up as one PR from `feat/world-markers`, not open
-yet. Still missing are terrain reads (W6) and the indoor and floorplan data
-(W7 to W9).
+ground shapes. All of it is up as one PR, [#51](https://github.com/eriknihlen/openac-rust/pull/51),
+from `feat/world-markers`. Still missing are terrain reads (W6) and the indoor
+and floorplan data (W7 to W9).
 
 | ID | Feature (C# merge) | Rust today | What porting involves | Size | Needs | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -91,6 +128,8 @@ rather than a paint callback, so the canvas items become new `PaintCmd` and
 | P19 | Sample plugins: ControlsDemo, FlexDemo, ThemeGallery | Missing | Port as WASM samples to test the features above against. | S each | P1, P6 | Not started | Optional |
 
 ## Modern HUD decks
+
+Parked as of 2026-10-31, along with F6 (see Current focus).
 
 None of the decks are in Rust. The C# code is about 15,500 lines
 (`src/AcDream.App/UI/Hud`, 77 files, plus `AcDream.Core/Chat/Deck`). Each deck
@@ -160,6 +199,9 @@ These are already in Rust, don't apply to Rust's design, or have been dropped.
 | Gateway versions, per-product launchers, fork feed and navdata install (`eca0047c`, `3a2cf0db`, `5f774494`) | Dropped | One client. Use `--update-manifest-uri` to test fork builds. |
 
 ## Suggested order
+
+This is the order for the whole list, from before the focus was set. Current
+focus comes first and its order wins, and step 8 is parked.
 
 World drawing is done, so next come the dock and themes, then the decks. Each
 step depends only on the ones before it. A chain of work that builds on itself
