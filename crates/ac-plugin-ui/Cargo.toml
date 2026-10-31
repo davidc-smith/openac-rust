@@ -18,6 +18,10 @@ roxmltree.workspace = true
 # answer alike.
 fontdue.workspace = true
 ttf-parser.workspace = true
+# Inflates a plugin's icon.png, and the client's own icon (the launcher checks
+# and shows the same file).
+miniz_oxide.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

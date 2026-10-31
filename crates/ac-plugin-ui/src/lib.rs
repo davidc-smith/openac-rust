@@ -20,6 +20,7 @@ pub mod file_images;
 pub mod flex;
 pub mod fonts;
 pub mod hotkeys;
+pub mod icon;
 pub mod images;
 pub mod list;
 pub mod list_view;
