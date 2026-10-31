@@ -91,6 +91,11 @@ goes through `Host`: game state, items, chat, movement and navigation, trade
 and vendors, storage, network, peers, and UI. `cargo doc -p openac-plugin
 --open` shows the whole surface with its documentation.
 
+**Controls show what the plugin stores.** A checkbox, colour swatch or other bound
+control does not change itself. A click sends the value it asks for to the
+`onchange` handler, and the control shows whatever its binding says afterwards.
+Store the value and set the binding, or the control looks as if nothing happened.
+
 **Drawing like a themed window.** A canvas paints its own pixels, so it reads
 the theme with `host.theme()`, hears each change as `Event::ThemeChanged`, and
 repaints. For the same look, use the theme's colours, the bundled font's

@@ -19,13 +19,15 @@
 //!   the client's key map holds (refused while a window is attached).
 //!   `/uidemo hotkeys` logs how they stand, `/uidemo rebind` moves `ping`
 //!   to Ctrl+Shift+O; a press logs `uidemo hotkey <id>`.
+//! - `/uidemo typed` opens a window whose checkbox and colour picker use typed
+//!   bindings; what they send logs `uidemo typed <handler> <value>`.
 
 use openac_plugin::ui::{
     ActionValue, Anchor, BindingKind, Canvas, CanvasSpec, ClientWindow, Image, MapPoint,
     MarkerAnchor, MarkerLayer, Panel, PanelSpec, TriangleLayer, UiEvent, ground_ring, label, rgba,
     triangle, world_icon,
 };
-use openac_plugin::ui::{Font, FontWeight, PluginKey, chord};
+use openac_plugin::ui::{Font, FontWeight, PluginKey, TypedBindingKind, TypedValue, chord};
 use openac_plugin::{Event, Host, Plugin, StartInfo};
 
 /// The window's markup: OpenAC's vocabulary, `{Binding}`s declared below.
@@ -42,6 +44,12 @@ pub const MARKUP: &str = r##"<panel x="40" y="120" w="260" h="250" resizable="tr
   <button x="10" y="222" w="110" h="20" text="Inventory" onclick="{Inventory}" anchor="left,bottom"/>
   <button x="126" y="222" w="120" h="20" text="Hide canvas" onclick="{ToggleCanvas}" anchor="right,bottom"/>
 </panel>"##;
+
+/// A window whose controls use typed bindings.
+const TYPED_MARKUP: &str = r#"<panel x="40" y="400" w="200" h="80" title="Typed">
+  <checkbox x="8" y="28" w="100" h="18" text="Loot" checked="{Maybe}" onchange="{SetFlag}"/>
+  <color x="8" y="50" w="28" h="20" value="{Colour}" onchange="{SetColour}"/>
+</panel>"#;
 
 /// A CFF OpenType font of the plugin's own.
 const OWN_FONT: &[u8] =
@@ -358,6 +366,23 @@ impl Plugin for UiDemo {
                         let done = host.set_control_label("main", "Headline", rest);
                         host.info(&format!("uidemo rename: {done}"));
                     }
+                    "typed" => {
+                        let spec = PanelSpec::new("typed", "Typed", TYPED_MARKUP)
+                            .bind_typed("Maybe", TypedBindingKind::OptionalBool)
+                            .bind_typed("SetFlag", TypedBindingKind::BoolAction)
+                            .bind_typed("Colour", TypedBindingKind::Uint)
+                            .bind_typed("SetColour", TypedBindingKind::UintAction);
+                        match host.register_panel(&spec) {
+                            Ok(mut panel) => {
+                                panel.set("Maybe", TypedValue::OptionalBool(None));
+                                panel.set("Colour", TypedValue::Uint(0xFF33_6699));
+                                let flushed = panel.flush(host);
+                                panel.show(host, true);
+                                host.info(&format!("uidemo typed: {flushed:?}"));
+                            }
+                            Err(why) => host.info(&format!("uidemo typed refused: {why}")),
+                        }
+                    }
                     "hotkeys" => Self::hotkeys(host, "now"),
                     "actions" => {
                         let listen = rest != "off";
@@ -370,6 +395,13 @@ impl Plugin for UiDemo {
                     }
                     _ => self.report(host, "status"),
                 }
+            }
+            Event::Ui(UiEvent::Action(action)) if action.handler == "SetFlag" => {
+                host.info(&format!("uidemo typed SetFlag {:?}", action.value.as_bool()));
+            }
+            Event::Ui(UiEvent::Action(action)) if action.handler == "SetColour" => {
+                let colour = action.value.as_uint().map(|c| format!("{c:08X}"));
+                host.info(&format!("uidemo typed SetColour {colour:?}"));
             }
             Event::Ui(UiEvent::Action(action)) => {
                 match (action.handler.as_str(), action.value) {

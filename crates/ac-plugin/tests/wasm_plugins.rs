@@ -1687,6 +1687,61 @@ fn import_census() {
     assert_eq!(census, expected);
 }
 
+/// A window's typed bindings answer through a real module: a checkbox whose
+/// state is unset draws from `OptionalBool` and sends a `BoolAction`, and a
+/// colour picker sends its pick back as a `UintAction`.
+#[test]
+fn typed_bool_and_uint_actions_reach_a_real_plugin() {
+    use ac_plugin_ui::{ActionValue, UiInput, UiValue};
+    let root = Root::new("typed-actions");
+    install(&root.0, "uidemo");
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], Some(&["openac.uidemo"]));
+    plugins.start(&mut api);
+    assert!(plugins.handle_line("/uidemo typed", &mut api));
+    let panel = api
+        .ui
+        .panels()
+        .find(|p| p.descriptor.window_id == "typed")
+        .expect("the typed window")
+        .clone();
+    assert_eq!(
+        panel.values.get("Maybe"),
+        Some(&UiValue::OptionalBool(None))
+    );
+    assert_eq!(
+        panel.values.get("Colour"),
+        Some(&UiValue::Uint(0xFF33_6699))
+    );
+    for (handler, value) in [
+        ("SetFlag", ActionValue::Bool(true)),
+        ("SetFlag", ActionValue::Bool(false)),
+        ("SetColour", ActionValue::Uint(0x8011_2233)),
+    ] {
+        api.ui.input(UiInput::Action {
+            panel: panel.id,
+            handler: handler.to_owned(),
+            value,
+        });
+    }
+    plugins.pump(0.0, None, &mut api);
+    let heard: Vec<&str> = api
+        .logs
+        .iter()
+        .map(|(_, _, line)| line.as_str())
+        .filter(|line| line.starts_with("uidemo typed Set"))
+        .collect();
+    assert_eq!(
+        heard,
+        [
+            "uidemo typed SetFlag Some(true)",
+            "uidemo typed SetFlag Some(false)",
+            "uidemo typed SetColour Some(\"80112233\")",
+        ]
+    );
+    plugins.shutdown(&mut api);
+}
+
 /// A plugin installed with an `icon.png` has it on its windows' shelf
 /// buttons (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`); one without,
 /// or with a file the icon rules refuse, has none and the shelf falls back

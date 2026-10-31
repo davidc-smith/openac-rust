@@ -975,3 +975,76 @@ fn a_palette_is_light_only_under_parchment() {
         );
     }
 }
+
+/// What the window's controls sent since the last call.
+fn sent(g: &Gallery) -> Vec<(String, ActionValue)> {
+    g.outbox
+        .borrow_mut()
+        .drain(..)
+        .filter_map(|i| match i {
+            ac_plugin_ui::UiInput::Action { handler, value, .. } => Some((handler, value)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Bound controls ask, and the plugin decides: a click sends what it asks
+/// for, and the control shows only what the plugin stores. A plugin that hears
+/// and stores nothing leaves them looking as if nothing happened.
+#[test]
+fn a_checkbox_and_a_colour_send_by_pointer_and_show_only_what_is_stored() {
+    use ac_plugin_ui::UiValue;
+    for theme in [PluginTheme::Moss, PluginTheme::Classic] {
+        let mut g = window(
+            r#"title="T""#,
+            r#"<checkbox name="tick" x="10" y="30" w="50" h="20" text="Tick" checked="{On}" onchange="{SetFlag}"/>
+               <checkbox name="empty" x="70" y="30" w="50" h="20" text="Empty" checked="{Flag}" onchange="{SetFlag}"/>
+               <checkbox name="some" x="130" y="30" w="60" h="20" text="Some" checked="{Maybe}" onchange="{SetFlag}"/>
+               <color name="swatch" x="10" y="60" w="28" h="24" value="{Colour}" onchange="{SetColour}"/>"#,
+        );
+        g.set_theme(theme);
+        let state = |g: &Gallery, name: &str| {
+            let ui = &g.host.root;
+            let found = find_named(ui, ui.root(), name).unwrap();
+            ui.widget::<controls::MarkupCheckbox>(found).unwrap().state
+        };
+        for (name, before, asked) in [
+            ("tick", Some(true), false),
+            ("empty", Some(false), true),
+            ("some", None, true),
+        ] {
+            let at = g.centre(name);
+            g.click(MouseButton::Left, at);
+            g.tick();
+            assert_eq!(
+                sent(&g),
+                [("SetFlag".to_owned(), ActionValue::Bool(asked))],
+                "{theme:?} {name}"
+            );
+            assert_eq!(state(&g, name), before, "{theme:?} {name}: nothing stored");
+        }
+        g.set("Flag", UiValue::Bool(true));
+        assert_eq!(state(&g, "empty"), Some(true), "{theme:?}: once stored");
+
+        let at = g.centre("swatch");
+        g.click(MouseButton::Left, at);
+        g.tick();
+        assert!(sent(&g).is_empty(), "{theme:?}: opening asks for nothing");
+        // Into the square of the picker, which opens under the swatch.
+        g.click(MouseButton::Left, (at.0 + 40, at.1 + 70));
+        g.tick();
+        let picked = sent(&g);
+        let [(handler, ActionValue::Uint(colour))] = picked.as_slice() else {
+            panic!("{theme:?}: {picked:?}");
+        };
+        assert_eq!(handler, "SetColour");
+        assert_ne!(*colour, 0x8033_6699);
+        // A click outside closes it with the pick kept: nothing goes back.
+        g.click(MouseButton::Left, (1000, 700));
+        g.tick();
+        assert!(sent(&g).is_empty(), "{theme:?}");
+        let ui = &g.host.root;
+        let found = find_named(ui, ui.root(), "swatch").unwrap();
+        assert!(!ui.widget::<color::MarkupColor>(found).unwrap().is_open());
+    }
+}

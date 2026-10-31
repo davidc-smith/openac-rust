@@ -192,6 +192,8 @@ pub(super) struct Gallery {
     panel: u32,
     revision: u64,
     theme: PluginTheme,
+    /// What the window's controls sent.
+    pub(super) outbox: PluginOutbox,
 }
 
 impl Gallery {
@@ -225,7 +227,7 @@ impl Gallery {
             &mut host.root,
             &view,
             Some(test_font(CLASSIC_TEXTURE)),
-            outbox,
+            Rc::clone(&outbox),
         )
         .with_modern_fonts(Some(ModernFonts {
             regular: test_font(REGULAR_TEXTURE),
@@ -250,6 +252,7 @@ impl Gallery {
             panel,
             revision: 1,
             theme,
+            outbox,
         };
         gallery.tick();
         gallery
