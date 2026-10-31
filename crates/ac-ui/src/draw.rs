@@ -1023,16 +1023,40 @@ impl<'a> RenderContext<'a> {
         top: Color,
         bottom: Color,
     ) {
+        self.fill_gradient((x, y, w, h), radii, top, bottom, |v| (v.y - y) / h);
+    }
+
+    /// A rounded rectangle whose colour runs from `left` to `right`. Each
+    /// corner of the shape takes the colour at its place across; the soft
+    /// edge keeps its own transparency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_horizontal_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        left: Color,
+        right: Color,
+    ) {
+        self.fill_gradient((x, y, w, h), radii, left, right, |v| (v.x - x) / w);
+    }
+
+    /// A rounded rectangle whose corners each take the colour `along` says
+    /// they are from `start` to `end`.
+    fn fill_gradient(
+        &mut self,
+        rect: shapes::ShapeRect,
+        radii: CornerRadii,
+        start: Color,
+        end: Color,
+        along: impl Fn(&ColorVertex) -> f32,
+    ) {
         let mut shape = Vec::new();
-        shapes::fill_rounded_rect(
-            (x, y, w, h),
-            radii,
-            Color::WHITE,
-            self.device_pixel,
-            &mut shape,
-        );
+        shapes::fill_rounded_rect(rect, radii, Color::WHITE, self.device_pixel, &mut shape);
         for v in &mut shape {
-            let c = top.lerp(bottom, ((v.y - y) / h).clamp(0.0, 1.0));
+            let c = start.lerp(end, along(v).clamp(0.0, 1.0));
             v.color = Color {
                 a: c.a * v.color.a,
                 ..c
@@ -2218,6 +2242,47 @@ mod tests {
         // The rim beyond the shape holds the end colour, faded out.
         let rim = v.iter().find(|p| p.y == 99.5).expect("the top rim");
         assert_eq!(rim.color, Color { a: 0.0, ..RED });
+    }
+
+    #[test]
+    fn a_horizontal_gradient_takes_the_colour_at_its_place_and_keeps_its_soft_edge() {
+        let list = with_ctx(|c| {
+            c.fill_horizontal_gradient(100.0, 0.0, 100.0, 50.0, CornerRadii::default(), RED, BLUE);
+        });
+        let v = triangles(&list);
+        let solid_left = v
+            .iter()
+            .find(|p| p.x == 100.5 && p.color.a == 1.0)
+            .expect("the solid ring's left");
+        assert!((solid_left.color.r - 0.995).abs() < 1e-4);
+        let solid_right = v
+            .iter()
+            .find(|p| p.x == 199.5 && p.color.a == 1.0)
+            .expect("the solid ring's right");
+        assert!((solid_right.color.b - 0.995).abs() < 1e-4);
+        // The rim beyond the shape holds the end colour, faded out.
+        let rim = v.iter().find(|p| p.x == 99.5).expect("the left rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..RED });
+        let rim = v.iter().find(|p| p.x == 200.5).expect("the right rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..BLUE });
+    }
+
+    /// Rounded corners keep to the line between the two colours, and a shape
+    /// with no width draws nothing rather than dividing by it.
+    #[test]
+    fn a_horizontal_gradient_follows_rounded_corners_and_ignores_an_empty_shape() {
+        let list = with_ctx(|c| {
+            c.fill_horizontal_gradient(0.0, 0.0, 100.0, 50.0, CornerRadii::all(10.0), RED, BLUE);
+        });
+        for p in triangles(&list) {
+            let t = (p.x / 100.0).clamp(0.0, 1.0);
+            assert!((p.color.b - t).abs() < 1e-4, "{p:?}");
+            assert!((p.color.r - (1.0 - t)).abs() < 1e-4, "{p:?}");
+        }
+        let empty = with_ctx(|c| {
+            c.fill_horizontal_gradient(0.0, 0.0, 0.0, 50.0, CornerRadii::default(), RED, BLUE);
+        });
+        assert!(empty.main.is_empty());
     }
 
     #[test]
