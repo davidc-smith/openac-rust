@@ -763,9 +763,10 @@ pub struct TriangleLayer {
 }
 
 impl TriangleLayer {
-    /// Replaces the layer's triangles (the first 65,536 are kept). Meant
-    /// for sets of up to a few thousand replaced a few times a second, not
-    /// every frame.
+    /// Replaces the layer's triangles. False, and the layer keeps what it
+    /// had, when this set and the plugin's other layers' triangles come to
+    /// more than 65,536. Meant for sets of up to a few thousand replaced a
+    /// few times a second, not every frame.
     pub fn set_triangles(self, host: &mut Host<'_>, triangles: &[WorldTriangle]) -> bool {
         let request = TriangleSet {
             layer: self.id,

@@ -1103,7 +1103,9 @@ wire_record! {
     pub struct TriangleSet {
         /// The layer.
         pub layer: u32,
-        /// Its triangles from now on (the first 65,536 are kept).
+        /// Its triangles from now on. Refused (false, the layer keeps what
+        /// it had) when they and the plugin's other layers' triangles come to
+        /// more than 65,536.
         pub triangles: Vec<WorldTriangle>,
     }
 }

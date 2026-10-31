@@ -725,20 +725,56 @@ fn triangle_layers_belong_to_their_plugin_and_go_with_it() {
         ui.take_changes().last(),
         Some(UiChange::Triangles(t)) if t.len() == 4
     ));
-    assert!(ui.set_triangles(
-        "edwards.tank",
-        a,
-        vec![triangle; MAXIMUM_TRIANGLES_PER_LAYER + 10]
-    ));
-    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES_PER_LAYER + 1);
-    assert!(ui.snapshot().iter().any(
-        |c| matches!(c, UiChange::Triangles(t) if t.len() == MAXIMUM_TRIANGLES_PER_LAYER + 1)
-    ));
+    assert!(ui.set_triangles("edwards.tank", a, vec![triangle; MAXIMUM_TRIANGLES]));
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES + 1);
+    assert!(
+        ui.snapshot()
+            .iter()
+            .any(|c| matches!(c, UiChange::Triangles(t) if t.len() == MAXIMUM_TRIANGLES + 1))
+    );
     ui.release("edwards.tank");
     assert_eq!(ui.merged_triangles().len(), 1);
     assert!(!ui.remove_triangle_layer("edwards.tank", b));
     assert!(ui.remove_triangle_layer("another.plugin", b));
     assert!(ui.merged_triangles().is_empty());
+}
+
+/// A plugin holds at most `MAXIMUM_TRIANGLES` across its layers, as it
+/// does icons and shapes: a set that would take it over is refused and the
+/// layer keeps what it had, so more layers buy no more triangles. Other
+/// plugins count apart.
+#[test]
+fn a_plugin_holds_a_limited_number_of_triangles_across_its_layers() {
+    let mut ui = PluginUi::new();
+    let corner = crate::model::MapPoint::default();
+    let triangle = WorldTriangle {
+        corners: [corner; 3],
+        colors_rgba: [0xFF00_0080; 3],
+    };
+    let half = MAXIMUM_TRIANGLES / 2;
+    let a = ui.create_triangle_layer("edwards.tank");
+    let b = ui.create_triangle_layer("edwards.tank");
+    let c = ui.create_triangle_layer("edwards.tank");
+    let other = ui.create_triangle_layer("another.plugin");
+    assert!(ui.set_triangles("edwards.tank", a, vec![triangle; half]));
+    assert!(ui.set_triangles("edwards.tank", b, vec![triangle; half]));
+    drop(ui.take_changes());
+    assert!(!ui.set_triangles("edwards.tank", c, vec![triangle]));
+    assert!(ui.take_changes().is_empty());
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES);
+    // Replacing a layer counts its new set, not the one it replaces.
+    assert!(ui.set_triangles("edwards.tank", b, vec![triangle; half - 1]));
+    assert!(ui.set_triangles("edwards.tank", c, vec![triangle]));
+    assert!(!ui.set_triangles("edwards.tank", a, vec![triangle; half + 1]));
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES);
+    // One set over the limit is refused whole.
+    assert!(!ui.set_triangles(
+        "another.plugin",
+        other,
+        vec![triangle; MAXIMUM_TRIANGLES + 1]
+    ));
+    assert!(ui.set_triangles("another.plugin", other, vec![triangle; MAXIMUM_TRIANGLES]));
+    assert_eq!(ui.merged_triangles().len(), 2 * MAXIMUM_TRIANGLES);
 }
 
 fn icon(anchor: crate::model::MarkerAnchor) -> crate::model::WorldIcon {

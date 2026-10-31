@@ -111,9 +111,10 @@ are drawn from both sides and unlit. Walls and hills in front hide them, but
 overlapping triangles blend rather than hide each other. A triangle does not
 follow the ground, so lift one meant to lie on it by about 0.1 m. The client
 draws what is within 250 m of the camera and in view, nearest first when a
-frame holds more than about twelve thousand. A layer keeps at most 65,536
-triangles; send a few thousand at a time, a few times a second, not every
-frame.
+frame holds more than about twelve thousand. A plugin holds at most 65,536
+triangles across its layers; a set that goes over is refused, and the layer
+keeps what it had. Send a few thousand at a time, a few times a second, not
+every frame.
 
 *Markers* are pinned by a `MarkerAnchor`: an object by its id, which they
 follow, or a `MapPoint` and whether it is on the landscape. A marker over an
