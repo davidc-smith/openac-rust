@@ -543,6 +543,474 @@ fn hiding_keeps_it_hidden_and_showing_again_also_expands_it() {
     assert!(rig.size().1 > layout::PILL_LENGTH);
 }
 
+// ── Snapping ────────────────────────────────────────────────────────────
+
+impl Rig {
+    /// A dock of two windows of one plugin in `mode`, away from the corners.
+    fn in_mode(mode: DockMode) -> Self {
+        let mut rig = Self::new(SCREEN.1, PluginTheme::Moss);
+        rig.add("test", "Test", PanelDescriptor::new("a", "Window A"));
+        rig.add("test", "Test", PanelDescriptor::new("b", "Window B"));
+        rig.sync_plain();
+        rig.with(|c, ui| c.set_mode(ui, mode));
+        rig.tick();
+        rig
+    }
+
+    fn mode(&mut self) -> DockMode {
+        self.with(|c, _| c.mode())
+    }
+
+    /// Presses on the handle row, `offset` in from the dock's corner, and
+    /// returns where.
+    fn grab(&mut self, offset: (i32, i32)) -> (i32, i32) {
+        let (left, top) = self.at();
+        let (x, y) = (left as i32 + offset.0, top as i32 + offset.1);
+        self.host.mouse_move(x, y);
+        self.host.mouse_down(MouseButton::Left, x, y, 0);
+        (x, y)
+    }
+
+    fn move_to(&mut self, x: i32, y: i32) {
+        self.host.mouse_move(x, y);
+        self.tick();
+    }
+
+    fn release(&mut self, x: i32, y: i32) {
+        self.host.mouse_up(MouseButton::Left, x, y, 0);
+        self.tick();
+    }
+
+    /// A press, one move and a release.
+    fn drag(&mut self, offset: (i32, i32), by: (i32, i32)) {
+        let (x, y) = self.grab(offset);
+        self.move_to(x + by.0, y + by.1);
+        self.release(x + by.0, y + by.1);
+    }
+
+    /// The modes a drag goes through in `count` steps of `step`.
+    fn steps(&mut self, from: (i32, i32), step: (i32, i32), count: i32) -> Vec<DockMode> {
+        (1..=count)
+            .map(|i| {
+                self.move_to(from.0 + step.0 * i, from.1 + step.1 * i);
+                self.mode()
+            })
+            .collect()
+    }
+}
+
+fn changes(modes: &[DockMode], start: DockMode) -> usize {
+    let mut last = start;
+    let mut n = 0;
+    for mode in modes {
+        if *mode != last {
+            n += 1;
+        }
+        last = *mode;
+    }
+    n
+}
+
+const ON_HANDLE: (i32, i32) = (10, 5);
+const ON_TURNED_HANDLE: (i32, i32) = (5, 10);
+
+#[test]
+fn picking_a_mode_moves_the_dock_and_keeps_its_place_along_the_edge() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let (_, top) = rig.at();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Left));
+    rig.tick();
+    assert_eq!(
+        (rig.at(), rig.size().0),
+        ((0.0, top), layout::RAIL_THICKNESS)
+    );
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Right));
+    rig.tick();
+    assert_eq!(rig.at(), (800.0 - layout::RAIL_THICKNESS, top));
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Floating));
+    rig.tick();
+    assert_eq!(rig.at(), (800.0 - layout::FLOATING_THICKNESS - 10.0, top));
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Left));
+    rig.tick();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Floating));
+    rig.tick();
+    assert_eq!(rig.at().0, 10.0);
+}
+
+#[test]
+fn top_and_bottom_rails_lie_along_their_edges_and_float_ten_in() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Top));
+    rig.tick();
+    assert_eq!(rig.at(), (300.0, 0.0));
+    assert_eq!(rig.size().1, layout::RAIL_THICKNESS);
+    assert!(rig.size().0 > rig.size().1);
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Bottom));
+    rig.tick();
+    assert_eq!(rig.at(), (300.0, 600.0 - layout::RAIL_THICKNESS));
+    rig.with(|c, ui| c.set_mode(ui, DockMode::FloatingHorizontal));
+    rig.tick();
+    assert_eq!(rig.at(), (300.0, 600.0 - layout::FLOATING_THICKNESS - 10.0));
+    assert_eq!(rig.size().1, layout::FLOATING_THICKNESS);
+}
+
+#[test]
+fn dragging_near_the_left_edge_snaps_at_once() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.move_to(x - 4, y + 30);
+    assert_eq!(rig.mode(), DockMode::Left);
+    assert_eq!(rig.at().0, 0.0);
+    assert_eq!(rig.size().0, layout::RAIL_THICKNESS);
+    rig.release(x - 4, y + 30);
+    assert_eq!(rig.mode(), DockMode::Left);
+    assert_eq!(rig.at().1, DEFAULT_TOP + 30.0);
+}
+
+#[test]
+fn dragging_near_the_right_edge_snaps_to_the_right() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.drag(ON_HANDLE, (800 - 48 - 10 - 4, 0));
+    assert_eq!(rig.mode(), DockMode::Right);
+    assert_eq!(rig.at().0, 800.0 - layout::RAIL_THICKNESS);
+}
+
+#[test]
+fn dragging_near_the_top_edge_turns_the_dock_into_a_top_rail() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    rig.drag(ON_HANDLE, (20, -96));
+    assert_eq!(rig.mode(), DockMode::Top);
+    assert_eq!(rig.at(), (320.0, 0.0));
+    assert_eq!(rig.size().1, layout::RAIL_THICKNESS);
+}
+
+#[test]
+fn dragging_past_the_bottom_edge_turns_the_dock_into_a_bottom_rail() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 100.0, 100.0);
+    rig.tick();
+    let (x, _) = rig.grab(ON_HANDLE);
+    // The dock's bottom reaches the edge first, with the pointer nearer the
+    // left: it stays floating until the bottom is the edge the pointer is near.
+    let (_, h) = rig.size();
+    rig.move_to(x, 600 - h as i32 + 5);
+    assert_eq!(rig.mode(), DockMode::Floating);
+    rig.move_to(x, 590);
+    assert_eq!(rig.mode(), DockMode::Bottom);
+    rig.release(x, 590);
+    assert_eq!(rig.at().1, 600.0 - layout::RAIL_THICKNESS);
+}
+
+#[test]
+fn a_rail_slides_along_its_edge_and_floats_when_pulled_more_than_32_away() {
+    let mut rig = Rig::in_mode(DockMode::Left);
+    let top = rig.at().1;
+    rig.drag(ON_HANDLE, (20, 60));
+    assert_eq!(rig.mode(), DockMode::Left);
+    assert_eq!(rig.at(), (0.0, top + 60.0));
+    rig.drag(ON_HANDLE, (40, 0));
+    assert_eq!(rig.mode(), DockMode::Floating);
+    assert_eq!(rig.size().0, layout::FLOATING_THICKNESS);
+    assert_eq!(rig.at().0, 40.0);
+}
+
+#[test]
+fn a_top_or_bottom_rail_pulled_away_floats_horizontally() {
+    let mut rig = Rig::in_mode(DockMode::Top);
+    rig.host.root.move_window(WINDOW, 300.0, 0.0);
+    rig.tick();
+    let left = rig.at().0;
+    rig.drag(ON_TURNED_HANDLE, (50, 20));
+    assert_eq!(rig.mode(), DockMode::Top);
+    assert_eq!(rig.at(), (left + 50.0, 0.0));
+    rig.drag(ON_TURNED_HANDLE, (0, 40));
+    assert_eq!(rig.mode(), DockMode::FloatingHorizontal);
+    assert_eq!(rig.size().1, layout::FLOATING_THICKNESS);
+
+    let mut rig = Rig::in_mode(DockMode::Bottom);
+    rig.host.root.move_window(WINDOW, 300.0, 600.0);
+    rig.tick();
+    rig.drag(ON_TURNED_HANDLE, (0, -40));
+    assert_eq!(rig.mode(), DockMode::FloatingHorizontal);
+}
+
+#[test]
+fn rails_stay_on_their_edges_when_the_screen_resizes() {
+    let mut rig = Rig::in_mode(DockMode::Right);
+    rig.host.root.set_size(1000.0, 600.0);
+    rig.tick();
+    assert_eq!(rig.at().0, 1000.0 - layout::RAIL_THICKNESS);
+
+    let mut rig = Rig::in_mode(DockMode::Bottom);
+    rig.host.root.set_size(800.0, 700.0);
+    rig.tick();
+    assert_eq!(rig.at().1, 700.0 - layout::RAIL_THICKNESS);
+    rig.host.root.set_size(800.0, 500.0);
+    rig.tick();
+    assert_eq!(rig.at().1, 500.0 - layout::RAIL_THICKNESS);
+}
+
+#[test]
+fn a_right_rail_grabbed_near_its_inner_edge_slides_and_stays_a_rail() {
+    let mut rig = Rig::in_mode(DockMode::Right);
+    let top = rig.at().1;
+    let (x, y) = rig.grab((5, 5));
+    let modes = rig.steps((x, y), (0, 6), 8);
+    assert!(modes.iter().all(|m| *m == DockMode::Right));
+    assert_eq!(rig.at(), (800.0 - layout::RAIL_THICKNESS, top + 48.0));
+    rig.release(x, y + 48);
+    assert_eq!(rig.mode(), DockMode::Right);
+}
+
+#[test]
+fn a_slow_drag_to_any_edge_changes_mode_once() {
+    // To the right, grabbed near the dock's near edge.
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let from = rig.grab((2, 5));
+    let modes = rig.steps(from, (2, 0), 400);
+    assert_eq!(changes(&modes, DockMode::Floating), 1);
+    assert_eq!(rig.mode(), DockMode::Right);
+
+    // To the left, with a far grab.
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 600.0, DEFAULT_TOP);
+    rig.tick();
+    let from = rig.grab((28, 5));
+    let modes = rig.steps(from, (-2, 0), 330);
+    assert_eq!(changes(&modes, DockMode::Floating), 1);
+    assert_eq!(rig.mode(), DockMode::Left);
+
+    // Up to the top.
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 300.0);
+    rig.tick();
+    let from = rig.grab(ON_HANDLE);
+    let modes = rig.steps(from, (0, -2), 200);
+    assert_eq!(changes(&modes, DockMode::Floating), 1);
+    assert_eq!(rig.mode(), DockMode::Top);
+
+    // Down to the bottom.
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    let from = rig.grab(ON_HANDLE);
+    let modes = rig.steps(from, (0, 2), 280);
+    assert_eq!(changes(&modes, DockMode::Floating), 1);
+    assert_eq!(rig.mode(), DockMode::Bottom);
+}
+
+#[test]
+fn a_dock_that_snaps_by_its_far_end_holds_on_as_the_pointer_carries_on() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    let from = rig.grab(ON_HANDLE);
+    let (_, h) = rig.size();
+    // Down until its bottom meets the edge, far from the pointer.
+    rig.move_to(from.0, 600 - h as i32 + 5);
+    assert_eq!(rig.mode(), DockMode::Bottom);
+    // The rail is now well below the pointer; moving on does not pull it off.
+    let y = 600 - h as i32 + 5;
+    for i in 1..=4 {
+        rig.move_to(from.0, y - i * 5);
+        assert_eq!(rig.mode(), DockMode::Bottom);
+    }
+    rig.move_to(from.0, y - 40);
+    assert_eq!(rig.mode(), DockMode::FloatingHorizontal);
+}
+
+#[test]
+fn a_rail_pulled_away_floats_and_stays_floating_on_further_small_moves() {
+    let mut rig = Rig::in_mode(DockMode::Left);
+    let from = rig.grab(ON_HANDLE);
+    let modes = rig.steps(from, (3, 1), 30);
+    let first = modes.iter().position(|m| *m == DockMode::Floating).unwrap();
+    assert!(first > 0);
+    assert!(modes[first..].iter().all(|m| *m == DockMode::Floating));
+}
+
+#[test]
+fn dragging_another_window_near_an_edge_does_not_snap_the_dock() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let other = rig.host.root.insert(
+        {
+            let mut e = Element::at(400.0, 300.0, 100.0, 100.0);
+            e.window_move_handle = true;
+            e
+        },
+        DockGear::default(),
+    );
+    let top = rig.host.root.root();
+    rig.host.root.add_child(top, other);
+    // A dock left touching an edge by a saved place, with the pointer near it.
+    rig.host.root.move_window(WINDOW, 4.0, 200.0);
+    rig.tick();
+    rig.host.mouse_move(420, 320);
+    rig.host.mouse_down(MouseButton::Left, 420, 320, 0);
+    assert!(rig.host.root.is_window_move_active());
+    rig.move_to(5, 320);
+    rig.release(5, 320);
+    assert_eq!(rig.mode(), DockMode::Floating);
+}
+
+#[test]
+fn a_press_that_never_moves_the_dock_leaves_its_mode_alone() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    // Left touching an edge by a saved place.
+    rig.host.root.move_window(WINDOW, 4.0, 200.0);
+    rig.tick();
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.tick();
+    rig.release(x, y);
+    assert_eq!(rig.mode(), DockMode::Floating);
+    // The first real move is what snaps it.
+    rig.drag(ON_HANDLE, (0, 1));
+    assert_eq!(rig.mode(), DockMode::Left);
+}
+
+#[test]
+fn a_whole_drag_between_two_frames_still_snaps_and_saves() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let (_, y) = rig.grab(ON_HANDLE);
+    rig.host.mouse_move(4, y);
+    rig.host.mouse_up(MouseButton::Left, 4, y, 0);
+    rig.tick();
+    assert_eq!(rig.mode(), DockMode::Left);
+    assert_eq!(rig.at().0, 0.0);
+}
+
+#[test]
+fn a_press_and_release_between_frames_is_not_taken_for_another_windows_drag() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let other = rig.host.root.insert(
+        {
+            let mut e = Element::at(400.0, 300.0, 100.0, 100.0);
+            e.window_move_handle = true;
+            e
+        },
+        DockGear::default(),
+    );
+    let top = rig.host.root.root();
+    rig.host.root.add_child(top, other);
+    rig.host.root.move_window(WINDOW, 4.0, 200.0);
+    rig.tick();
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.host.mouse_up(MouseButton::Left, x, y, 0);
+    rig.tick();
+    rig.host.mouse_move(420, 320);
+    rig.host.mouse_down(MouseButton::Left, 420, 320, 0);
+    rig.move_to(30, 320);
+    rig.release(30, 320);
+    assert_eq!(rig.mode(), DockMode::Floating);
+}
+
+#[test]
+fn edge_pills_ease_to_their_lengths_and_the_front_window_has_the_long_one() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    let a = rig.add("test", "Test", PanelDescriptor::new("a", "A"));
+    let b = rig.add("test", "Test", PanelDescriptor::new("b", "B"));
+    rig.add("test", "Test", PanelDescriptor::new("c", "C"));
+    rig.ui.show_panel("test", "a", true);
+    rig.ui.show_panel("test", "b", true);
+    rig.ui.show_panel("test", "c", false);
+    let frames: Vec<ElementId> = ["a", "b", "c"]
+        .iter()
+        .map(|view| {
+            let id = rig
+                .host
+                .root
+                .insert(Element::at(300.0, 100.0, 100.0, 100.0), DockGrip::default());
+            let top = rig.host.root.root();
+            rig.host.root.add_child(top, id);
+            rig.host
+                .root
+                .register_window(&format!("plugin:test:{view}"), id, Some(id), 0)
+                .unwrap();
+            id
+        })
+        .collect();
+    rig.sync_plain();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Left));
+    rig.host.root.bring_to_front(frames[0]);
+    let pills =
+        |rig: &mut Rig| rig.with(|c, _| c.entries.iter().map(|e| e.pill).collect::<Vec<f32>>());
+    rig.now += 60;
+    rig.host.tick(0.06, rig.now, None);
+    let easing = pills(&mut rig)[0];
+    assert!((1.0..19.0).contains(&easing), "{easing}");
+    for _ in 0..10 {
+        rig.tick();
+    }
+    assert_eq!(pills(&mut rig), [style::PILL_FRONT, style::PILL_OPEN, 0.0]);
+    let _ = (a, b);
+    rig.host.root.bring_to_front(frames[1]);
+    for _ in 0..10 {
+        rig.tick();
+    }
+    assert_eq!(pills(&mut rig), [style::PILL_OPEN, style::PILL_FRONT, 0.0]);
+}
+
+#[test]
+fn a_horizontal_dock_shows_its_label_away_from_its_edge_and_scrolls_along_its_length() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(30);
+    rig.sync_plain();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Top));
+    rig.tick();
+    let l = rig.layout();
+    assert_eq!(l.width, rig.size().0);
+    assert!(l.width <= 800.0);
+    assert!(l.max_first > 0 && l.fade_end);
+    let slot = l.slots[0].unwrap();
+    rig.hover(slot);
+    let label = rig.label().unwrap().rect;
+    assert_eq!(label.y, l.height + style::LABEL_GAP);
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Bottom));
+    rig.tick();
+    let l = rig.layout();
+    let slot = l.slots[0].unwrap();
+    rig.hover(slot);
+    let label = rig.label().unwrap().rect;
+    assert_eq!(label.y, -style::LABEL_GAP - label.h);
+
+    let frame = rig.frame();
+    rig.host.root.send_message(frame, ElementMessage::Wheel(-1));
+    rig.host.pump();
+    rig.tick();
+    let scrolled = rig.layout();
+    assert_eq!(scrolled.first, 1);
+    assert!(scrolled.fade_start);
+    assert_eq!(scrolled.slots[1].unwrap().x, layout::SLOTS_START);
+}
+
+#[test]
+fn a_label_on_a_horizontal_dock_is_kept_on_the_screen_at_its_ends() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Classic);
+    rig.add(
+        "test",
+        "A plugin with a long name",
+        PanelDescriptor::new("a", "A window with a long title"),
+    );
+    rig.sync_plain();
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Top));
+    rig.host.root.move_window(WINDOW, 0.0, 0.0);
+    rig.tick();
+    rig.with(|c, ui| {
+        let r = c.label_rect(
+            ui,
+            DockSide::Top,
+            Rect::new(0.0, 0.0, 10.0, 46.0),
+            "A long title that runs well past the slot it names",
+            None,
+        );
+        assert!(r.x >= 0.0);
+    });
+}
+
 // ── Hover labels ────────────────────────────────────────────────────────
 
 /// A window titled `title` of a plugin named `owner`, at the default place.

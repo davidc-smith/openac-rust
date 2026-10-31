@@ -1,9 +1,15 @@
 //! The plugin dock: one slot per plugin window that asked for one, a move
 //! handle, a minimize button and a gear that opens and closes the Appearance
 //! window. A slot shows its plugin's `icon.png` (else its window's icon, else
-//! a monogram) and opens or closes the window. It draws the same shape in
-//! every theme, in the theme's colours or its own under Classic; where things
-//! go is worked out by [`layout`] and how they look by [`style`].
+//! a monogram) and opens or closes the window. It floats running either way,
+//! or snaps to a screen edge as a rail. It draws the same shape in every theme,
+//! in the theme's colours or its own under Classic; where things go is worked
+//! out by [`layout`] and how they look by [`style`].
+//!
+//! The root sets a dragged window's place from the pointer on every move, so
+//! the dock reads that place each frame, decides its mode, and puts itself
+//! back on its edge. Pointer input arrives before the frame's tick, so a snap
+//! shows in the frame of the move that caused it.
 
 pub mod layout;
 pub mod style;
@@ -85,6 +91,10 @@ fn label_text<'a>(title: &'a str, owner: &'a str) -> (&'a str, Option<&'a str>) 
 struct Entry {
     panel: u32,
     slot: ElementId,
+    /// The window's name.
+    window: String,
+    /// How long its edge pill is now; it eases toward its state's length.
+    pill: f32,
     owner: String,
     owner_name: String,
     title: String,
@@ -113,6 +123,9 @@ pub struct PluginDock {
     first: usize,
     layout: DockLayout,
     screen: (f32, f32),
+    /// The dock is being dragged, with the closest the pointer has been to its
+    /// rail's edge since it was grabbed or snapped there.
+    dragging: Option<f32>,
     /// The player right-clicked the dock or pressed the gear since the window
     /// last asked.
     appearance_requested: bool,
@@ -165,6 +178,7 @@ impl PluginDock {
             first: 0,
             layout,
             screen: ui.size(),
+            dragging: None,
             appearance_requested: false,
         };
         dock.reflow(ui);
@@ -215,6 +229,39 @@ impl PluginDock {
     #[must_use]
     pub fn layout(&self) -> &DockLayout {
         &self.layout
+    }
+
+    /// Where it is and which way it runs.
+    #[must_use]
+    pub fn mode(&self) -> DockMode {
+        self.mode
+    }
+
+    /// Puts the dock in `mode`: a rail goes to its edge, and a floating dock
+    /// that was a rail goes 10 points in from the edge it was on. It keeps its
+    /// place along the edge.
+    pub fn set_mode(&mut self, ui: &mut UiRoot, mode: DockMode) {
+        let from = self.mode;
+        if from == mode {
+            return;
+        }
+        self.mode = mode;
+        self.reflow(ui);
+        let Some((left, top)) = ui.element(self.root).map(|e| (e.left, e.top)) else {
+            return;
+        };
+        let (sw, sh) = self.screen;
+        let (w, h) = (self.layout.width, self.layout.height);
+        let (left, top) = match from {
+            DockMode::Left => (DEFAULT_LEFT, top),
+            DockMode::Right => (sw - w - DEFAULT_LEFT, top),
+            DockMode::Top => (left, DEFAULT_LEFT),
+            DockMode::Bottom => (left, sh - h - DEFAULT_LEFT),
+            DockMode::Floating | DockMode::FloatingHorizontal => (left, top),
+        };
+        if !mode.is_rail() {
+            ui.move_window(WINDOW, left, top);
+        }
     }
 
     /// Whether the player right-clicked the dock or pressed the gear since
@@ -296,6 +343,8 @@ impl PluginDock {
                 self.entries.push(Entry {
                     panel: panel.id,
                     slot: id,
+                    window: panel.window_name(),
+                    pill: 0.0,
                     owner: panel.owner.id.clone(),
                     owner_name: panel.owner.display_name.clone(),
                     title: panel.descriptor.title.clone(),
@@ -367,30 +416,38 @@ impl PluginDock {
             w.palette = palette;
             w.mode = self.mode;
         }
-        let marks: Vec<SlotMark> = self
-            .entries
-            .iter()
-            .zip(&l.slots)
-            .filter_map(|(entry, slot)| {
-                slot.map(|slot| SlotMark {
-                    slot,
-                    open: entry.open,
-                })
-            })
-            .collect();
         if let Some(frame) = ui.widget_mut::<DockFrame>(self.root) {
             frame.palette = palette;
             frame.mode = self.mode;
             frame.minimized = self.minimized;
             frame.dividers.clone_from(&l.dividers);
-            frame.marks = marks;
             frame.fades = (l.fade_start, l.fade_end);
             frame.list = (l.list_start, l.list_end);
         }
         self.layout = l;
-        self.keep_on_screen(ui);
+        self.mark_slots(ui);
+        self.keep_in_place(ui);
         self.follow_pointer(ui);
         self.apply_visibility(ui);
+    }
+
+    /// Tells the frame what to draw beside each slot.
+    fn mark_slots(&self, ui: &mut UiRoot) {
+        let marks: Vec<SlotMark> = self
+            .entries
+            .iter()
+            .zip(&self.layout.slots)
+            .filter_map(|(entry, slot)| {
+                slot.map(|slot| SlotMark {
+                    slot,
+                    open: entry.open,
+                    pill: entry.pill,
+                })
+            })
+            .collect();
+        if let Some(frame) = ui.widget_mut::<DockFrame>(self.root) {
+            frame.marks = marks;
+        }
     }
 
     /// Whether the window shows matches whether the dock should.
@@ -412,14 +469,125 @@ impl PluginDock {
         }
     }
 
-    /// A dock that grew, or a screen that shrank, leaves it where it all fits.
-    fn keep_on_screen(&self, ui: &mut UiRoot) {
+    /// A rail stays on its edge, and a dock that grew, or a screen that
+    /// shrank, leaves it where it all fits.
+    fn keep_in_place(&self, ui: &mut UiRoot) {
         let (sw, sh) = self.screen;
         let (w, h) = (self.layout.width, self.layout.height);
+        let (far_x, far_y) = ((sw - w).max(0.0), (sh - h).max(0.0));
         if let Some(e) = ui.element_mut(self.root) {
-            e.left = e.left.clamp(0.0, (sw - w).max(0.0));
-            e.top = e.top.clamp(0.0, (sh - h).max(0.0));
+            e.left = e.left.clamp(0.0, far_x);
+            e.top = e.top.clamp(0.0, far_y);
+            match self.mode {
+                DockMode::Left => e.left = 0.0,
+                DockMode::Right => e.left = far_x,
+                DockMode::Top => e.top = 0.0,
+                DockMode::Bottom => e.top = far_y,
+                DockMode::Floating | DockMode::FloatingHorizontal => {}
+            }
         }
+    }
+
+    /// While the dock is dragged it takes the mode its place and the pointer
+    /// say. The drag's last move is followed in the frame after it ends.
+    fn follow_drag(&mut self, ui: &mut UiRoot) {
+        let press = ui.widget::<DockGrip>(self.grip).and_then(|g| g.held);
+        let moving = ui.is_window_move_active() && press.is_some();
+        // A whole drag can fall between two frames when a frame is slow; a
+        // press and release in place cannot have moved the dock.
+        let done_between_frames =
+            !moving && self.dragging.is_none() && press.is_some_and(|start| start != ui.mouse());
+        if !moving && self.dragging.is_none() && !done_between_frames {
+            if press.is_some()
+                && let Some(g) = ui.widget_mut::<DockGrip>(self.grip)
+            {
+                g.held = None;
+            }
+            return;
+        }
+        let Some(at) = ui
+            .element(self.root)
+            .map(|e| Rect::new(e.left, e.top, e.width, e.height))
+        else {
+            return;
+        };
+        let (mx, my) = ui.mouse();
+        let pointer = (mx as f32, my as f32);
+        let from_edge = |mode, at| layout::pointer_from_edge(mode, self.screen, at);
+        let start = press.map_or(pointer, |(x, y)| (x as f32, y as f32));
+        let closest = self
+            .dragging
+            .or_else(|| from_edge(self.mode, start))
+            .unwrap_or(f32::INFINITY);
+        let closest = from_edge(self.mode, pointer).map_or(closest, |d| closest.min(d));
+        // Pressing the handle is not yet moving the dock.
+        let next = if pointer == start {
+            self.mode
+        } else {
+            layout::dragged_mode(self.mode, at, self.screen, pointer, closest)
+        };
+        let closest = if next == self.mode {
+            closest
+        } else {
+            from_edge(next, pointer).unwrap_or(f32::INFINITY)
+        };
+        if next != self.mode {
+            self.mode = next;
+            self.reflow(ui);
+        }
+        self.dragging = moving.then_some(closest);
+        if !moving && let Some(g) = ui.widget_mut::<DockGrip>(self.grip) {
+            g.held = None;
+        }
+    }
+
+    /// The plugin window drawn over the dock's other open windows.
+    fn front_window(&self, ui: &UiRoot) -> Option<usize> {
+        let mut front: Option<(usize, i32)> = None;
+        for (i, entry) in self.entries.iter().enumerate() {
+            if !entry.open {
+                continue;
+            }
+            let Some(z) = ui
+                .window(&entry.window)
+                .and_then(|w| ui.element(w.frame))
+                .map(Element::z_order)
+            else {
+                continue;
+            };
+            if front.is_none_or(|(_, top)| z >= top) {
+                front = Some((i, z));
+            }
+        }
+        front.map(|(i, _)| i)
+    }
+
+    /// Each edge pill eases toward its state's length: tallest beside the
+    /// front window, then an open window, then under the pointer.
+    fn ease_pills(&mut self, ui: &mut UiRoot, dt: f32) {
+        if !self.mode.is_rail() {
+            return;
+        }
+        let front = self.front_window(ui);
+        let step = style::PILL_FRONT / style::PILL_SECONDS * dt.max(0.0);
+        for i in 0..self.entries.len() {
+            let entry = &self.entries[i];
+            let hovered = ui
+                .widget::<DockSlot>(entry.slot)
+                .is_some_and(|s| s.pointer.look(true) != ButtonLook::Normal);
+            let target = if front == Some(i) {
+                style::PILL_FRONT
+            } else if entry.open {
+                style::PILL_OPEN
+            } else if hovered {
+                style::PILL_HOVER
+            } else {
+                0.0
+            };
+            let entry = &mut self.entries[i];
+            entry.pill += (target - entry.pill).clamp(-step, step);
+        }
+        self.mark_slots(ui);
     }
 
     /// The screen edge the dock faces: a rail's own edge, else the nearer of
@@ -578,12 +746,14 @@ const fn toggle_direction(mode: DockMode, minimized: bool) -> Direction {
 }
 
 impl PanelController for PluginDock {
-    fn tick(&mut self, ui: &mut UiRoot, _dt: f64) {
+    fn tick(&mut self, ui: &mut UiRoot, dt: f64) {
+        self.follow_drag(ui);
         let size = ui.element(self.root).map(|e| (e.width, e.height));
         if self.screen != ui.size() || size != Some((self.layout.width, self.layout.height)) {
             self.reflow(ui);
         }
-        self.keep_on_screen(ui);
+        self.keep_in_place(ui);
+        self.ease_pills(ui, dt as f32);
         self.follow_pointer(ui);
         self.apply_visibility(ui);
         self.keep_on_top(ui);
@@ -634,11 +804,13 @@ impl PanelController for PluginDock {
     }
 }
 
-/// Where a slot is on the dock and whether its window is open.
+/// Where a slot is on the dock, whether its window is open and how long its
+/// edge pill is.
 #[derive(Debug, Clone, Copy)]
 struct SlotMark {
     slot: Rect,
     open: bool,
+    pill: f32,
 }
 
 /// What a hover label says and where it goes.
@@ -711,9 +883,13 @@ impl Widget for DockFrame {
         if self.minimized {
             return;
         }
+        let p = &self.palette;
         for mark in &self.marks {
-            if mark.open {
-                style::open_dot(rc, &self.palette, self.side, size, mark.slot);
+            if self.mode.is_rail() {
+                let color = if mark.open { p.accent } else { p.muted };
+                style::edge_pill(rc, color, self.side, size, mark.slot, mark.pill);
+            } else if mark.open {
+                style::open_dot(rc, p, self.side, size, mark.slot);
             }
         }
     }
@@ -771,6 +947,8 @@ struct DockGrip {
     palette: Palette,
     pointer_over: bool,
     minimized: bool,
+    /// Where the button went down on it, until the dock sees the drag end.
+    held: Option<(i32, i32)>,
 }
 
 impl Default for DockGrip {
@@ -779,11 +957,19 @@ impl Default for DockGrip {
             palette: Palette::CLASSIC_DOCK,
             pointer_over: false,
             minimized: false,
+            held: None,
         }
     }
 }
 
 impl Widget for DockGrip {
+    fn on_event(&mut self, ui: &mut UiRoot, _me: ElementId, e: &UiEvent) -> bool {
+        if e.kind == kind::MOUSE_DOWN {
+            self.held = Some(ui.mouse());
+        }
+        false
+    }
+
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         if self.pointer_over || self.minimized {
             let (w, h) = element_size(ui, me);

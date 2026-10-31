@@ -54,6 +54,11 @@ pub const TAB_HANDLE: f32 = 20.0;
 /// dragged.
 pub const FLOATING_MARGIN: f32 = 24.0;
 
+/// A dragged dock's edge snaps to a screen edge this close.
+pub const SNAP_IN: f32 = 8.0;
+/// A rail floats again once it is pulled this far from its screen edge.
+pub const SNAP_OUT: f32 = 32.0;
+
 const DIVIDER_BLOCK: f32 = DIVIDER_SPACE * 2.0 + 1.0;
 
 /// Where the dock is and which way it runs.
@@ -99,6 +104,69 @@ pub fn max_length(mode: DockMode, width: f32, height: f32) -> f32 {
         screen
     } else {
         screen - 2.0 * FLOATING_MARGIN
+    }
+}
+
+/// The pointer's distance from a rail's screen edge; none for a floating dock.
+#[must_use]
+pub fn pointer_from_edge(
+    mode: DockMode,
+    (screen_w, screen_h): (f32, f32),
+    (x, y): (f32, f32),
+) -> Option<f32> {
+    match mode {
+        DockMode::Left => Some(x),
+        DockMode::Right => Some(screen_w - x),
+        DockMode::Top => Some(y),
+        DockMode::Bottom => Some(screen_h - y),
+        DockMode::Floating | DockMode::FloatingHorizontal => None,
+    }
+}
+
+/// The mode a dock dragged to `at` takes, with the pointer at `pointer`. A
+/// floating dock becomes a rail when one of its edges is within [`SNAP_IN`] of
+/// a screen edge and that is the screen edge nearest the pointer, so that a
+/// long dock whose far end touches an edge does not snap there while it is
+/// being carried past.
+///
+/// A rail stays until the pointer is [`SNAP_OUT`] further from its edge than
+/// `closest`, the closest it has been in this drag, and then floats running the
+/// way it ran, so moving to another edge means floating first. It goes by the
+/// pointer because a dock that snaps by its far end may turn into a rail well
+/// away from the pointer.
+#[must_use]
+pub fn dragged_mode(
+    mode: DockMode,
+    at: Rect,
+    screen: (f32, f32),
+    pointer: (f32, f32),
+    closest: f32,
+) -> DockMode {
+    let (screen_w, screen_h) = screen;
+    let (x, y) = pointer;
+    if let Some(away) = pointer_from_edge(mode, screen, pointer) {
+        return match mode {
+            _ if away <= closest + SNAP_OUT => mode,
+            DockMode::Left | DockMode::Right => DockMode::Floating,
+            _ => DockMode::FloatingHorizontal,
+        };
+    }
+    let edges = [
+        (DockMode::Left, x, at.x),
+        (DockMode::Right, screen_w - x, screen_w - (at.x + at.w)),
+        (DockMode::Top, y, at.y),
+        (DockMode::Bottom, screen_h - y, screen_h - (at.y + at.h)),
+    ];
+    let mut nearest = edges[0];
+    for edge in &edges[1..] {
+        if edge.1 < nearest.1 {
+            nearest = *edge;
+        }
+    }
+    if nearest.2 <= SNAP_IN {
+        nearest.0
+    } else {
+        mode
     }
 }
 
@@ -480,6 +548,99 @@ mod tests {
         assert!(l.fade_start && l.fade_end);
         assert!(l.slots[1].is_none());
         assert_eq!(l.slots[2].unwrap().x, SLOTS_START);
+    }
+
+    const SCREEN: (f32, f32) = (800.0, 600.0);
+
+    fn floated(at: Rect, pointer: (f32, f32)) -> DockMode {
+        dragged_mode(DockMode::Floating, at, SCREEN, pointer, 0.0)
+    }
+
+    #[test]
+    fn a_floating_dock_snaps_to_the_edge_nearest_the_pointer() {
+        let tall = |x, y| Rect::new(x, y, 48.0, 100.0);
+        assert_eq!(floated(tall(6.0, 200.0), (16.0, 210.0)), DockMode::Left);
+        assert_eq!(floated(tall(746.0, 200.0), (756.0, 210.0)), DockMode::Right);
+        assert_eq!(floated(tall(300.0, 5.0), (310.0, 10.0)), DockMode::Top);
+        assert_eq!(
+            floated(tall(300.0, 496.0), (310.0, 590.0)),
+            DockMode::Bottom
+        );
+        assert_eq!(
+            floated(tall(300.0, 200.0), (310.0, 210.0)),
+            DockMode::Floating
+        );
+    }
+
+    #[test]
+    fn a_dock_touching_an_edge_far_from_the_pointer_does_not_snap_there() {
+        // A tall dock carried across the screen: its bottom is on the edge,
+        // the pointer on its handle near the top.
+        let at = Rect::new(300.0, 100.0, 48.0, 496.0);
+        assert_eq!(floated(at, (310.0, 110.0)), DockMode::Floating);
+        // Carried on down, past where it can go, the pointer comes near.
+        assert_eq!(floated(at, (310.0, 590.0)), DockMode::Bottom);
+    }
+
+    #[test]
+    fn a_dock_as_long_as_the_screen_goes_to_the_end_the_pointer_is_near() {
+        let at = Rect::new(300.0, 0.0, 48.0, 600.0);
+        assert_eq!(floated(at, (310.0, 5.0)), DockMode::Top);
+        assert_eq!(floated(at, (310.0, 595.0)), DockMode::Bottom);
+        // Nearer a side it does not touch, it carries on floating.
+        assert_eq!(floated(at, (100.0, 300.0)), DockMode::Floating);
+    }
+
+    #[test]
+    fn in_a_corner_the_pointers_edge_wins() {
+        let at = Rect::new(2.0, 2.0, 48.0, 100.0);
+        assert_eq!(floated(at, (5.0, 9.0)), DockMode::Left);
+        assert_eq!(floated(at, (9.0, 5.0)), DockMode::Top);
+    }
+
+    #[test]
+    fn a_horizontal_floating_dock_snaps_like_a_vertical_one() {
+        let at = Rect::new(200.0, 496.0, 200.0, 100.0);
+        assert_eq!(
+            dragged_mode(
+                DockMode::FloatingHorizontal,
+                at,
+                SCREEN,
+                (205.0, 590.0),
+                0.0
+            ),
+            DockMode::Bottom
+        );
+    }
+
+    #[test]
+    fn a_rail_stays_until_the_pointer_is_pulled_away_and_floats_running_as_it_ran() {
+        let at = Rect::new(0.0, 0.0, 46.0, 46.0);
+        let rail = |mode, pointer| dragged_mode(mode, at, SCREEN, pointer, 10.0);
+        assert_eq!(rail(DockMode::Left, (42.0, 300.0)), DockMode::Left);
+        assert_eq!(rail(DockMode::Left, (43.0, 300.0)), DockMode::Floating);
+        assert_eq!(rail(DockMode::Right, (758.0, 300.0)), DockMode::Right);
+        assert_eq!(rail(DockMode::Right, (757.0, 300.0)), DockMode::Floating);
+        assert_eq!(rail(DockMode::Top, (400.0, 42.0)), DockMode::Top);
+        assert_eq!(
+            rail(DockMode::Top, (400.0, 43.0)),
+            DockMode::FloatingHorizontal
+        );
+        assert_eq!(rail(DockMode::Bottom, (400.0, 558.0)), DockMode::Bottom);
+        assert_eq!(
+            rail(DockMode::Bottom, (400.0, 557.0)),
+            DockMode::FloatingHorizontal
+        );
+    }
+
+    #[test]
+    fn a_rail_goes_by_the_pointer_so_one_snapped_by_its_far_end_stays() {
+        // Snapped to the bottom with the pointer 138 above the edge: it holds
+        // until the pointer is 32 further away still.
+        let at = Rect::new(300.0, 554.0, 200.0, 46.0);
+        let rail = |y| dragged_mode(DockMode::Bottom, at, SCREEN, (310.0, y), 138.0);
+        assert_eq!(rail(450.0), DockMode::Bottom);
+        assert_eq!(rail(429.0), DockMode::FloatingHorizontal);
     }
 
     #[test]
