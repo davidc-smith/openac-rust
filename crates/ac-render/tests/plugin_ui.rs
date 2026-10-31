@@ -366,7 +366,7 @@ fn the_dock_takes_its_saved_place_and_a_drag_is_saved_when_it_ends() {
 }
 
 /// A reader that hands out a 4 x 4 image for every path (OpenAC PR #271's
-/// file icons; the real reader is `ac-plugin`'s).
+/// file icons; the real reader is `ac-plugin-ui`'s).
 #[derive(Debug)]
 struct SquareFiles;
 

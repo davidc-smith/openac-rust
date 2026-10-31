@@ -65,8 +65,9 @@ pub const PROJECTILE_SAMPLES_SHOWN: Duration = Duration::from_millis(350);
 /// metres (about a standing human).
 pub const FALLBACK_LABEL_HEIGHT: f32 = 1.1;
 
-/// OpenAC's own icon, which the plugin dock's tile shows.
-const APP_ICON_PNG: &[u8] = include_bytes!("../../../../assets/icons/launcher-256.png");
+/// OpenAC's crescent on a clear background, which the plugin dock's tile shows
+/// on every theme's fill.
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../../assets/icons/crescent-256.png");
 /// The size of the count on the dock's tile, pixels.
 const DOCK_COUNT_FONT_SIZE: f32 = 10.0;
 /// The size of a monogram's letters on the smaller dock, pixels.
@@ -1837,6 +1838,17 @@ mod tests {
     fn the_openac_icon_decodes() {
         let icon = ac_plugin_ui::icon::decode_png(APP_ICON_PNG).expect("the icon decodes");
         assert_eq!((icon.width, icon.height), (256, 256));
+    }
+
+    #[test]
+    fn the_openac_icon_is_clear_round_and_inside_its_ring() {
+        let icon = ac_plugin_ui::icon::decode_png(APP_ICON_PNG).expect("the icon decodes");
+        let alpha = |x: usize, y: usize| icon.rgba[(y * 256 + x) * 4 + 3];
+        // A corner, and the open middle of the crescent.
+        assert_eq!(alpha(4, 4), 0);
+        assert_eq!(alpha(180, 128), 0);
+        // The crescent's body.
+        assert_eq!(alpha(80, 128), 255);
     }
 
     #[test]
