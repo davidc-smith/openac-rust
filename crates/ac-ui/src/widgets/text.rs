@@ -202,6 +202,20 @@ impl Text {
         self.wrapped_cache = None;
     }
 
+    /// Show an authored string (the element's own text property) as the
+    /// element lays it out: word-wrapped to its width between the margins
+    /// unless the element is one line. An authored line break always
+    /// starts a new line.
+    pub fn set_authored(&mut self, text: String) {
+        if !self.one_line || text.contains('\n') {
+            self.set_content(TextContent::Wrapped(text));
+        } else {
+            // In the default colour as it is when drawn, so a state's font
+            // colour reaches the authored line.
+            self.set_content(TextContent::Single(text));
+        }
+    }
+
     /// Show these lines.
     pub fn set_lines(&mut self, lines: Vec<Line>) {
         self.set_content(TextContent::Lines(lines));
@@ -303,7 +317,7 @@ impl Text {
             .find(|(k, _)| *k == state_id)
             .map(|(_, t)| (t.clone(), ()))
         {
-            self.set_content(TextContent::Single(text));
+            self.set_authored(text);
         }
         if let Some((ui, me)) = ui {
             if let Some(s) = state
