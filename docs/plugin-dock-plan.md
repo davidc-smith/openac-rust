@@ -217,7 +217,7 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 | --- | --- | --- | --- |
 | Plan | Agreed 2026-10-31 | | No project code yet |
 | F3 | Done | `79da491`, `8d3c0b8`, `f9c403a` | MBP check passed at `f9c403a`, on its own. Has to run again at the new tip |
-| 1. Foundations | Not started | | |
+| 1. Foundations | Done 2026-10-31 | `c62fd98`, `aff4e48`, `254315d` | Tests and real-dat tests pass at the tip, 2931 in `ac-ui` and `ac-render`. Live on the Air's Retina screen. Nothing pushed |
 | 2. Modern look | Not started | | |
 | 3. Themes and plugin API | Not started | | |
 | 4. Dock | Not started | | |
@@ -226,5 +226,13 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 
 ## Notes for the next phase
 
-- Erik has not yet answered on the wider scope, as far as this file knows. Ask the user.
+- **Scope, confirmed by the user on 2026-10-31:** the plan stands as written. Themed plugin windows do get the modern look. The Command, Spell, Target, Chat and Gear Decks (tracker H1 to H13) are not part of this. Classic plugin windows must stay exactly as they are.
+- **Erik** had not answered on the wider scope as of 2026-10-31, and the user said to go ahead anyway. Still ask at the start of each phase.
 - The stale `feat/ui-shapes` branch on the fork is the user's call to delete.
+- **Worktree:** `../openac-rust-dock`, on `feat/plugin-dock`, local only. Pushing it needs the user's go-ahead, so the work is only on the Air for now.
+- **Disk:** the Air has about 20 GB free. Build the worktree into the main target so dependencies are shared: `export CARGO_TARGET_DIR=/Users/davidsmith/Code/OpenAC/openac-rust/target`. Watch `df`. `target/debug/incremental` reached 20 GB, and deleting it only costs rebuild time.
+- **Fonts for phase 2:** `ModernFonts { regular, semibold }` reaches every plugin window through `with_modern_fonts`, stored as `modern_fonts` on the controller. Nothing reads `semibold` yet, so use it for titles and list headers. Sharper text needs no further work: anything drawn in those fonts through `string_dat` gets it, and `UiRoot::set_sharp_fonts` holds the bakes.
+- **Live harness:** `../openac-docktest` is a private plugin with a themed window and a window that does not opt in. Rebuild with `cargo build --release --target wasm32-unknown-unknown`. `tools/live.sh <client> <theme> <run name> <output dir>` runs a client under a theme and takes a screenshot. Run it with the sandbox off, on one line per run, because zsh does not split a variable into arguments. Allow 50 seconds to get into the world; one run at 45 produced no screenshot. Extend the plugin's markup with the remaining controls in phase 2. `fill="0.6"` on its meter drew an empty bar, so bind the value instead.
+- **Before and after:** build the client at the last commit before the phase, copy the binary out of the target, then compare. Classic windows are translucent and the world moves behind them, so a plain pixel diff of a Classic window is noisy. `tools/mask.py <tools dir> <before.png> <after.png>` compares only bright opaque pixels. Differences at the window's outer edge are the world. Phase 1's shots are in `baseline/`. The exact guarantee has to come from draw-list tests, which is why the Classic identity tests come first in phase 2.
+- **Seen, not investigated:** a plugin window with no saved placement came up centred rather than at its markup's `x` and `y`, though the real-dat test's window does honour them. `run.sh` saves placements to avoid it. It was seen on this branch only, and nothing in phase 1 touches placement. If it matters for the dock, look at it there.
+- `scripts/check.sh` has not run on these commits. It is due on the MBP in phase 6.
