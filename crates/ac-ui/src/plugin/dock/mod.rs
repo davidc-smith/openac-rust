@@ -1,14 +1,16 @@
-//! The plugin dock: one slot per plugin window that asked for one, a move
-//! handle, a minimize button and a gear that opens and closes the Appearance
-//! window. A slot shows its plugin's `icon.png` (else its window's icon, else
+//! The plugin dock: a tile that moves it and opens and closes it, one slot per
+//! plugin window that asked for one, and a gear that opens and closes the
+//! Appearance window. A slot shows its plugin's `icon.png` (else its window's icon, else
 //! a monogram) and opens or closes the window. It floats running either way,
 //! or snaps to a screen edge as a rail. It draws the same shape in every theme,
 //! in the theme's colours or its own under Classic; where things go is worked
 //! out by [`layout`] and how they look by [`style`].
 //!
-//! Minimized, the dock is a small pill or, on an edge, a tab, and the plugin
-//! windows stay as they are. The chevron that does it always shows, and the
-//! state is saved per character with the dock's place.
+//! Closed, the dock is only the tile, with a count of the plugin windows open,
+//! and those windows stay as they are. The state is saved per character with
+//! the dock's place. A press and a drag start the same way, on the tile: the
+//! root starts moving the window at once, so the dock holds still until the
+//! pointer has gone [`PRESS_SLOP`] points, and a release before that is a press.
 //!
 //! The root sets a dragged window's place from the pointer on every move, so
 //! the dock reads that place each frame, decides its mode, and puts itself
@@ -25,7 +27,7 @@ use ac_plugin_ui::{PanelView, PluginIcon, UiInput};
 
 pub use self::layout::DockMode;
 use self::layout::{ART, DockLayout, FADE_LENGTH};
-use self::style::{Direction, DockSide};
+use self::style::DockSide;
 use super::style::PointerState;
 use super::widgets::ButtonLook;
 use super::{Icon, Palette, PluginOutbox, PluginTheme};
@@ -49,10 +51,11 @@ pub const DEFAULT_TOP: f32 = 116.0;
 pub const DEFAULT_LEFT: f32 = 10.0;
 /// The gear's hover label.
 pub const APPEARANCE_LABEL: &str = "Plugin appearance";
-/// The minimize button's tooltip on an open dock.
-pub const MINIMIZE_TOOLTIP: &str = "Minimize the dock";
-/// The minimize button's tooltip on a minimized dock.
-pub const EXPAND_TOOLTIP: &str = "Expand the dock";
+/// The tile's hover label.
+pub const TILE_LABEL: &str = "Plugins";
+/// How far the pointer may go from where it pressed the tile and still be a
+/// press rather than a drag.
+pub const PRESS_SLOP: f32 = 4.0;
 
 /// Where the dock's slot images come from: the window's textures.
 pub trait DockIcons {
@@ -112,8 +115,7 @@ struct Entry {
 pub struct PluginDock {
     /// The dock (its window's root).
     pub root: ElementId,
-    grip: ElementId,
-    toggle: ElementId,
+    tile: ElementId,
     gear: ElementId,
     entries: Vec<Entry>,
     mode: DockMode,
@@ -124,6 +126,10 @@ pub struct PluginDock {
     covered: bool,
     font: Option<Arc<UiFont>>,
     modern: Option<ModernFonts>,
+    /// The tile's art.
+    app_icon: Option<Icon>,
+    /// The font of the count on the tile.
+    count_font: Option<Arc<UiFont>>,
     outbox: PluginOutbox,
     theme: PluginTheme,
     first: usize,
@@ -132,8 +138,11 @@ pub struct PluginDock {
     /// The dock is being dragged, with the closest the pointer has been to its
     /// rail's edge since it was grabbed or snapped there.
     dragging: Option<f32>,
-    /// The pointer has left where it pressed since the drag began.
+    /// The pointer has gone past [`PRESS_SLOP`] since the drag began.
     moved_in_drag: bool,
+    /// Where a closed dock was when it opened, if that made it move to fit:
+    /// it goes back there when it closes.
+    closed_at: Option<(f32, f32)>,
     /// The mode it had when the drag began.
     mode_before_drag: DockMode,
     /// A drag ended in another mode since the window last asked.
@@ -163,20 +172,16 @@ impl PluginDock {
         e.resize_x = false;
         e.resize_y = false;
         let root = ui.insert(e, DockFrame::default());
-        let mut g = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
-        g.window_move_handle = true;
-        g.name = Some("PluginDockGrip".to_owned());
-        let grip = ui.add(root, g, DockGrip::default());
         let mut t = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
-        t.name = Some("PluginDockToggle".to_owned());
-        let toggle = ui.add(root, t, DockToggle::default());
+        t.window_move_handle = true;
+        t.name = Some("PluginDockTile".to_owned());
+        let tile = ui.add(root, t, DockTile::default());
         let mut c = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
         c.name = Some("PluginDockGear".to_owned());
         let gear = ui.add(root, c, DockGear::default());
         let mut dock = Self {
             root,
-            grip,
-            toggle,
+            tile,
             gear,
             entries: Vec::new(),
             mode,
@@ -185,6 +190,8 @@ impl PluginDock {
             covered: false,
             font,
             modern,
+            app_icon: None,
+            count_font: None,
             outbox,
             theme: PluginTheme::Classic,
             first: 0,
@@ -192,12 +199,25 @@ impl PluginDock {
             screen: ui.size(),
             dragging: None,
             moved_in_drag: false,
+            closed_at: None,
             mode_before_drag: mode,
             mode_dragged: false,
             appearance_requested: false,
         };
         dock.reflow(ui);
         dock
+    }
+
+    /// The tile's art and the font of its count.
+    pub fn set_art(
+        &mut self,
+        ui: &mut UiRoot,
+        icon: Option<Icon>,
+        count_font: Option<Arc<UiFont>>,
+    ) {
+        self.app_icon = icon;
+        self.count_font = count_font;
+        self.reflow(ui);
     }
 
     /// Whether the dock shows: it has a window to offer and the player has
@@ -213,7 +233,7 @@ impl PluginDock {
     pub fn set_hidden(&mut self, ui: &mut UiRoot, hidden: bool) {
         self.hidden = hidden;
         if !hidden {
-            self.minimized = false;
+            self.set_minimized(ui, false);
         }
         self.reflow(ui);
     }
@@ -413,31 +433,22 @@ impl PluginDock {
                 }
             }
         }
-        place(ui, self.grip, l.handle);
-        place(ui, self.toggle, l.toggle);
+        place(ui, self.tile, l.tile);
         place(ui, self.gear, l.gear);
         ui.set_visible(self.gear, !self.minimized);
         if let Some(e) = ui.element_mut(self.root) {
             e.width = l.width;
             e.height = l.height;
         }
-        if let Some(w) = ui.widget_mut::<DockGrip>(self.grip) {
+        let open_count = self.entries.iter().filter(|e| e.open).count();
+        let (app_icon, count_font) = (self.app_icon, self.count_font.clone());
+        if let Some(w) = ui.widget_mut::<DockTile>(self.tile) {
             w.palette = palette;
-            w.minimized = self.minimized;
-        }
-        if let Some(w) = ui.widget_mut::<DockToggle>(self.toggle) {
-            w.palette = palette;
-            w.direction = toggle_direction(self.mode, self.minimized);
-        }
-        if let Some(e) = ui.element_mut(self.toggle) {
-            e.runtime_tooltip_text = Some(
-                if self.minimized {
-                    EXPAND_TOOLTIP
-                } else {
-                    MINIMIZE_TOOLTIP
-                }
-                .to_owned(),
-            );
+            w.mode = self.mode;
+            w.icon = app_icon;
+            w.count_font = count_font;
+            w.count = if self.minimized { open_count } else { 0 };
+            w.closed = self.minimized;
         }
         if let Some(w) = ui.widget_mut::<DockGear>(self.gear) {
             w.palette = palette;
@@ -515,49 +526,74 @@ impl PluginDock {
         }
     }
 
-    /// While the dock is dragged it takes the mode its place and the pointer
-    /// say. The drag's last move is followed in the frame after it ends.
-    fn follow_drag(&mut self, ui: &mut UiRoot) {
-        let press = ui.widget::<DockGrip>(self.grip).and_then(|g| g.held);
-        let moving = ui.is_window_move_active() && press.is_some();
-        // A whole drag can fall between two frames when a frame is slow; a
-        // press and release in place cannot have moved the dock.
-        let done_between_frames =
-            !moving && self.dragging.is_none() && press.is_some_and(|start| start != ui.mouse());
-        if !moving && self.dragging.is_none() && !done_between_frames {
-            if press.is_some()
-                && let Some(g) = ui.widget_mut::<DockGrip>(self.grip)
+    /// Opens or closes the dock. A dock that had to move to fit when it opened
+    /// goes back to where it was when it closes.
+    fn set_minimized(&mut self, ui: &mut UiRoot, minimized: bool) {
+        if self.minimized == minimized {
+            return;
+        }
+        let before = ui.element(self.root).map(|e| (e.left, e.top));
+        self.minimized = minimized;
+        self.reflow(ui);
+        if minimized {
+            if let (Some((left, top)), Some(e)) = (self.closed_at.take(), ui.element_mut(self.root))
             {
-                g.held = None;
+                e.left = left;
+                e.top = top;
+            }
+            self.keep_in_place(ui);
+        } else {
+            let after = ui.element(self.root).map(|e| (e.left, e.top));
+            self.closed_at = before.filter(|_| before != after);
+        }
+    }
+
+    /// While the tile is held the dock takes the mode its place and the pointer
+    /// say, once the pointer has gone far enough for this to be a drag. The
+    /// drag's last move is followed in the frame after it ends; a whole drag can
+    /// fall between two frames when a frame is slow. Released before that, it
+    /// was a press.
+    fn follow_drag(&mut self, ui: &mut UiRoot) {
+        let Some(held) = ui.widget::<DockTile>(self.tile).and_then(|t| t.held) else {
+            self.dragging = None;
+            return;
+        };
+        let moving = ui.is_window_move_active();
+        let (mx, my) = ui.mouse();
+        let pointer = (mx as f32, my as f32);
+        let start = (held.pointer.0 as f32, held.pointer.1 as f32);
+        let from_edge = |mode, at| layout::pointer_from_edge(mode, self.screen, at);
+        if self.dragging.is_none() {
+            self.mode_before_drag = self.mode;
+            self.moved_in_drag = false;
+        }
+        let far = (pointer.0 - start.0).hypot(pointer.1 - start.1) >= PRESS_SLOP;
+        self.moved_in_drag = self.moved_in_drag || far;
+        let closest = self
+            .dragging
+            .or_else(|| from_edge(self.mode, start))
+            .unwrap_or(f32::INFINITY);
+        let closest = from_edge(self.mode, pointer).map_or(closest, |d| closest.min(d));
+        if !self.moved_in_drag {
+            if let Some(e) = ui.element_mut(self.root) {
+                (e.left, e.top) = held.at;
+            }
+            self.dragging = moving.then_some(closest);
+            if !moving {
+                self.release_tile(ui);
+                let minimized = !self.minimized;
+                self.set_minimized(ui, minimized);
             }
             return;
         }
+        self.closed_at = None;
         let Some(at) = ui
             .element(self.root)
             .map(|e| Rect::new(e.left, e.top, e.width, e.height))
         else {
             return;
         };
-        if self.dragging.is_none() {
-            self.mode_before_drag = self.mode;
-            self.moved_in_drag = false;
-        }
-        let (mx, my) = ui.mouse();
-        let pointer = (mx as f32, my as f32);
-        let from_edge = |mode, at| layout::pointer_from_edge(mode, self.screen, at);
-        let start = press.map_or(pointer, |(x, y)| (x as f32, y as f32));
-        let closest = self
-            .dragging
-            .or_else(|| from_edge(self.mode, start))
-            .unwrap_or(f32::INFINITY);
-        let closest = from_edge(self.mode, pointer).map_or(closest, |d| closest.min(d));
-        // Pressing the handle is not yet moving the dock.
-        self.moved_in_drag = self.moved_in_drag || pointer != start;
-        let next = if !self.moved_in_drag {
-            self.mode
-        } else {
-            layout::dragged_mode(self.mode, at, self.screen, pointer, closest)
-        };
+        let next = layout::dragged_mode(self.mode, at, self.screen, pointer, closest);
         let closest = if next == self.mode {
             closest
         } else {
@@ -570,9 +606,14 @@ impl PluginDock {
         self.dragging = moving.then_some(closest);
         if !moving {
             self.mode_dragged = self.mode != self.mode_before_drag;
-            if let Some(g) = ui.widget_mut::<DockGrip>(self.grip) {
-                g.held = None;
-            }
+            self.release_tile(ui);
+        }
+    }
+
+    fn release_tile(&mut self, ui: &mut UiRoot) {
+        self.dragging = None;
+        if let Some(t) = ui.widget_mut::<DockTile>(self.tile) {
+            t.held = None;
         }
     }
 
@@ -645,42 +686,43 @@ impl PluginDock {
         }
     }
 
-    /// What follows the pointer each frame: the handle's dots and the hover
+    /// What follows the pointer each frame: the tile's look and the hover
     /// label.
     fn follow_pointer(&mut self, ui: &mut UiRoot) {
         let (mx, my) = ui.mouse();
         let (mx, my) = (mx as f32, my as f32);
+        let tile = self.layout.tile;
         let over = ui.element(self.root).is_some_and(|e| {
-            e.visible()
-                && mx >= e.left
-                && mx < e.left + e.width
-                && my >= e.top
-                && my < e.top + e.height
+            let (x, y) = (mx - e.left - tile.x, my - e.top - tile.y);
+            e.visible() && x >= 0.0 && x < tile.w && y >= 0.0 && y < tile.h
         });
-        if let Some(w) = ui.widget_mut::<DockGrip>(self.grip) {
-            w.pointer_over = over;
-        }
-        let opacity = if ui.ui_locked() { 0.5 } else { 1.0 };
-        if let Some(e) = ui.element_mut(self.grip) {
-            e.opacity = opacity;
+        if let Some(t) = ui.widget_mut::<DockTile>(self.tile) {
+            t.hovered = over;
         }
         let side = self.side(ui);
-        let label = self.hover_label(ui, side);
+        let label = self.hover_label(ui, side, over);
         if let Some(frame) = ui.widget_mut::<DockFrame>(self.root) {
             frame.side = side;
             frame.label = label;
         }
     }
 
-    /// The label of the slot or gear under the pointer.
-    fn hover_label(&self, ui: &UiRoot, side: DockSide) -> Option<HoverLabel> {
-        if self.minimized {
-            return None;
-        }
+    /// The label of the tile, slot or gear under the pointer.
+    fn hover_label(&self, ui: &UiRoot, side: DockSide, over_tile: bool) -> Option<HoverLabel> {
+        let held = ui
+            .widget::<DockTile>(self.tile)
+            .is_some_and(|t| t.held.is_some());
         let hovered = |look: Option<ButtonLook>| {
             matches!(look, Some(ButtonLook::Hovered | ButtonLook::Pressed))
         };
-        let (slot, title, subtitle) = if hovered(
+        let (slot, title, subtitle) = if over_tile {
+            if held {
+                return None;
+            }
+            (self.layout.tile, TILE_LABEL, None)
+        } else if self.minimized {
+            return None;
+        } else if hovered(
             ui.widget::<DockGear>(self.gear)
                 .map(|g| g.pointer.look(true)),
         ) {
@@ -765,21 +807,6 @@ fn place(ui: &mut UiRoot, id: ElementId, r: Rect) {
     }
 }
 
-/// Which way the minimize button's chevron points: toward where the dock goes
-/// when pressed.
-const fn toggle_direction(mode: DockMode, minimized: bool) -> Direction {
-    match (mode, minimized) {
-        (DockMode::Left, false) | (DockMode::Right, true) => Direction::Left,
-        (DockMode::Left, true) | (DockMode::Right, false) => Direction::Right,
-        (DockMode::Top, false) | (DockMode::Bottom, true) => Direction::Up,
-        (DockMode::Top, true) | (DockMode::Bottom, false) => Direction::Down,
-        (DockMode::Floating, false) => Direction::Up,
-        (DockMode::Floating, true) => Direction::Down,
-        (DockMode::FloatingHorizontal, false) => Direction::Left,
-        (DockMode::FloatingHorizontal, true) => Direction::Right,
-    }
-}
-
 impl PanelController for PluginDock {
     /// Minimized or not is saved per character, with its place.
     fn capture_window_state(&self, _ui: &UiRoot) -> Option<WindowState> {
@@ -790,6 +817,7 @@ impl PanelController for PluginDock {
     }
 
     fn restore_window_state(&mut self, ui: &mut UiRoot, state: &WindowState) -> bool {
+        self.closed_at = None;
         self.minimized = state.collapsed;
         self.reflow(ui);
         true
@@ -833,9 +861,9 @@ impl PanelController for PluginDock {
             ElementMessage::Clicked { .. } => {}
             _ => return false,
         }
-        if element == self.toggle {
-            self.minimized = !self.minimized;
-            self.reflow(ui);
+        if element == self.tile {
+            let minimized = !self.minimized;
+            self.set_minimized(ui, minimized);
             return true;
         }
         if element == self.gear {
@@ -989,44 +1017,6 @@ impl Widget for DockFrame {
     }
 }
 
-/// What moves the dock: its dots show while the pointer is over the dock, or
-/// always on a minimized one, where they are most of what there is to grab.
-#[derive(Debug, Clone)]
-struct DockGrip {
-    palette: Palette,
-    pointer_over: bool,
-    minimized: bool,
-    /// Where the button went down on it, until the dock sees the drag end.
-    held: Option<(i32, i32)>,
-}
-
-impl Default for DockGrip {
-    fn default() -> Self {
-        Self {
-            palette: Palette::CLASSIC_DOCK,
-            pointer_over: false,
-            minimized: false,
-            held: None,
-        }
-    }
-}
-
-impl Widget for DockGrip {
-    fn on_event(&mut self, ui: &mut UiRoot, _me: ElementId, e: &UiEvent) -> bool {
-        if e.kind == kind::MOUSE_DOWN {
-            self.held = Some(ui.mouse());
-        }
-        false
-    }
-
-    fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
-        if self.pointer_over || self.minimized {
-            let (w, h) = element_size(ui, me);
-            style::handle_dots(rc, &self.palette, Rect::new(0.0, 0.0, w, h));
-        }
-    }
-}
-
 /// A press and a release on the element send it [`ElementMessage::Clicked`].
 fn click_event(pointer: &mut PointerState, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> bool {
     if e.target != Some(me) {
@@ -1046,27 +1036,73 @@ fn click_event(pointer: &mut PointerState, ui: &mut UiRoot, me: ElementId, e: &U
     true
 }
 
-/// Minimizes and expands the dock.
-#[derive(Debug, Clone)]
-struct DockToggle {
-    palette: Palette,
-    pointer: PointerState,
-    direction: Direction,
+/// Where the left button went down on the tile and where the dock was then.
+#[derive(Debug, Clone, Copy)]
+struct TileHold {
+    pointer: (i32, i32),
+    at: (f32, f32),
 }
 
-impl Default for DockToggle {
+/// The tile: the OpenAC icon, which moves the dock and opens and closes it, with
+/// a count of open plugin windows while closed. While windows are locked the
+/// root does not move the dock and sends an ordinary click, so a press still
+/// opens and closes it.
+#[derive(Debug, Clone)]
+struct DockTile {
+    palette: Palette,
+    mode: DockMode,
+    hovered: bool,
+    held: Option<TileHold>,
+    closed: bool,
+    icon: Option<Icon>,
+    count: usize,
+    count_font: Option<Arc<UiFont>>,
+}
+
+impl Default for DockTile {
     fn default() -> Self {
         Self {
             palette: Palette::CLASSIC_DOCK,
-            pointer: PointerState::default(),
-            direction: Direction::Up,
+            mode: DockMode::default(),
+            hovered: false,
+            held: None,
+            closed: false,
+            icon: None,
+            count: 0,
+            count_font: None,
         }
     }
 }
 
-impl Widget for DockToggle {
+impl Widget for DockTile {
     fn on_event(&mut self, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> bool {
-        click_event(&mut self.pointer, ui, me, e)
+        if e.target != Some(me) {
+            return false;
+        }
+        match e.kind {
+            kind::MOUSE_DOWN if !ui.ui_locked() => {
+                let at = ui
+                    .parent(me)
+                    .and_then(|p| ui.element(p))
+                    .map_or((0.0, 0.0), |e| (e.left, e.top));
+                self.held = Some(TileHold {
+                    pointer: ui.mouse(),
+                    at,
+                });
+                false
+            }
+            kind::CLICK => {
+                ui.send_message(
+                    me,
+                    ElementMessage::Clicked {
+                        x: e.data1,
+                        y: e.data2,
+                    },
+                );
+                true
+            }
+            _ => false,
+        }
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
@@ -1075,15 +1111,27 @@ impl Widget for DockToggle {
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = element_size(ui, me);
-        let p = &self.palette;
-        let look = self.pointer.look(true);
-        super::style::ghost_button(rc, p, w, h, look);
-        let color = if look == ButtonLook::Normal {
-            p.muted
-        } else {
-            p.text
+        let look = match (self.held.is_some(), self.hovered) {
+            (true, _) => ButtonLook::Pressed,
+            (false, true) => ButtonLook::Hovered,
+            (false, false) => ButtonLook::Normal,
         };
-        style::chevron(rc, w / 2.0, h / 2.0, 6.0, self.direction, color);
+        let well = if self.closed {
+            Rect::new(3.0, 3.0, w - 6.0, h - 6.0)
+        } else {
+            style::slot_well_rect(self.mode, w, h)
+        };
+        style::slot_well(rc, &self.palette, well, look);
+        if let Some((texture, iw, ih)) = self.icon
+            && iw > 0.0
+            && ih > 0.0
+        {
+            let (x, y) = ((w - ART) / 2.0, (h - ART) / 2.0);
+            rc.sprite(texture, x, y, ART, ART, (0.0, 0.0, 1.0, 1.0), Color::WHITE);
+        }
+        if self.count > 0 {
+            style::count_badge(rc, &self.palette, self.count_font.as_ref(), w, self.count);
+        }
     }
 }
 

@@ -50,6 +50,10 @@ pub const LABEL_PAD_Y: f32 = 5.0;
 pub const LABEL_RADIUS: f32 = 7.0;
 /// A monogram's corner radius.
 pub const MONOGRAM_RADIUS: f32 = 6.0;
+/// The count on a closed tile: its height, and how far it sits from the corner.
+pub const BADGE_SIZE: f32 = 14.0;
+/// How far the count sits in from the tile's corner.
+pub const BADGE_INSET: f32 = 2.0;
 /// Colour art's alpha while its window is closed.
 pub const CLOSED_ART_ALPHA: f32 = 0.85;
 
@@ -86,19 +90,6 @@ pub enum DockSide {
     Top,
     /// The bottom edge.
     Bottom,
-}
-
-/// Which way a chevron points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    /// Up.
-    Up,
-    /// Down.
-    Down,
-    /// Left.
-    Left,
-    /// Right.
-    Right,
 }
 
 /// The dock's corners: all four when floating, only the two inner ones on a
@@ -277,40 +268,6 @@ pub fn fade(
     }
 }
 
-/// Three small dots, the dock's move handle, centred in `r` and running along
-/// its longer side.
-pub fn handle_dots(rc: &mut RenderContext<'_>, p: &Palette, r: Rect) {
-    let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    for i in [-1.0, 0.0, 1.0] {
-        let (x, y) = if r.w >= r.h {
-            (cx + i * 5.0, cy)
-        } else {
-            (cx, cy + i * 5.0)
-        };
-        rc.fill_ellipse(x - 1.0, y - 1.0, 2.0, 2.0, p.muted);
-    }
-}
-
-/// A two-stroke chevron centred at (`cx`, `cy`), `size` across.
-pub fn chevron(
-    rc: &mut RenderContext<'_>,
-    cx: f32,
-    cy: f32,
-    size: f32,
-    direction: Direction,
-    color: Color,
-) {
-    let (a, b) = (size / 2.0, size / 4.0);
-    let (p0, tip, p1) = match direction {
-        Direction::Up => ((-a, b), (0.0, -b), (a, b)),
-        Direction::Down => ((-a, -b), (0.0, b), (a, -b)),
-        Direction::Left => ((b, -a), (-b, 0.0), (b, a)),
-        Direction::Right => ((-b, -a), (b, 0.0), (-b, a)),
-    };
-    rc.smooth_line(cx + p0.0, cy + p0.1, cx + tip.0, cy + tip.1, color, 1.5);
-    rc.smooth_line(cx + tip.0, cy + tip.1, cx + p1.0, cy + p1.1, color, 1.5);
-}
-
 /// The gear on the dock's appearance slot, filling a `size` box at (`x`, `y`).
 pub fn gear(rc: &mut RenderContext<'_>, x: f32, y: f32, size: f32, color: Color) {
     let c = size / 2.0;
@@ -375,6 +332,39 @@ pub fn monogram(
         let ty = y + (size - font.line_height) / 2.0;
         let ink = with_alpha(MONOGRAM_INK, alpha);
         rc.string_dat(font, letters, tx, ty, ink, false, DEFAULT_OUTLINE_COLOR);
+    }
+}
+
+/// The count of open plugin windows on a closed tile: a small accent circle in
+/// the top-right corner of a tile `w` wide, in the fill's colour on the accent.
+pub fn count_badge(
+    rc: &mut RenderContext<'_>,
+    p: &Palette,
+    font: Option<&Arc<UiFont>>,
+    w: f32,
+    count: usize,
+) {
+    let text = count.to_string();
+    let width = font.map_or(0.0, |f| f.measure_width(&text));
+    let side = (width + 6.0).max(BADGE_SIZE);
+    let (x, y) = (w - side - BADGE_INSET, BADGE_INSET);
+    let ink = if p.is_light() {
+        Color::WHITE
+    } else {
+        Color::BLACK
+    };
+    rc.fill_rounded_rect(
+        x,
+        y,
+        side,
+        BADGE_SIZE,
+        CornerRadii::all(BADGE_SIZE / 2.0),
+        p.accent,
+    );
+    if let Some(font) = font {
+        let tx = x + (side - width) / 2.0;
+        let ty = y + (BADGE_SIZE - font.line_height) / 2.0;
+        rc.string_dat(font, &text, tx, ty, ink, false, DEFAULT_OUTLINE_COLOR);
     }
 }
 

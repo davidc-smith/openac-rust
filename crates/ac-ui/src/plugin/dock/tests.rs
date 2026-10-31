@@ -324,39 +324,26 @@ fn colour_art_is_dimmer_while_its_window_is_closed() {
 // ── Chrome ──────────────────────────────────────────────────────────────
 
 #[test]
-fn the_handle_and_toggle_follow_the_layout_expanded_and_minimized() {
+fn the_tile_follows_the_layout_open_and_closed_and_a_press_toggles_it() {
     let mut rig = Rig::new(SCREEN.1, PluginTheme::Classic);
     rig.add_plugins(2);
     rig.sync_plain();
-    let (grip, toggle) = rig.with(|c, _| (c.grip, c.toggle));
-    let rect = |rig: &Rig, id: ElementId| {
-        let e = rig.host.root.element(id).unwrap();
+    let tile = rig.with(|c, _| c.tile);
+    let rect = |rig: &Rig| {
+        let e = rig.host.root.element(tile).unwrap();
         (e.left, e.top, e.width, e.height)
     };
-    assert_eq!(rect(&rig, grip), (0.0, 0.0, 30.0, 16.0));
-    assert_eq!(rect(&rig, toggle), (30.0, 2.0, 12.0, 12.0));
-    let tooltip = |rig: &Rig| {
-        rig.host
-            .root
-            .element(toggle)
-            .unwrap()
-            .runtime_tooltip_text
-            .clone()
-            .unwrap()
-    };
-    assert_eq!(tooltip(&rig), MINIMIZE_TOOLTIP);
-
-    let target = rig.layout().toggle;
+    assert_eq!(rect(&rig), (6.0, 6.0, 36.0, 36.0));
+    let target = rig.layout().tile;
     rig.click(target);
-    assert_eq!(rig.size(), (48.0, 24.0));
-    assert_eq!(rect(&rig, grip), (0.0, 0.0, 30.0, 24.0));
-    assert_eq!(rect(&rig, toggle), (30.0, 0.0, 12.0, 24.0));
-    assert_eq!(tooltip(&rig), EXPAND_TOOLTIP);
-
-    let target = rig.layout().toggle;
+    assert!(rig.with(|c, _| c.is_minimized()));
+    assert_eq!(rig.size(), (48.0, 48.0));
+    assert_eq!(rect(&rig), (0.0, 0.0, 48.0, 48.0));
+    let target = rig.layout().tile;
     rig.click(target);
+    assert!(!rig.with(|c, _| c.is_minimized()));
     assert_eq!(rig.size().0, 48.0);
-    assert!(rig.size().1 > 24.0);
+    assert!(rig.size().1 > 48.0);
 }
 
 #[test]
@@ -419,43 +406,6 @@ fn a_dock_too_long_for_the_screen_scrolls_and_fits_wherever_it_is_placed() {
 }
 
 #[test]
-fn the_dots_show_only_while_the_pointer_is_over_the_dock_and_the_chevron_always() {
-    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
-    rig.add_plugins(1);
-    rig.sync_plain();
-    rig.host.mouse_move(700, 500);
-    rig.tick();
-    let (grip, toggle) = rig.with(|c, _| (c.grip, c.toggle));
-    let over = |rig: &Rig| {
-        rig.host
-            .root
-            .widget::<DockGrip>(grip)
-            .is_some_and(|g| g.pointer_over)
-    };
-    assert!(!over(&rig));
-    let away = rig.draw().commands().count();
-    assert!(rig.host.root.element(toggle).unwrap().visible());
-
-    let handle = rig.layout().handle;
-    rig.hover(handle);
-    assert!(over(&rig));
-    let near = rig.draw().commands().count();
-    assert!(near > away, "{near} commands, {away} away");
-}
-
-#[test]
-fn the_grip_dims_while_the_interface_is_locked() {
-    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
-    rig.add_plugins(1);
-    rig.sync_plain();
-    let grip = rig.with(|c, _| c.grip);
-    assert_eq!(rig.host.root.element(grip).unwrap().opacity, 1.0);
-    rig.host.root.set_ui_locked(true);
-    rig.tick();
-    assert_eq!(rig.host.root.element(grip).unwrap().opacity, 0.5);
-}
-
-#[test]
 fn pressing_a_slot_toggles_its_window_and_the_gear_asks_for_appearance() {
     let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
     rig.add_plugins(1);
@@ -482,7 +432,7 @@ fn the_dock_stays_over_a_window_that_was_raised() {
     let other = rig
         .host
         .root
-        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGrip::default());
+        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGear::default());
     let top = rig.host.root.root();
     rig.host.root.add_child(top, other);
     rig.host.root.bring_to_front(other);
@@ -501,7 +451,7 @@ fn a_covered_dock_stays_as_the_covering_screen_left_it_and_comes_back_after() {
     let other = rig
         .host
         .root
-        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGrip::default());
+        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGear::default());
     let top = rig.host.root.root();
     rig.host.root.add_child(top, other);
 
@@ -531,98 +481,103 @@ fn hiding_keeps_it_hidden_and_showing_again_also_expands_it() {
     let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
     rig.add_plugins(1);
     rig.sync_plain();
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
-    assert_eq!(rig.size().1, layout::PILL_LENGTH);
+    let tile = rig.layout().tile;
+    rig.click(tile);
+    assert_eq!(rig.size().1, layout::FLOATING_THICKNESS);
     rig.with(|c, ui| c.set_hidden(ui, true));
     rig.tick();
     assert!(!rig.host.root.is_window_visible(WINDOW));
     rig.with(|c, ui| c.set_hidden(ui, false));
     rig.tick();
     assert!(rig.host.root.is_window_visible(WINDOW));
-    assert!(rig.size().1 > layout::PILL_LENGTH);
+    assert!(rig.size().1 > layout::FLOATING_THICKNESS);
 }
 
-// ── Minimizing ──────────────────────────────────────────────────────────
+// ── Closing to the tile ─────────────────────────────────────────────────
 
-/// The muted ink inside the toggle, which is the chevron at rest.
-fn chevron_ink(rig: &mut Rig) -> usize {
-    let toggle = rig.layout().toggle;
-    let (left, top) = rig.at();
-    let muted = Palette::MOSS.muted;
-    let list = rig.draw();
-    draw_corners(&list)
-        .iter()
-        .filter(|(x, y, c)| {
-            c.a > 0.5
-                && (c.r - muted.r).abs() < 0.004
-                && *x >= left + toggle.x
-                && *x <= left + toggle.x + toggle.w
-                && *y >= top + toggle.y
-                && *y <= top + toggle.y + toggle.h
-        })
-        .count()
-}
+const ICON: TextureRef = TextureRef::Runtime(9);
 
-#[test]
-fn the_chevron_shows_with_the_pointer_away_open_and_minimized_in_every_mode() {
-    for mode in [
-        DockMode::Floating,
-        DockMode::FloatingHorizontal,
-        DockMode::Left,
-        DockMode::Right,
-        DockMode::Top,
-        DockMode::Bottom,
-    ] {
-        let mut rig = Rig::in_mode(mode);
-        rig.host.mouse_move(400, 300);
-        rig.tick();
-        assert!(chevron_ink(&mut rig) > 0, "{mode:?} open");
-        let toggle = rig.layout().toggle;
-        rig.click(toggle);
-        rig.host.mouse_move(400, 300);
-        rig.tick();
-        assert!(rig.with(|c, _| c.is_minimized()));
-        assert!(chevron_ink(&mut rig) > 0, "{mode:?} minimized");
+impl Rig {
+    fn closed(&mut self) -> bool {
+        self.with(|c, _| c.is_minimized())
+    }
+
+    fn press_tile(&mut self) {
+        let tile = self.layout().tile;
+        self.click(tile);
+    }
+
+    fn tile_count(&mut self) -> usize {
+        let tile = self.with(|c, _| c.tile);
+        self.host.root.widget::<DockTile>(tile).unwrap().count
     }
 }
 
 #[test]
-fn minimized_sizes_and_edges_in_every_mode() {
-    for (mode, size) in [
-        (DockMode::Floating, (48.0, 24.0)),
-        (DockMode::FloatingHorizontal, (24.0, 48.0)),
-        (DockMode::Left, (12.0, 44.0)),
-        (DockMode::Right, (12.0, 44.0)),
-        (DockMode::Top, (44.0, 12.0)),
-        (DockMode::Bottom, (44.0, 12.0)),
+fn closed_it_is_a_square_tile_in_every_mode_on_its_edge() {
+    for (mode, side) in [
+        (DockMode::Floating, 48.0),
+        (DockMode::FloatingHorizontal, 48.0),
+        (DockMode::Left, 46.0),
+        (DockMode::Right, 46.0),
+        (DockMode::Top, 46.0),
+        (DockMode::Bottom, 46.0),
     ] {
         let mut rig = Rig::in_mode(mode);
-        let toggle = rig.layout().toggle;
-        rig.click(toggle);
-        assert_eq!(rig.size(), size, "{mode:?}");
+        rig.press_tile();
+        assert_eq!(rig.size(), (side, side), "{mode:?}");
         let (left, top) = rig.at();
         match mode {
             DockMode::Left => assert_eq!(left, 0.0),
-            DockMode::Right => assert_eq!(left, 800.0 - 12.0),
+            DockMode::Right => assert_eq!(left, 800.0 - side),
             DockMode::Top => assert_eq!(top, 0.0),
-            DockMode::Bottom => assert_eq!(top, 600.0 - 12.0),
+            DockMode::Bottom => assert_eq!(top, 600.0 - side),
             _ => {}
         }
         assert!(rig.slot_rects().iter().flatten().all(|s| !s.2), "{mode:?}");
+        // The plugin windows stay as they are.
+        assert!(rig.outbox.borrow().is_empty());
     }
 }
 
 #[test]
-fn minimizing_leaves_plugin_windows_as_they_are() {
-    let mut rig = Rig::in_mode(DockMode::Floating);
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
-    assert!(rig.outbox.borrow().is_empty());
+fn the_tile_shows_the_icon_open_and_closed() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(1);
+    rig.sync_plain();
+    rig.with(|c, ui| c.set_art(ui, Some((ICON, 256.0, 256.0)), None));
+    rig.tick();
+    assert_eq!(sprites_of(&rig.draw(), ICON).len(), 1);
+    rig.press_tile();
+    assert_eq!(sprites_of(&rig.draw(), ICON).len(), 1);
 }
 
 #[test]
-fn a_saved_state_restores_minimized_and_stays_on_a_rails_edge() {
+fn a_closed_tile_counts_the_open_windows_and_shows_nothing_at_none() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add("test", "Test", PanelDescriptor::new("a", "A"));
+    rig.add("test", "Test", PanelDescriptor::new("b", "B"));
+    rig.add("test", "Test", PanelDescriptor::new("c", "C"));
+    rig.ui.show_panel("test", "a", true);
+    rig.ui.show_panel("test", "b", true);
+    rig.ui.show_panel("test", "c", false);
+    rig.sync_plain();
+    // An open dock marks each open window, so only a closed one counts.
+    assert_eq!(rig.tile_count(), 0);
+    rig.press_tile();
+    assert_eq!(rig.tile_count(), 2);
+    let list = rig.draw();
+    assert!(has_color(&draw_corners(&list), Palette::MOSS.accent));
+    rig.ui.show_panel("test", "a", false);
+    rig.ui.show_panel("test", "b", false);
+    rig.sync_plain();
+    assert_eq!(rig.tile_count(), 0);
+    let list = rig.draw();
+    assert!(!has_color(&draw_corners(&list), Palette::MOSS.accent));
+}
+
+#[test]
+fn a_saved_state_restores_closed_and_stays_on_a_rails_edge() {
     let mut rig = Rig::in_mode(DockMode::Right);
     assert!(!rig.host.capture_window_state(WINDOW).collapsed);
     rig.host.root.set_size(1000.0, 600.0);
@@ -636,38 +591,78 @@ fn a_saved_state_restores_minimized_and_stays_on_a_rails_edge() {
     );
     rig.tick();
     assert!(rig.host.capture_window_state(WINDOW).collapsed);
-    assert_eq!(rig.at().0, 1000.0 - layout::TAB_THICKNESS);
-    assert_eq!(rig.size().1, layout::TAB_LENGTH);
+    assert_eq!(rig.at().0, 1000.0 - layout::RAIL_THICKNESS);
 }
 
 #[test]
-fn a_minimized_dock_can_be_dragged_and_snaps_as_a_tab() {
+fn a_closed_dock_drags_and_snaps_and_opens_as_the_rail_on_that_edge() {
     let mut rig = Rig::in_mode(DockMode::Floating);
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
+    rig.press_tile();
     let (left, _) = rig.at();
     rig.drag(ON_HANDLE, (-(left as i32) + 2, 40));
     assert_eq!(rig.mode(), DockMode::Left);
-    assert_eq!(rig.size(), (layout::TAB_THICKNESS, layout::TAB_LENGTH));
-    // Expanded again, it opens as the rail on that edge.
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
+    assert!(rig.closed());
+    assert_eq!(rig.size(), (46.0, 46.0));
+    rig.press_tile();
     assert_eq!(rig.size().0, layout::RAIL_THICKNESS);
+    assert!(rig.size().1 > 46.0);
     assert_eq!(rig.at().0, 0.0);
 }
 
 #[test]
-fn expanding_near_the_screens_far_end_keeps_the_whole_dock_on_it() {
+fn a_press_that_wanders_a_little_is_a_press_and_the_dock_holds_still() {
     let mut rig = Rig::in_mode(DockMode::Floating);
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
+    rig.host.root.move_window(WINDOW, 300.0, 100.0);
+    rig.tick();
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.move_to(x + 2, y + 2);
+    assert_eq!(rig.at(), (300.0, 100.0));
+    rig.release(x + 2, y + 2);
+    assert_eq!(rig.at(), (300.0, 100.0));
+    assert!(rig.closed());
+    // Past that it is a drag, and does not toggle.
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.move_to(x + 20, y);
+    rig.release(x + 20, y);
+    assert_eq!(rig.at(), (320.0, 100.0));
+    assert!(rig.closed());
+}
+
+#[test]
+fn a_press_still_opens_and_closes_it_while_the_interface_is_locked() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.host.root.set_ui_locked(true);
+    rig.press_tile();
+    assert!(rig.closed());
+    rig.press_tile();
+    assert!(!rig.closed());
+}
+
+#[test]
+fn opening_near_the_far_end_slides_to_fit_and_closing_goes_back() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.press_tile();
     rig.host.root.move_window(WINDOW, 300.0, 600.0);
     rig.tick();
-    assert_eq!(rig.at().1, 600.0 - layout::PILL_LENGTH);
-    let toggle = rig.layout().toggle;
-    rig.click(toggle);
+    let closed_at = rig.at();
+    assert_eq!(closed_at.1, 600.0 - layout::FLOATING_THICKNESS);
+    rig.press_tile();
     let (_, h) = rig.size();
     assert_eq!(rig.at().1, 600.0 - h);
+    let tile = rig.layout().tile;
+    rig.click(tile);
+    assert_eq!(rig.at(), closed_at);
+}
+
+#[test]
+fn hovering_the_tile_labels_it_and_holding_it_does_not() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let tile = rig.layout().tile;
+    rig.hover(tile);
+    assert_eq!(rig.label().unwrap().title, TILE_LABEL);
+    let (x, y) = rig.grab(ON_HANDLE);
+    rig.move_to(x, y);
+    assert!(rig.label().is_none());
 }
 
 // ── Snapping ────────────────────────────────────────────────────────────
@@ -688,8 +683,8 @@ impl Rig {
         self.with(|c, _| c.mode())
     }
 
-    /// Presses on the handle row, `offset` in from the dock's corner, and
-    /// returns where.
+    /// Presses on the tile, `offset` in from the dock's corner, and returns
+    /// where.
     fn grab(&mut self, offset: (i32, i32)) -> (i32, i32) {
         let (left, top) = self.at();
         let (x, y) = (left as i32 + offset.0, top as i32 + offset.1);
@@ -738,8 +733,8 @@ fn changes(modes: &[DockMode], start: DockMode) -> usize {
     n
 }
 
-const ON_HANDLE: (i32, i32) = (10, 5);
-const ON_TURNED_HANDLE: (i32, i32) = (5, 10);
+const ON_HANDLE: (i32, i32) = (10, 10);
+const ON_TURNED_HANDLE: (i32, i32) = (10, 10);
 
 #[test]
 fn picking_a_mode_moves_the_dock_and_keeps_its_place_along_the_edge() {
@@ -915,7 +910,7 @@ fn a_right_rail_grabbed_near_its_inner_edge_slides_and_stays_a_rail() {
 fn a_slow_drag_to_any_edge_changes_mode_once() {
     // To the right, grabbed near the dock's near edge.
     let mut rig = Rig::in_mode(DockMode::Floating);
-    let from = rig.grab((2, 5));
+    let from = rig.grab((8, 8));
     let modes = rig.steps(from, (2, 0), 400);
     assert_eq!(changes(&modes, DockMode::Floating), 1);
     assert_eq!(rig.mode(), DockMode::Right);
@@ -924,7 +919,7 @@ fn a_slow_drag_to_any_edge_changes_mode_once() {
     let mut rig = Rig::in_mode(DockMode::Floating);
     rig.host.root.move_window(WINDOW, 600.0, DEFAULT_TOP);
     rig.tick();
-    let from = rig.grab((28, 5));
+    let from = rig.grab((28, 8));
     let modes = rig.steps(from, (-2, 0), 330);
     assert_eq!(changes(&modes, DockMode::Floating), 1);
     assert_eq!(rig.mode(), DockMode::Left);
@@ -1013,7 +1008,7 @@ fn a_press_that_never_moves_the_dock_leaves_its_mode_alone() {
     rig.release(x, y);
     assert_eq!(rig.mode(), DockMode::Floating);
     // The first real move is what snaps it.
-    rig.drag(ON_HANDLE, (0, 1));
+    rig.drag(ON_HANDLE, (0, 6));
     assert_eq!(rig.mode(), DockMode::Left);
 }
 
@@ -1069,7 +1064,7 @@ fn edge_pills_ease_to_their_lengths_and_the_front_window_has_the_long_one() {
             let id = rig
                 .host
                 .root
-                .insert(Element::at(300.0, 100.0, 100.0, 100.0), DockGrip::default());
+                .insert(Element::at(300.0, 100.0, 100.0, 100.0), DockGear::default());
             let top = rig.host.root.root();
             rig.host.root.add_child(top, id);
             rig.host
@@ -1130,7 +1125,7 @@ fn a_horizontal_dock_shows_its_label_away_from_its_edge_and_scrolls_along_its_le
     let scrolled = rig.layout();
     assert_eq!(scrolled.first, 1);
     assert!(scrolled.fade_start);
-    assert_eq!(scrolled.slots[1].unwrap().x, layout::SLOTS_START);
+    assert_eq!(scrolled.slots[1].unwrap().x, scrolled.list_start);
 }
 
 #[test]

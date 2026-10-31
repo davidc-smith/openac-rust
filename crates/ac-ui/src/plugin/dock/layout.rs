@@ -4,10 +4,11 @@
 //!
 //! It works along the dock's main axis, the way its slots run, and across
 //! it, so a horizontal dock is the vertical one turned on its side. Along the
-//! main axis: the handle row, the slots (a divider between two plugins, a gap
-//! between one plugin's windows), a divider, the gear slot and padding. When
-//! the slots do not fit, only those that do from the first one are laid out;
-//! the handle row and the gear stay.
+//! main axis: the tile, a divider, the slots (a divider between two plugins, a
+//! gap between one plugin's windows), a divider, the gear slot and padding.
+//! When the slots do not fit, only those that do from the first one are laid
+//! out; the tile and the gear stay. Closed, the dock is only the tile, and the
+//! tile's art is in the same place either way.
 
 use crate::geometry::Rect;
 
@@ -21,34 +22,19 @@ pub const GAP: f32 = 4.0;
 pub const ART: f32 = 24.0;
 /// A floating dock's thickness across its main axis.
 pub const FLOATING_THICKNESS: f32 = PADDING + SLOT + PADDING;
-/// Where the row with the handle and the minimize button starts its contents.
-pub const HANDLE_START: f32 = 2.0;
-/// How long those contents are along the main axis.
-pub const HANDLE_LENGTH: f32 = 12.0;
-/// Where the first slot starts along the main axis.
-pub const SLOTS_START: f32 = HANDLE_START + HANDLE_LENGTH + 2.0;
-/// The handle's extent across the main axis.
-pub const HANDLE_ACROSS: f32 = 30.0;
-/// The minimize button, each way.
-pub const TOGGLE_SIZE: f32 = 12.0;
 /// The space each side of a divider.
 pub const DIVIDER_SPACE: f32 = 4.0;
 /// How long a fade over cut-off slots is.
 pub const FADE_LENGTH: f32 = 12.0;
-/// A minimized floating dock's length along its main axis.
-pub const PILL_LENGTH: f32 = 24.0;
 /// A rail's thickness across its main axis.
 pub const RAIL_THICKNESS: f32 = 46.0;
 /// A rail's slot along its main axis.
 pub const RAIL_SLOT: f32 = 38.0;
 /// Between a rail's slots of one plugin.
 pub const RAIL_GAP: f32 = 2.0;
-/// A minimized rail's thickness.
-pub const TAB_THICKNESS: f32 = 12.0;
-/// A minimized rail's length along its edge.
-pub const TAB_LENGTH: f32 = 44.0;
-/// The part of a minimized rail that moves it.
-pub const TAB_HANDLE: f32 = 20.0;
+/// Where a rail's tile starts along its main axis, which centres it in the
+/// square a closed rail is.
+pub const RAIL_TILE_START: f32 = (RAIL_THICKNESS - RAIL_SLOT) / 2.0;
 /// How far a floating dock's longest stays from each end of the screen, so
 /// that one which fills the screen is not touching an edge wherever it is
 /// dragged.
@@ -232,12 +218,10 @@ pub struct DockLayout {
     pub slots: Vec<Option<Rect>>,
     /// Where each one-point divider starts along the main axis.
     pub dividers: Vec<f32>,
-    /// The gear's place; empty on a minimized dock.
+    /// The gear's place; empty on a closed dock.
     pub gear: Rect,
-    /// The part that moves the dock.
-    pub handle: Rect,
-    /// The minimize button.
-    pub toggle: Rect,
+    /// The tile, which moves the dock and opens and closes it.
+    pub tile: Rect,
     /// The first slot laid out.
     pub first: usize,
     /// How many slots are laid out.
@@ -296,31 +280,19 @@ pub fn compute(
     let count = owners.len();
     let mut slots = vec![None; count];
 
+    let thickness = if rail {
+        RAIL_THICKNESS
+    } else {
+        FLOATING_THICKNESS
+    };
     if minimized {
-        let (cross, main, handle, toggle) = if rail {
-            (
-                TAB_THICKNESS,
-                TAB_LENGTH,
-                axes.rect(0.0, 0.0, TAB_HANDLE, TAB_THICKNESS),
-                axes.rect(TAB_HANDLE, 0.0, TAB_LENGTH - TAB_HANDLE, TAB_THICKNESS),
-            )
-        } else {
-            (
-                FLOATING_THICKNESS,
-                PILL_LENGTH,
-                axes.rect(0.0, 0.0, PILL_LENGTH, HANDLE_ACROSS),
-                axes.rect(0.0, HANDLE_ACROSS, PILL_LENGTH, TOGGLE_SIZE),
-            )
-        };
-        let (width, height) = axes.size(main, cross);
         return DockLayout {
-            width,
-            height,
+            width: thickness,
+            height: thickness,
             slots,
             dividers: Vec::new(),
             gear: Rect::new(0.0, 0.0, 0.0, 0.0),
-            handle,
-            toggle,
+            tile: Rect::new(0.0, 0.0, thickness, thickness),
             first: 0,
             visible: 0,
             max_first: 0,
@@ -331,11 +303,13 @@ pub fn compute(
         };
     }
 
-    let (cross, slot_cross_at, slot_across, slot_along, gap) = if rail {
-        (RAIL_THICKNESS, 0.0, RAIL_THICKNESS, RAIL_SLOT, RAIL_GAP)
+    let (tile_start, slot_cross_at, slot_across, slot_along, gap) = if rail {
+        (RAIL_TILE_START, 0.0, RAIL_THICKNESS, RAIL_SLOT, RAIL_GAP)
     } else {
-        (FLOATING_THICKNESS, PADDING, SLOT, SLOT, GAP)
+        (PADDING, PADDING, SLOT, SLOT, GAP)
     };
+    let tile = axes.rect(tile_start, slot_cross_at, slot_along, slot_across);
+    let list_start = tile_start + slot_along + DIVIDER_BLOCK;
     let spacing = |i: usize| {
         if owners[i] == owners[i - 1] {
             gap
@@ -343,10 +317,10 @@ pub fn compute(
             DIVIDER_BLOCK
         }
     };
-    // Everything that is not the slot list: the handle row before it, and the
-    // divider, gear and padding after it.
+    // Everything that is not the slot list: the tile and divider before it, and
+    // the divider, gear and padding after it.
     let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
-    let room = max_length - (SLOTS_START + divider + slot_along + PADDING);
+    let room = max_length - (list_start + divider + slot_along + PADDING);
 
     // At least one slot, however little room there is.
     let mut fit_backward = 0;
@@ -377,8 +351,8 @@ pub fn compute(
         visible += 1;
     }
 
-    let mut dividers = Vec::new();
-    let mut at = SLOTS_START;
+    let mut dividers = vec![tile_start + slot_along + DIVIDER_SPACE + 0.5];
+    let mut at = list_start;
     for (i, slot) in slots.iter_mut().enumerate().skip(first).take(visible) {
         if i > first {
             let space = spacing(i);
@@ -396,26 +370,20 @@ pub fn compute(
         at += DIVIDER_BLOCK;
     }
     let gear = axes.rect(at, slot_cross_at, slot_along, slot_across);
-    let (width, height) = axes.size(at + slot_along + PADDING, cross);
+    let (width, height) = axes.size(at + slot_along + PADDING, thickness);
     DockLayout {
         width,
         height,
         slots,
         dividers,
         gear,
-        handle: axes.rect(0.0, 0.0, SLOTS_START, HANDLE_ACROSS),
-        toggle: axes.rect(
-            HANDLE_START,
-            cross - PADDING - TOGGLE_SIZE,
-            TOGGLE_SIZE,
-            TOGGLE_SIZE,
-        ),
+        tile,
         first,
         visible,
         max_first,
         fade_start: first > 0,
         fade_end: first + visible < count,
-        list_start: SLOTS_START,
+        list_start,
         list_end,
     }
 }
@@ -437,47 +405,46 @@ mod tests {
     }
 
     #[test]
-    fn one_slot_is_the_handle_row_a_slot_a_divider_the_gear_and_padding() {
+    fn one_slot_is_the_tile_a_divider_a_slot_a_divider_the_gear_and_padding() {
         let l = floating(&["a"], f32::INFINITY, 0);
         assert_eq!(l.width, 48.0);
-        // 16 (handle row) + 36 (slot) + 9 (divider) + 36 (gear) + 6 (padding)
-        assert_eq!(l.height, 103.0);
-        assert_eq!(l.slots[0], Some(Rect::new(6.0, 16.0, 36.0, 36.0)));
-        assert_eq!(l.dividers, [56.5]);
-        assert_eq!(l.gear, Rect::new(6.0, 61.0, 36.0, 36.0));
-        assert_eq!(l.handle, Rect::new(0.0, 0.0, 30.0, 16.0));
-        assert_eq!(l.toggle, Rect::new(30.0, 2.0, 12.0, 12.0));
+        // 6 + 36 (tile) + 9 (divider) + 36 (slot) + 9 (divider) + 36 (gear) + 6
+        assert_eq!(l.height, 138.0);
+        assert_eq!(l.tile, Rect::new(6.0, 6.0, 36.0, 36.0));
+        assert_eq!(l.slots[0], Some(Rect::new(6.0, 51.0, 36.0, 36.0)));
+        assert_eq!(l.dividers, [46.5, 91.5]);
+        assert_eq!(l.gear, Rect::new(6.0, 96.0, 36.0, 36.0));
     }
 
     #[test]
     fn slots_of_one_plugin_have_a_gap_and_another_plugin_a_divider() {
         let l = floating(&["moss", "moss", "goarrow"], f32::INFINITY, 0);
         let main = |i: usize| l.slots[i].unwrap().y;
-        assert_eq!(main(0), 16.0);
-        assert_eq!(main(1), 56.0); // 16 + 36 + 4
-        assert_eq!(main(2), 101.0); // 56 + 36 + 9
-        assert_eq!(l.dividers, [96.5, 141.5]);
-        assert_eq!(l.gear.y, 146.0);
-        assert_eq!(l.height, 188.0);
+        assert_eq!(main(0), 51.0);
+        assert_eq!(main(1), 91.0); // 51 + 36 + 4
+        assert_eq!(main(2), 136.0); // 91 + 36 + 9
+        assert_eq!(l.dividers, [46.5, 131.5, 176.5]);
+        assert_eq!(l.gear.y, 181.0);
+        assert_eq!(l.height, 223.0);
     }
 
     #[test]
     fn overflow_shows_what_fits_and_scrolling_stops_at_the_last_full_page() {
         let owners = twelve();
         let owners = refs(&owners);
-        // Room for 16 + 3 slots (36 + 9 + 36 + 9 + 36) + 9 + 36 + 6 = 193.
-        let top = floating(&owners, 200.0, 0);
+        // Room for 51 + 3 slots (36 + 9 + 36 + 9 + 36) + 9 + 36 + 6 = 228.
+        let top = floating(&owners, 230.0, 0);
         assert_eq!((top.visible, top.first, top.max_first), (3, 0, 9));
         assert!(!top.fade_start && top.fade_end);
-        assert!(top.height <= 200.0);
+        assert!(top.height <= 230.0);
         assert!(top.slots[2].is_some());
         assert!(top.slots[3].is_none());
 
-        let end = floating(&owners, 200.0, 50);
+        let end = floating(&owners, 230.0, 50);
         assert_eq!(end.first, 9);
         assert!(end.fade_start && !end.fade_end);
         assert!(end.slots[8].is_none());
-        assert_eq!(end.slots[9].unwrap().y, 16.0);
+        assert_eq!(end.slots[9].unwrap().y, 51.0);
         assert!(end.slots[11].is_some());
     }
 
@@ -492,38 +459,46 @@ mod tests {
     fn a_rail_has_full_width_slots_at_the_same_pitch_as_floating() {
         for mode in [DockMode::Left, DockMode::Right] {
             let rail = compute(mode, false, &["a", "a"], f32::INFINITY, 0);
-            let free = floating(&["a", "a"], f32::INFINITY, 0);
             assert_eq!(rail.width, 46.0);
-            assert_eq!(rail.slots[0], Some(Rect::new(0.0, 16.0, 46.0, 38.0)));
-            assert_eq!(rail.slots[1].unwrap().y, 56.0); // 16 + 38 + 2
-            // The pitch is 40 in both; the last slot and the gear are 2 taller.
-            assert_eq!(rail.height, free.height + 4.0);
-            assert_eq!(rail.toggle, Rect::new(28.0, 2.0, 12.0, 12.0));
+            assert_eq!(rail.tile, Rect::new(0.0, 4.0, 46.0, 38.0));
+            assert_eq!(rail.slots[0], Some(Rect::new(0.0, 51.0, 46.0, 38.0)));
+            assert_eq!(rail.slots[1].unwrap().y, 91.0); // 51 + 38 + 2
         }
     }
 
     #[test]
-    fn minimized_floating_is_a_pill_and_a_vertical_rail_a_tab() {
-        let pill = compute(DockMode::Floating, true, &["a"], 500.0, 0);
-        assert_eq!((pill.width, pill.height), (48.0, 24.0));
-        assert_eq!(pill.handle, Rect::new(0.0, 0.0, 30.0, 24.0));
-        assert_eq!(pill.toggle, Rect::new(30.0, 0.0, 12.0, 24.0));
-        assert!(pill.slots.iter().all(Option::is_none));
-        assert!(pill.dividers.is_empty());
+    fn closed_is_only_the_tile_a_square_as_thick_as_the_dock() {
+        for (mode, side) in [
+            (DockMode::Floating, 48.0),
+            (DockMode::FloatingHorizontal, 48.0),
+            (DockMode::Left, 46.0),
+            (DockMode::Right, 46.0),
+            (DockMode::Top, 46.0),
+            (DockMode::Bottom, 46.0),
+        ] {
+            let l = compute(mode, true, &["a"], 500.0, 0);
+            assert_eq!((l.width, l.height), (side, side));
+            assert_eq!(l.tile, Rect::new(0.0, 0.0, side, side));
+            assert!(l.slots.iter().all(Option::is_none));
+            assert!(l.dividers.is_empty());
+        }
+    }
 
-        for mode in [DockMode::Left, DockMode::Right] {
-            let tab = compute(mode, true, &["a"], 500.0, 0);
-            assert_eq!((tab.width, tab.height), (12.0, 44.0));
-            assert_eq!(tab.handle, Rect::new(0.0, 0.0, 12.0, 20.0));
-            assert_eq!(tab.toggle, Rect::new(0.0, 20.0, 12.0, 24.0));
+    #[test]
+    fn the_tiles_art_does_not_move_between_closed_and_open() {
+        for mode in DockMode::ALL {
+            let centre = |r: Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let closed = compute(mode, true, &["a"], 500.0, 0);
+            let open = compute(mode, false, &["a"], 500.0, 0);
+            assert_eq!(centre(closed.tile), centre(open.tile), "{mode:?}");
         }
     }
 
     #[test]
     fn no_entries_have_no_divider_before_the_gear() {
         let l = floating(&[], f32::INFINITY, 0);
-        assert!(l.dividers.is_empty());
-        assert_eq!(l.gear.y, 16.0);
+        assert_eq!(l.dividers, [46.5]);
+        assert_eq!(l.gear.y, 51.0);
     }
 
     // ── Running the other way ───────────────────────────────────────────
@@ -542,11 +517,10 @@ mod tests {
             (DockMode::Right, DockMode::Bottom),
         ] {
             for minimized in [false, true] {
-                let v = compute(vertical, minimized, &owners, 200.0, 0);
-                let h = compute(horizontal, minimized, &owners, 200.0, 0);
+                let v = compute(vertical, minimized, &owners, 260.0, 0);
+                let h = compute(horizontal, minimized, &owners, 260.0, 0);
                 assert_eq!((h.width, h.height), (v.height, v.width));
-                assert_eq!(h.handle, turned(v.handle));
-                assert_eq!(h.toggle, turned(v.toggle));
+                assert_eq!(h.tile, turned(v.tile));
                 assert_eq!(h.gear, turned(v.gear));
                 assert_eq!(h.dividers, v.dividers);
                 assert_eq!(
@@ -570,23 +544,10 @@ mod tests {
             f32::INFINITY,
             0,
         );
-        assert_eq!((l.width, l.height), (103.0, 48.0));
-        assert_eq!(l.slots[0], Some(Rect::new(16.0, 6.0, 36.0, 36.0)));
-        assert_eq!(l.gear, Rect::new(61.0, 6.0, 36.0, 36.0));
-        assert_eq!(l.handle, Rect::new(0.0, 0.0, 16.0, 30.0));
-        assert_eq!(l.toggle, Rect::new(2.0, 30.0, 12.0, 12.0));
-    }
-
-    #[test]
-    fn minimized_sizes_turn_with_the_dock() {
-        let pill = compute(DockMode::FloatingHorizontal, true, &["a"], 500.0, 0);
-        assert_eq!((pill.width, pill.height), (24.0, 48.0));
-        for mode in [DockMode::Top, DockMode::Bottom] {
-            let tab = compute(mode, true, &["a"], 500.0, 0);
-            assert_eq!((tab.width, tab.height), (44.0, 12.0));
-            assert_eq!(tab.handle, Rect::new(0.0, 0.0, 20.0, 12.0));
-            assert_eq!(tab.toggle, Rect::new(20.0, 0.0, 24.0, 12.0));
-        }
+        assert_eq!((l.width, l.height), (138.0, 48.0));
+        assert_eq!(l.tile, Rect::new(6.0, 6.0, 36.0, 36.0));
+        assert_eq!(l.slots[0], Some(Rect::new(51.0, 6.0, 36.0, 36.0)));
+        assert_eq!(l.gear, Rect::new(96.0, 6.0, 36.0, 36.0));
     }
 
     #[test]
@@ -598,7 +559,7 @@ mod tests {
         assert!(l.width <= 400.0);
         assert!(l.fade_start && l.fade_end);
         assert!(l.slots[1].is_none());
-        assert_eq!(l.slots[2].unwrap().x, SLOTS_START);
+        assert_eq!(l.slots[2].unwrap().x, l.list_start);
     }
 
     #[test]

@@ -65,6 +65,11 @@ pub const PROJECTILE_SAMPLES_SHOWN: Duration = Duration::from_millis(350);
 /// metres (about a standing human).
 pub const FALLBACK_LABEL_HEIGHT: f32 = 1.1;
 
+/// OpenAC's own icon, which the plugin dock's tile shows.
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../../assets/icons/launcher-256.png");
+/// The size of the count on the dock's tile, pixels.
+const DOCK_COUNT_FONT_SIZE: f32 = 10.0;
+
 /// The size composed item and spell icons are drawn at, pixels.
 const ICON_SIZE: f32 = 32.0;
 
@@ -129,6 +134,8 @@ pub struct PluginWindowUi {
     /// The bundled sans font the modern themes draw opted-in windows in
     /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
     modern_fonts: Option<ModernFonts>,
+    /// The font of the count on the dock's tile.
+    dock_count_font: Option<Arc<UiFont>>,
     /// The display density the sharper bakes of those fonts were last chosen
     /// for.
     sharp_density: Option<f32>,
@@ -465,6 +472,9 @@ impl WindowUi {
         let frame = dock.root;
         let top = self.host.root.root();
         self.host.root.add_child(top, frame);
+        let (icon, count_font) = (self.dock_app_icon(), self.dock_count_font());
+        let mut dock = dock;
+        dock.set_art(&mut self.host.root, icon, count_font);
         match self
             .host
             .root
@@ -496,6 +506,40 @@ impl WindowUi {
         self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
     }
 
+    /// OpenAC's icon as a texture, smaller copies and all, as it is drawn far
+    /// below its size.
+    fn dock_app_icon(&mut self) -> Option<Icon> {
+        let Some(icon) = ac_plugin_ui::icon::decode_png(APP_ICON_PNG) else {
+            self.notices
+                .push("ui: the OpenAC icon does not decode".to_owned());
+            return None;
+        };
+        let (w, h) = (icon.width, icon.height);
+        let levels = ac_plugin_ui::mips::build(icon.rgba.as_ref().clone(), w, h)
+            .into_iter()
+            .map(|l| ac_dat::texture::DecodedTexture {
+                width: l.width,
+                height: l.height,
+                rgba: l.rgba,
+            })
+            .collect();
+        Some((self.images.add_plugin_image(levels), w as f32, h as f32))
+    }
+
+    /// The font of the count on the dock's tile.
+    fn dock_count_font(&mut self) -> Option<Arc<UiFont>> {
+        match self.bake_bundled_font(DOCK_COUNT_FONT_SIZE, Weight::SemiBold) {
+            Ok(font) => {
+                self.plugins.dock_count_font = Some(Arc::clone(&font));
+                Some(font)
+            }
+            Err(e) => {
+                self.notices.push(format!("ui: bundled font: {e}"));
+                None
+            }
+        }
+    }
+
     /// The sharper bakes of the bundled font for a display with `pixels` a
     /// UI unit, made the first time a display of that density is used. On a
     /// standard display there are none.
@@ -512,12 +556,18 @@ impl WindowUi {
         let Some(fonts) = self.plugins.modern_fonts.clone() else {
             return;
         };
+        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+        let mut bakes = vec![
+            (fonts.regular, Weight::Regular, size),
+            (fonts.semibold, Weight::SemiBold, size),
+        ];
+        if let Some(count) = self.plugins.dock_count_font.clone() {
+            bakes.push((count, Weight::SemiBold, DOCK_COUNT_FONT_SIZE));
+        }
         let mut chosen = SharpFonts::new();
-        for (font, weight) in [
-            (&fonts.regular, Weight::Regular),
-            (&fonts.semibold, Weight::SemiBold),
-        ] {
-            match self.sharp_bake(font, weight, pixels) {
+        for (font, weight, size) in &bakes {
+            let (font, weight, size) = (font, *weight, *size);
+            match self.sharp_bake(font, weight, size, pixels) {
                 Ok(Some(sharp)) => {
                     chosen.insert(font.id, sharp);
                 }
@@ -529,15 +579,15 @@ impl WindowUi {
         self.host.root.set_sharp_fonts(chosen);
     }
 
-    /// The sharper bake of `font` for `pixels` a UI unit: none where it would
-    /// be no sharper.
+    /// The sharper bake of `font`, baked at `size`, for `pixels` a UI unit: none
+    /// where it would be no sharper.
     fn sharp_bake(
         &mut self,
         font: &UiFont,
         weight: Weight,
+        size: f32,
         pixels: f32,
     ) -> Result<Option<SharpFont>, BundledFontError> {
-        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
         let scale = bundled_font::sharp_scale_for(size, pixels);
         if scale <= 1.0 {
             return Ok(None);
@@ -1677,6 +1727,12 @@ fn model_height(dats: &DatCollection, setup: &Setup) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_openac_icon_decodes() {
+        let icon = ac_plugin_ui::icon::decode_png(APP_ICON_PNG).expect("the icon decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+    }
 
     #[test]
     fn every_client_window_has_a_name() {

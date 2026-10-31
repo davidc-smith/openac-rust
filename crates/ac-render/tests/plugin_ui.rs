@@ -386,27 +386,38 @@ fn the_window_follows_the_displays_density_with_sharper_fonts() {
             .sharp_fonts()
             .expect("sharper bakes")
             .values()
-            .map(|s| {
-                assert_eq!(s.scale, 2.0);
-                s.font.foreground.texture
-            })
+            .map(|s| s.font.foreground.texture)
             .collect();
         bakes.sort_by_key(|t| format!("{t:?}"));
         bakes
     };
     ui.set_pixels_per_unit(2.0);
     let first = textures(&ui);
-    assert_eq!(first.len(), 2);
+    // The regular and SemiBold fonts, and the count on the dock's tile.
+    assert_eq!(first.len(), 3);
     assert_ne!(first[0], first[1]);
+    assert_ne!(first[1], first[2]);
 
     ui.set_pixels_per_unit(1.0);
     assert!(ui.host().root.sharp_fonts().is_none());
     ui.set_pixels_per_unit(2.0);
     assert_eq!(textures(&ui), first, "no second bake");
 
-    // Past what the largest bake allows, the scale stops at two.
+    // Past what the largest bake allows, the scale stops at two for the text
+    // fonts. The count's smaller font has room for three.
     ui.set_pixels_per_unit(3.0);
-    assert_eq!(textures(&ui), first);
+    let mut scales: Vec<f32> = ui
+        .host()
+        .root
+        .sharp_fonts()
+        .expect("sharper bakes")
+        .values()
+        .map(|s| s.scale)
+        .collect();
+    scales.sort_by(f32::total_cmp);
+    assert_eq!(scales, [2.0, 2.0, 3.0]);
+    let at_three = textures(&ui);
+    assert_eq!(first.iter().filter(|t| at_three.contains(t)).count(), 2);
 }
 
 fn runtime_sprites(list: &ac_ui::draw::DrawList) -> usize {
