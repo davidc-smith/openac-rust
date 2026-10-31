@@ -1328,7 +1328,9 @@ impl ClientObjectTable {
     /// Records one object-id property update. Placement has its own
     /// messages, so this stores the value, and a house's owner (which a
     /// purchase or an abandon announces this way) also moves the owner the
-    /// entry gate reads; 0 means no owner.
+    /// entry gate reads; 0 means no owner. The monarch (which swearing or
+    /// breaking allegiance announces this way) moves the object's monarch,
+    /// the one its description carries; 0 means none.
     pub fn update_instance_id_property(
         &mut self,
         item_id: u32,
@@ -1342,12 +1344,16 @@ impl ClientObjectTable {
         server_showed_object(item);
         item.properties.instance_ids.insert(property_id, value);
         let mut authority_changes = 0;
-        if PropertyInstanceId(property_id) == PropertyInstanceId::HOUSE_OWNER {
-            let owner = (value != 0).then_some(value);
-            if item.house_owner_id != owner {
-                item.house_owner_id = owner;
-                authority_changes = 1;
-            }
+        let id = (value != 0).then_some(value);
+        if PropertyInstanceId(property_id) == PropertyInstanceId::HOUSE_OWNER
+            && item.house_owner_id != id
+        {
+            item.house_owner_id = id;
+            authority_changes = 1;
+        }
+        if PropertyInstanceId(property_id) == PropertyInstanceId::MONARCH && item.monarch_id != id {
+            item.monarch_id = id;
+            authority_changes = 1;
         }
         self.mutation_revision = self.mutation_revision.wrapping_add(authority_changes);
         self.emit_updated(item_id, events);
