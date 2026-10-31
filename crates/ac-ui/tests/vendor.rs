@@ -943,6 +943,36 @@ fn the_tabs_switch_pages() {
     assert_eq!(v.with(|c, _| c.tab()), VendorTab::Items);
 }
 
+// The shop sent again after a sale leaves the window on the page the player
+// was on; only a newly opened shop picks its page.
+#[test]
+fn a_refresh_keeps_the_open_tab() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        armor_and_food(),
+    )));
+    v.click(vendor::SELLING_TAB_ID);
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Selling);
+    v.event(Some(&shop(
+        VendorViewReason::Refreshed,
+        profile(1.5),
+        armor_and_food(),
+    )));
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Selling);
+    assert!(v.visible(vendor::SELLING_PAGE_ID));
+    assert!(!v.visible(vendor::ITEMS_PAGE_ID));
+    // The listing row is still refilled behind the open page.
+    assert_eq!(v.occupied(vendor::ITEM_LIST_ID), [ARMOR]);
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        armor_and_food(),
+    )));
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Items);
+}
+
 // CloseButton_HidesTheWindowOnly_... / CloseButtonPressed_WithNoStaging_HidesImmediatelyWithoutADialog
 #[test]
 fn close_with_nothing_staged_hides_the_window_only() {

@@ -566,7 +566,13 @@ impl VendorController {
                 self.rebuild_categories(ui, items, icons);
                 ui.show_window(&self.window);
             }
-            VendorViewReason::Refreshed | VendorViewReason::Asked => {
+            // The open shop sent again (after a purchase or a sale): the
+            // window stays on the page the player was on.
+            VendorViewReason::Refreshed => {
+                self.rebuild_categories(ui, items, icons);
+                ui.show_window(&self.window);
+            }
+            VendorViewReason::Asked => {
                 self.show_tab(ui, VendorTab::Items);
                 self.rebuild_categories(ui, items, icons);
                 ui.show_window(&self.window);
