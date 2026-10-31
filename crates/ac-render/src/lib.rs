@@ -69,6 +69,7 @@ pub mod surface_image;
 #[cfg(test)]
 mod test_gpu;
 pub mod texture_detail;
+pub mod title;
 pub mod translucency;
 pub mod ui;
 mod ui_scale;

@@ -35,9 +35,10 @@ use crate::lifetime::OrderedTeardown;
 use crate::pacing::DisplayPacing;
 use crate::platform::HostOs;
 use crate::portal_space::PortalCue;
-use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage, TitleFacts, format_title};
+use crate::profiler::{FrameProfiler, FrameRateTitle, FrameStage};
 use crate::renderer::{WorldRenderer, WorldSettings, WorldStats};
 use crate::scene::{SceneEffect, SceneSource};
+use crate::title::{TitleFacts, TitleStats, TitleSubject, format_title};
 use crate::ui::input::{self as ui_input, Routed, WorldInput};
 use crate::ui::{UiBatch, UiRenderer, WindowUi};
 use crate::ui_scale::UiScale;
@@ -294,6 +295,7 @@ pub(crate) struct AttachedWindow {
     clear_color: wgpu::Color,
     adapter: AdapterSummary,
     frames_presented: u64,
+    /// The title the window shows (set again only when it changes).
     title: String,
     scene: Option<Box<SceneSource>>,
     world_failure_reported: bool,
@@ -391,10 +393,18 @@ impl AttachedWindow {
         // pixels elsewhere; the drawing surface follows in pixels.
         let attributes = Window::default_attributes()
             .with_title(spec.title.clone())
+            .with_active(true)
             .with_inner_size(
                 crate::display_mode::size_unit(HostOs::current()).request(spec.width, spec.height),
             );
         let window = Arc::new(event_loop.create_window(attributes)?);
+        // A window opened onto a running session (the console's or the
+        // launcher's switch to graphical) comes to the front with the
+        // keyboard, though this process was not the one in front. A
+        // compositor may refuse (Wayland grants focus only to a request it
+        // handed a token for; some X11 window managers prevent focus
+        // stealing): the window then opens behind, as it would without this.
+        window.focus_window();
         // Fullscreen is a mode switch to the chosen resolution, as later
         // (on Wayland the compositor's fullscreen at the monitor's mode).
         let mut display_lines = Vec::new();
@@ -1097,19 +1107,40 @@ impl AttachedWindow {
         self.notices.extend(notices);
     }
 
-    fn title_facts(&self) -> TitleFacts {
-        let objects = self.scene.as_ref().map_or(0, |s| s.scene().len());
+    /// The title for the last refresh interval's frame rate and `world`,
+    /// the last frame's landblocks.
+    fn window_title(&self, fps: f64, mean_ms: f64, world: &WorldOutcome) -> String {
+        let scene = self.scene.as_deref().map(SceneSource::scene);
+        let subject = TitleSubject::of(scene);
+        if subject == TitleSubject::BeforeWorld {
+            return crate::title::product();
+        }
         let stats = self
             .world
             .as_ref()
             .map(WorldRenderer::stats)
             .unwrap_or_default();
-        TitleFacts {
-            visible_landblocks: stats.landblocks_drawn,
-            total_landblocks: stats.landblocks,
-            objects,
-            drawn_objects: stats.objects_drawn,
-        }
+        let placed_server_objects =
+            scene.map_or(0, |s| s.objects().filter(|o| o.position.is_some()).count());
+        let facts = TitleFacts {
+            visible_landblocks: world.visible_landblocks,
+            total_landblocks: world.total_landblocks,
+            objects: self.world.as_ref().map_or(0, WorldRenderer::loaded_objects)
+                + placed_server_objects,
+            animated: stats.animated_objects,
+            calendar: self
+                .world
+                .as_ref()
+                .and_then(|w| w.calendar_date(scene, Instant::now())),
+        };
+        format_title(
+            subject,
+            &TitleStats {
+                fps,
+                mean_ms,
+                facts,
+            },
+        )
     }
 
     /// Record the world (or a clear) into `target`.
@@ -1520,11 +1551,11 @@ impl FramePhases for AttachedWindow {
     fn publish(&mut self, input: &FrameInput, outcome: &FrameOutcome) -> Result<(), RenderError> {
         self.after_automation_frame(outcome);
         if let Some((fps, mean_ms)) = self.title_rate.frame(input.delta_seconds) {
-            let mut facts = self.title_facts();
-            facts.visible_landblocks = outcome.world.visible_landblocks;
-            facts.total_landblocks = outcome.world.total_landblocks;
-            self.window
-                .set_title(&format_title(&self.title, fps, mean_ms, facts));
+            let title = self.window_title(fps, mean_ms, &outcome.world);
+            if title != self.title {
+                self.window.set_title(&title);
+                self.title = title;
+            }
             self.publish_facts();
         }
         Ok(())
