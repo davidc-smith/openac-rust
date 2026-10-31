@@ -93,7 +93,9 @@ pub struct Text {
     pub honor_vertical_justification: bool,
     /// The scroll model (also read by a linked scrollbar).
     pub scroll: Scrollable,
-    /// Keep the view at the end as lines arrive.
+    /// Keep the view at the end as lines arrive (lines set by code, such as
+    /// a log; the element's own authored string always starts at its first
+    /// line).
     pub preserve_end_on_layout: bool,
     /// The wheel scrolls even when not selectable.
     pub wheel_scroll_enabled: bool,
@@ -547,10 +549,17 @@ impl Text {
         let bottom = height - self.padding - self.margin_bottom;
         let content_h = lines.len() as f32 * lh;
         self.scroll.line_height = lh.round_ties_even() as i32;
+        // A text element keeps its scroll offset (zero at first) as its text
+        // is laid out, so an authored string too tall for its box shows its
+        // start; only a panel streaming lines in follows the end.
+        let authored = matches!(
+            self.content,
+            TextContent::Single(_) | TextContent::Wrapped(_)
+        );
         self.scroll.set_extents(
             content_h.ceil() as i32,
             (bottom - top).floor() as i32,
-            self.preserve_end_on_layout,
+            self.preserve_end_on_layout && !authored,
         );
         let base_y = content_base_y(
             top,
