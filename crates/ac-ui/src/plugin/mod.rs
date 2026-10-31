@@ -19,6 +19,7 @@ pub mod layout;
 pub mod list_ext;
 mod repeat;
 pub mod shelf;
+pub mod style;
 pub mod title_bar;
 pub mod widgets;
 
@@ -1818,3 +1819,5 @@ mod list_button_tests;
 mod repeat_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod theme_tests;
