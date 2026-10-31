@@ -716,6 +716,74 @@ fn a_canvas_holds_the_pointer_from_press_to_release_and_reports_a_lost_press() {
     assert_eq!(kinds, vec![PointerKind::Down, PointerKind::Cancelled]);
 }
 
+#[test]
+fn a_canvas_is_told_which_modifier_keys_each_pointer_event_came_with() {
+    use crate::event::Modifiers;
+    use crate::overlay::OverlayHost;
+    use ac_plugin_ui::{CanvasAnchor, CanvasDescriptor, PluginUiView, PointerKind};
+    let mut state = PluginUi::new();
+    let owner = UiOwner::new("test.canvas", "Canvas");
+    let id = state
+        .register_canvas(
+            &owner,
+            CanvasDescriptor {
+                canvas_id: "hud".into(),
+                width: 100,
+                height: 50,
+                anchor: CanvasAnchor::TopLeft,
+                offset: (200.0, 100.0),
+                start_visible: true,
+                accepts_pointer_input: true,
+            },
+        )
+        .unwrap();
+    assert!(state.listen_canvas("test.canvas", id, true));
+    let mut view = PluginUiView::new();
+    view.apply_all(state.snapshot());
+    let mut host = UiHost::new();
+    host.root.set_size(800.0, 600.0);
+    let mut band = OverlayHost::mount(&mut host.root);
+    let mut layer = canvas::CanvasLayer::mount(&mut host.root, &mut band);
+    let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
+    let mut no_image = |_: &str, _: u32| None;
+    layer.sync(&mut host.root, &band, &view, &mut no_image, None, &outbox);
+
+    // A Ctrl+drag, ending with Ctrl let go before the button comes up.
+    host.set_modifiers(Modifiers::CTRL);
+    host.mouse_down(MouseButton::Left, 210, 110, 0);
+    host.mouse_move(250, 130);
+    host.set_modifiers(Modifiers::NONE);
+    host.mouse_up(MouseButton::Left, 250, 130, 0);
+    // The wheel with Shift and Alt, and a plain click.
+    host.set_modifiers(Modifiers::SHIFT | Modifiers::ALT);
+    host.mouse_move(210, 110);
+    host.root.on_scroll(1);
+    host.set_modifiers(Modifiers::NONE);
+    host.mouse_down(MouseButton::Left, 210, 110, 0);
+    host.mouse_up(MouseButton::Left, 210, 110, 0);
+    host.pump();
+
+    let events: Vec<(PointerKind, u8)> = outbox
+        .borrow_mut()
+        .drain(..)
+        .filter_map(|i| match i {
+            UiInput::Pointer { event, .. } => Some((event.kind, event.modifiers)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        events,
+        vec![
+            (PointerKind::Down, 2),
+            (PointerKind::Move, 2),
+            (PointerKind::Up, 0),
+            (PointerKind::Wheel, 5),
+            (PointerKind::Down, 0),
+            (PointerKind::Up, 0),
+        ]
+    );
+}
+
 // ── The shelf under the plugin themes (as in OpenAC) ─────────────────────
 
 #[test]
