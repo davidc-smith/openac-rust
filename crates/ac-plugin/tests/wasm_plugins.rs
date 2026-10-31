@@ -1742,6 +1742,54 @@ fn uidemo_keeps_its_ui_in_the_session_with_or_without_a_window() {
     assert_eq!(api.ui.image_count("openac.uidemo"), 0);
 }
 
+/// A held pointer's release reaches the plugin through the session measured
+/// from where the canvas is now, not from where the window still had it:
+/// the window follows the plugin's moves a moment late. `uidemo`'s canvas
+/// (180 x 110, top-right, offset -220, 40) is at (400, 40) on an 800 x 600
+/// layer; the window still had it 30 to the left. A press stays as the
+/// player saw it.
+#[test]
+fn the_session_hands_a_held_pointer_over_measured_from_the_canvass_latest_place() {
+    use ac_plugin_ui::{CanvasPlace, PointerEvent, PointerKind, UiInput};
+    let root = Root::new("uidemo-placed");
+    install(&root.0, "uidemo");
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], None);
+    plugins.start(&mut api);
+    let canvas = api.ui.canvases().next().unwrap().id;
+    let place = CanvasPlace {
+        origin: (370.0, 40.0),
+        layer: (800.0, 600.0),
+    };
+    for kind in [PointerKind::Down, PointerKind::Up] {
+        api.ui.input(UiInput::Pointer {
+            canvas,
+            event: PointerEvent {
+                kind,
+                x: 40.0,
+                y: 50.0,
+                button: 1,
+                modifiers: 0,
+                wheel_delta: 0,
+            },
+            place,
+        });
+    }
+    plugins.pump(0.0, Some(1), &mut api);
+    let heard: Vec<String> = api
+        .messages("openac.uidemo")
+        .into_iter()
+        .filter(|m| m.starts_with("uidemo pointer"))
+        .collect();
+    assert_eq!(
+        heard,
+        vec![
+            "uidemo pointer kind=0 at 40,50 button=1".to_owned(),
+            "uidemo pointer kind=1 at 10,50 button=1".to_owned(),
+        ]
+    );
+}
+
 /// OpenAC hands a plugin's submit through the chat
 /// pipeline inside the call, and the lines it writes reach the chat
 /// subscribers there. Without re-entering the plugin, the submit is
