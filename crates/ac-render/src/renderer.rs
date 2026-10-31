@@ -438,6 +438,11 @@ fn held_draws(own_state: u32, holder_draws: bool) -> bool {
 
 /// The renderer. See the module documentation.
 pub(crate) struct WorldRenderer {
+    /// The texture detail the world's textures are made at.
+    texture_detail: crate::texture_detail::WorldTextureDetail,
+    /// The particle range setting's multiplier of every emitter's authored
+    /// degrade distance.
+    particle_range: f32,
     loader: Loader,
     failure: Option<String>,
     near_radius: u32,
@@ -828,10 +833,13 @@ impl WorldRenderer {
         // WebGPU guarantees four samples for half-float targets; the window
         // tells the adapter's own counts (`set_hdr_sample_counts`).
         let hdr_msaa_supported = msaa_supported.iter().copied().filter(|&n| n == 4).collect();
+        let texture_detail = crate::texture_detail::WorldTextureDetail::from_display(display);
         let mut renderer = Self {
+            texture_detail,
+            particle_range: crate::quality::particle_range_multiplier(display.particle_range),
             loader: Loader::spawn(
                 Arc::clone(&settings.content),
-                crate::texture_detail::WorldTextureDetail::from_display(display),
+                texture_detail,
                 device
                     .features()
                     .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
@@ -1092,15 +1100,24 @@ impl WorldRenderer {
     }
 
     /// Run with the quality `display` resolves to (the effective display
-    /// settings): the streaming window, the work budget, anti-aliasing and
-    /// the terrain's filtering follow at once (texture detail is fixed when
-    /// the world starts).
+    /// settings): the streaming window, the work budget, anti-aliasing, the
+    /// terrain's filtering, the particle range and the texture detail
+    /// follow at once (a new texture detail has the loader make the terrain
+    /// atlas and every world texture again, which replace the old ones as
+    /// they arrive).
     pub(crate) fn apply_display(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         display: &ac_host::settings::DisplaySettings,
     ) {
+        let texture_detail = crate::texture_detail::WorldTextureDetail::from_display(display);
+        if texture_detail != self.texture_detail {
+            self.texture_detail = texture_detail;
+            self.loader
+                .request(LoadRequest::TextureDetail(texture_detail));
+        }
+        self.particle_range = crate::quality::particle_range_multiplier(display.particle_range);
         self.degrade.degrade_distance = display.degrade_distance;
         self.detail
             .set_enabled(queue, display.building_detail_textures);
@@ -2095,6 +2112,7 @@ impl WorldRenderer {
             sky_active: player_outdoors(scene),
             camera: eye,
             source,
+            particle_range: self.particle_range,
         });
     }
 
@@ -4351,6 +4369,8 @@ impl RevealFacts for RevealState<'_> {
 mod atlas_upload_tests;
 #[cfg(test)]
 mod retirement_tests;
+#[cfg(test)]
+mod texture_detail_tests;
 
 #[cfg(test)]
 mod tests {
