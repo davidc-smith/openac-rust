@@ -1,6 +1,6 @@
 //! Plugin UI in the window: the session's plugin windows built from their
 //! markup and kept in step with the session's copy (`ac_plugin_ui`), the
-//! plugins' canvases on the overlay band, and the plugin shelf.
+//! plugins' canvases on the overlay band, and the plugin dock.
 //!
 //! Nothing here decides anything: the session owns the plugin UI state
 //! (which values, which windows are shown, what a canvas shows), the
@@ -19,7 +19,6 @@ pub mod hotkeys;
 pub mod layout;
 pub mod list_ext;
 mod repeat;
-pub mod shelf;
 pub mod style;
 pub mod title_bar;
 pub mod widgets;
@@ -53,7 +52,7 @@ pub use widgets::{
 
 /// What the player did with the plugins' UI, for the client to send to the
 /// session, oldest first. Shared by every plugin window, canvas and the
-/// shelf of one window.
+/// dock of one window.
 pub type PluginOutbox = Rc<RefCell<Vec<UiInput>>>;
 
 /// Resolves the images markup names: dat images, spell icons and live
@@ -414,7 +413,7 @@ fn absolute_group_size(w: f32, h: f32, scroll_x: bool, scroll_y: bool) -> FlexMe
 
 /// Builds the window of `view` (OpenAC `MarkupDocument.Build`): the frame
 /// at the markup's position and size, its title, an element per markup
-/// element in document order, and (for a window on the shelf) the minimize
+/// element in document order, and (for a window on the dock) the minimize
 /// button. Nothing is shown until [`PluginPanelController::sync`].
 pub fn build_panel(
     ui: &mut UiRoot,
@@ -637,22 +636,22 @@ pub fn build_panel_with_state(
             && let Some(close) = ui.widget::<title_bar::TitleBar>(bar).map(|b| b.close)
             && let Some(e) = ui.element_mut(close)
         {
-            // The bar's close button takes the shelf's minimize button's
+            // The bar's close button takes the dock's minimize button's
             // place and says where the window went.
             e.runtime_tooltip_text = Some(ac_plugin_ui::chrome::DOCKED_CLOSE_TOOLTIP.to_owned());
         }
     }
     // A window with a title bar already has a close button, which does what
     // "-" would; a layout window without a bar has content right up to its
-    // border, where "-" would sit over it, and is closed from its shelf
-    // button, as the author chose no chrome.
+    // border, where "-" would sit over it, and is closed from its dock
+    // slot, as the author chose no chrome.
     let frame_width = ui.element(root).map_or(spec.rect.w, |e| e.width);
     controller.minimize = (view.descriptor.show_in_side_panel && !content_area).then(|| {
         let mut e = Element::at((frame_width - 23.0).max(8.0), 3.0, 18.0, 17.0)
             .with_anchors(AnchorEdges::TOP | AnchorEdges::RIGHT)
             .with_z_order(1);
         e.name = Some("PluginMinimize".to_owned());
-        e.runtime_tooltip_text = Some("Minimize to plugin sidepanel".to_owned());
+        e.runtime_tooltip_text = Some("Minimize to the plugin dock".to_owned());
         let button = MarkupButton {
             text: "\u{2013}".to_owned(),
             background: MINIMIZE_BACKGROUND,
@@ -673,7 +672,7 @@ const LEGACY_TITLE_LEFT: f32 = 8.0;
 /// Its top.
 const LEGACY_TITLE_TOP: f32 = 4.0;
 
-/// The shelf's minimize button's fill in Classic.
+/// The minimize button's fill in Classic.
 const MINIMIZE_BACKGROUND: Color = Color::rgba(0.02, 0.02, 0.015, 0.94);
 /// Its border in Classic.
 const MINIMIZE_BORDER: Color = Color::rgba(0.58, 0.46, 0.17, 1.0);
@@ -743,7 +742,7 @@ impl PluginPanelController {
             .and_then(|s| s.nodes.get(&node).copied())
     }
 
-    /// The minimize button, on a window that is on the shelf.
+    /// The minimize button, on a window that is on the dock.
     #[must_use]
     pub fn minimize_button(&self) -> Option<ElementId> {
         self.minimize
@@ -947,7 +946,7 @@ impl PluginPanelController {
         if let Some(minimize) = self.minimize
             && let Some(b) = ui.widget_mut::<MarkupButton>(minimize)
         {
-            // The shelf's "-" follows the window's theme as the bar's close
+            // The "-" follows the window's theme as the bar's close
             // button does: a button's face, edge and caption in the palette.
             b.palette = palette;
             b.background = p.map_or(MINIMIZE_BACKGROUND, |p| p.field);

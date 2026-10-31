@@ -40,9 +40,9 @@ impl MarkupIcons for NoIcons {
     }
 }
 
-struct NoShelfIcons;
+struct NoDockIcons;
 
-impl shelf::ShelfIcons for NoShelfIcons {
+impl dock::DockIcons for NoDockIcons {
     fn file(&mut self, _owner: &str, _icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
         None
     }
@@ -633,7 +633,7 @@ fn the_title_takes_the_controls_ini_colour_where_no_theme_colours_it() {
 
 /// OpenAC `PluginMarkupTheme`'s font bindings: under a modern theme the
 /// buttons, tabs, toggles, menus (and their captions), logs and lists of a
-/// themed window draw in the bundled font, a meter and the shelf's
+/// themed window draw in the bundled font, a meter and the dock's
 /// minimize button keep theirs; a window that does not opt in keeps its
 /// font under every theme.
 #[test]
@@ -984,29 +984,29 @@ fn a_canvas_dragged_through_the_session_follows_the_pointer_without_overshooting
     assert_eq!(offset, (440.0, 220.0));
 }
 
-// ── The shelf under the plugin themes (as in OpenAC) ─────────────────────
+// ── The dock under the plugin themes (as in OpenAC) ──────────────────────
 
 #[test]
-fn a_right_click_on_a_shelf_entry_asks_for_appearance_without_toggling_the_plugin() {
+fn a_right_click_on_a_dock_slot_asks_for_appearance_without_toggling_the_plugin() {
     // PluginSidePanelThemeTests.RightClickOnEntryOpensAppearanceWithoutTogglingPlugin.
-    use super::shelf::{self, PluginShelf};
+    use super::dock::{self, PluginDock};
     for theme in [PluginTheme::Classic, PluginTheme::Moss, PluginTheme::Brass] {
         let (state, _) = session();
         let mut host = UiHost::new();
         host.root.set_size(800.0, 600.0);
         let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
-        let mut shelf_controller = PluginShelf::build(&mut host.root, None, Rc::clone(&outbox));
-        let frame = shelf_controller.root;
+        let mut dock_controller = PluginDock::build(&mut host.root, None, None, Rc::clone(&outbox));
+        let frame = dock_controller.root;
         let top = host.root.root();
         host.root.add_child(top, frame);
         host.root
-            .register_window(shelf::WINDOW, frame, Some(frame), 0)
+            .register_window(dock::WINDOW, frame, Some(frame), 0)
             .unwrap();
         let panels: Vec<PanelView> = state.panels().cloned().collect();
-        shelf_controller.set_theme(&mut host.root, theme);
-        shelf_controller.sync(&mut host.root, &panels, &mut NoShelfIcons);
-        let button = shelf_controller.button(panels[0].id).unwrap();
-        host.attach_controller(shelf::WINDOW, Box::new(shelf_controller))
+        dock_controller.set_theme(&mut host.root, theme);
+        dock_controller.sync(&mut host.root, &panels, &mut NoDockIcons);
+        let button = dock_controller.slot(panels[0].id).unwrap();
+        host.attach_controller(dock::WINDOW, Box::new(dock_controller))
             .unwrap();
         let (x, y) = host.root.screen_position(button);
         let e = host.root.element(button).unwrap();
@@ -1015,7 +1015,7 @@ fn a_right_click_on_a_shelf_entry_asks_for_appearance_without_toggling_the_plugi
         host.mouse_up(MouseButton::Right, x, y, 0);
         host.pump();
         let asked = host
-            .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| c.take_appearance_request())
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.take_appearance_request())
             .unwrap();
         assert!(asked, "{theme:?}");
         assert!(outbox.borrow().is_empty(), "the plugin is not toggled");

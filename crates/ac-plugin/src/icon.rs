@@ -230,7 +230,7 @@ pub fn decode_icon(bytes: &[u8]) -> Option<PluginIcon> {
 
 /// The `icon.png` in plugin folder `directory`, decoded: `None` when there
 /// is none, or it is larger than the rules allow, breaks them, or does not
-/// decode, so the shelf falls back to the plugin's other icon instead of
+/// decode, so the dock falls back to the plugin's other icon instead of
 /// failing the plugin.
 #[must_use]
 pub fn load_icon(directory: &Path) -> Option<PluginIcon> {

@@ -33,8 +33,8 @@ use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
+use ac_ui::plugin::dock::{self, PluginDock};
 use ac_ui::plugin::fold::SharedControlState;
-use ac_ui::plugin::shelf::{self, PluginShelf};
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
     build_panel_with_state,
@@ -105,7 +105,7 @@ pub struct PluginWindowUi {
     /// The plugin windows mounted, by the session's number, with their
     /// window names.
     panels: BTreeMap<u32, String>,
-    shelf: bool,
+    dock: bool,
     canvases: Option<CanvasLayer>,
     projectile: Option<ProjectileDebugOverlay>,
     /// The plugins' images as textures, by plugin and handle, each with
@@ -358,15 +358,15 @@ fn keyed_surface_icon(content: &DatContent, icons: &mut IconComposer, id: u32) -
     Some((icons.keyed_icon(id)?, w as f32, h as f32))
 }
 
-/// The shelf's button images: the window's art and its runtime textures.
-struct WindowShelfIcons<'a> {
+/// The dock's slot images: the window's art and its runtime textures.
+struct WindowDockIcons<'a> {
     content: &'a DatContent,
     icons: &'a mut IconComposer,
     images: &'a super::icons::RuntimeImages,
     file_icons: &'a mut HashMap<String, (Arc<Vec<u8>>, Icon)>,
 }
 
-impl shelf::ShelfIcons for WindowShelfIcons<'_> {
+impl dock::DockIcons for WindowDockIcons<'_> {
     fn file(&mut self, owner: &str, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
         if let Some((pixels, texture)) = self.file_icons.get(owner)
             && Arc::ptr_eq(pixels, &icon.rgba)
@@ -441,7 +441,7 @@ impl WindowUi {
         self.plugins.title_color = controls.color("title", "color");
     }
 
-    /// Mount the plugins' shelf and their layers of the overlay band
+    /// Mount the plugins' dock and their layers of the overlay band
     /// (after the overlays).
     pub(super) fn mount_plugin_ui(&mut self) {
         // The bundled sans font of the modern themes, baked into an atlas
@@ -458,25 +458,26 @@ impl WindowUi {
         }
         let font = self.content.font(DEFAULT_FONT_ID);
         let outbox = Rc::clone(&self.plugins.outbox);
-        let shelf = PluginShelf::build(&mut self.host.root, font, outbox);
-        let frame = shelf.root;
+        let modern = self.plugins.modern_fonts.clone();
+        let dock = PluginDock::build(&mut self.host.root, font, modern, outbox);
+        let frame = dock.root;
         let top = self.host.root.root();
         self.host.root.add_child(top, frame);
         match self
             .host
             .root
-            .register_window(shelf::WINDOW, frame, Some(frame), 0)
+            .register_window(dock::WINDOW, frame, Some(frame), 0)
         {
             Ok(()) => {
                 if self
                     .host
-                    .attach_controller(shelf::WINDOW, Box::new(shelf))
+                    .attach_controller(dock::WINDOW, Box::new(dock))
                     .is_ok()
                 {
-                    self.plugins.shelf = true;
+                    self.plugins.dock = true;
                 }
             }
-            Err(e) => self.notices.push(format!("ui: plugin shelf: {e:?}")),
+            Err(e) => self.notices.push(format!("ui: plugin dock: {e:?}")),
         }
         if let Some(host) = self.status.overlays.host_mut() {
             let root = &mut self.host.root;
@@ -565,17 +566,17 @@ impl WindowUi {
         Ok(Arc::new(atlas.create_font(texture)))
     }
 
-    /// The plugin theme in force: opted-in windows restyle, the shelf
-    /// turns compact (or classic again), the Appearance window shows it and
+    /// The plugin theme in force: opted-in windows restyle, the dock takes
+    /// its colours, the Appearance window shows it and
     /// the session tells plugins (OpenAC `PluginUiThemeSettings.Theme`'s
     /// setter and `BufferedUiRegistry.PublishTheme`).
     fn apply_plugin_theme(&mut self, kind: ThemeKind, tell_session: bool) {
         self.plugins.theme_kind = kind;
         self.plugins.theme = kind.into();
         let theme = self.plugins.theme;
-        if self.plugins.shelf {
+        if self.plugins.dock {
             self.host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_theme(ui, theme));
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_theme(ui, theme));
         }
         // Every window draws again in the theme.
         self.plugins.synced = None;
@@ -609,10 +610,11 @@ impl WindowUi {
         }
     }
 
-    /// Open the Appearance window, building it the first time (OpenAC
-    /// `ShowPluginAppearance`).
-    fn show_plugin_appearance(&mut self) {
-        if self.plugins.appearance.is_none() {
+    /// Open the Appearance window, building it the first time, or close it
+    /// when it is open (OpenAC `ShowPluginAppearance`).
+    fn toggle_plugin_appearance(&mut self) {
+        let first_time = self.plugins.appearance.is_none();
+        if first_time {
             let mut ui = ac_plugin_ui::PluginUi::new();
             let schema = ac_plugin_ui::BindingSchema::new("PluginAppearanceBinding")
                 .with("Themes", ac_plugin_ui::BindingKind::TextList)
@@ -662,10 +664,15 @@ impl WindowUi {
                 revision: 0,
             });
         }
+        let mut opened = false;
         if let Some(a) = self.plugins.appearance.as_mut() {
-            a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, true);
+            opened = first_time || !a.ui.panels().next().is_some_and(PanelView::shown);
+            a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, opened);
         }
         self.sync_appearance();
+        if !opened {
+            return;
+        }
         if let Some(frame) = self
             .plugins
             .appearance
@@ -760,15 +767,13 @@ impl WindowUi {
             self.client_window_request(window, action);
         }
         self.report_client_windows();
-        let appearance_asked = self.plugins.shelf
+        let appearance_asked = self.plugins.dock
             && self
                 .host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
-                    c.take_appearance_request()
-                })
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.take_appearance_request())
                 .unwrap_or(false);
         if appearance_asked {
-            self.show_plugin_appearance();
+            self.toggle_plugin_appearance();
         }
         self.follow_appearance();
     }
@@ -907,15 +912,15 @@ impl WindowUi {
                 notices.push(format!("ui: plugin window {name}: {notice}"));
             }
         }
-        if plugins.shelf {
-            let mut shelf_icons = WindowShelfIcons {
+        if plugins.dock {
+            let mut dock_icons = WindowDockIcons {
                 content,
                 icons: &mut *markup_icons.icons,
                 images,
                 file_icons: &mut plugins.file_icons,
             };
-            host.with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| {
-                c.sync(ui, &facts.plugin_ui.panels, &mut shelf_icons);
+            host.with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
+                c.sync(ui, &facts.plugin_ui.panels, &mut dock_icons);
             });
         }
     }
@@ -1331,13 +1336,13 @@ impl WindowUi {
     }
 
     /// OpenAC `RetailUiRuntime`'s `TogglePluginManager` (Shift+Ctrl+F1 by
-    /// default): with no plugin window on the shelf it says so; else the
-    /// shelf hides, telling the player the key that brings it back (or to
+    /// default): with no plugin window on the dock it says so; else the
+    /// dock hides, telling the player the key that brings it back (or to
     /// bind one), or shows again.
-    pub(super) fn toggle_plugin_shelf(&mut self) -> bool {
-        let state = if self.plugins.shelf {
+    pub(super) fn toggle_plugin_dock(&mut self) -> bool {
+        let state = if self.plugins.dock {
             self.host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| {
                     (c.entry_count(), c.is_shown())
                 })
                 .unwrap_or((0, false))
@@ -1350,18 +1355,18 @@ impl WindowUi {
             return true;
         }
         self.host
-            .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_hidden(ui, shown));
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_hidden(ui, shown));
         if shown {
-            let text = self.plugin_shelf_hidden_message();
+            let text = self.plugin_dock_hidden_message();
             self.client_line(&text);
         }
         true
     }
 
     /// OpenAC `PluginShelfHiddenMessage`.
-    fn plugin_shelf_hidden_message(&self) -> String {
+    fn plugin_dock_hidden_message(&self) -> String {
         let Some(chord) = self.plugins.manager_chord else {
-            return "Plugin shelf hidden. Bind Toggle Plugin Manager in Configure Keyboard to \
+            return "Plugin dock hidden. Bind Toggle Plugin Manager in Configure Keyboard to \
                     show it again."
                 .to_owned();
         };
@@ -1374,7 +1379,7 @@ impl WindowUi {
             crate::platform::key_name_provider(),
         );
         format!(
-            "Plugin shelf hidden. Press {} to show it again.",
+            "Plugin dock hidden. Press {} to show it again.",
             names.describe(chord)
         )
     }

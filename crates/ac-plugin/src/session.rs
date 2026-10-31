@@ -550,7 +550,7 @@ impl PluginSession {
             .unwrap_or(self.plugins.len())
             .min(self.plugins.len());
         // The plugin's icon.png, read as it starts so the windows it
-        // registers carry it to the shelf (OpenAC reads it as each window
+        // registers carry it to the dock (OpenAC reads it as each window
         // mounts); a reload reads it again.
         if let Some(ui) = api.plugin_ui() {
             ui.set_file_icon(&manifest.id, crate::icon::load_icon(&directory));

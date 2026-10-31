@@ -328,7 +328,7 @@ impl PluginUi {
 
     /// The `icon.png` of plugin `owner` (none: it has none, or it did not
     /// decode), which the windows it registers from now on carry for
-    /// their shelf buttons. The host sets it as the plugin starts;
+    /// their dock slots. The host sets it as the plugin starts;
     /// [`Self::release`] forgets it.
     pub fn set_file_icon(&mut self, owner: &str, icon: Option<PluginIcon>) {
         match icon {
@@ -493,7 +493,7 @@ impl PluginUi {
             .is_some_and(|i| self.panels[i].view.shown())
     }
 
-    /// Shows or hides `owner`'s window as its shelf button and close button
+    /// Shows or hides `owner`'s window as its dock slot and close button
     /// do (OpenAC `ShowPanel`/`HidePanel`); false when it has none by that
     /// id or title.
     pub fn show_panel(&mut self, owner: &str, view: &str, show: bool) -> bool {

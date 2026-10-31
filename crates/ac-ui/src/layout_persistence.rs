@@ -164,7 +164,7 @@ pub mod window_names {
     pub const VITALS: &str = "vitals";
     /// The side-by-side vitals.
     pub const SIDE_VITALS: &str = "side-vitals";
-    /// The plugin shelf.
+    /// The plugin dock.
     pub const PLUGIN_SHELF: &str = "plugin-shelf";
 }
 

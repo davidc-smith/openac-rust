@@ -97,6 +97,18 @@ const fn rgb(packed: u32) -> Color {
 }
 
 impl Palette {
+    /// The plugin dock's colours under Classic, its old black and gold. It is
+    /// not a theme: only the dock uses it, and Classic windows still draw
+    /// unthemed.
+    pub const CLASSIC_DOCK: Self = Self {
+        background: Color::rgba(0.0, 0.0, 0.0, 0.88),
+        field: rgb(0x06_0605),
+        border: rgb(0x9E_7A29),
+        text: rgb(0xF0_EBDD),
+        muted: rgb(0xA8_925C),
+        accent: rgb(0xDB_B852),
+        selected: rgb(0x17_300E),
+    };
     /// "Charcoal + moss".
     pub const MOSS: Self = Self {
         background: rgb(0x17_1D1B),

@@ -112,7 +112,7 @@ pub const MAXIMUM_LABELS: usize = 256;
 /// The most characters one label may have.
 pub const MAXIMUM_LABEL_TEXT: usize = 128;
 
-/// A window to register: its identity, shelf button, markup and bindings
+/// A window to register: its identity, dock slot, markup and bindings
 /// (OpenAC `PluginPanelDescriptor` plus the markup and the binding type).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
@@ -180,7 +180,7 @@ impl ItemType {
 
 impl PanelSpec {
     /// A window `window_id` captioned `title` showing `markup`: open at
-    /// once, on the plugin shelf, no bindings yet.
+    /// once, on the plugin dock, no bindings yet.
     #[must_use]
     pub fn new(window_id: &str, title: &str, markup: &str) -> Self {
         Self {
@@ -255,14 +255,14 @@ impl PanelSpec {
         self
     }
 
-    /// Initials on the shelf button when there is no icon.
+    /// Initials on the dock slot when there is no icon.
     #[must_use]
     pub fn icon_text(mut self, text: &str) -> Self {
         self.registration.icon_text = Some(text.to_owned());
         self
     }
 
-    /// The shelf button's icon (a full image id or a bare index).
+    /// The dock slot's icon (a full image id or a bare index).
     #[must_use]
     pub fn icon(mut self, surface: u32) -> Self {
         self.registration.icon_surface_id = surface;
@@ -276,7 +276,7 @@ impl PanelSpec {
         self
     }
 
-    /// No button on the plugin shelf.
+    /// No slot on the plugin dock.
     #[must_use]
     pub fn off_shelf(mut self) -> Self {
         self.registration.show_in_side_panel = false;
@@ -369,7 +369,7 @@ impl Panel {
         Ok(())
     }
 
-    /// Shows or hides the window as its shelf and close buttons do.
+    /// Shows or hides the window as its dock slot and close button do.
     pub fn show(&self, host: &mut Host<'_>, visible: bool) -> bool {
         host.show_panel(&self.window_id, visible)
     }

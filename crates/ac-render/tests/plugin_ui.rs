@@ -1,6 +1,6 @@
 //! The plugins' UI in the game window on the retail dats: a window
 //! built from the session's snapshot mounts the plugin's window and its
-//! shelf button, a press reaches the session as a command, and a plugin's
+//! dock slot, a press reaches the session as a command, and a plugin's
 //! request to toggle a client window is carried out and reported back.
 //! Ignored by default; `scripts/check.*` runs them when the dats are
 //! present.
@@ -88,7 +88,7 @@ fn a_plugin_window_mounts_from_the_snapshot_and_reports_presses() {
     assert!(
         ui.host()
             .root
-            .is_window_visible(ac_ui::plugin::shelf::WINDOW)
+            .is_window_visible(ac_ui::plugin::dock::WINDOW)
     );
     // The window tells the session which client windows it has.
     let commands = ui.drain();
@@ -131,7 +131,7 @@ fn a_plugin_window_mounts_from_the_snapshot_and_reports_presses() {
     deliver(&mut state, ui.drain());
     assert!(state.is_client_window_visible(ClientWindow::Inventory));
 
-    // The plugin goes: its window and its shelf button go with it.
+    // The plugin goes: its window and its dock slot go with it.
     state.release("test.demo");
     scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
         state.take_changes(),
@@ -143,7 +143,7 @@ fn a_plugin_window_mounts_from_the_snapshot_and_reports_presses() {
     assert!(
         !ui.host()
             .root
-            .is_window_visible(ac_ui::plugin::shelf::WINDOW)
+            .is_window_visible(ac_ui::plugin::dock::WINDOW)
     );
 }
 
@@ -151,10 +151,10 @@ fn a_plugin_window_mounts_from_the_snapshot_and_reports_presses() {
 /// chords, the session binds around them and sends the bound table back,
 /// and a press of a bound chord reaches the plugin (a client chord never
 /// binds). Toggle Plugin Manager (Shift+Ctrl+F1) hides and shows the
-/// shelf (OpenAC `RetailUiRuntime.TogglePluginManager`).
+/// dock (OpenAC `RetailUiRuntime.TogglePluginManager`).
 #[test]
 #[ignore = "needs the retail dat files"]
-fn plugin_hotkeys_fire_from_the_window_and_the_shelf_toggles() {
+fn plugin_hotkeys_fire_from_the_window_and_the_dock_toggles() {
     use ac_plugin_ui::hotkeys::Chord;
     use ac_ui::event::{Key, Modifiers};
     use ac_ui::input::{InputAction, KeyBindings};
@@ -236,14 +236,59 @@ fn plugin_hotkeys_fire_from_the_window_and_the_shelf_toggles() {
         ]
     );
 
-    let shelf = ac_ui::plugin::shelf::WINDOW;
-    assert!(ui.host().root.is_window_visible(shelf));
+    let dock = ac_ui::plugin::dock::WINDOW;
+    assert!(ui.host().root.is_window_visible(dock));
     assert!(ui.handle_input_action(InputAction::TogglePluginManager));
     ui.frame(Instant::now(), size);
-    assert!(!ui.host().root.is_window_visible(shelf));
+    assert!(!ui.host().root.is_window_visible(dock));
     assert!(ui.handle_input_action(InputAction::TogglePluginManager));
     ui.frame(Instant::now(), size);
-    assert!(ui.host().root.is_window_visible(shelf));
+    assert!(ui.host().root.is_window_visible(dock));
+}
+
+/// The dock's gear opens the Appearance window on the first press and closes it
+/// on the next, and a right click does the same.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn the_docks_gear_opens_and_closes_the_appearance_window() {
+    use ac_ui::plugin::dock::{PluginDock, WINDOW};
+    const APPEARANCE: &str = "plugin:openac:appearance";
+    let size = (1280, 720);
+    let (state, _) = session();
+    let mut ui = WindowUi::build(dats(), size).expect("the UI builds");
+    let mut scene = Scene::default();
+    scene.apply(PresentationEvent::Interface(InterfaceEvent::PluginUi(
+        state.snapshot(),
+    )));
+    ui.feed(&mut scene);
+    ui.frame(Instant::now(), size);
+    let gear = ui
+        .host_mut()
+        .with_controller::<PluginDock, _>(WINDOW, |c, _| c.layout().gear)
+        .unwrap();
+    let frame = ui.host().root.window(WINDOW).unwrap().frame;
+    let e = ui.host().root.element(frame).unwrap();
+    let (x, y) = (
+        (e.left + gear.x + 4.0) as i32,
+        (e.top + gear.y + 4.0) as i32,
+    );
+    let mut press = |ui: &mut WindowUi, button| {
+        ui.script(&UiScript::Click {
+            x,
+            y,
+            button,
+            double: false,
+        });
+        ui.feed(&mut scene);
+        ui.frame(Instant::now(), size);
+        ui.feed(&mut scene);
+        ui.frame(Instant::now(), size);
+        ui.host().root.is_window_visible(APPEARANCE)
+    };
+    assert!(press(&mut ui, 0), "the first press opens it");
+    assert!(!press(&mut ui, 0), "the second closes it");
+    assert!(press(&mut ui, 1), "a right click opens it");
+    assert!(!press(&mut ui, 1), "and closes it");
 }
 
 /// A reader that hands out a 4 x 4 image for every path (OpenAC PR #271's

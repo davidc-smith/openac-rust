@@ -1742,9 +1742,9 @@ fn typed_bool_and_uint_actions_reach_a_real_plugin() {
     plugins.shutdown(&mut api);
 }
 
-/// A plugin installed with an `icon.png` has it on its windows' shelf
+/// A plugin installed with an `icon.png` has it on its windows. dock
 /// buttons (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`); one without,
-/// or with a file the icon rules refuse, has none and the shelf falls back
+/// or with a file the icon rules refuse, has none and the dock falls back
 /// to the descriptor's icon. Unloading forgets it.
 #[test]
 fn a_plugins_icon_png_reaches_its_windows() {

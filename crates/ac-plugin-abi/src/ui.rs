@@ -385,13 +385,13 @@ wire_record! {
         pub window_id: String,
         /// The caption.
         pub title: String,
-        /// Initials on the shelf button when there is no icon.
+        /// Initials on the dock slot when there is no icon.
         pub icon_text: Option<String>,
-        /// The shelf icon (a full image id or a bare index; 0 none).
+        /// The dock icon (a full image id or a bare index; 0 none).
         pub icon_surface_id: u32,
         /// Open at once.
         pub start_visible: bool,
-        /// A button on the plugin shelf.
+        /// A slot on the plugin dock.
         pub show_in_side_panel: bool,
         /// The markup.
         pub markup: String,
@@ -791,13 +791,13 @@ wire_record! {
         pub window_id: String,
         /// The caption.
         pub title: String,
-        /// Initials on the shelf button when there is no icon.
+        /// Initials on the dock slot when there is no icon.
         pub icon_text: Option<String>,
-        /// The shelf icon (a full image id or a bare index; 0 none).
+        /// The dock icon (a full image id or a bare index; 0 none).
         pub icon_surface_id: u32,
         /// Open at once.
         pub start_visible: bool,
-        /// A button on the plugin shelf.
+        /// A slot on the plugin dock.
         pub show_in_side_panel: bool,
         /// The markup.
         pub markup: String,

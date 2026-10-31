@@ -28,7 +28,7 @@ impl UiOwner {
     }
 }
 
-/// A plugin's `icon.png`, decoded: the image its shelf buttons show ahead
+/// A plugin's `icon.png`, decoded: the image its dock slots show ahead
 /// of a render surface or initials.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PluginIcon {
@@ -59,19 +59,19 @@ pub struct PanelDescriptor {
     pub window_id: String,
     /// The caption.
     pub title: String,
-    /// Initials on the shelf button when there is no icon.
+    /// Initials on the dock slot when there is no icon.
     pub icon_text: Option<String>,
-    /// The shelf button's icon (a full image id or a bare index; 0: none).
+    /// The dock slot's icon (a full image id or a bare index; 0: none).
     pub icon_surface_id: u32,
     /// Open as soon as it is registered.
     pub start_visible: bool,
-    /// Gets a button on the plugin shelf.
+    /// Gets a button on the plugin dock.
     pub show_in_side_panel: bool,
 }
 
 impl PanelDescriptor {
     /// A descriptor with OpenAC's defaults: no icon, open at once, on the
-    /// shelf.
+    /// dock.
     #[must_use]
     pub fn new(window_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
@@ -94,7 +94,7 @@ pub struct PanelView {
     pub id: u32,
     /// Its plugin.
     pub owner: UiOwner,
-    /// Its identity and shelf button.
+    /// Its identity and dock slot.
     pub descriptor: PanelDescriptor,
     /// Its markup, parsed.
     pub document: Arc<MarkupDocument>,
@@ -108,7 +108,7 @@ pub struct PanelView {
     /// The player's (or the plugin's) show or close request.
     pub requested_visible: bool,
     /// Its plugin's `icon.png`, when the plugin's folder has one that
-    /// decodes: the shelf button shows it ahead of the descriptor's icon.
+    /// decodes: the dock slot shows it ahead of the descriptor's icon.
     pub file_icon: Option<PluginIcon>,
 }
 
@@ -1037,7 +1037,7 @@ pub enum UiInput {
         value: ActionValue,
     },
     /// The player opened (`true`) or closed (`false`) a plugin window
-    /// (shelf button, close or minimize button).
+    /// (dock slot, close or minimize button).
     PanelShown {
         /// The panel.
         panel: u32,

@@ -1,7 +1,8 @@
 //! How the modern plugin themes draw: every rounded shape, state colour and
 //! size of the look lives here, so a themed control only says what it is and
 //! which state it is in. Colours come from the palette, with hover, pressed
-//! and focus colours worked out from it. Classic never comes here.
+//! and focus colours worked out from it. Classic windows never come here; the
+//! plugin dock's shapes build on these in every theme (`dock::style`).
 //!
 //! Everything but a shadow is drawn inside the bounds given: an element clips
 //! to its own rectangle, so a ring or glow outside it would be cut off.
@@ -451,12 +452,6 @@ pub fn window_shadow(rc: &mut RenderContext<'_>, w: f32, h: f32) {
 pub fn popup_shadow(rc: &mut RenderContext<'_>, x: f32, y: f32, w: f32, h: f32) {
     let color = with_alpha(Color::BLACK, 0.35);
     rc.soft_shadow(x, y, w, h, CONTAINER_RADIUS, 3.0, 8.0, color);
-}
-
-/// The shadow under the plugin shelf.
-pub fn shelf_shadow(rc: &mut RenderContext<'_>, w: f32, h: f32) {
-    let color = with_alpha(Color::BLACK, 0.40);
-    rc.soft_shadow(0.0, 0.0, w, h, WINDOW_RADIUS, 3.0, 8.0, color);
 }
 
 /// The band behind a window's title, `height` tall, with a separator line
