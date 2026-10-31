@@ -521,7 +521,7 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
     ui.input(UiInput::Pointer {
         canvas: map,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     assert!(ui.take_events().is_empty());
     assert!(ui.listen_canvas("edwards.tank", map, true));
@@ -529,12 +529,12 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
     ui.input(UiInput::Pointer {
         canvas: map,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     ui.input(UiInput::Pointer {
         canvas: quiet,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     assert_eq!(
         ui.take_events(),
@@ -543,7 +543,7 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
             UiEvent::Pointer {
                 canvas: map,
                 event,
-                place: CanvasPlace::default(),
+                place: None,
             }
         )]
     );
@@ -586,7 +586,7 @@ fn a_held_pointer_is_measured_from_where_the_plugin_last_put_the_canvas() {
         let event = ui.pointer_as_placed_now(UiEvent::Pointer {
             canvas: hud,
             event,
-            place,
+            place: Some(place),
         });
         let UiEvent::Pointer { event, .. } = event else {
             panic!("still a pointer event");
@@ -608,6 +608,45 @@ fn a_held_pointer_is_measured_from_where_the_plugin_last_put_the_canvas() {
     assert_eq!(heard(&ui, PointerKind::Up), (5.0, 15.0));
     // A press stays as the player saw it.
     assert_eq!(heard(&ui, PointerKind::Down), (15.0, 25.0));
+}
+
+#[test]
+fn a_held_pointer_whose_place_is_not_known_is_heard_as_sent() {
+    // Input that no window measured (a test, a script) carries no place: a
+    // canvas anchored away from the top-left is not moved by a made-up
+    // zero-sized layer.
+    let mut ui = PluginUi::new();
+    let owner = UiOwner::new("edwards.tank", "Tank");
+    let hud = ui
+        .register_canvas(
+            &owner,
+            CanvasDescriptor {
+                canvas_id: "hud".into(),
+                width: 100,
+                height: 50,
+                anchor: CanvasAnchor::BottomRight,
+                offset: (-20.0, -30.0),
+                start_visible: true,
+                accepts_pointer_input: true,
+            },
+        )
+        .unwrap();
+    for kind in [PointerKind::Down, PointerKind::Move, PointerKind::Up] {
+        let event = PointerEvent {
+            kind,
+            x: 15.0,
+            y: 25.0,
+            button: 1,
+            modifiers: 2,
+            wheel_delta: 0,
+        };
+        let sent = UiEvent::Pointer {
+            canvas: hud,
+            event,
+            place: None,
+        };
+        assert_eq!(ui.pointer_as_placed_now(sent.clone()), sent, "{kind:?}");
+    }
 }
 
 #[test]

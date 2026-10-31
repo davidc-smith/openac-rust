@@ -1683,7 +1683,7 @@ fn uidemo_keeps_its_ui_in_the_session_with_or_without_a_window() {
             modifiers: 0,
             wheel_delta: 0,
         },
-        place: ac_plugin_ui::CanvasPlace::default(),
+        place: None,
     });
     plugins.pump(0.0, Some(1), &mut api);
     let messages = api.messages("openac.uidemo");
@@ -1772,7 +1772,7 @@ fn the_session_hands_a_held_pointer_over_measured_from_the_canvass_latest_place(
                 modifiers: 0,
                 wheel_delta: 0,
             },
-            place,
+            place: Some(place),
         });
     }
     plugins.pump(0.0, Some(1), &mut api);
