@@ -543,6 +543,133 @@ fn hiding_keeps_it_hidden_and_showing_again_also_expands_it() {
     assert!(rig.size().1 > layout::PILL_LENGTH);
 }
 
+// ── Minimizing ──────────────────────────────────────────────────────────
+
+/// The muted ink inside the toggle, which is the chevron at rest.
+fn chevron_ink(rig: &mut Rig) -> usize {
+    let toggle = rig.layout().toggle;
+    let (left, top) = rig.at();
+    let muted = Palette::MOSS.muted;
+    let list = rig.draw();
+    draw_corners(&list)
+        .iter()
+        .filter(|(x, y, c)| {
+            c.a > 0.5
+                && (c.r - muted.r).abs() < 0.004
+                && *x >= left + toggle.x
+                && *x <= left + toggle.x + toggle.w
+                && *y >= top + toggle.y
+                && *y <= top + toggle.y + toggle.h
+        })
+        .count()
+}
+
+#[test]
+fn the_chevron_shows_with_the_pointer_away_open_and_minimized_in_every_mode() {
+    for mode in [
+        DockMode::Floating,
+        DockMode::FloatingHorizontal,
+        DockMode::Left,
+        DockMode::Right,
+        DockMode::Top,
+        DockMode::Bottom,
+    ] {
+        let mut rig = Rig::in_mode(mode);
+        rig.host.mouse_move(400, 300);
+        rig.tick();
+        assert!(chevron_ink(&mut rig) > 0, "{mode:?} open");
+        let toggle = rig.layout().toggle;
+        rig.click(toggle);
+        rig.host.mouse_move(400, 300);
+        rig.tick();
+        assert!(rig.with(|c, _| c.is_minimized()));
+        assert!(chevron_ink(&mut rig) > 0, "{mode:?} minimized");
+    }
+}
+
+#[test]
+fn minimized_sizes_and_edges_in_every_mode() {
+    for (mode, size) in [
+        (DockMode::Floating, (48.0, 24.0)),
+        (DockMode::FloatingHorizontal, (24.0, 48.0)),
+        (DockMode::Left, (12.0, 44.0)),
+        (DockMode::Right, (12.0, 44.0)),
+        (DockMode::Top, (44.0, 12.0)),
+        (DockMode::Bottom, (44.0, 12.0)),
+    ] {
+        let mut rig = Rig::in_mode(mode);
+        let toggle = rig.layout().toggle;
+        rig.click(toggle);
+        assert_eq!(rig.size(), size, "{mode:?}");
+        let (left, top) = rig.at();
+        match mode {
+            DockMode::Left => assert_eq!(left, 0.0),
+            DockMode::Right => assert_eq!(left, 800.0 - 12.0),
+            DockMode::Top => assert_eq!(top, 0.0),
+            DockMode::Bottom => assert_eq!(top, 600.0 - 12.0),
+            _ => {}
+        }
+        assert!(rig.slot_rects().iter().flatten().all(|s| !s.2), "{mode:?}");
+    }
+}
+
+#[test]
+fn minimizing_leaves_plugin_windows_as_they_are() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let toggle = rig.layout().toggle;
+    rig.click(toggle);
+    assert!(rig.outbox.borrow().is_empty());
+}
+
+#[test]
+fn a_saved_state_restores_minimized_and_stays_on_a_rails_edge() {
+    let mut rig = Rig::in_mode(DockMode::Right);
+    assert!(!rig.host.capture_window_state(WINDOW).collapsed);
+    rig.host.root.set_size(1000.0, 600.0);
+    rig.tick();
+    rig.host.restore_window_state(
+        WINDOW,
+        WindowState {
+            collapsed: true,
+            ..WindowState::default()
+        },
+    );
+    rig.tick();
+    assert!(rig.host.capture_window_state(WINDOW).collapsed);
+    assert_eq!(rig.at().0, 1000.0 - layout::TAB_THICKNESS);
+    assert_eq!(rig.size().1, layout::TAB_LENGTH);
+}
+
+#[test]
+fn a_minimized_dock_can_be_dragged_and_snaps_as_a_tab() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let toggle = rig.layout().toggle;
+    rig.click(toggle);
+    let (left, _) = rig.at();
+    rig.drag(ON_HANDLE, (-(left as i32) + 2, 40));
+    assert_eq!(rig.mode(), DockMode::Left);
+    assert_eq!(rig.size(), (layout::TAB_THICKNESS, layout::TAB_LENGTH));
+    // Expanded again, it opens as the rail on that edge.
+    let toggle = rig.layout().toggle;
+    rig.click(toggle);
+    assert_eq!(rig.size().0, layout::RAIL_THICKNESS);
+    assert_eq!(rig.at().0, 0.0);
+}
+
+#[test]
+fn expanding_near_the_screens_far_end_keeps_the_whole_dock_on_it() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let toggle = rig.layout().toggle;
+    rig.click(toggle);
+    rig.host.root.move_window(WINDOW, 300.0, 600.0);
+    rig.tick();
+    assert_eq!(rig.at().1, 600.0 - layout::PILL_LENGTH);
+    let toggle = rig.layout().toggle;
+    rig.click(toggle);
+    let (_, h) = rig.size();
+    assert_eq!(rig.at().1, 600.0 - h);
+}
+
 // ── Snapping ────────────────────────────────────────────────────────────
 
 impl Rig {

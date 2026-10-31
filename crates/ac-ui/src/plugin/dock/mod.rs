@@ -6,6 +6,10 @@
 //! in the theme's colours or its own under Classic; where things go is worked
 //! out by [`layout`] and how they look by [`style`].
 //!
+//! Minimized, the dock is a small pill or, on an edge, a tab, and the plugin
+//! windows stay as they are. The chevron that does it always shows, and the
+//! state is saved per character with the dock's place.
+//!
 //! The root sets a dragged window's place from the pointer on every move, so
 //! the dock reads that place each frame, decides its mode, and puts itself
 //! back on its edge. Pointer input arrives before the frame's tick, so a snap
@@ -30,6 +34,7 @@ use crate::event::{UiEvent, kind};
 use crate::font::UiFont;
 use crate::geometry::{AnchorEdges, Rect};
 use crate::host::PanelController;
+use crate::layout_persistence::WindowState;
 use crate::root::{ElementMessage, UiRoot};
 use crate::tree::{Element, ElementId, Widget};
 
@@ -229,6 +234,12 @@ impl PluginDock {
     #[must_use]
     pub fn layout(&self) -> &DockLayout {
         &self.layout
+    }
+
+    /// Whether it is minimized.
+    #[must_use]
+    pub fn is_minimized(&self) -> bool {
+        self.minimized
     }
 
     /// Where it is and which way it runs.
@@ -746,6 +757,20 @@ const fn toggle_direction(mode: DockMode, minimized: bool) -> Direction {
 }
 
 impl PanelController for PluginDock {
+    /// Minimized or not is saved per character, with its place.
+    fn capture_window_state(&self, _ui: &UiRoot) -> Option<WindowState> {
+        Some(WindowState {
+            collapsed: self.minimized,
+            ..WindowState::default()
+        })
+    }
+
+    fn restore_window_state(&mut self, ui: &mut UiRoot, state: &WindowState) -> bool {
+        self.minimized = state.collapsed;
+        self.reflow(ui);
+        true
+    }
+
     fn tick(&mut self, ui: &mut UiRoot, dt: f64) {
         self.follow_drag(ui);
         let size = ui.element(self.root).map(|e| (e.width, e.height));

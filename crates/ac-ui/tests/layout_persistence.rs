@@ -672,6 +672,77 @@ fn a_temporary_pregame_viewport_does_not_change_the_characters_arrangement() {
     assert_ne!(dir.text(), before);
 }
 
+// ── The plugin dock ─────────────────────────────────────────────────────
+
+/// A plugin dock on a new host, as the window mounts it.
+fn dock_host() -> UiHost {
+    use ac_ui::plugin::dock::{PluginDock, WINDOW};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut host = host(1280.0, 720.0);
+    let dock = PluginDock::build(
+        &mut host.root,
+        None,
+        None,
+        Rc::new(RefCell::new(Vec::new())),
+    );
+    let frame = dock.root;
+    let top = host.root.root();
+    host.root.add_child(top, frame);
+    host.root
+        .register_window(WINDOW, frame, Some(frame), 0)
+        .unwrap();
+    host.attach_controller(WINDOW, Box::new(dock)).unwrap();
+    host.pump();
+    host.take_outputs();
+    host
+}
+
+#[test]
+fn the_plugin_dock_remembers_being_minimized_per_character_and_keeps_its_saved_name() {
+    use ac_ui::plugin::dock::{PluginDock, WINDOW};
+    assert_eq!(WINDOW, "plugin-shelf");
+    let dir = Dir::new();
+    let minimized = |host: &mut UiHost| {
+        host.with_controller::<PluginDock, _>(WINDOW, |c, _| c.is_minimized())
+            .unwrap()
+    };
+    {
+        let mut host = dock_host();
+        let mut p = persist(&mut host, Some(dir.store()), "Alice", (1280, 720));
+        p.set_gameplay_active(&mut host, true);
+        p.restore_all(&mut host);
+        assert!(!minimized(&mut host));
+        let toggle = host
+            .with_controller::<PluginDock, _>(WINDOW, |c, _| c.layout().toggle)
+            .unwrap();
+        // The dock is hidden with no plugin windows; the state is the point.
+        host.root.show_window(WINDOW);
+        let frame = host.root.window(WINDOW).unwrap().frame;
+        let at = host.root.element(frame).map(|e| (e.left, e.top)).unwrap();
+        let (x, y) = (
+            (at.0 + toggle.x + 4.0) as i32,
+            (at.1 + toggle.y + 4.0) as i32,
+        );
+        host.mouse_move(x, y);
+        host.mouse_down(ac_ui::event::MouseButton::Left, x, y, 0);
+        host.mouse_up(ac_ui::event::MouseButton::Left, x, y, 0);
+        host.pump();
+        assert!(minimized(&mut host));
+        p.follow(&mut host);
+    }
+    // A new run for the same character comes back minimized.
+    let mut host = dock_host();
+    let mut p = persist(&mut host, Some(dir.store()), "Alice", (1280, 720));
+    p.set_gameplay_active(&mut host, true);
+    p.restore_all(&mut host);
+    assert!(minimized(&mut host));
+    // Another character has its own.
+    p.set_character(&mut host, "Bob");
+    p.restore_all(&mut host);
+    assert!(!minimized(&mut host));
+}
+
 // ── .SidePanels ─────────────────────────────────────────────────────────
 
 fn side_panel_size_survives_a_map_switch_and_a_fresh_login(chosen: f32) {
