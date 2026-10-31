@@ -702,6 +702,17 @@ impl ChaseCamera {
         self.adjust_pitch(invert * y * sensitivity * MOUSE_ORBIT_SCALE);
     }
 
+    /// A character entered the world: the camera starts over as it did at
+    /// the first entry, in the default view (2.75 m back, 0.825 m up, no
+    /// swing, not looking down, no map, not first person) with its eye
+    /// placed afresh on the next update. The player's camera settings stay.
+    pub fn reset_for_world_entry(&mut self) {
+        *self = Self {
+            tuning: self.tuning,
+            ..Self::default()
+        };
+    }
+
     /// Back to the default view: 2.75 m back, 0.825 m up, no swing.
     pub fn set_default_view(&mut self) {
         self.looking_down = false;
@@ -1228,6 +1239,10 @@ pub struct PlayerModeFacts {
     pub controller_ready: bool,
     /// The world around the character is shown: the login reveal is over.
     pub world_ready: bool,
+    /// How many times a character has entered the world in what the
+    /// window has seen of the session: a new count is a new entry (a log
+    /// in after a log out), even when no frame saw the character gone.
+    pub world_entry: u64,
 }
 
 /// The one-shot trigger that puts the camera into player mode on its own
@@ -1340,14 +1355,21 @@ impl CameraController {
     }
 
     /// This frame's facts about the player. A character entering the world
-    /// (or one already in it when the window attaches) arms the player-mode
-    /// trigger, which puts the chase camera in charge once the character
-    /// can be followed; a character leaving the world cancels it and falls
-    /// back to orbiting. Fly mode is left alone.
+    /// (or one already in it when the window attaches) puts the chase
+    /// camera back in its default view, as the game does when it creates
+    /// the player, and arms the player-mode trigger, which puts the chase
+    /// camera in charge once the character can be followed; a character
+    /// leaving the world cancels it and falls back to orbiting. Fly mode is
+    /// left alone.
     pub fn follow_player(&mut self, facts: PlayerModeFacts) {
         let was_in_world = self.facts.live_in_world;
+        let entered =
+            facts.live_in_world && (!was_in_world || facts.world_entry != self.facts.world_entry);
         self.facts = facts;
-        if facts.live_in_world && !was_in_world {
+        if entered {
+            // Every entry starts the chase camera over in the default view,
+            // whatever the last character left it at.
+            self.chase.reset_for_world_entry();
             self.auto_entry.arm();
         } else if !facts.live_in_world && was_in_world {
             self.auto_entry.cancel();
@@ -2033,12 +2055,14 @@ mod tests {
         player_present: true,
         controller_ready: true,
         world_ready: true,
+        world_entry: 1,
     };
     const GONE: PlayerModeFacts = PlayerModeFacts {
         live_in_world: false,
         player_present: false,
         controller_ready: false,
         world_ready: false,
+        world_entry: 1,
     };
 
     // ── the player-mode trigger: OpenAC `AutoEnterPlayerModeTests` ──────
@@ -2193,6 +2217,64 @@ mod tests {
         assert_eq!(c.mode(), CameraMode::Orbit, "cancelled, not re-fired");
     }
 
+    /// Whether the chase camera sits in its default view: 2.75 m back and
+    /// 0.825 m up (the game's 2.5 m and 0.75 m scaled by 1.1), no swing,
+    /// no look-down, map or first-person view.
+    fn in_default_view(c: &ChaseCamera) -> bool {
+        close(c.distance * c.pitch.cos(), 2.75, 1e-5)
+            && close(c.distance * c.pitch.sin(), 0.825, 1e-5)
+            && c.yaw_offset == 0.0
+            && !c.is_looking_down()
+            && !c.is_map_mode()
+            && !c.is_in_head()
+    }
+
+    /// The game puts the camera back in its default view whenever it makes
+    /// the player (each entry into the world): a camera zoomed out and
+    /// turned around the character, or in the map view, before a log out
+    /// starts the next log in, the same character or another, in the
+    /// default view. The player's camera settings stay.
+    #[test]
+    fn every_entry_into_the_world_starts_the_chase_camera_in_its_default_view() {
+        for map in [false, true] {
+            let mut c = CameraController::new(OrbitCamera::default());
+            c.follow_player(READY);
+            assert!(in_default_view(&c.chase));
+            c.chase.tuning.stiffness = 0.25;
+            c.zoom(6.0);
+            c.chase.yaw_offset = 2.0;
+            if map {
+                c.chase.toggle_map_mode_view();
+            }
+            c.follow_player(READY);
+            assert!(!in_default_view(&c.chase), "kept while in the world");
+            c.follow_player(GONE);
+            assert!(!in_default_view(&c.chase), "kept at character selection");
+            c.follow_player(PlayerModeFacts {
+                world_entry: 2,
+                ..READY
+            });
+            assert!(in_default_view(&c.chase), "map {map}: reset by the log in");
+            assert_eq!(c.chase.tuning.stiffness, 0.25, "the settings stay");
+        }
+    }
+
+    /// A log out and log in the window saw no frame of (it was minimised,
+    /// say) is still a new entry: the entry count moved on.
+    #[test]
+    fn an_entry_seen_only_by_its_count_resets_the_view_too() {
+        let mut c = CameraController::new(OrbitCamera::default());
+        c.follow_player(READY);
+        c.zoom(6.0);
+        c.follow_player(READY);
+        assert!(!in_default_view(&c.chase), "the same entry keeps the view");
+        c.follow_player(PlayerModeFacts {
+            world_entry: 2,
+            ..READY
+        });
+        assert!(in_default_view(&c.chase));
+    }
+
     #[test]
     fn the_camera_follows_the_player_and_toggles_fly() {
         let mut c = CameraController::new(OrbitCamera::default());
@@ -2226,6 +2308,11 @@ mod tests {
     #[test]
     fn only_the_chase_cameras_map_view_is_the_overhead_view() {
         let mut c = CameraController::new(OrbitCamera::default());
+        // In the world, before the chase camera takes over.
+        c.follow_player(PlayerModeFacts {
+            world_ready: false,
+            ..READY
+        });
         c.chase.toggle_map_mode_view();
         assert!(c.chase.is_map_mode());
         assert!(!c.is_overhead_view(), "orbiting");

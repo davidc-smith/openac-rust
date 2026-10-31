@@ -1241,6 +1241,7 @@ impl WorldRenderer {
                 .is_some_and(|m| m.body.is_some()),
             // Player mode waits for the end of the login presentation.
             world_ready: self.reveal.is_complete() && !self.presents_login(),
+            world_entry: scene.map_or(0, Scene::world_entries),
         });
         if let Some((pos, _)) = player {
             let block = LandblockCoord::of_cell(pos.cell_id);
