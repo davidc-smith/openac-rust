@@ -33,7 +33,7 @@ use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
 use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
-use ac_ui::plugin::dock::{self, DockArt, DockMode, DockSize, PluginDock};
+use ac_ui::plugin::dock::{self, DockArt, DockMode, DockOpens, DockSize, PluginDock};
 use ac_ui::plugin::fold::SharedControlState;
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
@@ -291,14 +291,16 @@ const APPEARANCE_OWNER: &str = "openac";
 const APPEARANCE_VIEW: &str = "appearance";
 
 /// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
-const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="252" title="Plugin appearance" theme="plugin">
+const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="308" title="Plugin appearance" theme="plugin">
   <label x="12" y="33" text="Theme" />
   <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="8" />
   <label x="12" y="89" text="Dock" />
   <menu x="12" y="111" w="286" h="24" items="{Docks}" selected="{SelectedDock}" onchange="{SelectDock}" rows="6" />
   <label x="12" y="145" text="Dock size" />
   <menu x="12" y="167" w="286" h="24" items="{DockSizes}" selected="{SelectedDockSize}" onchange="{SelectDockSize}" rows="3" />
-  <button x="226" y="214" w="72" h="24" text="Close" onclick="{Close}" />
+  <label x="12" y="201" text="Dock opens" />
+  <menu x="12" y="223" w="286" h="24" items="{DockOpenings}" selected="{SelectedDockOpens}" onchange="{SelectDockOpens}" rows="2" />
+  <button x="226" y="270" w="72" h="24" text="Close" onclick="{Close}" />
 </panel>"#;
 
 /// Markup with no images to resolve.
@@ -715,14 +717,31 @@ impl WindowUi {
             .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_size(ui, size));
     }
 
-    /// The saved place and size of the dock are applied, when they differ.
+    /// The player picked how the dock opens in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock_opens(&mut self, opens: DockOpens) {
+        opens
+            .saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock_opens);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_opens(ui, opens));
+    }
+
+    /// The saved place, size and opening of the dock are applied, when they
+    /// differ.
     pub(super) fn follow_plugin_dock_setting(&mut self) {
         let saved = DockMode::from_saved(&self.settings.plugin_ui.dock);
         let size = DockSize::from_saved(&self.settings.plugin_ui.dock_size);
+        let opens = DockOpens::from_saved(&self.settings.plugin_ui.dock_opens);
         self.host
             .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
                 c.set_mode(ui, saved);
                 c.set_size(ui, size);
+                c.set_opens(ui, opens);
             });
     }
 
@@ -742,6 +761,9 @@ impl WindowUi {
                 .with("DockSizes", ac_plugin_ui::BindingKind::TextList)
                 .with("SelectedDockSize", ac_plugin_ui::BindingKind::Text)
                 .with("SelectDockSize", ac_plugin_ui::BindingKind::TextAction)
+                .with("DockOpenings", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDockOpens", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDockOpens", ac_plugin_ui::BindingKind::TextAction)
                 .with("Close", ac_plugin_ui::BindingKind::Action);
             let mut descriptor =
                 ac_plugin_ui::PanelDescriptor::new(APPEARANCE_VIEW, "Plugin appearance");
@@ -811,9 +833,9 @@ impl WindowUi {
         let theme = self.plugins.theme;
         let kind = self.plugins.theme_kind;
         let mode = self.plugin_dock_mode();
-        let size = self
+        let (size, opens) = self
             .host
-            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.size())
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| (c.size(), c.opens()))
             .unwrap_or_default();
         let Some(a) = self.plugins.appearance.as_mut() else {
             return;
@@ -857,6 +879,19 @@ impl WindowUi {
                     "SelectedDockSize".into(),
                     ac_plugin_ui::UiValue::Text(size.display_name().to_owned()),
                 ),
+                (
+                    "DockOpenings".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockOpens::ALL
+                            .iter()
+                            .map(|o| o.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDockOpens".into(),
+                    ac_plugin_ui::UiValue::Text(opens.display_name().to_owned()),
+                ),
             ],
         );
         a.revision += 1;
@@ -884,6 +919,7 @@ impl WindowUi {
         let mut picked = None;
         let mut picked_dock = None;
         let mut picked_size = None;
+        let mut picked_opens = None;
         for input in inputs {
             match &input {
                 UiInput::Action {
@@ -903,6 +939,13 @@ impl WindowUi {
                 } if handler == "SelectDockSize" => {
                     picked_size = DockSize::from_display_name(name);
                 }
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDockOpens" => {
+                    picked_opens = DockOpens::from_display_name(name);
+                }
                 UiInput::Action { handler, .. } if handler == "Close" => {
                     a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, false);
                 }
@@ -917,6 +960,9 @@ impl WindowUi {
         }
         if let Some(size) = picked_size {
             self.pick_plugin_dock_size(size);
+        }
+        if let Some(opens) = picked_opens {
+            self.pick_plugin_dock_opens(opens);
         }
         self.sync_appearance();
     }

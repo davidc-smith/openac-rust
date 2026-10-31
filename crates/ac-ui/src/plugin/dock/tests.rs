@@ -687,6 +687,170 @@ fn hovering_the_tile_labels_it_and_holding_it_does_not() {
     assert!(rig.label().is_none());
 }
 
+// ── Peeking open ────────────────────────────────────────────────────────
+
+impl Rig {
+    /// A closed dock that opens on hover, with the pointer away from it.
+    fn hover_mode() -> Self {
+        let mut rig = Self::in_mode(DockMode::Floating);
+        rig.press_tile();
+        rig.with(|c, ui| c.set_opens(ui, DockOpens::Hover));
+        rig.host.mouse_move(600, 500);
+        rig.pass(1.0);
+        assert!(rig.closed_view());
+        rig
+    }
+
+    /// A frame `seconds` long.
+    fn pass(&mut self, seconds: f64) {
+        self.now += (seconds * 1000.0) as i64;
+        self.host.tick(seconds, self.now, None);
+    }
+
+    fn closed_view(&mut self) -> bool {
+        self.with(|c, _| c.closed())
+    }
+
+    fn pointer_on_dock(&mut self) {
+        let (left, top) = self.at();
+        self.host.mouse_move(left as i32 + 10, top as i32 + 10);
+    }
+}
+
+#[test]
+fn with_hover_on_the_pointer_peeks_it_open_and_leaving_closes_it() {
+    let mut rig = Rig::hover_mode();
+    rig.pointer_on_dock();
+    rig.pass(0.05);
+    assert!(rig.closed_view(), "not before a moment has passed");
+    rig.pass(0.1);
+    assert!(!rig.closed_view());
+    assert!(rig.size().1 > layout::FLOATING_THICKNESS);
+    // Across the opened dock it stays open.
+    let slot = rig.layout().slots[0].unwrap();
+    rig.hover(slot);
+    rig.pass(1.0);
+    assert!(!rig.closed_view());
+    rig.host.mouse_move(600, 500);
+    rig.pass(0.3);
+    assert!(!rig.closed_view(), "not straight away");
+    rig.pass(0.3);
+    assert!(rig.closed_view());
+}
+
+#[test]
+fn a_peek_is_not_saved_as_open() {
+    let mut rig = Rig::hover_mode();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+    assert!(rig.host.capture_window_state(WINDOW).collapsed);
+}
+
+#[test]
+fn with_hover_off_the_pointer_does_nothing() {
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    rig.press_tile();
+    rig.pointer_on_dock();
+    rig.pass(2.0);
+    assert!(rig.closed_view());
+}
+
+#[test]
+fn with_hover_on_a_press_on_a_peek_keeps_it_open_and_the_next_closes_it_for_good() {
+    let mut rig = Rig::hover_mode();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    rig.press_tile();
+    assert!(!rig.with(|c, _| c.is_minimized()));
+    rig.host.mouse_move(600, 500);
+    rig.pass(2.0);
+    assert!(!rig.closed_view(), "kept open");
+
+    // Closing it leaves the pointer on the tile, which does not reopen it.
+    rig.press_tile();
+    assert!(rig.closed_view());
+    rig.pass(2.0);
+    assert!(rig.closed_view());
+    // Until the pointer has left and come back.
+    rig.host.mouse_move(600, 500);
+    rig.pass(0.1);
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+}
+
+#[test]
+fn nothing_peeks_it_open_while_a_window_is_moved_or_it_is_covered() {
+    let mut rig = Rig::hover_mode();
+    let other = rig.host.root.insert(
+        {
+            let mut e = Element::at(400.0, 300.0, 100.0, 100.0);
+            e.window_move_handle = true;
+            e
+        },
+        DockGear::default(),
+    );
+    let top = rig.host.root.root();
+    rig.host.root.add_child(top, other);
+    rig.host.mouse_move(420, 320);
+    rig.host.mouse_down(MouseButton::Left, 420, 320, 0);
+    rig.pointer_on_dock();
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+    rig.host.mouse_up(MouseButton::Left, 420, 320, 0);
+    rig.host.mouse_move(600, 500);
+    rig.pass(0.1);
+
+    rig.with(|c, _| c.set_covered(true));
+    rig.pointer_on_dock();
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+}
+
+#[test]
+fn a_peek_near_the_far_end_slides_to_fit_and_goes_back() {
+    let mut rig = Rig::hover_mode();
+    rig.host.root.move_window(WINDOW, 300.0, 600.0);
+    rig.pass(0.016);
+    let closed_at = rig.at();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(rig.at().1 < closed_at.1);
+    rig.host.mouse_move(100, 100);
+    rig.pass(1.0);
+    assert_eq!(rig.at(), closed_at);
+}
+
+#[test]
+fn the_wheel_scrolls_a_peeking_dock() {
+    let mut rig = Rig::new(300.0, PluginTheme::Moss);
+    rig.add_plugins(12);
+    rig.sync_plain();
+    rig.press_tile();
+    rig.with(|c, ui| c.set_opens(ui, DockOpens::Hover));
+    rig.host.mouse_move(600, 250);
+    rig.pass(0.016);
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+    let frame = rig.frame();
+    rig.host.root.send_message(frame, ElementMessage::Wheel(-1));
+    rig.host.pump();
+    rig.pass(0.016);
+    assert_eq!(rig.layout().first, 1);
+}
+
+#[test]
+fn turning_hover_off_ends_a_peek() {
+    let mut rig = Rig::hover_mode();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+    rig.with(|c, ui| c.set_opens(ui, DockOpens::Click));
+    assert!(rig.closed_view());
+}
+
 // ── Sizes ───────────────────────────────────────────────────────────────
 
 #[test]

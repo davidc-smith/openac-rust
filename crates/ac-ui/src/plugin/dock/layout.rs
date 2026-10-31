@@ -44,6 +44,54 @@ pub const SNAP_OUT: f32 = 32.0;
 
 const DIVIDER_BLOCK: f32 = DIVIDER_SPACE * 2.0 + 1.0;
 
+/// How a closed dock opens. Pressing the tile opens and closes it either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DockOpens {
+    /// Only by pressing the tile.
+    #[default]
+    Click,
+    /// Also by hovering over it, until the pointer leaves the dock.
+    Hover,
+}
+
+impl DockOpens {
+    /// Every way, in the order the Appearance window lists them.
+    pub const ALL: [Self; 2] = [Self::Click, Self::Hover];
+
+    /// The name it is saved under.
+    #[must_use]
+    pub const fn saved_name(self) -> &'static str {
+        match self {
+            Self::Click => "click",
+            Self::Hover => "hover",
+        }
+    }
+
+    /// The way saved as `name`, in any case; an unknown name is a click.
+    #[must_use]
+    pub fn from_saved(name: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|o| o.saved_name().eq_ignore_ascii_case(name))
+            .unwrap_or_default()
+    }
+
+    /// Its name in the Appearance window.
+    #[must_use]
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Click => "When the icon is clicked",
+            Self::Hover => "When hovering over the icon",
+        }
+    }
+
+    /// The way with this name in the Appearance window.
+    #[must_use]
+    pub fn from_display_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|o| o.display_name() == name)
+    }
+}
+
 /// How big the dock is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DockSize {
@@ -672,6 +720,19 @@ mod tests {
         assert_eq!(DockSize::from_saved("BIGGER"), DockSize::Bigger);
         assert_eq!(DockSize::from_saved("huge"), DockSize::Default);
         assert_eq!(DockSize::from_saved(""), DockSize::Default);
+    }
+
+    #[test]
+    fn opening_names_round_trip_and_an_unknown_one_is_a_click() {
+        for opens in DockOpens::ALL {
+            assert_eq!(DockOpens::from_saved(opens.saved_name()), opens);
+            assert_eq!(
+                DockOpens::from_display_name(opens.display_name()),
+                Some(opens)
+            );
+        }
+        assert_eq!(DockOpens::from_saved("HOVER"), DockOpens::Hover);
+        assert_eq!(DockOpens::from_saved("psychic"), DockOpens::Click);
     }
 
     #[test]

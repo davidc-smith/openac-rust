@@ -8,7 +8,8 @@
 //!
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
-//! the dock's place. A press and a drag start the same way, on the tile: the
+//! the dock's place. With hovering turned on, the pointer on a closed dock also
+//! peeks it open until the pointer leaves, which saves nothing. A press and a drag start the same way, on the tile: the
 //! root starts moving the window at once, so the dock holds still until the
 //! pointer has gone [`PRESS_SLOP`] points, and a release before that is a press.
 //!
@@ -26,7 +27,7 @@ use ac_plugin_ui::markup::normalize_icon;
 use ac_plugin_ui::{PanelView, PluginIcon, UiInput};
 
 use self::layout::{DockLayout, FADE_LENGTH, Metrics};
-pub use self::layout::{DockMode, DockSize};
+pub use self::layout::{DockMode, DockOpens, DockSize};
 use self::style::DockSide;
 use super::style::PointerState;
 use super::widgets::ButtonLook;
@@ -53,6 +54,10 @@ pub const DEFAULT_LEFT: f32 = 10.0;
 pub const APPEARANCE_LABEL: &str = "Plugin appearance";
 /// The tile's hover label.
 pub const TILE_LABEL: &str = "Plugins";
+/// How long the pointer must stay on a closed dock before it peeks open, seconds.
+pub const PEEK_OPEN_SECONDS: f32 = 0.12;
+/// How long the pointer must stay away before a peeking dock closes, seconds.
+pub const PEEK_CLOSE_SECONDS: f32 = 0.5;
 /// How far the pointer may go from where it pressed the tile and still be a
 /// press rather than a drag.
 pub const PRESS_SLOP: f32 = 4.0;
@@ -134,7 +139,17 @@ pub struct PluginDock {
     entries: Vec<Entry>,
     mode: DockMode,
     size: DockSize,
+    /// The player closed it, which is saved. It can still be open while
+    /// `peeking`.
     minimized: bool,
+    opens: DockOpens,
+    /// The pointer has it open for now.
+    peeking: bool,
+    /// How long the pointer has wanted the peek changed, seconds.
+    peek_wait: f32,
+    /// A press closed it with the pointer still on it: no peek until the pointer
+    /// has left.
+    peek_held_off: bool,
     /// The player hid it (Toggle Plugin Manager).
     hidden: bool,
     /// A screen that has no in-game windows covers it.
@@ -199,6 +214,10 @@ impl PluginDock {
             mode,
             size: DockSize::default(),
             minimized: false,
+            opens: DockOpens::default(),
+            peeking: false,
+            peek_wait: 0.0,
+            peek_held_off: false,
             hidden: false,
             covered: false,
             font,
@@ -286,10 +305,29 @@ impl PluginDock {
         &self.layout
     }
 
-    /// Whether it is minimized.
+    /// Whether the player has closed it, peeking or not.
     #[must_use]
     pub fn is_minimized(&self) -> bool {
         self.minimized
+    }
+
+    /// Whether it shows closed now.
+    fn closed(&self) -> bool {
+        self.minimized && !self.peeking
+    }
+
+    /// How it opens.
+    #[must_use]
+    pub fn opens(&self) -> DockOpens {
+        self.opens
+    }
+
+    /// Sets how it opens. Turned off, a peek ends at once.
+    pub fn set_opens(&mut self, ui: &mut UiRoot, opens: DockOpens) {
+        self.opens = opens;
+        if opens == DockOpens::Click && self.peeking {
+            self.change_openness(ui, |dock| dock.peeking = false);
+        }
     }
 
     /// Where it is and which way it runs.
@@ -444,14 +482,8 @@ impl PluginDock {
         self.screen = ui.size();
         let owners: Vec<&str> = self.entries.iter().map(|e| e.owner.as_str()).collect();
         let longest = layout::max_length(self.mode, self.screen.0, self.screen.1);
-        let l = layout::compute(
-            self.mode,
-            self.size,
-            self.minimized,
-            &owners,
-            longest,
-            self.first,
-        );
+        let closed = self.closed();
+        let l = layout::compute(self.mode, self.size, closed, &owners, longest, self.first);
         self.first = l.first;
         let palette = self.palette();
         let metrics = self.size.metrics();
@@ -476,7 +508,7 @@ impl PluginDock {
         }
         place(ui, self.tile, l.tile);
         place(ui, self.gear, l.gear);
-        ui.set_visible(self.gear, !self.minimized);
+        ui.set_visible(self.gear, !closed);
         if let Some(e) = ui.element_mut(self.root) {
             e.width = l.width;
             e.height = l.height;
@@ -489,8 +521,8 @@ impl PluginDock {
             w.metrics = metrics;
             w.icon = app_icon;
             w.count_font = count_font;
-            w.count = if self.minimized { open_count } else { 0 };
-            w.closed = self.minimized;
+            w.count = if closed { open_count } else { 0 };
+            w.closed = closed;
         }
         if let Some(w) = ui.widget_mut::<DockGear>(self.gear) {
             w.palette = palette;
@@ -501,7 +533,7 @@ impl PluginDock {
             frame.palette = palette;
             frame.mode = self.mode;
             frame.metrics = metrics;
-            frame.minimized = self.minimized;
+            frame.minimized = closed;
             frame.dividers.clone_from(&l.dividers);
             frame.fades = (l.fade_start, l.fade_end);
             frame.list = (l.list_start, l.list_end);
@@ -570,25 +602,80 @@ impl PluginDock {
         }
     }
 
-    /// Opens or closes the dock. A dock that had to move to fit when it opened
-    /// goes back to where it was when it closes.
+    /// Opens or closes the dock for the player. A press that closes it leaves the
+    /// pointer on the tile, which must not peek it straight open again.
     fn set_minimized(&mut self, ui: &mut UiRoot, minimized: bool) {
-        if self.minimized == minimized {
-            return;
-        }
+        self.peek_held_off = minimized;
+        self.change_openness(ui, |dock| {
+            dock.minimized = minimized;
+            dock.peeking = false;
+        });
+    }
+
+    /// Makes `change`, and lays the dock out for it. A dock that has to move to
+    /// fit when it opens goes back to where it was when it closes.
+    fn change_openness(&mut self, ui: &mut UiRoot, change: impl FnOnce(&mut Self)) {
+        let was_closed = self.closed();
         let before = ui.element(self.root).map(|e| (e.left, e.top));
-        self.minimized = minimized;
+        change(self);
         self.reflow(ui);
-        if minimized {
+        let closed = self.closed();
+        if closed && !was_closed {
             if let (Some((left, top)), Some(e)) = (self.closed_at.take(), ui.element_mut(self.root))
             {
                 e.left = left;
                 e.top = top;
             }
             self.keep_in_place(ui);
-        } else {
+        } else if !closed && was_closed {
             let after = ui.element(self.root).map(|e| (e.left, e.top));
             self.closed_at = before.filter(|_| before != after);
+        }
+    }
+
+    /// With hovering on, the pointer on a closed dock peeks it open after a
+    /// moment, and away from it closes it again after a longer one. Nothing peeks
+    /// open while something else has the pointer's attention, and a peek stays
+    /// open while it is being dragged.
+    fn follow_peek(&mut self, ui: &mut UiRoot, dt: f32) {
+        if self.opens != DockOpens::Hover || !self.minimized {
+            self.peek_wait = 0.0;
+            return;
+        }
+        let (mx, my) = ui.mouse();
+        let (mx, my) = (mx as f32, my as f32);
+        let over = ui.element(self.root).is_some_and(|e| {
+            e.visible()
+                && mx >= e.left
+                && mx < e.left + e.width
+                && my >= e.top
+                && my < e.top + e.height
+        });
+        if !over {
+            self.peek_held_off = false;
+        }
+        let held = ui
+            .widget::<DockTile>(self.tile)
+            .is_some_and(|t| t.held.is_some());
+        let busy = held || ui.is_window_move_active() || ui.modal.is_some() || self.covered;
+        let want = if busy {
+            self.peeking
+        } else {
+            over && !self.peek_held_off
+        };
+        if want == self.peeking {
+            self.peek_wait = 0.0;
+            return;
+        }
+        self.peek_wait += dt.max(0.0);
+        let delay = if want {
+            PEEK_OPEN_SECONDS
+        } else {
+            PEEK_CLOSE_SECONDS
+        };
+        if self.peek_wait >= delay {
+            self.peek_wait = 0.0;
+            self.change_openness(ui, |dock| dock.peeking = want);
         }
     }
 
@@ -764,7 +851,7 @@ impl PluginDock {
                 return None;
             }
             (self.layout.tile, TILE_LABEL, None)
-        } else if self.minimized {
+        } else if self.closed() {
             return None;
         } else if hovered(
             ui.widget::<DockGear>(self.gear)
@@ -862,6 +949,7 @@ impl PanelController for PluginDock {
 
     fn restore_window_state(&mut self, ui: &mut UiRoot, state: &WindowState) -> bool {
         self.closed_at = None;
+        self.peeking = false;
         self.minimized = state.collapsed;
         self.reflow(ui);
         true
@@ -873,6 +961,7 @@ impl PanelController for PluginDock {
         if self.screen != ui.size() || size != Some((self.layout.width, self.layout.height)) {
             self.reflow(ui);
         }
+        self.follow_peek(ui, dt as f32);
         self.keep_in_place(ui);
         self.ease_pills(ui, dt as f32);
         self.follow_pointer(ui);
@@ -892,7 +981,7 @@ impl PanelController for PluginDock {
                 return true;
             }
             ElementMessage::Wheel(dy) if element == self.root => {
-                if !self.minimized && self.layout.max_first > 0 {
+                if !self.closed() && self.layout.max_first > 0 {
                     self.first = if *dy > 0 {
                         self.first.saturating_sub(1)
                     } else {

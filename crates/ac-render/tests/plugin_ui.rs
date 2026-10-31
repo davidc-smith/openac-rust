@@ -318,6 +318,7 @@ fn the_dock_takes_its_saved_place_and_a_drag_is_saved_when_it_ends() {
     let mut saved = PlayerSettings::default();
     saved.plugin_ui.dock = "top".to_owned();
     saved.plugin_ui.dock_size = "bigger".to_owned();
+    saved.plugin_ui.dock_opens = "hover".to_owned();
     ui.settings_changed_elsewhere(&saved);
     ui.frame(Instant::now(), size);
     assert_eq!(mode(&mut ui), DockMode::Top);
@@ -325,6 +326,11 @@ fn the_dock_takes_its_saved_place_and_a_drag_is_saved_when_it_ends() {
         ui.host_mut()
             .with_controller::<PluginDock, _>(WINDOW, |c, _| c.size()),
         Some(ac_ui::plugin::dock::DockSize::Bigger)
+    );
+    assert_eq!(
+        ui.host_mut()
+            .with_controller::<PluginDock, _>(WINDOW, |c, _| c.opens()),
+        Some(ac_ui::plugin::dock::DockOpens::Hover)
     );
     let frame = ui.host().root.window(WINDOW).unwrap().frame;
     let at = |ui: &WindowUi| {
