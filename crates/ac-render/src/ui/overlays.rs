@@ -248,19 +248,24 @@ pub(crate) fn placement(world: &WorldRenderer, object: &ObjectView) -> Option<Pl
 /// (by `objects`: in his packs or wielded by him), placed or held by
 /// another, its setup's selection sphere turned with it and scaled (a
 /// 0.1 m sphere at its base when the setup has none).
+///
+/// `viewport` is the framebuffer in UI units
+/// (`crate::ui_scale::UiScale::overlay_viewport`): what the camera puts at
+/// a pixel the overlays place at that pixel in units, so the UI scale
+/// draws it back over the pixel.
 pub(crate) fn world_view(
     world: &WorldRenderer,
     scene: &Scene,
     dats: &DatCollection,
     objects: &ClientObjectTable,
-    viewport: (u32, u32),
+    viewport: (f32, f32),
 ) -> (Option<OverlayCamera>, Option<VividTargetInfo>) {
     let camera = world
         .view_matrices()
         .map(|(view, projection)| OverlayCamera {
             view,
             projection,
-            viewport: (viewport.0 as f32, viewport.1 as f32),
+            viewport,
         });
     let target = (|| {
         let selected = scene.player_view()?.selected?;

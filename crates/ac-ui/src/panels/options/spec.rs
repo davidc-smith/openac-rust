@@ -294,6 +294,9 @@ pub enum ConfigRow {
         range_low: Option<&'static str>,
         /// High end caption (`None`: the number).
         range_high: Option<&'static str>,
+        /// When set, the caption shows the value after the label, with
+        /// this after the number ("UI Scale (150%)").
+        value_suffix: Option<&'static str>,
     },
     /// An OpenAC-only menu of named choices.
     ExplicitMenu {
@@ -452,6 +455,9 @@ const fn trio(
     }
 }
 
+/// The interface-scale row's caption.
+pub const UI_SCALE_LABEL: &str = "UI Scale";
+
 const fn display(field: DisplayField) -> OptionKey {
     OptionKey::Display(field)
 }
@@ -544,6 +550,7 @@ pub fn config_rows() -> Vec<ConfigRow> {
             dimmed_by_retail_mixer: true,
             range_low: None,
             range_high: None,
+            value_suffix: None,
         },
         ConfigRow::ExplicitToggle {
             label: "Priority",
@@ -564,6 +571,7 @@ pub fn config_rows() -> Vec<ConfigRow> {
             dimmed_by_retail_mixer: true,
             range_low: Some("Off"),
             range_high: Some("8"),
+            value_suffix: None,
         },
         Separator,
         Header("ID_Camera_CameraSection"),
@@ -674,6 +682,20 @@ pub fn config_rows() -> Vec<ConfigRow> {
             display(DisplayField::PotatoMode),
             "Everything at its cheapest, for running many clients on one machine: full detail only in the nearest landblocks, landscape draw distance 3, no anti-aliasing, the lowest texture detail, plain texture filtering, no building detail textures, the plain render pack and retail particle range. Your other settings are kept and come back when this is off. It applies at once: the world's textures are made again at the new detail and replace the old ones over the next moments.",
         ),
+        ConfigRow::ExplicitSlider {
+            label: UI_SCALE_LABEL,
+            min: f64::from(ac_host::settings::UI_SCALE_MIN_PERCENT),
+            max: f64::from(ac_host::settings::UI_SCALE_MAX_PERCENT),
+            step: f64::from(ac_host::settings::UI_SCALE_STEP_PERCENT),
+            integer: true,
+            default: f64::from(def.ui_scale_percent),
+            target: display(DisplayField::UiScale),
+            tooltip: "How large the in-game windows, text and controls are drawn, all together; the world is not scaled. It applies when you let go of the slider. The login and character screens always fill the window.",
+            dimmed_by_retail_mixer: false,
+            range_low: Some("50%"),
+            range_high: Some("300%"),
+            value_suffix: Some("%"),
+        },
         explicit_toggle(
             "UI Only",
             def.ui_only,
@@ -876,6 +898,7 @@ fn atmospheric_rows() -> Vec<ConfigRow> {
                 dimmed_by_retail_mixer: false,
                 range_low: None,
                 range_high: None,
+                value_suffix: None,
             },
             SettingKind::Choice => ConfigRow::ExplicitMenu {
                 label: s.display_name,
@@ -1102,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn the_configuration_page_has_39_option_rows_in_48_list_items() {
+    fn the_configuration_page_has_40_option_rows_in_49_list_items() {
         let all = config_rows();
         // The Graphics Enhancements section follows the game's rows.
         let enhancements = all
@@ -1110,8 +1133,8 @@ mod tests {
             .position(|r| matches!(r, ConfigRow::ExplicitHeader(_)))
             .expect("the enhancements section");
         let rows = &all[..enhancements];
-        assert_eq!(option_rows(rows), 39);
-        assert_eq!(rows.len(), 48);
+        assert_eq!(option_rows(rows), 40);
+        assert_eq!(rows.len(), 49);
         let headers = rows
             .iter()
             .filter(|r| matches!(r, ConfigRow::Header(_)))
