@@ -8,8 +8,8 @@ Written 2026-10-31 and meant to be read by a fresh session with no other context
 
 1. Read this whole file, then the Progress table. Do the first phase that is not Done.
 2. Read the "Notes for the next phase" section, and the memory notes `plugin-dock-redo`, `ui-shapes-f3`, `upstream-contributing-rules` and `mac-live-launch`.
-3. Check the plan still holds: `git fetch upstream`, see whether upstream has moved from `198debb`, and whether #51 or #58 have merged. If the ABI position below has changed, tell the user before continuing.
-4. Work in a worktree on `feat/plugin-dock`. Phase 1 creates that branch from `feat/antialiased-shapes` (tip `f9c403a`, which is off upstream `198debb`), so the three F3 commits stay first. Do not cut it from `main`.
+3. Check the plan still holds: `git fetch upstream`, see whether upstream has moved from `57a8e81`. If the ABI position below has changed, tell the user before continuing.
+4. Work in a worktree on `feat/plugin-dock`. It sits on upstream `57a8e81` with the three F3 commits first. Do not rebase it onto `main`.
 5. Make the commits listed. Each must build and pass on its own, with a clean message.
 6. Run the targeted checks and the live check for that phase. Long checks wait for the MBP, see Checks.
 7. Update this file in the main checkout (`/Users/davidsmith/Code/OpenAC/openac-rust/docs/plugin-dock-plan.md`): the Progress row, commit hashes, and anything the next phase must know. Then report to the user and stop. Do not start the next phase in the same session.
@@ -26,16 +26,15 @@ Contents:
 | --- | --- |
 | F3 | Anti-aliased shapes (done, three commits) |
 | F4 (part) | SemiBold weight. The plugin font API part is P8 |
-| F5 | Decision: use `resvg` |
 | P1, P13 | Modern look for themed plugin windows, themed Confirm close X, SemiBold list headers |
 | P14 | Expander framed like a group box |
 | P6 | Five more themes, `is_light`, light and dark variants |
 | P7 | Theme metrics and SemiBold for canvases |
 | P8 | Plugin fonts |
 | P2, P5 | The dock, with its gear |
-| P3, P4 | SVG and per-window PNG dock icons |
+| P4 | Per-window PNG dock icons |
 
-Out of scope: P9 (anti-aliased shapes on canvases), P10, P11, P12, P15 to P18, P19 (samples). Live checks use a private test plugin instead of ThemeGallery, in the style of `../openac-markertest`.
+Out of scope: P3 (SVG dock icons) and with it F5 (`resvg`), which the user left out on 2026-11-01, P9 (anti-aliased shapes on canvases), P10, P11, P12, P15 to P18, P19 (samples). Live checks use a private test plugin instead of ThemeGallery, in the style of `../openac-markertest`.
 
 ## Erik's agreement
 
@@ -45,7 +44,7 @@ His reply about the dock, to quote in the PR:
 
 He agreed the dock replaces the shelf with no option, which waives the usual "non-retail features sit behind an option". That agreement covers the dock only. The modern look and the themes need no waiver, because they only apply to windows that opted in under a theme the player picked.
 
-The user was going to message Erik about the wider scope: the modern look, themes and new icon types, the plugin font API, the `resvg` dependency, the raise to API 1.3 (which also answers tracker F1), and what else he finds buggy in the dock. Ask the user for his answers at the start of each phase and record them in Notes. A "no" to `resvg` changes only phase 5.
+The user was going to message Erik about the wider scope: the modern look, themes and new icon types, the plugin font API, the raise to API 1.4, and what else he finds buggy in the dock. Ask the user for his answers at the start of each phase and record them in Notes. He had not answered at the start of phase 5. SVG icons and `resvg` are no longer part of this.
 
 ## Rules for this work
 
@@ -54,7 +53,7 @@ The user was going to message Erik about the wider scope: the modern look, theme
 - **Fix known limits** in the same work rather than listing them in the PR.
 - **Retail outranks C#** on behaviour questions. The decompile is `ac-client-src/symbols/acclient_2013_pseudo_c.txt` in the main checkout.
 - Match the surrounding code's comment density, naming and idiom. Plain, full-sentence doc comments are the local style.
-- **ABI**: follow `CONTRIBUTING.md` "The plugin ABI". New fields go at the end of a record, marked `since (1, 3)`. New imports get a test through a real plugin module. Pin the older shapes in the layout tests.
+- **ABI**: follow `CONTRIBUTING.md` "The plugin ABI". New fields go at the end of a record, marked `since (1, 4)`. New imports get a test through a real plugin module. Pin the older shapes in the layout tests.
 
 ## Environment
 
@@ -90,11 +89,9 @@ Verified on 2026-10-31, so do not redo these unless the code has moved.
 
 **Verified since.** Input is handled before the tick in a frame, so a snap does not lag. `fontdue` with `ttf-parser` default features off reads CFF-based OTF fonts, with `opentype-layout` named in the workspace `Cargo.toml`.
 
-**Versions.** `resvg` and `usvg` 0.49.0 are `Apache-2.0 OR MIT`. `tiny-skia` is `BSD-3-Clause`. All are on the accept list in `about.toml`.
-
 ## ABI position
 
-**Out of date since 2026-10-31: see the first note under "Notes for the next phase".** Upstream is on API 1.2. Fork `main` shows 1.3 only because it includes #51, so do not read `main` to learn the upstream version. This branch stays off upstream and raises to 1.3 itself, in phase 3. Whichever of this PR and #51 merges second combines the additions under 1.3, as tracker F1 proposes. Expect mechanical conflicts in `version.rs`, the layout fingerprints, `crates/ac-plugin/tests/import_census.txt`, canvas commands and `plugin_ui.rs`.
+Settled in phase 5. Upstream released API 1.3 in v0.1.9 with #51's world triangles and markers. This branch sits on that and raises to 1.4. Its additions are `since (1, 4)`: the five theme kinds, the font imports, the font on `PaintCmd::Text` and `icon_file`. Plugins built for 1.0 to 1.3 keep loading. The phase 3 and 5 sections below still say 1.3 where they were written before this.
 
 ## Phase 1: Foundations
 
@@ -184,28 +181,19 @@ Edge shapes: a rail rounds only its two inner corners and has no rim on the scre
 
 Live check: all six positions in all eight themes, minimized and expanded, with real plugins including a dat icon. Restart to confirm the position and minimize are remembered. Resize the window with a right and a bottom rail. Check overflow scrolling on a horizontal dock.
 
-## Phase 5: Dock icons (P4, P3)
+## Phase 5: Dock icons (P4)
 
-Order on the dock: the window's own PNG or SVG (`icon_file`), the plugin's `icon.svg`, its `icon.png`, the dat icon (keyed), the monogram. Failure rules are in C# `docs/plugin-ui-markup.md:28-52`. An icon that cannot be used is skipped and the next is tried.
-
-Commits:
-
-1. **`icon_file`, ABI and SDK**: a field at the end of `PanelRegistration` and `TypedPanelRegistration` (`crates/ac-plugin-abi/src/ui.rs`), `since (1, 3)`, plus the SDK builder in `crates/openac-plugin/src/ui.rs`.
-2. **Per-window PNG (P4)**: full colour, same 64x64 px and 64 KiB rule (`crates/ac-plugin/src/icon.rs`), path stays inside the plugin folder (`set_plugin_folder` in `session.rs`), and `.light.png` / `.dark.png` variants from phase 3. Dimmer while its window is closed.
-3. **SVG (P3)**: `usvg` and `resvg` with default features off, so no text, system fonts or embedded images, and never given a resources folder, so a plugin's SVG cannot read other files. Limit file size and rendered size. Render at device pixels and take only the alpha as a coverage texture (`RuntimeImages::add_coverage`), so colours in the file are ignored. Tint per theme and slot state. Check `about.toml` and `NOTICE.md`.
-4. **Installer and `plugincheck` accept `.svg`**, with useful messages for a bad file. C#: `PluginContentPolicy.cs`, `PluginCheckRunner.cs`.
-
-Live check: every step of the icon order on the dock, in a dark and a light theme, and a bad file falling through to the next icon.
+Done. The user left SVG out on 2026-11-01, so the listed `resvg` work, and the installer and `plugincheck` commit that only existed to accept `.svg`, were not done. Order on the dock: the window's own PNG (`icon_file`), the plugin's `icon.png`, the dat icon (keyed), the monogram. A named `.svg` is refused and logged, and the next icon is drawn.
 
 ## Phase 6: Finish
 
 1. Rebase check: does the branch still merge with upstream, #51 and #58? Say what conflicts.
 2. Grep the diff for client internals and private C# class names.
-3. Full `scripts/check.sh` on the MBP at the tip, and fmt, clippy and tests on each commit. Needs the user's go-ahead to push.
-4. Merge into fork `main` with `git merge --no-ff`, as a topic branch merge. Remove the worktree.
+3. Full `scripts/check.sh` on the MBP at the tip, and fmt, clippy and tests on each commit. The rebase rewrote every commit and only the tip has been built since, so this sweep matters more than it did: expect to fix an intermediate commit or two. Needs the user's go-ahead to push.
+4. Fork `main` has not taken upstream `57a8e81` yet, and still holds #51 and #58 as its own merges, so sync it first and expect conflicts in the API version. Merge into fork `main` with `git merge --no-ff`, as a topic branch merge. Remove the worktree.
 5. Update `docs/csharp-fork-port-tracker.md`: the rows above, plus the top and bottom edges and minimize, which are new beyond the C# dock. Memory `ui-shapes-f3` and `plugin-dock-redo` too.
 6. Final live test with the user, of everything. Look together at **Classic expanders, which have no frame**. C# frames them in Classic and this port does not, because Classic windows must not change. The user will judge then whether that looks odd, and it can be adjusted. Drawing it would mean re-pinning the Classic hashes in `crates/ac-ui/tests/data/plugin_classic/pinned.txt`, on the user's say only.
-7. Write the PR text for the user to review. The old F3 copy in `ui-shapes-f3` is out of date: its title, "Nothing draws with these yet", and the temporary-patch live test no longer hold. It must quote Erik's agreement, state the raise to 1.3 and that older plugins keep loading, state the `resvg` dependency, say Classic windows are unchanged, and say it is not tested on Windows or Linux.
+7. Write the PR text for the user to review. The old F3 copy in `ui-shapes-f3` is out of date: its title, "Nothing draws with these yet", and the temporary-patch live test no longer hold. It must quote Erik's agreement, state the raise to 1.4 and that older plugins keep loading, say Classic windows are unchanged, and say it is not tested on Windows or Linux.
 
 **Do not open the PR until the user says so.**
 
@@ -217,19 +205,24 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 
 | Phase | Status | Commits | Notes |
 | --- | --- | --- | --- |
-| Plan | Agreed 2026-10-31 | | No project code yet |
-| F3 | Done | `79da491`, `8d3c0b8`, `f9c403a` | MBP check passed at `f9c403a`, on its own. Has to run again at the new tip |
-| 1. Foundations | Done 2026-10-31 | `c62fd98`, `aff4e48`, `254315d` | Tests and real-dat tests pass at the tip, 2931 in `ac-ui` and `ac-render`. Live on the Air's Retina screen. Nothing pushed |
-| 2. Modern look | Done 2026-10-31 | `9e31720`, `0361d4b`, `3873f17`, `078566d`, `00b126e`, `c3b81a9` | Tests and real-dat tests pass at the tip, 2986 in `ac-ui` and `ac-render`, 264 in `ac-plugin-ui`. Live in Classic, Moss and Brass on the Air's Retina screen. Pushed to `origin` at `c3b81a9` |
-| 3. Themes and plugin API | Done 2026-10-31 | `896d162`, `70e548b`, `4e143a0`, `12a8b5c`, `fc0ba19`, `d5f6c52` | Tests and real-dat tests pass, 4261 in the crates touched; after the last fold, which changed only a test and docs, `ac-ui` and clippy were rerun. Screenshots good in all eight themes. Pointer retest by the user passed. Nothing pushed |
-| 4. Dock | Done 2026-10-31 | `fa5f7e1`, `d380e23`, `96036c2`, `fba5c40`, `90eeefb`, `f6217cd` | fmt, clippy and tests with real dats pass at each commit, 3608 at the tip in `ac-ui`, `ac-render`, `ac-host` and `ac-plugin-ui`, 324 in the plugin crates. All six positions, minimized and expanded, in all eight themes on the Air's Retina screen, through the probe's pointer. By-hand retest with a real mouse passed. Nothing pushed |
-| 4b. Closed design | Done 2026-10-31 | `b613181`, `70a169f`, `edad035`, `2ef008b`, `a664b20` | The icon tile, three sizes, hover or click, then the clear crescent and the grip. Tests with real dats pass at the tip, 3328 in `ac-ui`, `ac-render` and `ac-host`; `2ef008b` ran clippy, the icon tests and the dock tests on its own. Seen live: Parchment at the default size, Classic bigger, Glacier smaller, through the lock, grip, tile, a closed drag, and left and top rails (top seen on Parchment). By-hand retest with a real mouse passed. Nothing pushed |
-| 5. Dock icons | Not started | | |
+| Plan | Agreed 2026-10-31 | | Hashes below are from the rebase of 2026-11-01. The older notes further down use the old ones, and `feat/plugin-dock-pre-rebase` (`a664b20`) keeps them |
+| F3 | Done | `7da4050`, `36f42b8`, `fcf7c82` | MBP check passed at `f9c403a`, on its own. Has to run again at the new tip |
+| 1. Foundations | Done 2026-10-31 | `b6ae9a4`, `49d721c`, `350657d` | Tests and real-dat tests pass at the tip, 2931 in `ac-ui` and `ac-render`. Live on the Air's Retina screen. Nothing pushed |
+| 2. Modern look | Done 2026-10-31 | `c26a003`, `29b440b`, `a870f0d`, `f7408c6`, `d96c086`, `da0b8d0` | Tests and real-dat tests pass at the tip, 2986 in `ac-ui` and `ac-render`, 264 in `ac-plugin-ui`. Live in Classic, Moss and Brass on the Air's Retina screen. Pushed to `origin` at `c3b81a9` |
+| 3. Themes and plugin API | Done 2026-10-31 | `06985c5`, `0707529`, `58bd47c`, `efb70f6`, `7170b08`, `82acdf5` | Tests and real-dat tests pass, 4261 in the crates touched; after the last fold, which changed only a test and docs, `ac-ui` and clippy were rerun. Screenshots good in all eight themes. Pointer retest by the user passed. Nothing pushed |
+| 4. Dock | Done 2026-10-31 | `31494a7`, `dbb1c6c`, `8e4b770`, `48b3970`, `2471292`, `9b8f42a` | fmt, clippy and tests with real dats pass at each commit, 3608 at the tip in `ac-ui`, `ac-render`, `ac-host` and `ac-plugin-ui`, 324 in the plugin crates. All six positions, minimized and expanded, in all eight themes on the Air's Retina screen, through the probe's pointer. By-hand retest with a real mouse passed. Nothing pushed |
+| 4b. Closed design | Done 2026-10-31 | `0cfb7da`, `b6f704c`, `051caca`, `b3dbaa4`, `0f2edfd`, `fdc44fa` | The icon tile, three sizes, hover or click, then the clear crescent and the grip. Tests with real dats pass at the tip, 3328 in `ac-ui`, `ac-render` and `ac-host`; `2ef008b` ran clippy, the icon tests and the dock tests on its own. Seen live: Parchment at the default size, Classic bigger, Glacier smaller, through the lock, grip, tile, a closed drag, and left and top rails (top seen on Parchment). By-hand retest with a real mouse passed. Nothing pushed |
+| 5. Dock icons | Done 2026-11-01, no SVG | `12b68d4`, `323425e` | Rebased onto upstream `57a8e81` and raised to 1.4 first, which rewrote every hash above. fmt, clippy over the workspace and tests with real dats pass at the tip, 4782 in the crates touched. Live on the Air's Retina screen: Classic, Moss and Parchment, and Moss at UI Scale 110% and 150%. Nothing pushed |
 | 6. Finish | Not started | | |
 
 ## Notes for the next phase
 
-- **Start here: the ABI position has changed, so settle it before phase 5.** Upstream moved from `198debb` to `57a8e81` on 2026-10-31 (58 commits). #51 and #58 merged, and v0.1.9 shipped API 1.3 with #51's world triangles. So "combine under 1.3" below no longer holds: 1.3 is released with its own shapes, and this branch's additions should move to `since (1, 4)`, with `API_CURRENT` at 1.4. Tracker F1 is settled by that too. A test merge of `a664b20` with upstream conflicts in six files: `ac-plugin-abi/src/layout.rs`, `ac-plugin/tests/wasm_plugins.rs`, `ac-render/src/ui/batch.rs`, `ac-ui/src/plugin/canvas.rs`, `ac-ui/src/plugin/tests.rs`, `openac-plugin/src/ui.rs`. Claude's recommendation, told to the user on 2026-10-31: rebase onto upstream and renumber to 1.4 as the first thing in the next session, because phase 5's `icon_file` needs to know the version it is marked with. Rebasing rewrites hashes and needs a force-push or new branch on the fork, and force-pushes have been refused there before.
+- **Start here, phase 6.** Pushing needs the user: `origin/feat/plugin-dock` is at the old `d5f6c52` and has diverged, so it takes a force-push, or a new branch name since force-pushes have been refused on the fork before. The MBP check depends on that.
+- **Rebase, for the PR text.** Upstream's UI Scale option (50% to 300%) was new to this work, and it has not been checked everywhere. The batcher now snaps quads and polygons to whole pixels when a unit is not one pixel, and coloured triangles are deliberately multiplied but not snapped, because a snap folds their one-pixel soft edge. `UiRoot`'s pixels per unit includes the player's scale, so soft edges and sharper bakes follow it. Seen in Moss at 110% (2.2 pixels a unit on Retina) and 150%. Not seen: Classic or a light theme at a scale, or pressed and hover states at one. A new density rebakes the sharper fonts, so stepping the option bakes each time, and that cost was not measured.
+- **A rule phase 4b broke, fixed in the rebase.** `ac-render` had taken a dependency on `ac-plugin` for the PNG decoder, which `ac-plugin/tests/crate_graph.rs` forbids. Phase 4b ran only the `ac-ui`, `ac-render` and `ac-host` tests, so it was not caught. The decoder moved to `ac-plugin-ui` in a new commit (`0cfb7da`), ahead of the tile. `ac_plugin::icon` still names it. A window-side change should also run the `ac-plugin` tests.
+- **Older plugins.** Live, a real module built by upstream's released 1.3 SDK (`phase5/uidemo-api-1.3.wasm`, its `uidemo`) and the older real 1.2 module both load and show on the dock. Tests also go through `rawbytes` built for 1.2 and 1.3.
+- **Phase 5, design.** The session reads `icon_file` when the window registers, synchronously through `FileImageLoader::read_dock_icon`, which is safe at 64 KiB and does not wait on a pipe. C# reloads a changed file when the interface rebuilds. Here a changed file is seen when a window registers, so on a plugin reload. A version may exist with no named file: it draws under its theme and the other theme goes to the next icon. A path refused along with its versions for one reason logs once. `icon.png` has no light and dark versions, as in C#. Dock textures are kept by picture, not by plugin, and given back when nothing holds the pixels. They now have smaller copies, which also improves `icon.png`.
+- **Live harness, phase 5:** `phase5/try.sh <theme> <run>` on `phase5/client-phase5`, output in `phase5/${BATCH:-a}/<run>`, with `ICONPLUG=1` (a second copy with an `icon.png`), `UPSTREAM13=1` and `UI_SCALE=<percent>` for `run.sh`. Theme names are case-sensitive: `moss` silently came up Classic, so use `Moss`. `phase5/a/` holds the shots. The plugin now has a window for each step of the icon order and each refusal.
 - **Phase 4b, the user's changes on 2026-10-31.** They said the tile moving the dock as well as opening it was confusing, because of the move cursor over a button, and that the crescent's black square looked wrong on Parchment. They left the timing of the icon to Claude, who did it now: phase 5 is about icons a plugin supplies, and does not touch this one. The user retested by hand on 2026-10-31 and said "looks good - happy with it as is", which also accepts the slide below. To retest: `sh phase4b/retest.sh [theme]` in `../openac-docktest`, on the client at `a664b20`. Click the lock on the radar to see the grip, and quit Magnet first (memory `mac-live-launch`, tracker M4).
   - **Grip.** It comes first on the dock, 14 points long at every size, whole width across, with two rows of four dots. It shows only while windows are unlocked, the same condition as the radar's move button. Only it moves the dock or shows the move cursor. `PRESS_SLOP` is gone, along with the hold logic, because a press on the grip has no other meaning. `follow_drag` is back to its phase 4 form.
   - **Tile.** An ordinary button, the same locked or not. A press and release on two places is not a click.
@@ -237,7 +230,7 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
   - **Decided by Claude, accepted by the user: the dock keeps its top-left place when the lock changes, so its icons slide 14 points along it.** Keeping the icons still would mean moving the window on each change, and a saved place cannot say whether it was saved with the grip, so it would drift on restarts and against screen edges.
   - **Icon.** `assets/icons/crescent-256.png` is the same crescent and ring, cut from the 1024 px launcher art in the C# repo (`assets/icons/acdream-launcher-1024.png`). The launcher and app bundle keep `launcher-256.png`. The cut was made with throwaway scripts: background told from metal by its warm tint and by brightness, then colour unblended from the local background.
   - **Seen in the test run, unrelated:** `plugin::repeat_tests::a_150_row_repeat_builds_reconciles_and_lays_out_within_bounds` failed once on a timing bound during a heavy run, then passed three times alone and in two full runs. It was not investigated further.
-- **Phase 5 comes after the ABI step.** The user passed phase 4's by-hand retest on 2026-10-31 and confirmed the dock stays hidden on the character list, including after logging off, then chose the closed design below. To retest: `NOCHAR=1 sh phase4/retest.sh [theme]` in `../openac-docktest`, which stops at the character list. Click the lock on the radar first, or the dock will not move.
+- **Phase 4 retest.** The user passed phase 4's by-hand retest on 2026-10-31 and confirmed the dock stays hidden on the character list, including after logging off, then chose the closed design below. To retest: `NOCHAR=1 sh phase4/retest.sh [theme]` in `../openac-docktest`, which stops at the character list. Click the lock on the radar first, or the dock will not move.
 - **Phase 4b, what changed:** three commits on top, so the series adds the chevron in commit 3 and takes it out in `b613181`. Phase 6 can fold them into the earlier commits if that reads better for Erik. The icon is `assets/icons/launcher-256.png`, the silver crescent, which the user picked over `client.ico`. It had a dark square of its own, which showed inside the tile on Parchment, so `2ef008b` swapped it for a clear cut. `ac-render` now depends on `ac-plugin` for its PNG decoder. The bundled font bakes three more sizes at mount: 10 for the count, 12 and 20 for monogram letters, each with a sharper bake. The dock no longer dims while windows are locked, because a press still works then. The saved settings are `dockSize` and `dockOpens`, beside `dock`.
 - **Character list bug, fixed in `96036c2`:** the pre-game screens hide every game window on each feed, and the dock's per-frame visibility check put itself back before the frame drew. `set_covered` tells the dock. `tests/pregame_ui.rs` has a real-dat test that failed before the fix. Live runs with `--character` never pause on that screen, so a live check of anything pre-game needs `NOCHAR=1`.
 - **Phase 4b, the design the user chose on 2026-10-31**, from the mockup at https://claude.ai/artifact/9JjwD66W2QaGgPxGHR7wU3:
@@ -250,7 +243,7 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 - **Phase 4, not seen on screen:** the wheel scrolling an overflowing dock (the probe has no wheel command, and the by-hand retest had too few windows to overflow), which only tests cover. The user's by-hand retest covered resizing with a right and bottom rail, Toggle Plugin Manager and a right click. The overflow itself, with its fades and labels, was seen on top, bottom and floating docks with 36 windows.
 - **Phase 4, for the user to rule on:** keying markup icons (commit 1, as this plan says, and as C# does) means a Classic plugin window that names a dat icon draws that icon's white pixels as black. Everything else in Classic plugin windows is unchanged: the guard's hashes were not touched, and phase 3's client against phase 4's on a 1.2 plugin showed no bright pixel added or lost and no difference on shared ones. That plugin names no dat icon, so the comparison does not show this one case. Separately, Toggle Plugin Manager's hidden state is still not remembered across restarts, as today. C# does save it, but older saved layouts hold `visible: false` from runs with no plugin windows, so honouring that could hide the dock with no sign of why.
 - **Phase 4, design changes from this plan:** a rail holds by the pointer, not its own place: it floats once the pointer is 32 points further from the edge than the closest it has been in the drag. A tall dock that snaps by its far end shrinks well away from the pointer, so going by the rail's place floated it again on the next move, which a slow-drag test caught. A floating dock's longest is the screen less 24 points at each end (`layout::FLOATING_MARGIN`), so a full one is not always within reach of an edge. A tab's handle is 20 long, not C#'s 14, because the outer dot fell in the rounded corner. The chevron is always visible from commit 3, so commit 5 is mainly the saved state. The gear and a right click now toggle the Appearance window, as C# does. The dock raises itself above other windows each frame unless a modal one is up, so plugin windows go under it too, not only retail ones. No root change was needed. Input reaches the host before the frame's tick (`surface.rs` `cursor_moved`, then `render`), so a snap does not lag. A whole drag between two frames, which a slow frame can cause, also snaps.
-- **For phase 5:** the art goes through `DockIcons` and `DockSlot::icon` in `crates/ac-ui/src/plugin/dock/mod.rs`, and `DockSlot::draw` is where a coverage icon's tint belongs. `sync` only resolves icons when the set of panels changes, so light and dark variants need a re-resolve on a theme change. `ImageSource::ClientArt` and `SpellIcon` were left unkeyed: C# draws client art raw, because a plugin asked for that art by name.
+- `ImageSource::ClientArt` and `SpellIcon` were left unkeyed: C# draws client art raw, because a plugin asked for that art by name.
 - **Live harness, phase 4b:** `phase4b/try.sh <theme> <run> [script] [last shot]` is `walk.sh` on `phase4b/client-phase4b`, giving up after 45 s if the window is covered. Output goes to `phase4b/${BATCH:-a}/<run>`. `phase4b/grip.txt` clicks the lock twice, so the character ends locked as found, and its coordinates fit all three sizes from the default floating place. `phase4/tile*.txt` and the other phase 4 scripts assume no grip. The first run this session sat covered for its whole length with no screenshots, and a retry worked.
 - **Live harness, phase 4:** `phase4/walk.sh <theme> [run] [script] [last shot]` runs a probe script from `phase4/*.txt` and stops when the last screenshot appears. Output goes to `phase4/${BATCH:-r2}/<run>`, a fresh folder per batch, because it deletes nothing. `run.sh` takes `DOCK=`, `MANY=<n>` (more plugins, to overflow) and `KEEP=1` (a second run on the same root and settings). The themed window now names the dat icon `0x06002C41`. The final shots are in `r2`, `r4` and `walk-*`; those `walk-*` from the first pass are good only for Classic, Lavender Dusk, Bloodmoon and Parchment, and `r2` has the other four.
 - **Traps for scripted runs:** the UI lock is saved per character on the server, so a script that clicks the lock toggles it every run and every other run's drags do nothing. `phase4/toggle-lock.txt` changes it once, and the character is back to locked as found. A long dock is clamped upward, so its handle is not at its saved top: with 36 windows it is at 76. The probe's `drag at` falls between two frames. An Appearance window with no saved placement came up centred, not at its markup's place; this is the older "seen, not investigated" note below, still not looked into.
