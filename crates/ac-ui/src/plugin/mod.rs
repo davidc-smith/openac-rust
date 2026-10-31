@@ -658,11 +658,13 @@ struct NoMarkupIcons;
 
 /// The look one sync shows: the palette on a themed window under a modern
 /// theme, and with the bundled font loaded the text font and a menu's
-/// caption font for the theme (none: the fonts stay as built).
+/// caption font for the theme (none: the fonts stay as built), and the
+/// weight a list's header takes under the theme.
 #[derive(Debug, Default)]
 struct Look {
     palette: Option<Palette>,
     fonts: Option<ThemeFonts>,
+    heading: Option<Arc<UiFont>>,
 }
 
 /// A theme's text font and a menu's caption font.
@@ -930,7 +932,16 @@ impl PluginPanelController {
                 b.font.clone_from(f);
             }
         }
-        let look = Look { palette, fonts };
+        let heading = self
+            .modern_fonts
+            .as_ref()
+            .filter(|_| p.is_some())
+            .map(|m| Arc::clone(&m.semibold));
+        let look = Look {
+            palette,
+            fonts,
+            heading,
+        };
         self.sync_set(ui, repeat::WINDOW_SET, view, Some(view), icons, &look);
         self.sync_repeats(ui, repeat::WINDOW_SET, view, icons, &look);
     }
@@ -1317,6 +1328,7 @@ impl PluginPanelController {
                         w.row_files = list_row_files(values, body);
                         w.drawn_files = (!w.row_files.is_empty()).then(|| drawn.clone());
                         w.palette = palette;
+                        w.header_font.clone_from(&look.heading);
                         if let Some(f) = text_font {
                             w.font.clone_from(f);
                         }

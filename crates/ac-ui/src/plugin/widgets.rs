@@ -847,6 +847,8 @@ pub struct MarkupList {
     pub selection_band: bool,
     /// The interface font.
     pub font: Option<Arc<UiFont>>,
+    /// The header's font under a theme (none: the interface font).
+    pub header_font: Option<Arc<UiFont>>,
     /// Fill.
     pub background: Color,
     /// Border.
@@ -947,6 +949,7 @@ impl MarkupList {
             row_height,
             selection_band: false,
             font,
+            header_font: None,
             background: Color::rgba(0.0, 0.0, 0.0, 0.92),
             border: Color::rgba(0.46, 0.37, 0.16, 1.0),
             text_color: Color::rgba(0.91, 0.87, 0.76, 1.0),
@@ -1362,7 +1365,7 @@ impl MarkupList {
             rc.fill(0.0, 0.0, w, super::list_ext::HEADER_HEIGHT, self.background);
             rc.fill(0.0, underline, w, 1.0, border);
         }
-        let font = self.font.clone();
+        let font = self.header_font.clone().or_else(|| self.font.clone());
         let Some(ext) = self.ext.as_mut() else {
             return;
         };

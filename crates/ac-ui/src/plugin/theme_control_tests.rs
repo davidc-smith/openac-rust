@@ -1,8 +1,16 @@
 //! Themed windows and controls draw the modern shapes and states.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use ac_plugin_ui::{DialogView, UiOwner};
+
 use super::style::tests::{corners, has_color, same_rgb};
 use super::style::{self};
-use super::theme_tests::{CLASSIC_TEXTURE, Gallery, SEMIBOLD_TEXTURE, find_named};
+use super::theme_tests::{
+    CLASSIC_TEXTURE, Gallery, REGULAR_TEXTURE, SEMIBOLD_TEXTURE, find_named, test_font,
+};
 use super::title_bar::{self, TitleBar};
 use super::*;
 use crate::draw::{DrawCmd, DrawList, TextureRef};
@@ -694,4 +702,151 @@ fn a_classic_colour_popup_has_no_shadow() {
     });
     assert!(!v.is_empty());
     assert!(!v.iter().any(|(_, _, c)| is_shadow(c) && c.a < 0.9));
+}
+
+fn dialog_box(palette: Option<Palette>) -> (Gallery, ElementId) {
+    let dialog = DialogView {
+        handle: 7,
+        owner: UiOwner::new("test.gallery", "Gallery"),
+        owner_panel: None,
+        title: "Delete".to_owned(),
+        message: "Delete it?".to_owned(),
+        buttons: vec!["OK".to_owned(), "Cancel".to_owned()],
+    };
+    let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
+    let (mut widget, w, h) =
+        dialog::PluginDialogBox::new(&dialog, Some(test_font(REGULAR_TEXTURE)), outbox);
+    widget.palette = palette;
+    widget.set_fonts(
+        Some(test_font(REGULAR_TEXTURE)),
+        Some(test_font(SEMIBOLD_TEXTURE)),
+    );
+    let mut g = Gallery::of(
+        r#"<panel x="0" y="0" w="10" h="10"></panel>"#,
+        PluginTheme::Classic,
+    );
+    let root = g.host.root.root();
+    let id = g
+        .host
+        .root
+        .add(root, Element::at(100.0, 100.0, w, h), widget);
+    g.tick();
+    (g, id)
+}
+
+fn tree_list(g: &mut Gallery, id: ElementId) -> DrawList {
+    let mut list = DrawList::default();
+    let mut rc =
+        crate::draw::RenderContext::new(&mut list, (1024.0, 768.0), &crate::draw::NoSprites);
+    g.host.root.draw_tree(id, &mut rc);
+    drop(rc);
+    list
+}
+
+#[test]
+fn a_themed_dialog_is_a_rounded_window_with_its_heading_in_the_title_weight() {
+    let (mut g, id) = dialog_box(Some(P));
+    let list = tree_list(&mut g, id);
+    let runs = text_runs(&list);
+    let headings: Vec<_> = runs
+        .iter()
+        .filter(|(t, _, _)| *t == TextureRef::Surface(SEMIBOLD_TEXTURE))
+        .collect();
+    assert_eq!(headings.len(), 1);
+    assert!(headings[0].2 < 100.0 + dialog::TITLE_HEIGHT);
+    assert!(runs.iter().any(|(t, _, top)| {
+        *t == TextureRef::Surface(REGULAR_TEXTURE) && *top >= 100.0 + dialog::TITLE_HEIGHT
+    }));
+    let v = corners(&list);
+    assert!(!corner_at(&v, 100.0, 100.0, P.border), "no square corner");
+    assert!(v.iter().any(|(x, _, _)| *x < 100.0), "a shadow");
+}
+
+#[test]
+fn a_themed_dialogs_close_button_is_the_title_bars_ghost_x_and_classics_a_caption() {
+    let (mut g, id) = dialog_box(Some(P));
+    let list = tree_list(&mut g, id);
+    let v = corners(&list);
+    assert!(has_color(&v, P.muted), "the X");
+    // Only the heading, the message and two button captions: no "x" caption.
+    assert_eq!(text_runs(&list).len(), 4);
+    let (mut g, id) = dialog_box(None);
+    assert!(
+        text_runs(&tree_list(&mut g, id)).len() > 4,
+        "outlined, with an x"
+    );
+}
+
+#[test]
+fn a_themed_dialogs_buttons_show_hover() {
+    let (mut g, id) = dialog_box(Some(P));
+    let ui = &g.host.root;
+    let e = ui.element(id).unwrap();
+    let (x, y) = (
+        (e.left + e.width / 2.0) as i32,
+        (e.top + e.height - dialog::PAD - dialog::BUTTON_HEIGHT / 2.0) as i32,
+    );
+    assert!(!has_color(
+        &corners(&tree_list(&mut g, id)),
+        style::hover(&P, P.field)
+    ));
+    g.host.mouse_move(x - 40, y);
+    g.tick();
+    assert!(has_color(
+        &corners(&tree_list(&mut g, id)),
+        style::hover(&P, P.field)
+    ));
+}
+
+#[test]
+fn new_fonts_lay_a_dialog_out_again_and_the_same_fonts_do_not() {
+    let dialog = DialogView {
+        handle: 7,
+        owner: UiOwner::new("test.gallery", "Gallery"),
+        owner_panel: None,
+        title: "A title long enough to set the width of the box itself, at any rate".to_owned(),
+        message: String::new(),
+        buttons: vec!["OK".to_owned()],
+    };
+    let outbox: PluginOutbox = Rc::new(RefCell::new(Vec::new()));
+    let classic = test_font(CLASSIC_TEXTURE);
+    let (mut b, w, _) = dialog::PluginDialogBox::new(&dialog, Some(classic.clone()), outbox);
+    assert_eq!(
+        b.set_fonts(Some(classic.clone()), Some(classic.clone())),
+        None
+    );
+    let wide = Arc::new(UiFont::clone(&test_font(SEMIBOLD_TEXTURE)));
+    let resized = b.set_fonts(Some(classic), Some(wide));
+    assert_eq!(
+        resized.map(|r| r.0),
+        Some(w),
+        "the same metrics, the same width"
+    );
+}
+
+#[test]
+fn a_themed_list_header_is_in_the_title_weight_and_classics_is_not() {
+    let mut g = control(
+        r#"<list name="l" x="0" y="0" w="200" h="80" header="true" selected="{Index}" onchange="{Choose}">
+             <column type="text" header="Name" items="{Items}"/></list>"#,
+    );
+    let header = super::list_ext::HEADER_HEIGHT;
+    let runs = text_runs(&element_list(&mut g, "l"));
+    let semibold = TextureRef::Surface(SEMIBOLD_TEXTURE);
+    assert!(
+        runs.iter()
+            .any(|(t, _, top)| *t == semibold && *top < header)
+    );
+    assert!(
+        !runs
+            .iter()
+            .any(|(t, _, top)| *t == semibold && *top >= header)
+    );
+    assert!(
+        runs.iter()
+            .any(|(t, _, top)| *t == TextureRef::Surface(REGULAR_TEXTURE) && *top >= header)
+    );
+    g.set_theme(PluginTheme::Classic);
+    let runs = text_runs(&element_list(&mut g, "l"));
+    assert!(!runs.iter().any(|(t, _, _)| *t == semibold));
 }

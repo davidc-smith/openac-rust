@@ -772,6 +772,7 @@ impl WindowUi {
             }
         }
         let font = self.content.font(DEFAULT_FONT_ID);
+        let modern = self.plugins.modern_fonts.clone();
         let outbox = Rc::clone(&self.plugins.outbox);
         let dialogs = self.facts.plugin_ui.dialogs.clone();
         let modals = self.facts.plugin_ui.modals.clone();
@@ -781,6 +782,7 @@ impl WindowUi {
             &frames,
             &palettes,
             font.as_ref(),
+            modern.as_ref(),
             &outbox,
         );
         self.plugins
