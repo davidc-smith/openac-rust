@@ -431,6 +431,127 @@ pub struct DockLayout {
     pub list_start: f32,
 }
 
+/// How a dock's slots and tile sit along its main axis and across it.
+#[derive(Debug, Clone, Copy)]
+struct SlotRun {
+    tile_start: f32,
+    cross_at: f32,
+    across: f32,
+    along: f32,
+    gap: f32,
+}
+
+impl SlotRun {
+    fn new(mode: DockMode, m: &Metrics, lead: f32) -> Self {
+        // A rail's tile is centred in the square a closed rail is, so its art
+        // stays where it was.
+        if mode.is_rail() {
+            Self {
+                tile_start: lead + (m.rail_thickness - m.rail_slot) / 2.0,
+                cross_at: 0.0,
+                across: m.rail_thickness,
+                along: m.rail_slot,
+                gap: RAIL_GAP,
+            }
+        } else {
+            Self {
+                tile_start: lead + m.padding,
+                cross_at: m.padding,
+                across: m.slot,
+                along: m.slot,
+                gap: m.gap,
+            }
+        }
+    }
+
+    /// Between slot `i` and the one before it: a gap within one plugin, a
+    /// divider between two.
+    fn spacing(&self, owners: &[&str], i: usize) -> f32 {
+        if owners[i] == owners[i - 1] {
+            self.gap
+        } else {
+            DIVIDER_BLOCK
+        }
+    }
+
+    /// Everything that is not the slot list: the grip, tile and divider before
+    /// it, and the divider, gear and padding after it.
+    fn around_list(&self, count: usize, padding: f32) -> f32 {
+        let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
+        self.tile_start + self.along + DIVIDER_BLOCK + divider + self.along + padding
+    }
+}
+
+/// The longest a dock may be to show `limit` slots wherever it has scrolled to:
+/// room for the longest run of that many in the list, and its arrows. It is
+/// counted in slots, so the same limit shows the same windows at every size,
+/// locked or not, on any screen. With no limit, or one the list fits in, it can
+/// be as long as it likes.
+#[must_use]
+pub fn length_for_slots(
+    mode: DockMode,
+    size: DockSize,
+    grip: bool,
+    owners: &[&str],
+    limit: Option<usize>,
+) -> f32 {
+    let count = owners.len();
+    let Some(limit) = limit.map(|l| l.max(1)).filter(|l| *l < count) else {
+        return f32::INFINITY;
+    };
+    let m = size.metrics();
+    let run = SlotRun::new(mode, &m, if grip { GRIP_LENGTH } else { 0.0 });
+    let longest = ((limit - 1)..count)
+        .map(|last| {
+            ((last + 1 - limit + 1)..=last)
+                .map(|i| run.spacing(owners, i))
+                .sum::<f32>()
+        })
+        .fold(0.0, f32::max);
+    run.around_list(count, m.padding) + 2.0 * ARROW_LENGTH + limit as f32 * run.along + longest
+}
+
+/// The limit that brings a dock nearest to `length` along its main axis, with
+/// `longest` the most it may be and `room` what the screen has left from where
+/// it starts: `None` when that is no limit at all.
+#[must_use]
+pub fn slots_for_length(
+    mode: DockMode,
+    size: DockSize,
+    grip: bool,
+    owners: &[&str],
+    longest: f32,
+    room: f32,
+    length: f32,
+) -> Option<usize> {
+    let count = owners.len();
+    let along = |limit: Option<usize>| {
+        let most = longest.min(length_for_slots(mode, size, grip, owners, limit));
+        let l = compute(mode, size, false, grip, owners, most, 0);
+        if mode.is_horizontal() {
+            l.width
+        } else {
+            l.height
+        }
+    };
+    let mut best = None;
+    let mut nearest = f32::INFINITY;
+    for limit in 1..=count {
+        let limit = (limit < count).then_some(limit);
+        let reached = along(limit);
+        if reached > room && best.is_some() {
+            break;
+        }
+        // The later of two the same keeps more slots, and so one as long as the
+        // list can be is no limit.
+        if (reached - length).abs() <= nearest {
+            nearest = (reached - length).abs();
+            best = limit.or(Some(count));
+        }
+    }
+    best.filter(|limit| *limit < count)
+}
+
 /// Places things by main and cross axis in a dock running either way.
 #[derive(Debug, Clone, Copy)]
 struct Axes {
@@ -471,12 +592,11 @@ pub fn compute(
     let axes = Axes {
         horizontal: mode.is_horizontal(),
     };
-    let rail = mode.is_rail();
     let count = owners.len();
     let mut slots = vec![None; count];
 
     let m = size.metrics();
-    let thickness = if rail {
+    let thickness = if mode.is_rail() {
         m.rail_thickness
     } else {
         m.floating_thickness()
@@ -503,32 +623,12 @@ pub fn compute(
         };
     }
 
-    // A rail's tile is centred in the square a closed rail is, so its art stays
-    // where it was.
-    let (tile_start, slot_cross_at, slot_across, slot_along, gap) = if rail {
-        (
-            lead + (m.rail_thickness - m.rail_slot) / 2.0,
-            0.0,
-            m.rail_thickness,
-            m.rail_slot,
-            RAIL_GAP,
-        )
-    } else {
-        (lead + m.padding, m.padding, m.slot, m.slot, m.gap)
-    };
-    let tile = axes.rect(tile_start, slot_cross_at, slot_along, slot_across);
-    let tile_end = tile_start + slot_along;
-    let spacing = |i: usize| {
-        if owners[i] == owners[i - 1] {
-            gap
-        } else {
-            DIVIDER_BLOCK
-        }
-    };
-    // Everything that is not the slot list: the grip, tile and divider before it,
-    // and the divider, gear and padding after it.
-    let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
-    let room = max_length - (tile_end + DIVIDER_BLOCK + divider + slot_along + m.padding);
+    let run = SlotRun::new(mode, &m, lead);
+    let (slot_cross_at, slot_across, slot_along) = (run.cross_at, run.across, run.along);
+    let tile = axes.rect(run.tile_start, slot_cross_at, slot_along, slot_across);
+    let tile_end = run.tile_start + slot_along;
+    let spacing = |i: usize| run.spacing(owners, i);
+    let room = max_length - run.around_list(count, m.padding);
 
     // How many slots fit back from the last one in `room`: at least one, however
     // little room there is.
@@ -1124,6 +1224,208 @@ mod tests {
         let rail = |y| dragged_mode(DockMode::Bottom, at, SCREEN, (310.0, y), 138.0);
         assert_eq!(rail(450.0), DockMode::Bottom);
         assert_eq!(rail(429.0), DockMode::FloatingHorizontal);
+    }
+
+    fn along(mode: DockMode, l: &DockLayout) -> f32 {
+        if mode.is_horizontal() {
+            l.width
+        } else {
+            l.height
+        }
+    }
+
+    /// The layout of a dock limited to `limit` slots, on a long screen.
+    fn limited(
+        mode: DockMode,
+        size: DockSize,
+        grip: bool,
+        owners: &[&str],
+        limit: usize,
+        first: usize,
+    ) -> DockLayout {
+        let most = length_for_slots(mode, size, grip, owners, Some(limit));
+        super::compute(mode, size, false, grip, owners, most, first)
+    }
+
+    /// Plugins with one window, two or several, so its pages differ in length.
+    const MIXED: [&str; 12] = ["a", "b", "c", "c", "d", "e", "e", "e", "f", "g", "h", "h"];
+
+    #[test]
+    fn a_limit_shows_that_many_slots_wherever_the_list_has_scrolled_to() {
+        for mode in DockMode::ALL {
+            for size in DockSize::ALL {
+                for grip in [false, true] {
+                    for limit in 1..MIXED.len() {
+                        let start = limited(mode, size, grip, &MIXED, limit, 0);
+                        for first in 0..=start.max_first {
+                            let l = limited(mode, size, grip, &MIXED, limit, first);
+                            assert!(l.visible >= limit, "{mode:?} {size:?} {limit} {first}");
+                            assert_eq!(along(mode, &l), along(mode, &start));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_limit_or_one_the_list_fits_in_changes_nothing() {
+        for mode in DockMode::ALL {
+            for limit in [None, Some(12), Some(50)] {
+                assert_eq!(
+                    length_for_slots(mode, DockSize::Default, true, &MIXED, limit),
+                    f32::INFINITY
+                );
+            }
+        }
+        assert_eq!(
+            length_for_slots(DockMode::Left, DockSize::Default, false, &[], Some(3)),
+            f32::INFINITY
+        );
+    }
+
+    #[test]
+    fn the_smallest_limit_is_one_slot_with_its_arrows() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let l = limited(DockMode::Floating, DockSize::Default, false, &owners, 1, 0);
+        // 6 + 36 + 9 + 16 + 36 + 16 + 9 + 36 + 6
+        assert_eq!(l.height, 170.0);
+        assert_eq!(l.visible, 1);
+        let zero = length_for_slots(
+            DockMode::Floating,
+            DockSize::Default,
+            false,
+            &owners,
+            Some(0),
+        );
+        assert_eq!(zero, 170.0);
+    }
+
+    #[test]
+    fn a_limit_is_turned_on_its_side_with_the_dock() {
+        let v = limited(DockMode::Left, DockSize::Default, false, &MIXED, 4, 2);
+        let h = limited(DockMode::Top, DockSize::Default, false, &MIXED, 4, 2);
+        assert_eq!((h.width, h.height), (v.height, v.width));
+        assert_eq!(
+            h.slots,
+            v.slots.iter().map(|s| s.map(turned)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_length_gives_back_the_limit_that_reaches_it() {
+        for mode in DockMode::ALL {
+            for size in DockSize::ALL {
+                for grip in [false, true] {
+                    let most = |limit: Option<usize>| {
+                        let l = length_for_slots(mode, size, grip, &MIXED, limit);
+                        let l = super::compute(mode, size, false, grip, &MIXED, l, 0);
+                        along(mode, &l)
+                    };
+                    let back = |length| {
+                        slots_for_length(
+                            mode,
+                            size,
+                            grip,
+                            &MIXED,
+                            f32::INFINITY,
+                            f32::INFINITY,
+                            length,
+                        )
+                    };
+                    for limit in 1..MIXED.len() {
+                        let reached = most(Some(limit));
+                        let found = back(reached);
+                        // A limit with the same length as the one above it shows
+                        // the same slots: a tight run leaves no room for its arrows.
+                        assert_eq!(
+                            found.map_or(most(None), |f| most(Some(f))),
+                            reached,
+                            "{mode:?} {size:?} {limit}"
+                        );
+                    }
+                    assert_eq!(back(most(None)), None, "{mode:?} {size:?}");
+                    assert_eq!(back(5000.0), None, "{mode:?} {size:?}");
+                    assert_eq!(back(0.0), Some(1), "{mode:?} {size:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_length_goes_to_the_nearer_limit() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let back = |length| {
+            slots_for_length(
+                DockMode::Floating,
+                DockSize::Default,
+                false,
+                &owners,
+                f32::INFINITY,
+                f32::INFINITY,
+                length,
+            )
+        };
+        // Each slot and its divider is 45, from 170 for one.
+        assert_eq!(back(170.0), Some(1));
+        assert_eq!(back(192.0), Some(1));
+        assert_eq!(back(193.0), Some(2));
+        assert_eq!(back(215.0), Some(2));
+    }
+
+    #[test]
+    fn a_limit_never_reaches_past_the_screen() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let back = |length, room| {
+            slots_for_length(
+                DockMode::Floating,
+                DockSize::Default,
+                false,
+                &owners,
+                f32::INFINITY,
+                room,
+                length,
+            )
+        };
+        // 300 is 260 for three slots and 305 for four.
+        assert_eq!(back(304.0, 300.0), Some(3));
+        // With no room even for one, one is what it shows.
+        assert_eq!(back(90.0, 80.0), Some(1));
+    }
+
+    #[test]
+    fn a_dock_dragged_as_long_as_the_screen_lets_it_has_no_limit() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        assert_eq!(
+            slots_for_length(
+                DockMode::Floating,
+                DockSize::Default,
+                false,
+                &owners,
+                400.0,
+                400.0,
+                400.0,
+            ),
+            None
+        );
+        // But not when it is where it is that stops it: on its own it would grow
+        // on up the screen. 395 is six slots.
+        assert_eq!(
+            slots_for_length(
+                DockMode::Floating,
+                DockSize::Default,
+                false,
+                &owners,
+                700.0,
+                400.0,
+                400.0,
+            ),
+            Some(6)
+        );
     }
 
     #[test]

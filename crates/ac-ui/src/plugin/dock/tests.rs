@@ -924,6 +924,84 @@ fn hovering_the_tile_labels_it_and_the_grip_has_no_label() {
     assert!(rig.label().is_none());
 }
 
+// ── The limit on its length ─────────────────────────────────────────────
+
+impl Rig {
+    /// `count` plugins with a window each, in `mode`, locked.
+    fn limited(mode: DockMode, count: usize, limit: Option<usize>) -> Self {
+        let mut rig = Self::new(SCREEN.1, PluginTheme::Moss);
+        rig.add_plugins(count);
+        rig.sync_plain();
+        rig.with(|c, ui| {
+            c.set_mode(ui, mode);
+            c.set_slot_limit(ui, limit);
+        });
+        rig.tick();
+        rig
+    }
+
+    fn shown_slots(&mut self) -> usize {
+        self.layout().slots.iter().flatten().count()
+    }
+}
+
+#[test]
+fn a_limit_shows_that_many_slots_and_scrolls_the_rest_at_every_size() {
+    for size in DockSize::ALL {
+        let mut rig = Rig::limited(DockMode::Floating, 8, Some(3));
+        rig.with(|c, ui| c.set_size(ui, size));
+        rig.tick();
+        assert_eq!(rig.shown_slots(), 3, "{size:?}");
+        assert!(rig.layout().forward.is_some(), "{size:?}");
+        assert_eq!(rig.layout().max_first, 5, "{size:?}");
+    }
+}
+
+#[test]
+fn a_limit_the_list_fits_in_lays_it_out_as_with_none() {
+    let mut rig = Rig::limited(DockMode::Floating, 4, None);
+    let plain = rig.layout();
+    rig.with(|c, ui| c.set_slot_limit(ui, Some(4)));
+    assert_eq!(rig.layout(), plain);
+    rig.with(|c, ui| c.set_slot_limit(ui, Some(9)));
+    assert_eq!(rig.layout(), plain);
+}
+
+#[test]
+fn a_limit_keeps_its_slots_through_the_lock_and_gives_way_to_a_small_screen() {
+    let mut rig = Rig::limited(DockMode::Left, 12, Some(5));
+    assert_eq!(rig.shown_slots(), 5);
+    rig.host.root.set_ui_locked(false);
+    rig.tick();
+    assert_eq!(rig.shown_slots(), 5);
+    rig.host.root.set_size(SCREEN.0, 250.0);
+    rig.tick();
+    assert!(rig.shown_slots() < 5);
+    assert!(rig.size().1 <= 250.0);
+    rig.host.root.set_size(SCREEN.0, SCREEN.1);
+    rig.tick();
+    assert_eq!(rig.shown_slots(), 5);
+}
+
+#[test]
+fn a_limit_keeps_the_place_in_the_list_when_it_can_and_the_closed_dock_is_still_the_tile() {
+    let mut rig = Rig::limited(DockMode::Floating, 12, Some(4));
+    rig.with(|c, ui| c.scroll_to(ui, 3));
+    assert_eq!(rig.layout().first, 3);
+    rig.with(|c, ui| c.set_slot_limit(ui, Some(6)));
+    assert_eq!(rig.layout().first, 3);
+    rig.with(|c, ui| c.set_slot_limit(ui, None));
+    let unlimited = rig.layout().first;
+    assert!(unlimited <= 3);
+
+    let closed = rig.layout().tile;
+    rig.with(|c, ui| c.set_slot_limit(ui, Some(2)));
+    rig.click(closed);
+    rig.tick();
+    assert!(rig.closed());
+    assert_eq!(rig.size().1, rig.size().0);
+}
+
 // ── The grip ────────────────────────────────────────────────────────────
 
 impl Rig {
