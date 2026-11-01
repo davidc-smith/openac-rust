@@ -467,7 +467,7 @@ impl Rgba {
 }
 
 /// What comes before a literal's colour for light themes.
-const LIGHT_COLOR_MARKER: &str = "|light:";
+pub(crate) const LIGHT_COLOR_MARKER: &str = "|light:";
 
 /// A colour attribute's literal: `#AARRGGBB` (exactly nine characters),
 /// the fallback after `|` of a `theme:token|#AARRGGBB` value, the first
