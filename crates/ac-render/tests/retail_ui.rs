@@ -108,6 +108,7 @@ fn scene() -> Scene {
         public_weenie_bitfield: 0,
         radar_behavior: Some(4),
         radar_blip_color: 0,
+        monarch_id: 0,
     };
     scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
         player_guid: Some(PLAYER),

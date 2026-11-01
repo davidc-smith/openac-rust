@@ -147,6 +147,8 @@ jobs:
             -c about.toml -o staging/common/THIRD-PARTY-LICENSES.html about.hbs
           test -s staging/common/THIRD-PARTY-LICENSES.html
           cp assets/fonts/NotoSans/OFL.txt staging/common/licenses/NotoSans-OFL.txt
+          # The Linux window decorations' bundled Cantarell (compiled into both Linux programs).
+          cp assets/fonts/Cantarell/OFL.txt staging/common/licenses/Cantarell-OFL.txt
           # The launcher's egui fonts: their license texts ship in the crate.
           fonts_manifest=$(cargo metadata --locked --format-version 1 \
             | jq -r '.packages[] | select(.name == "epaint_default_fonts") | .manifest_path' \

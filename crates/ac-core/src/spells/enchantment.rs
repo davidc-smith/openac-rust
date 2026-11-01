@@ -1,5 +1,5 @@
 //! Active enchantments and how they combine: the stacking rule that keeps
-//! the strongest record of each spell category, the steps a stat query
+//! the strongest         .filter_map(EnchantStep::of); of each spell category, the steps a stat query
 //! takes on its value, the death penalty (vitae), and the "in effect" list
 //! the effects window shows.
 
@@ -314,9 +314,10 @@ pub fn candidate_wins(
 /// The modifier the active enchantments give one stat. `enchantments` are
 /// in list order: the multiplicative list, the additive list and the
 /// vitae, each from its head. With `include_vitae`, each vitae record
-/// multiplies first; then the records in effect for the stat
-/// ([`cull_enchantments`]) take their steps ([`EnchantStep::of`]) in the
-/// order they ended up in.
+/// takes its step first; then the records in effect for the stat
+/// ([`cull_enchantments`]) take theirs in the order they ended up in. Every
+/// step is the record's own ([`EnchantStep::of`]), vitae included, so a
+/// vitae record with neither operation bit changes nothing.
 #[must_use]
 pub fn get_mod<'a>(
     enchantments: impl IntoIterator<Item = &'a ActiveEnchantmentRecord>,
@@ -333,8 +334,7 @@ pub fn get_mod<'a>(
     };
     let vitae = in_list(BUCKET_VITAE)
         .filter(|_| include_vitae)
-        .filter_map(|record| record.stat_mod_value)
-        .map(EnchantStep::Multiply);
+        .filter_map(EnchantStep::of);
     let in_effect = cull_enchantments(
         in_list(BUCKET_MULTIPLICATIVE),
         in_list(BUCKET_ADDITIVE),
@@ -477,7 +477,7 @@ mod tests {
     fn vitae(spell_id: u32, layer: u32, key: u32, value: f32) -> ActiveEnchantmentRecord {
         ActiveEnchantmentRecord {
             duration: -1.0,
-            ..record(spell_id, layer, 4, 0, key, value)
+            ..record(spell_id, layer, 4, MULTIPLY, key, value)
         }
     }
 
@@ -557,6 +557,15 @@ mod tests {
             [EnchantStep::Multiply(0.85), EnchantStep::Add(10.0)]
         );
         assert!(close(m.apply(100.0), 95.0));
+    }
+
+    #[test]
+    fn vitae_with_neither_operation_bit_does_nothing() {
+        let bare = ActiveEnchantmentRecord {
+            duration: -1.0,
+            ..record(41, 2, BUCKET_VITAE, 0, 1, 0.85)
+        };
+        assert_eq!(vital_mod(&[bare], 1), VitalMod::IDENTITY);
     }
 
     #[test]

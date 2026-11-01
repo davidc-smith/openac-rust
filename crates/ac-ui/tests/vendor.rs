@@ -618,6 +618,97 @@ fn a_category_filters_the_row_and_selects_its_first_listing() {
     assert_eq!(l.scroll.scroll_y(), 0);
 }
 
+/// A shop with more armor than the row shows at once.
+fn long_armor_row() -> Vec<VendorShopItem> {
+    (0..20)
+        .map(|i| listing(0x6000_0300 + i, "Buckler", ItemType::ARMOR, 900 + i, 40))
+        .collect()
+}
+
+fn item_row_scroll(v: &Vendor) -> i32 {
+    v.host
+        .root
+        .widget::<ItemList>(v.ids[&vendor::ITEM_LIST_ID])
+        .unwrap()
+        .scroll
+        .scroll_y()
+}
+
+fn scroll_item_row_to(v: &mut Vendor, x: i32) {
+    let l = v.ids[&vendor::ITEM_LIST_ID];
+    v.host
+        .root
+        .widget_mut::<ItemList>(l)
+        .unwrap()
+        .scroll
+        .set_scroll_y(x);
+}
+
+// The shop sent again after a purchase keeps the row scrolled where it was,
+// so listings far along it can be bought one after another.
+#[test]
+fn a_refresh_keeps_the_rows_sideways_scroll() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        long_armor_row(),
+    )));
+    scroll_item_row_to(&mut v, 160);
+    assert_eq!(item_row_scroll(&v), 160);
+    v.event(Some(&shop(
+        VendorViewReason::Refreshed,
+        profile(1.5),
+        long_armor_row(),
+    )));
+    assert_eq!(item_row_scroll(&v), 160);
+}
+
+// A refill with fewer listings keeps as much of the scroll as still fits.
+#[test]
+fn a_refresh_with_a_shorter_row_clamps_the_kept_scroll() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        long_armor_row(),
+    )));
+    scroll_item_row_to(&mut v, 320);
+    assert_eq!(item_row_scroll(&v), 320);
+    let mut shorter = long_armor_row();
+    shorter.truncate(14);
+    v.event(Some(&shop(
+        VendorViewReason::Refreshed,
+        profile(1.5),
+        shorter,
+    )));
+    let l = v
+        .host
+        .root
+        .widget::<ItemList>(v.ids[&vendor::ITEM_LIST_ID])
+        .unwrap();
+    assert!(l.scroll.max_scroll() > 0 && l.scroll.max_scroll() < 320);
+    assert_eq!(item_row_scroll(&v), l.scroll.max_scroll());
+}
+
+// Another shop opening starts its row at the beginning.
+#[test]
+fn a_newly_opened_shop_starts_the_row_at_the_beginning() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        long_armor_row(),
+    )));
+    scroll_item_row_to(&mut v, 160);
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        long_armor_row(),
+    )));
+    assert_eq!(item_row_scroll(&v), 0);
+}
+
 // ── The selection's name and cost ───────────────────────────────────────
 
 fn stacked_arrows() -> VendorShopItem {
@@ -849,6 +940,36 @@ fn the_tabs_switch_pages() {
     v.click(vendor::ITEMS_TAB_ID);
     assert!(v.visible(vendor::ITEMS_PAGE_ID));
     assert_eq!(v.occupied(vendor::ITEM_LIST_ID), [ARMOR]);
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Items);
+}
+
+// The shop sent again after a sale leaves the window on the page the player
+// was on; only a newly opened shop picks its page.
+#[test]
+fn a_refresh_keeps_the_open_tab() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        armor_and_food(),
+    )));
+    v.click(vendor::SELLING_TAB_ID);
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Selling);
+    v.event(Some(&shop(
+        VendorViewReason::Refreshed,
+        profile(1.5),
+        armor_and_food(),
+    )));
+    assert_eq!(v.with(|c, _| c.tab()), VendorTab::Selling);
+    assert!(v.visible(vendor::SELLING_PAGE_ID));
+    assert!(!v.visible(vendor::ITEMS_PAGE_ID));
+    // The listing row is still refilled behind the open page.
+    assert_eq!(v.occupied(vendor::ITEM_LIST_ID), [ARMOR]);
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        profile(1.5),
+        armor_and_food(),
+    )));
     assert_eq!(v.with(|c, _| c.tab()), VendorTab::Items);
 }
 

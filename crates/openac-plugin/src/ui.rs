@@ -763,9 +763,10 @@ pub struct TriangleLayer {
 }
 
 impl TriangleLayer {
-    /// Replaces the layer's triangles (the first 65,536 are kept). Meant
-    /// for sets of up to a few thousand replaced a few times a second, not
-    /// every frame.
+    /// Replaces the layer's triangles. False, and the layer keeps what it
+    /// had, when this set and the plugin's other layers' triangles come to
+    /// more than 65,536. Meant for sets of up to a few thousand replaced a
+    /// few times a second, not every frame.
     pub fn set_triangles(self, host: &mut Host<'_>, triangles: &[WorldTriangle]) -> bool {
         let request = TriangleSet {
             layer: self.id,
@@ -1229,9 +1230,9 @@ impl Host<'_> {
         }
     }
 
-    /// A new, empty world-marker layer (API 1.3). Its markers go when the
-    /// character leaves the world, and the layer stays usable for the next
-    /// stay.
+    /// A new, empty world-marker layer (API 1.3). Its markers over objects
+    /// go when the character leaves the world (those at fixed positions
+    /// stay), and the layer stays usable for the next stay.
     pub fn create_marker_layer(&mut self) -> MarkerLayer {
         let reply = ui_call!(self, UiMarkersCreate, ui_markers_create, &[]);
         MarkerLayer {

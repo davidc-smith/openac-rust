@@ -1131,14 +1131,11 @@ impl WindowUi {
                         (WorldIconAnchor::Object(id), IconProbeKey::Object(id), head)
                     }
                     MarkerAnchor::Position { point, .. } => {
+                        let key = icon_probe_key(point);
                         let Some(point) = map_point_in_frame(world, point) else {
                             continue;
                         };
-                        (
-                            WorldIconAnchor::Point(point),
-                            IconProbeKey::Entry(entry),
-                            Some(point),
-                        )
+                        (WorldIconAnchor::Point(point), key, Some(point))
                     }
                 };
                 if icon.icon.hidden_by_world {
@@ -1311,6 +1308,16 @@ impl WindowUi {
     }
 }
 
+/// What the occlusion answer of an icon at a fixed position is kept under:
+/// the position itself, which is what the probe tests.
+fn icon_probe_key(point: MapPoint) -> IconProbeKey {
+    IconProbeKey::Position([
+        point.east_west.to_bits(),
+        point.north_south.to_bits(),
+        point.elevation.to_bits(),
+    ])
+}
+
 /// `0xRRGGBBAA` as red, green, blue and alpha in 0..1.
 fn rgba_unit(rgba: u32) -> [f32; 4] {
     rgba.to_be_bytes().map(|channel| f32::from(channel) / 255.0)
@@ -1466,6 +1473,30 @@ mod tests {
             .map(|w| client_window_name(*w))
             .collect();
         assert_eq!(names.len(), ClientWindow::ALL.len());
+    }
+
+    fn at(east_west: f64) -> MapPoint {
+        MapPoint {
+            east_west,
+            north_south: 12.5,
+            elevation: 0.3,
+        }
+    }
+
+    /// An icon at a fixed position keeps its probe's answer under its
+    /// position, not its place in the merged list: when a plugin replaces
+    /// its icons, a new icon elsewhere at the same place in the list has no
+    /// answer yet (so it stays hidden until its own probe answers) rather
+    /// than the old icon's "in sight", which would flash it through a wall.
+    /// (Keyed by place in the list, the two keys below were equal.)
+    #[test]
+    fn a_new_icon_elsewhere_does_not_inherit_an_old_icons_probe_answer() {
+        let old = icon_probe_key(at(40.0));
+        let new = icon_probe_key(at(41.0));
+        assert_ne!(old, new);
+        // The same position is the same anchor with the same answer,
+        // wherever its icon sits in the list.
+        assert_eq!(icon_probe_key(at(40.0)), old);
     }
 
     #[test]

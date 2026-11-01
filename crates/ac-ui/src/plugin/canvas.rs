@@ -58,7 +58,7 @@ impl CanvasWidget {
                 modifiers,
                 wheel_delta: wheel,
             },
-            place: self.place,
+            place: Some(self.place),
         });
     }
 

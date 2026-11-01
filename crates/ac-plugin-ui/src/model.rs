@@ -454,8 +454,9 @@ pub enum PointerKind {
 }
 
 /// Where the window had a canvas when the pointer did something on it: the
-/// window follows the plugin's moves a moment late.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// window follows the plugin's moves a moment late. There is no default: a
+/// place the window did not measure is `None`, never a zero-sized layer.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CanvasPlace {
     /// Its top-left corner on the layer.
     pub origin: (f32, f32),
@@ -616,7 +617,7 @@ pub struct WorldIcon {
     pub anchor: MarkerAnchor,
     /// The plugin's own image.
     pub image: u32,
-    /// The side of the square the image is fitted into, pixels.
+    /// The side of the square the image is fitted into, interface points.
     pub size: f32,
     /// Multiplied into the image, `0xRRGGBBAA`.
     pub tint_rgba: u32,
@@ -1037,8 +1038,10 @@ pub enum UiInput {
         canvas: u32,
         /// What happened.
         event: PointerEvent,
-        /// Where the window had the canvas when it happened.
-        place: CanvasPlace,
+        /// Where the window had the canvas when it happened; `None` when
+        /// that is not known (input a test or script sends), and the event
+        /// is heard as sent.
+        place: Option<CanvasPlace>,
     },
     /// Which client windows the window has, and which are shown (bit sets
     /// by [`ClientWindow::bit`]); sent at attach and whenever they change.
@@ -1106,8 +1109,8 @@ pub enum UiEvent {
         canvas: u32,
         /// What happened.
         event: PointerEvent,
-        /// Where the window had the canvas when it happened.
-        place: CanvasPlace,
+        /// Where the window had the canvas when it happened, if known.
+        place: Option<CanvasPlace>,
     },
     /// One of its hotkeys was pressed (its own id).
     Hotkey(String),

@@ -28,6 +28,8 @@ fn typed(
     let operation = match bucket {
         1 => MULTIPLICATIVE,
         2 => ADDITIVE,
+        // Vitae records carry the multiplicative bit.
+        4 => MULTIPLICATIVE,
         _ => 0,
     };
     ActiveEnchantmentRecord {
@@ -279,6 +281,29 @@ fn health_rounds_half_endurance_and_includes_gear() {
     s.on_vital_update(7, 0, 10, 0, 40);
     assert_eq!(s.get_base_max_approx(VitalKind::Health), Some(40));
     assert_eq!(s.get_max_approx(VitalKind::Health), Some(40));
+}
+
+#[test]
+fn health_adds_two_per_enlightenment_before_vitae() {
+    let mut b = book(&[1]);
+    b.on_enchantment_added(vitae(1, 0.95));
+    let mut s = LocalPlayerState::new(Some(b));
+    s.on_int_properties(BTreeMap::from([(PropertyInt::ENLIGHTENMENT.0, 4)]));
+    s.on_vital_update(1, 100, 0, 0, 103);
+    s.on_vital_update(3, 100, 0, 0, 95);
+    // (100 + 4 x 2) x 0.95 = 102.6, shown as 103; stamina has no such term.
+    assert_eq!(s.get_base_max_approx(VitalKind::Health), Some(108));
+    assert_eq!(s.get_max_approx(VitalKind::Health), Some(103));
+    assert_eq!(s.get_max_approx(VitalKind::Stamina), Some(95));
+}
+
+#[test]
+fn gear_health_update_mid_session_moves_the_maximum() {
+    let mut s = LocalPlayerState::default();
+    s.on_int_properties(BTreeMap::new());
+    s.on_vital_update(1, 100, 0, 0, 100);
+    s.on_int_property_update(PropertyInt::GEAR_MAX_HEALTH.0, 12);
+    assert_eq!(s.get_max_approx(VitalKind::Health), Some(112));
 }
 
 #[test]
@@ -624,6 +649,7 @@ fn spells_scale_first_and_add_second() {
 fn vitae_scales_the_augmented_skill() {
     let mut b = book(&[1]);
     b.on_enchantment_added(ActiveEnchantmentRecord {
+        stat_mod_type: Some(MULTIPLICATIVE),
         stat_mod_value: Some(0.95),
         bucket: 4,
         ..ActiveEnchantmentRecord::new(1, 1, 0.0, 0)

@@ -152,6 +152,7 @@ pub fn radar_scene(
             cell_id: position.cell_id,
             item_type: p.radar.item_type,
             pwd_bitfield: p.radar.public_weenie_bitfield,
+            monarch_id: p.radar.monarch_id,
         })
     });
     let objects = scene
@@ -167,6 +168,7 @@ pub fn radar_scene(
                 item_type: o.radar.item_type,
                 pwd_bitfield: o.radar.public_weenie_bitfield,
                 color_override: o.radar.radar_blip_color,
+                monarch_id: o.radar.monarch_id,
                 relationship: fellowship_relationship(fellowship, o.guid),
             })
         })
@@ -1916,6 +1918,72 @@ mod tests {
             fellowship_relationship(None, 0x5000_0001),
             RelationshipTraits::default()
         );
+    }
+
+    #[test]
+    fn the_radar_scene_squares_the_players_allegiance() {
+        // The session's monarchs reach the radar: an object that shares
+        // the player's monarch is drawn as a box; one with another monarch
+        // keeps the plus.
+        use ac_runtime::session::PresentationEvent;
+        use ac_runtime::world::{ObjectKey, ObjectView, RadarFacts, WorldSnapshot};
+        const MONARCH: u32 = 0x5000_0777;
+        let view = |local_id, guid, y, monarch_id| ObjectView {
+            key: ObjectKey {
+                local_id,
+                incarnation: 1,
+            },
+            guid,
+            name: None,
+            setup_id: None,
+            position: Some(Position {
+                cell_id: 0xA9B4_0031,
+                origin: Vector3 {
+                    x: 100.0,
+                    y,
+                    z: 0.0,
+                },
+                orientation: Quaternion::IDENTITY,
+            }),
+            step_blend: None,
+            parent: None,
+            placement: None,
+            rest_placement: 0,
+            scale: None,
+            translucency: None,
+            state: 0,
+            velocity: None,
+            model: ac_proto::ModelData::default(),
+            motion_table_id: None,
+            sound_table_id: None,
+            radar: RadarFacts {
+                public_weenie_bitfield: 0x8,
+                radar_behavior: Some(4),
+                monarch_id,
+                ..RadarFacts::default()
+            },
+            motion: None,
+            effects: ac_runtime::world::EffectFacts::default(),
+        };
+        let mut scene = Scene::default();
+        scene.apply(PresentationEvent::Snapshot(WorldSnapshot {
+            player_guid: Some(0x5000_0001),
+            objects: vec![
+                view(1, 0x5000_0001, 100.0, MONARCH),
+                view(2, 0x5000_0002, 110.0, MONARCH),
+                view(3, 0x5000_0003, 90.0, 0x5000_0778),
+            ],
+        }));
+        let snapshot = ac_ui::panels::radar::build_snapshot(&radar_scene(&scene, None, None));
+        let shape = |guid| {
+            snapshot
+                .blips
+                .iter()
+                .find(|b| b.object_id == guid)
+                .map(|b| b.shape)
+        };
+        assert_eq!(shape(0x5000_0002), Some(ac_ui::radar::BlipShape::Box));
+        assert_eq!(shape(0x5000_0003), Some(ac_ui::radar::BlipShape::Plus));
     }
 
     #[test]

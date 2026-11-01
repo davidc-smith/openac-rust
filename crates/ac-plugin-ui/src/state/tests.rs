@@ -521,7 +521,7 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
     ui.input(UiInput::Pointer {
         canvas: map,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     assert!(ui.take_events().is_empty());
     assert!(ui.listen_canvas("edwards.tank", map, true));
@@ -529,12 +529,12 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
     ui.input(UiInput::Pointer {
         canvas: map,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     ui.input(UiInput::Pointer {
         canvas: quiet,
         event,
-        place: CanvasPlace::default(),
+        place: None,
     });
     assert_eq!(
         ui.take_events(),
@@ -543,7 +543,7 @@ fn pointer_input_reaches_a_listening_canvas_that_opted_in() {
             UiEvent::Pointer {
                 canvas: map,
                 event,
-                place: CanvasPlace::default(),
+                place: None,
             }
         )]
     );
@@ -586,7 +586,7 @@ fn a_held_pointer_is_measured_from_where_the_plugin_last_put_the_canvas() {
         let event = ui.pointer_as_placed_now(UiEvent::Pointer {
             canvas: hud,
             event,
-            place,
+            place: Some(place),
         });
         let UiEvent::Pointer { event, .. } = event else {
             panic!("still a pointer event");
@@ -608,6 +608,45 @@ fn a_held_pointer_is_measured_from_where_the_plugin_last_put_the_canvas() {
     assert_eq!(heard(&ui, PointerKind::Up), (5.0, 15.0));
     // A press stays as the player saw it.
     assert_eq!(heard(&ui, PointerKind::Down), (15.0, 25.0));
+}
+
+#[test]
+fn a_held_pointer_whose_place_is_not_known_is_heard_as_sent() {
+    // Input that no window measured (a test, a script) carries no place: a
+    // canvas anchored away from the top-left is not moved by a made-up
+    // zero-sized layer.
+    let mut ui = PluginUi::new();
+    let owner = UiOwner::new("edwards.tank", "Tank");
+    let hud = ui
+        .register_canvas(
+            &owner,
+            CanvasDescriptor {
+                canvas_id: "hud".into(),
+                width: 100,
+                height: 50,
+                anchor: CanvasAnchor::BottomRight,
+                offset: (-20.0, -30.0),
+                start_visible: true,
+                accepts_pointer_input: true,
+            },
+        )
+        .unwrap();
+    for kind in [PointerKind::Down, PointerKind::Move, PointerKind::Up] {
+        let event = PointerEvent {
+            kind,
+            x: 15.0,
+            y: 25.0,
+            button: 1,
+            modifiers: 2,
+            wheel_delta: 0,
+        };
+        let sent = UiEvent::Pointer {
+            canvas: hud,
+            event,
+            place: None,
+        };
+        assert_eq!(ui.pointer_as_placed_now(sent.clone()), sent, "{kind:?}");
+    }
 }
 
 #[test]
@@ -725,20 +764,56 @@ fn triangle_layers_belong_to_their_plugin_and_go_with_it() {
         ui.take_changes().last(),
         Some(UiChange::Triangles(t)) if t.len() == 4
     ));
-    assert!(ui.set_triangles(
-        "edwards.tank",
-        a,
-        vec![triangle; MAXIMUM_TRIANGLES_PER_LAYER + 10]
-    ));
-    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES_PER_LAYER + 1);
-    assert!(ui.snapshot().iter().any(
-        |c| matches!(c, UiChange::Triangles(t) if t.len() == MAXIMUM_TRIANGLES_PER_LAYER + 1)
-    ));
+    assert!(ui.set_triangles("edwards.tank", a, vec![triangle; MAXIMUM_TRIANGLES]));
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES + 1);
+    assert!(
+        ui.snapshot()
+            .iter()
+            .any(|c| matches!(c, UiChange::Triangles(t) if t.len() == MAXIMUM_TRIANGLES + 1))
+    );
     ui.release("edwards.tank");
     assert_eq!(ui.merged_triangles().len(), 1);
     assert!(!ui.remove_triangle_layer("edwards.tank", b));
     assert!(ui.remove_triangle_layer("another.plugin", b));
     assert!(ui.merged_triangles().is_empty());
+}
+
+/// A plugin holds at most `MAXIMUM_TRIANGLES` across its layers, as it
+/// does icons and shapes: a set that would take it over is refused and the
+/// layer keeps what it had, so more layers buy no more triangles. Other
+/// plugins count apart.
+#[test]
+fn a_plugin_holds_a_limited_number_of_triangles_across_its_layers() {
+    let mut ui = PluginUi::new();
+    let corner = crate::model::MapPoint::default();
+    let triangle = WorldTriangle {
+        corners: [corner; 3],
+        colors_rgba: [0xFF00_0080; 3],
+    };
+    let half = MAXIMUM_TRIANGLES / 2;
+    let a = ui.create_triangle_layer("edwards.tank");
+    let b = ui.create_triangle_layer("edwards.tank");
+    let c = ui.create_triangle_layer("edwards.tank");
+    let other = ui.create_triangle_layer("another.plugin");
+    assert!(ui.set_triangles("edwards.tank", a, vec![triangle; half]));
+    assert!(ui.set_triangles("edwards.tank", b, vec![triangle; half]));
+    drop(ui.take_changes());
+    assert!(!ui.set_triangles("edwards.tank", c, vec![triangle]));
+    assert!(ui.take_changes().is_empty());
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES);
+    // Replacing a layer counts its new set, not the one it replaces.
+    assert!(ui.set_triangles("edwards.tank", b, vec![triangle; half - 1]));
+    assert!(ui.set_triangles("edwards.tank", c, vec![triangle]));
+    assert!(!ui.set_triangles("edwards.tank", a, vec![triangle; half + 1]));
+    assert_eq!(ui.merged_triangles().len(), MAXIMUM_TRIANGLES);
+    // One set over the limit is refused whole.
+    assert!(!ui.set_triangles(
+        "another.plugin",
+        other,
+        vec![triangle; MAXIMUM_TRIANGLES + 1]
+    ));
+    assert!(ui.set_triangles("another.plugin", other, vec![triangle; MAXIMUM_TRIANGLES]));
+    assert_eq!(ui.merged_triangles().len(), 2 * MAXIMUM_TRIANGLES);
 }
 
 fn icon(anchor: crate::model::MarkerAnchor) -> crate::model::WorldIcon {
@@ -992,7 +1067,7 @@ fn the_shape_cap_counts_a_plugins_other_layers_apart_from_its_icons() {
             .iter()
             .any(|c| matches!(c, UiChange::Shapes(s) if s.len() == MAXIMUM_SHAPES))
     );
-    ui.clear_markers();
+    ui.clear_object_markers();
     assert!(ui.merged_shapes().is_empty());
     assert!(ui.set_shapes("edwards.tank", a, vec![one]));
     assert!(ui.remove_marker_layer("edwards.tank", a));
@@ -1006,16 +1081,79 @@ fn clearing_markers_empties_the_layers_and_they_stay_usable() {
     let layer = ui.create_marker_layer("edwards.tank");
     assert!(ui.set_icons("edwards.tank", layer, vec![icon(MarkerAnchor::Object(5))]));
     drop(ui.take_changes());
-    ui.clear_markers();
+    ui.clear_object_markers();
     assert!(ui.merged_icons().is_empty());
     assert!(matches!(
         ui.take_changes().as_slice(),
         [UiChange::Icons(i), UiChange::Shapes(s)] if i.is_empty() && s.is_empty()
     ));
-    ui.clear_markers();
+    ui.clear_object_markers();
     assert!(ui.take_changes().is_empty());
     assert!(ui.set_icons("edwards.tank", layer, vec![icon(MarkerAnchor::Object(5))]));
     assert_eq!(ui.merged_icons().len(), 1);
+}
+
+/// Leaving the world takes down what hangs on an object, whose id means
+/// nothing on the next stay, and keeps what sits at a fixed position, which
+/// is the same place in the world after a relog: markers at positions stay,
+/// as lines and triangles do.
+#[test]
+fn clearing_object_markers_keeps_markers_lines_and_triangles_at_positions() {
+    use crate::model::{MapPoint, MarkerAnchor};
+    let mut ui = PluginUi::new();
+    let here = MarkerAnchor::Position {
+        point: MapPoint {
+            east_west: 40.0,
+            north_south: 12.5,
+            elevation: 0.3,
+        },
+        is_outdoor: true,
+    };
+    let layer = ui.create_marker_layer("edwards.tank");
+    assert!(ui.set_icons(
+        "edwards.tank",
+        layer,
+        vec![icon(MarkerAnchor::Object(5)), icon(here)]
+    ));
+    let on_object = ring(2.0, 0.5);
+    let at_position = crate::model::GroundShape {
+        anchor: here,
+        ..on_object
+    };
+    assert!(ui.set_shapes("edwards.tank", layer, vec![on_object, at_position]));
+    let lines = ui.create_line_layer("edwards.tank");
+    let line = WorldLine {
+        start: MapPoint::default(),
+        end: MapPoint::default(),
+        color_rgb: 0xFF0000,
+        follow_terrain: false,
+        width_metres: 0.25,
+    };
+    assert!(ui.set_lines("edwards.tank", lines, vec![line]));
+    let triangles = ui.create_triangle_layer("edwards.tank");
+    let triangle = WorldTriangle {
+        corners: [MapPoint::default(); 3],
+        colors_rgba: [0xFF00_0080; 3],
+    };
+    assert!(ui.set_triangles("edwards.tank", triangles, vec![triangle]));
+    drop(ui.take_changes());
+
+    ui.clear_object_markers();
+    let icons = ui.merged_icons();
+    assert_eq!(icons.len(), 1);
+    assert_eq!(icons[0].icon.anchor, here);
+    let shapes = ui.merged_shapes();
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes[0].anchor, here);
+    assert_eq!(ui.merged_lines().len(), 1);
+    assert_eq!(ui.merged_triangles().len(), 1);
+    assert!(matches!(
+        ui.take_changes().as_slice(),
+        [UiChange::Icons(i), UiChange::Shapes(s)] if i.len() == 1 && s.len() == 1
+    ));
+    // Nothing on an object is left, so a second clear changes nothing.
+    ui.clear_object_markers();
+    assert!(ui.take_changes().is_empty());
 }
 
 /// Leaving the world takes every plugin's labels down; the plugins stay and

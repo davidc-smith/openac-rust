@@ -213,10 +213,14 @@ impl FakeHost {
     /// What a window would report (a control used, a window opened or
     /// closed, pointer input, the client windows): the plugin hears its UI
     /// events at once, as the client hands them over before its next tick.
+    /// A held pointer's move or release that carries the window's place is
+    /// measured from where the plugin last put the canvas, as the client
+    /// measures it (`ac_plugin_ui::PluginUi::pointer_as_placed_now`).
     pub fn ui_input<P: Plugin>(&mut self, plugin: &mut P, input: ac_plugin_ui::UiInput) {
         self.ui.input(input);
         for (owner, event) in self.ui.take_events() {
             if owner == self.plugin_id {
+                let event = self.ui.pointer_as_placed_now(event);
                 let event = ac_plugin_abi::ui_host::event(event);
                 self.send(plugin, &event);
             }
@@ -817,5 +821,77 @@ mod tests {
         );
         cache.clear();
         assert_eq!(cache.revision(), None);
+    }
+
+    /// Records the pointer events it hears on its canvas.
+    #[derive(Default)]
+    struct PointerRecorder {
+        canvas: Option<crate::ui::Canvas>,
+        heard: Vec<(u8, f32, f32)>,
+    }
+
+    impl Plugin for PointerRecorder {
+        fn enable(&mut self, host: &mut Host<'_>, _: &StartInfo) -> Result<(), String> {
+            let canvas = host.register_canvas(&crate::ui::CanvasSpec {
+                anchor: crate::ui::Anchor::TopRight,
+                offset: (-20.0, 30.0),
+                accepts_pointer_input: true,
+                ..crate::ui::CanvasSpec::new("hud", 100, 50)
+            })?;
+            canvas.listen_pointer(host, true);
+            self.canvas = Some(canvas);
+            Ok(())
+        }
+        fn on_event(&mut self, _host: &mut Host<'_>, event: Event) {
+            if let Event::Ui(crate::ui::UiEvent::Pointer(p)) = event {
+                self.heard.push((p.kind, p.x, p.y));
+            }
+        }
+    }
+
+    /// A plugin's own test hears a held pointer as the client hands it
+    /// over: a move that carries the window's place is measured from where
+    /// the plugin last put the canvas; a move with no place is heard as
+    /// sent.
+    #[test]
+    fn a_held_pointer_is_heard_as_the_client_measures_it() {
+        use ac_plugin_ui::{CanvasPlace, PointerEvent, PointerKind, UiInput};
+        let mut host = FakeHost::new("test.pointer");
+        let mut plugin = PointerRecorder::default();
+        host.enable(&mut plugin).unwrap();
+        let canvas = plugin.canvas.unwrap();
+        // The window has it at (680, 30) on an 800 x 600 layer.
+        let place = Some(CanvasPlace {
+            origin: (680.0, 30.0),
+            layer: (800.0, 600.0),
+        });
+        let pointer = |kind, place| UiInput::Pointer {
+            canvas: canvas.id(),
+            event: PointerEvent {
+                kind,
+                x: 15.0,
+                y: 25.0,
+                button: 1,
+                modifiers: 2,
+                wheel_delta: 0,
+            },
+            place,
+        };
+        host.ui_input(&mut plugin, pointer(PointerKind::Down, place));
+        // The plugin moves its canvas 10 right and 10 down; the window has
+        // not caught up.
+        host.with_host(|h| canvas.set_offset(h, -10.0, 40.0));
+        host.ui_input(&mut plugin, pointer(PointerKind::Move, place));
+        host.ui_input(&mut plugin, pointer(PointerKind::Move, None));
+        host.ui_input(&mut plugin, pointer(PointerKind::Up, place));
+        assert_eq!(
+            plugin.heard,
+            vec![
+                (0, 15.0, 25.0),
+                (2, 5.0, 15.0),
+                (2, 15.0, 25.0),
+                (1, 5.0, 15.0)
+            ]
+        );
     }
 }

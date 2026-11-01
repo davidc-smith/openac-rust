@@ -247,6 +247,14 @@ pub struct RelationshipTraits {
     pub player_is_pk_lite: bool,
 }
 
+/// True when an object whose allegiance's monarch is `object_monarch` is in
+/// the allegiance of a player whose monarch is `player_monarch`: it has a
+/// monarch, and it is the player's (0: no monarch).
+#[must_use]
+pub fn is_allegiance_member(object_monarch: u32, player_monarch: u32) -> bool {
+    object_monarch != 0 && object_monarch == player_monarch
+}
+
 /// The shape of an object's blip.
 #[must_use]
 pub fn blip_shape(target: &ObjectTraits, relationship: &RelationshipTraits) -> BlipShape {
@@ -689,6 +697,39 @@ mod tests {
             y: -12.26,
         };
         assert_eq!(south_west.combined_text(), "12.3S,0.0W");
+    }
+
+    #[test]
+    fn allegiance_membership_is_a_shared_nonzero_monarch() {
+        assert!(is_allegiance_member(0x5000_0777, 0x5000_0777));
+        assert!(!is_allegiance_member(0x5000_0777, 0x5000_0778));
+        assert!(!is_allegiance_member(0x5000_0777, 0));
+        // Neither in an allegiance: not "the same allegiance".
+        assert!(!is_allegiance_member(0, 0));
+    }
+
+    #[test]
+    fn an_allegiance_member_is_a_box_below_the_fellowship() {
+        let player = ObjectTraits {
+            is_player: true,
+            is_player_killer: true,
+            ..ObjectTraits::default()
+        };
+        let member = RelationshipTraits {
+            is_allegiance_member: true,
+            player_is_player_killer: true,
+            ..RelationshipTraits::default()
+        };
+        // Before the player-killer threat.
+        assert_eq!(blip_shape(&player, &member), BlipShape::Box);
+        let fellow_member = RelationshipTraits {
+            is_fellowship_member: true,
+            ..member
+        };
+        assert_eq!(
+            blip_shape(&player, &fellow_member),
+            BlipShape::InvertedTriangle
+        );
     }
 
     #[test]

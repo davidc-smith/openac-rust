@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "ac-plugin-abi"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ac-plugin-ui",
 ]
 
 [[package]]
 name = "ac-plugin-ui"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "roxmltree",
 ]
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "openac-plugin"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ac-plugin-abi",
  "ac-plugin-ui",
