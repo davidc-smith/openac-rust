@@ -1859,6 +1859,31 @@ impl AppraisalController {
         self.show_page(ui, AppraisalPage::Spell);
     }
 
+    /// The player's items changed: the shown spell's description and
+    /// formula again, from `components` as they stand now (the text keeps
+    /// its scroll; title, lines and icon stay). Nothing unless the spell
+    /// page shows `spell`.
+    pub fn refresh_spell_components(
+        &mut self,
+        ui: &mut UiRoot,
+        spell: &SpellMetadata,
+        components: &[SpellExamineComponent],
+    ) {
+        if self.page != AppraisalPage::Spell
+            || self.spell_id == 0
+            || spell.spell_id != self.spell_id
+        {
+            return;
+        }
+        let display = spell_display_text(spell, components);
+        if let Some(w) = ui.widget_mut::<Text>(self.spell_display) {
+            let color = w.default_color;
+            w.set_content(crate::widgets::TextContent::Wrapped(display));
+            w.default_color = color;
+        }
+        self.rebuild_formula(ui, components);
+    }
+
     /// The formula row: one cell per component, centred on the authored
     /// cell.
     fn rebuild_formula(&mut self, ui: &mut UiRoot, components: &[SpellExamineComponent]) {

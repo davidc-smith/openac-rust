@@ -1141,6 +1141,55 @@ fn examining_a_spell_shows_the_spell_page() {
     assert_eq!((f.left, f.width), (180.0, 40.0));
 }
 
+// OpenAC `AppraisalUiController.RefreshSpellComponents`: an item change
+// while the spell page shows lists the components again and rebuilds the
+// formula, leaving the rest of the page; on another page, or for another
+// spell, nothing changes.
+#[test]
+fn an_item_change_refreshes_the_examined_spell_s_components() {
+    let mut w = window();
+    let m = examined_spell();
+    let component = |name: &str, icon: u32, owned| SpellExamineComponent {
+        name: name.into(),
+        icon: Some(TextureRef::Runtime(icon)),
+        owned,
+    };
+    let before = [
+        component("Lead Scarab", 1, true),
+        component("Malar Herb", 2, false),
+    ];
+    w.with(|c, ui| c.examine_spell(ui, &m, None, 200, &before));
+    let after = [
+        component("Lead Scarab", 1, true),
+        component("Prismatic Taper", 3, true),
+    ];
+    let mut other = m.clone();
+    other.spell_id = 43;
+    w.with(|c, ui| c.refresh_spell_components(ui, &other, &after));
+    assert!(
+        w.lines(appraisal::SPELL_DISPLAY_TEXT_ID)
+            .iter()
+            .any(|l| l.contains("Malar Herb")),
+        "another spell's refresh leaves the page"
+    );
+    w.with(|c, ui| c.refresh_spell_components(ui, &m, &after));
+    let display = w.lines(appraisal::SPELL_DISPLAY_TEXT_ID).join("\n");
+    assert!(display.contains("Prismatic Taper"), "{display}");
+    assert!(!display.contains("Malar Herb"), "{display}");
+    assert_eq!(w.lines(appraisal::TITLE_ID), ["Incantation of Test"]);
+    assert_eq!(w.with(|c, _| c.formula_cells().len()), 2);
+    // On the item page the spell's components are not shown again.
+    w.apply(parsed(|a| a.guid = 0x5000_0001), &NoNames);
+    assert_eq!(w.with(|c, _| c.page()), AppraisalPage::Item);
+    w.with(|c, ui| c.refresh_spell_components(ui, &m, &before));
+    assert_eq!(w.with(|c, _| c.page()), AppraisalPage::Item);
+    assert!(
+        !w.lines(appraisal::SPELL_DISPLAY_TEXT_ID)
+            .join("\n")
+            .contains("Malar Herb")
+    );
+}
+
 #[test]
 fn the_spell_lines_follow_retail_rules() {
     let mut m = examined_spell();
