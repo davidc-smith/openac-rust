@@ -1223,6 +1223,12 @@ impl WindowUi {
         list
     }
 
+    /// How many framebuffer pixels one UI unit covers.
+    pub fn set_pixels_per_unit(&mut self, pixels: f32) {
+        self.host.root.set_pixels_per_unit(pixels);
+        self.follow_display_density(pixels);
+    }
+
     /// The textures the UI names: dat surfaces and composed icons.
     #[must_use]
     pub fn surfaces(&self) -> DatSurfaces<'_> {

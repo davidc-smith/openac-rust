@@ -416,7 +416,7 @@ fn hello_runs_its_verb_chat_tick_and_window_events() {
     assert_eq!(
         api.messages("openac.hello"),
         vec![
-            "hello openac.hello enabled on API 1.3 (client 0.1.0), window attached: false",
+            "hello openac.hello enabled on API 1.4 (client 0.1.0), window attached: false",
             "plugin loaded: openac.hello (Hello)",
         ]
     );
@@ -625,13 +625,13 @@ fn a_listed_plugin_that_is_missing_or_unreadable_is_reported() {
 fn an_api_version_this_client_does_not_support_is_refused() {
     let root = Root::new("api");
     let folder = install(&root.0, "probe");
-    edit_manifest(&folder, r#""apiVersion": "1.3""#, r#""apiVersion": "1.4""#);
+    edit_manifest(&folder, r#""apiVersion": "1.4""#, r#""apiVersion": "1.5""#);
     let mut api = FakeSession::default();
     let mut plugins = session(&[&root.0], None);
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.probe").unwrap(),
-        "plugin 'openac.probe' declares apiVersion 1.4, but this build supports 1.0..1.3"
+        "plugin 'openac.probe' declares apiVersion 1.5, but this build supports 1.0..1.4"
     );
 }
 
@@ -680,7 +680,7 @@ fn a_status_notice_reaches_only_plugins_built_for_api_1_1() {
 
     let root = Root::new("status-1-0");
     let folder = install(&root.0, "hello");
-    edit_manifest(&folder, r#""apiVersion": "1.3""#, r#""apiVersion": "1.0""#);
+    edit_manifest(&folder, r#""apiVersion": "1.4""#, r#""apiVersion": "1.0""#);
     let wasm = folder.join("hello.wasm");
     let layout = section_at(ApiVersion::new(1, 0));
     let built = std::fs::read(&wasm).unwrap();
@@ -794,7 +794,7 @@ fn load_probe_built_for(tag: &str, version: &str, layout: &[u8]) -> (Vec<String>
     let folder = install(&root.0, "probe");
     edit_manifest(
         &folder,
-        r#""apiVersion": "1.3""#,
+        r#""apiVersion": "1.4""#,
         &format!(r#""apiVersion": "{version}""#),
     );
     let wasm = folder.join("probe.wasm");
@@ -836,6 +836,15 @@ fn a_plugin_built_for_api_1_1_loads_with_the_records_it_knew() {
 fn a_plugin_built_for_api_1_2_still_loads() {
     let v1_2 = ApiVersion::new(1, 2);
     let (loaded, error) = load_probe_built_for("probe-1-2", "1.2", &section_at(v1_2));
+    assert_eq!((loaded, error), (vec!["openac.probe".to_owned()], None));
+}
+
+/// API 1.4 gave the theme's kind more variants: `probe` as an API 1.3 SDK
+/// built it still loads.
+#[test]
+fn a_plugin_built_for_api_1_3_still_loads() {
+    let v1_3 = ApiVersion::new(1, 3);
+    let (loaded, error) = load_probe_built_for("probe-1-3", "1.3", &section_at(v1_3));
     assert_eq!((loaded, error), (vec!["openac.probe".to_owned()], None));
 }
 
@@ -923,6 +932,161 @@ fn an_object_change_reaches_each_plugin_in_its_api_versions_encoding() {
             assert_eq!(read.current.map(|o| o.hook_item_types), Some(0));
         }
     }
+}
+
+/// A theme change reaches each plugin as its API version knows it, through
+/// a real module: under Ember, `rawbytes` built for API 1.2 or 1.3 is handed
+/// a kind it knows with Ember's name and colours, and reads the same from the
+/// `ui_theme` import; built for this API it hears Ember itself.
+#[test]
+fn a_new_theme_reaches_each_plugin_as_its_api_version_knows_it() {
+    use ac_plugin_ui::{ThemeKind, UiInput};
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-theme-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert_eq!(plugins.loaded_ids(), ["openac.rawbytes"], "{version}");
+        api.ui.input(UiInput::Theme(ThemeKind::Ember));
+        plugins.pump(0.0, None, &mut api);
+        plugins.shutdown(&mut api);
+        let info = ac_plugin::abi::ui_host::theme_info(ThemeKind::Ember);
+        let event = Event::ThemeChanged(info.clone());
+        let handed = raw_handed(&api, "event");
+        assert_eq!(handed, [event.to_bytes_at(version)], "{version}");
+        let Ok(Event::ThemeChanged(read)) = Event::from_bytes_at(&handed[0], version) else {
+            panic!("{version}: a theme change");
+        };
+        let kind = if version == API_CURRENT {
+            ac_plugin::abi::ui::ThemeKind::Ember
+        } else {
+            ac_plugin::abi::ui::ThemeKind::Moss
+        };
+        assert_eq!(read.kind, kind, "{version}");
+        assert_eq!(read.display_name, "Ember", "{version}");
+        assert_eq!(read.palette, info.palette, "{version}");
+        assert!(
+            api.logs.iter().any(|(id, _, line)| id == "openac.rawbytes"
+                && *line == format!("ui_theme {kind:?} Ember")),
+            "{version}: {:?}",
+            api.logs
+        );
+    }
+}
+
+/// A plugin built for API 1.2 or 1.3 paints text without a font field, through a
+/// real module, and the client reads it in the interface font; one built for
+/// this API sends the field.
+#[test]
+fn an_older_plugins_canvas_text_reads_without_a_font() {
+    use ac_plugin_ui::PaintCmd;
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-paint-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert!(plugins.handle_line(&format!("/rawpaint {version}"), &mut api));
+        plugins.pump(0.0, None, &mut api);
+        assert_eq!(
+            plugins.loaded_ids(),
+            ["openac.rawbytes"],
+            "{version}: {:?}",
+            api.logs
+        );
+        let canvas = api.ui.canvases().next().unwrap().clone();
+        let [PaintCmd::Text { text, font, .. }] = canvas.paint.as_slice() else {
+            panic!("{version}: {:?}", canvas.paint);
+        };
+        assert_eq!((text.as_str(), *font), ("raw", 0), "{version}");
+        plugins.shutdown(&mut api);
+    }
+}
+
+/// A plugin built for API 1.2 or 1.3 registers windows without a dock icon of
+/// their own, through a real module, and the client reads the rest as sent; one
+/// built for this API sends the path.
+#[test]
+fn an_older_plugins_window_reads_without_an_icon_file() {
+    for version in [ApiVersion::new(1, 2), ApiVersion::new(1, 3), API_CURRENT] {
+        let root = Root::new(&format!("raw-panel-{version}"));
+        install_built_for(&root.0, "rawbytes", version);
+        let mut api = FakeSession::default();
+        let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+        plugins.start(&mut api);
+        assert!(plugins.handle_line(&format!("/rawpanel {version}"), &mut api));
+        plugins.pump(0.0, None, &mut api);
+        assert_eq!(
+            plugins.loaded_ids(),
+            ["openac.rawbytes"],
+            "{version}: {:?}",
+            api.logs
+        );
+        let files: Vec<(String, Option<String>)> = api
+            .ui
+            .panels()
+            .map(|p| (p.descriptor.title.clone(), p.descriptor.icon_file.clone()))
+            .collect();
+        let file = |path: &str| (version == API_CURRENT).then(|| path.to_owned());
+        assert_eq!(
+            files,
+            [
+                ("Raw".to_owned(), file("raw.png")),
+                ("Raw Typed".to_owned(), file("rawtyped.png")),
+            ],
+            "{version}"
+        );
+        plugins.shutdown(&mut api);
+    }
+}
+
+/// `uidemo` holds fonts through a real module: the bundled font in both
+/// weights, a CFF OpenType file of its own, a file that is no font refused
+/// without stopping it; a font held twice takes two releases; its text names
+/// them; they go when it unloads.
+#[test]
+fn a_plugin_holds_fonts_through_a_real_module() {
+    use ac_plugin_ui::PaintCmd;
+    let root = Root::new("fonts");
+    install(&root.0, "uidemo");
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], Some(&["openac.uidemo"]));
+    plugins.start(&mut api);
+    assert_eq!(plugins.loaded_ids(), ["openac.uidemo"]);
+    let line = api
+        .logs
+        .iter()
+        .map(|(_, _, line)| line.as_str())
+        .find(|line| line.starts_with("uidemo fonts:"))
+        .expect("it reported its fonts");
+    assert!(
+        line.starts_with(
+            "uidemo fonts: heading=true body=true own=true bad=false released=true count=3 own_size="
+        ),
+        "{line}"
+    );
+    assert_eq!(api.ui.font_count("openac.uidemo"), 3);
+    plugins.pump(0.0, None, &mut api);
+    assert!(
+        api.logs
+            .iter()
+            .any(|(_, _, line)| line.contains("font 'fonts/bad.ttf'")),
+        "the bad file is reported: {:?}",
+        api.logs
+    );
+    let canvas = api.ui.canvases().next().unwrap().clone();
+    let fonts: Vec<u32> = canvas
+        .paint
+        .iter()
+        .filter_map(|c| match c {
+            PaintCmd::Text { font, .. } if *font != 0 => Some(*font),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fonts.len(), 3, "{:?}", canvas.paint);
+    plugins.shutdown(&mut api);
+    assert_eq!(api.ui.font_count("openac.uidemo"), 0);
 }
 
 /// A loot classifier question reaches the classifier's plugin exactly as
@@ -1052,7 +1216,7 @@ fn an_import_this_client_does_not_have_is_named_at_load() {
     plugins.start(&mut api);
     assert_eq!(
         failed(&plugins.take_reports(), "openac.future").unwrap(),
-        "imports openac.teleport_anywhere, which API 1.3 of this client does not have (the plugin was \
+        "imports openac.teleport_anywhere, which API 1.4 of this client does not have (the plugin was \
          built for API 1.0)"
     );
 }
@@ -1560,9 +1724,101 @@ fn import_census() {
     assert_eq!(census, expected);
 }
 
-/// A plugin installed with an `icon.png` has it on its windows' shelf
+/// A window's typed bindings answer through a real module: a checkbox whose
+/// state is unset draws from `OptionalBool` and sends a `BoolAction`, and a
+/// colour picker sends its pick back as a `UintAction`.
+#[test]
+fn typed_bool_and_uint_actions_reach_a_real_plugin() {
+    use ac_plugin_ui::{ActionValue, UiInput, UiValue};
+    let root = Root::new("typed-actions");
+    install(&root.0, "uidemo");
+    let mut api = FakeSession::default();
+    let mut plugins = session(&[&root.0], Some(&["openac.uidemo"]));
+    plugins.start(&mut api);
+    assert!(plugins.handle_line("/uidemo typed", &mut api));
+    let panel = api
+        .ui
+        .panels()
+        .find(|p| p.descriptor.window_id == "typed")
+        .expect("the typed window")
+        .clone();
+    assert_eq!(
+        panel.values.get("Maybe"),
+        Some(&UiValue::OptionalBool(None))
+    );
+    assert_eq!(
+        panel.values.get("Colour"),
+        Some(&UiValue::Uint(0xFF33_6699))
+    );
+    for (handler, value) in [
+        ("SetFlag", ActionValue::Bool(true)),
+        ("SetFlag", ActionValue::Bool(false)),
+        ("SetColour", ActionValue::Uint(0x8011_2233)),
+    ] {
+        api.ui.input(UiInput::Action {
+            panel: panel.id,
+            handler: handler.to_owned(),
+            value,
+        });
+    }
+    plugins.pump(0.0, None, &mut api);
+    let heard: Vec<&str> = api
+        .logs
+        .iter()
+        .map(|(_, _, line)| line.as_str())
+        .filter(|line| line.starts_with("uidemo typed Set"))
+        .collect();
+    assert_eq!(
+        heard,
+        [
+            "uidemo typed SetFlag Some(true)",
+            "uidemo typed SetFlag Some(false)",
+            "uidemo typed SetColour Some(\"80112233\")",
+        ]
+    );
+    plugins.shutdown(&mut api);
+}
+
+/// A window's own dock icon, through a real module: a file in the plugin's
+/// folder reaches the window's view, with its light version; one that breaks the
+/// rules leaves the slot to the next icon and says why; both go with the plugin.
+#[test]
+fn a_windows_own_icon_file_reaches_its_view() {
+    let pixels = vec![200_u8; 64 * 64 * 4];
+    let good = ac_bits::png::encode_rgba(64, 64, &pixels);
+    let wrong_size = ac_bits::png::encode_rgba(8, 8, &[200_u8; 8 * 8 * 4]);
+    let root = Root::new("window-icon");
+    let folder = install(&root.0, "rawbytes");
+    std::fs::write(folder.join("raw.png"), &good).unwrap();
+    std::fs::write(folder.join("raw.light.png"), &good).unwrap();
+    std::fs::write(folder.join("rawtyped.png"), &wrong_size).unwrap();
+    let mut api = FakeSession::default();
+    api.ui.set_file_images(Some(std::sync::Arc::new(
+        ac_plugin::file_image::PluginFileImageLoader::new(),
+    )));
+    let mut plugins = session(&[&root.0], Some(&["openac.rawbytes"]));
+    plugins.start(&mut api);
+    assert!(plugins.handle_line(&format!("/rawpanel {API_CURRENT}"), &mut api));
+    plugins.pump(0.0, None, &mut api);
+    let panels: Vec<_> = api.ui.panels().cloned().collect();
+    let icon = panels[0].window_icon.as_ref().expect("the file was read");
+    assert_eq!(icon.named.as_ref().map(|i| i.width), Some(64));
+    assert!(icon.light.is_some() && icon.dark.is_none());
+    assert_eq!(panels[1].window_icon, None);
+    assert!(
+        api.logs
+            .iter()
+            .any(|(_, _, line)| line.contains("plugin icon 'openac.rawbytes/rawtyped.png' ignored")),
+        "{:?}",
+        api.logs
+    );
+    plugins.shutdown(&mut api);
+    assert_eq!(api.ui.panels().count(), 0);
+}
+
+/// A plugin installed with an `icon.png` has it on its windows. dock
 /// buttons (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`); one without,
-/// or with a file the icon rules refuse, has none and the shelf falls back
+/// or with a file the icon rules refuse, has none and the dock falls back
 /// to the descriptor's icon. Unloading forgets it.
 #[test]
 fn a_plugins_icon_png_reaches_its_windows() {
@@ -2112,7 +2368,7 @@ fn a_new_copy_this_client_cannot_run_leaves_the_running_copy_alone() {
             "requires openAC 9.0.0 or newer (this is 0.1.20)",
         ),
         (
-            r#""apiVersion": "1.3""#,
+            r#""apiVersion": "1.4""#,
             r#""apiVersion": "99.0""#,
             "needs plugin API version 99.0",
         ),

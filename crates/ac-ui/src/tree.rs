@@ -485,6 +485,13 @@ pub trait Widget: AsAny + fmt::Debug {
         false
     }
 
+    /// The element stays hovered while the pointer rests on it, past the
+    /// time a tooltip shows (it draws its own label, which is not a timed
+    /// tooltip).
+    fn hover_outlasts_tooltip(&self) -> bool {
+        false
+    }
+
     /// The element can start a drag.
     fn is_drag_source(&self, element: &Element) -> bool {
         element

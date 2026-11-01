@@ -2805,6 +2805,7 @@ impl AttachedWindow {
             let (fps, multiplier) = world.level_of_detail();
             ui.set_level_of_detail(fps, multiplier);
         }
+        ui.set_pixels_per_unit(scale.pixels_per_unit());
         let list = ui.frame(Instant::now(), size);
         // Drawn in framebuffer pixels, on the whole-pixel grid.
         let batch = UiBatch::build_scaled(&list, scale.pixels_per_unit());

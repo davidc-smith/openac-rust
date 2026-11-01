@@ -192,7 +192,7 @@ impl FakeHost {
             Some(WorldQuery::ObjectIcon(object)) => self.object_icons.get(&object).copied(),
             None => None,
         };
-        let reply = match handle(import, bytes, &owner, &mut self.ui, answer) {
+        let reply = match handle(import, bytes, &owner, &mut self.ui, answer, API_CURRENT) {
             Ok(reply) => reply,
             Err(error) => panic!("{error}"),
         };
@@ -461,6 +461,11 @@ impl Transport for FakeHost {
             | Import::UiCanvasAvailable
             | Import::UiCanvasRemove
             | Import::UiMeasureText
+            | Import::UiFontBundled
+            | Import::UiFontLoad
+            | Import::UiFontMeasure
+            | Import::UiFontRelease
+            | Import::UiFontCount
             | Import::UiTheme
             | Import::UiImageClientArt
             | Import::UiImageSpellIcon
@@ -529,7 +534,7 @@ mod tests {
         host.enable(&mut plugin).unwrap();
         assert_eq!(
             host.logs,
-            vec![(LogLevel::Info, "test.recorder on API 1.3".to_owned())]
+            vec![(LogLevel::Info, "test.recorder on API 1.4".to_owned())]
         );
         host.tick(&mut plugin);
         assert!(host.type_line(&mut plugin, " @R waves "));

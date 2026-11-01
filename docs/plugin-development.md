@@ -84,10 +84,67 @@ does not stop it being heard). A record field a new minor version adds comes
 at the end of its record, and a plugin built for an older version is sent the
 record without it (API 1.2 added `hook_item_types` to the inventory and
 world-object records: the item-type bits saying what a house hook takes, 0
-for anything that is not a hook). Everything the client offers
+for anything that is not a hook). API 1.4 added five plugin themes: a plugin
+built for an older version is told `ThemeKind::Moss` under any of them, with
+the theme's real name and colours. Everything the client offers
 goes through `Host`: game state, items, chat, movement and navigation, trade
 and vendors, storage, network, peers, and UI. `cargo doc -p openac-plugin
 --open` shows the whole surface with its documentation.
+
+**Controls show what the plugin stores.** A checkbox, colour swatch or other bound
+control does not change itself. A click sends the value it asks for to the
+`onchange` handler, and the control shows whatever its binding says afterwards.
+Store the value and set the binding, or the control looks as if nothing happened.
+
+**Drawing like a themed window.** A canvas paints its own pixels, so it reads
+the theme with `host.theme()`, hears each change as `Event::ThemeChanged`, and
+repaints. For the same look, use the theme's colours, the bundled font's
+SemiBold weight for titles (`host.font_bundled(14.0, FontWeight::SemiBold)`), and
+the sizes in `openac_plugin::ui::theme_metrics`: `WINDOW_RADIUS`, `CONTROL_RADIUS`,
+`HEADER_HEIGHT`, `SWITCH_WIDTH`, `SWITCH_HEIGHT` and `SWITCH_KNOB`.
+
+**Light and dark.** Parchment is a light theme. A literal colour can name a
+second colour for light themes, `color="#FFB6F0AE|light:#FF2E7D32"`, and a file
+icon can have `icons/sword.light.png` and `icons/sword.dark.png` beside
+`icons/sword.png`. The light one is used under a light theme in a
+`theme="plugin"` window. The first colour and the dark file are used everywhere
+else, Classic included, and a version that is missing or cannot be used falls
+back to the named file. For a bound colour, read `host.theme().is_light()`.
+
+**Dock icons.** A window's slot on the plugin dock shows the first of these it
+can use: the window's own file (`PanelSpec::icon_file("icons/combat.png")`, API
+1.4), the plugin's `icon.png`, the render surface from `PanelSpec::icon`, and
+two letters from `icon_text` or the title. The window's file follows the rules
+of `icon.png`: a PNG by name and by signature, exactly 64 x 64 pixels, at most
+64 KiB and not animated, with a path relative to the plugin's folder that stays
+inside it. It keeps its own colours and dims while the window is closed. It may
+have `icons/combat.light.png` and `icons/combat.dark.png` beside it, each under
+the same rules: the dock draws the one for its theme when it is there. A file
+that cannot be used is logged once, and the next icon is drawn.
+
+**Fonts.** Canvas text is drawn in the interface font unless a plugin names
+one of its own (API 1.4). `host.font_bundled(16.0, FontWeight::SemiBold)` gives
+the client's Noto Sans in the weight themed window titles use, and
+`host.font_load("Inter-Bold.ttf", include_bytes!("../fonts/Inter-Bold.ttf"), 22.0, &[])`
+prepares a TrueType or OpenType font the plugin ships. Each size of each font is
+its own `Font`, carrying its `pixel_size`, `line_height` and `ascent`, and sizes
+are prepared to the nearest quarter pixel. Draw with `painter.text_in(font, ...)`
+and measure with `host.font_measure(font, text)`, which includes kerning. Asking
+twice for the same font holds it twice, and `host.font_release(font)` lets go of
+one hold.
+
+Name characters beyond the default set in the last argument, so an icon font
+can name the private-use area. A plugin may hold 16 fonts, sized from 6 to 64
+pixels, each of at most 2048 characters. Its own fonts may take 16 MB, counting
+the files and their atlases; a size of the bundled font counts its atlas only
+while no other plugin holds it too. A file's name may be 256 bytes and a request
+may list 256 ranges. A font whose outlines take too much work to draw is refused.
+A request past a limit, or a file that is not a usable font, answers
+`Font::NONE`. A refusal is logged once, and each kind of refusal for at most
+eight requests, then once to say the rest are left out; text in such a font, or a
+released one, draws nothing.
+Preparing a font takes some milliseconds, so ask up front rather than on every
+paint.
 
 **UI.** Windows are written in OpenAC's panel markup with `{Binding}`s; the
 plugin registers a window with `ui::PanelSpec`, pushes values to its
@@ -178,7 +235,7 @@ Every plugin folder holds a `plugin.json` beside its module:
   "displayName": "Hello",
   "version": "0.1.0",
   "entry": "hello.wasm",
-  "apiVersion": "1.3",
+  "apiVersion": "1.4",
   "minHostVersion": "0.1.0",
   "permissionsVersion": 1,
   "permissions": [
@@ -194,7 +251,7 @@ Every plugin folder holds a `plugin.json` beside its module:
 | `displayName` | The name players see. |
 | `version` | A SemVer 2.0 version (`1.2.0`, `1.3.0-beta.1`). |
 | `entry` | The `.wasm` file, inside the plugin folder. |
-| `apiVersion` | The plugin API version it was built for, `"MAJOR.MINOR"`: the SDK's `API_CURRENT` (currently `"1.3"`), which must match the version the SDK writes into the module. |
+| `apiVersion` | The plugin API version it was built for, `"MAJOR.MINOR"`: the SDK's `API_CURRENT` (currently `"1.4"`), which must match the version the SDK writes into the module. |
 | `minHostVersion`, `maxHostVersion`, `skipHostVersions` | The client versions it supports or is known broken on. `minHostVersion` is required for a launcher install. |
 | `permissionsVersion` | The permission vocabulary version (`1`); required when `permissions` is present. |
 | `permissions` | What it may do beyond the basics, each with a one-sentence `note` (at most 120 characters) the player reads before installing. |

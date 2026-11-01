@@ -8,9 +8,11 @@
 //! tooltip show/hide) is queued as [`UiOutput`] and drained by the host.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::draw::{Color, DrawList, RenderContext, SpriteSizes};
 use crate::event::{DragPayload, Key, Modifiers, MouseButton, UiEvent, kind};
+use crate::font::SharpFonts;
 use crate::geometry::{
     AnchorEdges, PixelRect, Rect, ResizeEdges, clamp, compute_anchored_rect, resize_rect,
 };
@@ -303,6 +305,8 @@ pub struct UiRoot {
     fixed_canvases: Vec<(u64, (f32, f32))>,
     fixed_canvas: Option<(f32, f32)>,
     media_seconds: f64,
+    pixels_per_unit: f32,
+    sharp_fonts: Option<Arc<SharpFonts>>,
 
     pub(crate) windows: WindowManager,
     output: Vec<UiOutput>,
@@ -386,6 +390,8 @@ impl UiRoot {
             fixed_canvases: Vec::new(),
             fixed_canvas: None,
             media_seconds: 0.0,
+            pixels_per_unit: 1.0,
+            sharp_fonts: None,
             windows: WindowManager::default(),
             output: Vec::new(),
             window_blocks: HashMap::new(),
@@ -948,6 +954,24 @@ impl UiRoot {
         }
     }
 
+    /// Tell the UI how many framebuffer pixels one of its screen units covers
+    /// (two on a Retina Mac), for the width of a shape's soft edge.
+    pub fn set_pixels_per_unit(&mut self, pixels: f32) {
+        self.pixels_per_unit = pixels;
+    }
+
+    /// Tell the UI which sharper font bakes to draw from on this display. The
+    /// fonts themselves are untouched, so nothing measures differently.
+    pub fn set_sharp_fonts(&mut self, fonts: Option<Arc<SharpFonts>>) {
+        self.sharp_fonts = fonts;
+    }
+
+    /// The sharper font bakes the UI draws from on this display, if any.
+    #[must_use]
+    pub fn sharp_fonts(&self) -> Option<&SharpFonts> {
+        self.sharp_fonts.as_deref()
+    }
+
     fn map_window_to_canvas(&self, x: i32, y: i32) -> (i32, i32) {
         let (sx, sy) = self.canvas_scale();
         if (sx, sy) == (1.0, 1.0) {
@@ -1335,6 +1359,9 @@ impl UiRoot {
                 self.emit(UiOutput::TooltipShow(hover));
             } else if self.tooltip_fired
                 && self.now_ms - self.tooltip_shown_ms >= self.tooltip_duration_ms
+                && !self
+                    .widget_dyn(hover)
+                    .is_some_and(|w| w.hover_outlasts_tooltip())
             {
                 let e = self.event_for(hover, kind::HOVER_LEAVE);
                 self.send_event(hover, &e);
@@ -1513,7 +1540,13 @@ impl UiRoot {
             ..DrawList::default()
         };
         let media = self.media_seconds;
-        let mut rc = RenderContext::new(&mut list, screen, sprites).with_media_seconds(media);
+        // A fixed canvas stretched unevenly has no one pixel size; the larger
+        // scale keeps a soft edge from going wider than a pixel.
+        let (sx, sy) = self.canvas_scale();
+        let mut rc = RenderContext::new(&mut list, screen, sprites)
+            .with_media_seconds(media)
+            .with_pixels_per_unit(self.pixels_per_unit * sx.max(sy))
+            .with_sharp_fonts(self.sharp_fonts.clone());
         let root = self.root;
         self.draw_tree(root, &mut rc);
         rc.begin_overlay();
@@ -1840,6 +1873,21 @@ impl UiRoot {
     #[must_use]
     pub fn is_window_blocked(&self, window: ElementId) -> bool {
         self.window_blocks.contains_key(&window)
+    }
+
+    /// The top-level elements blocking a window: each dialog box or modal
+    /// window that holds another window back.
+    #[must_use]
+    pub fn window_blockers(&self) -> Vec<ElementId> {
+        let mut tops: Vec<ElementId> = self
+            .window_blocks
+            .values()
+            .flatten()
+            .map(|b| self.top_level_of(*b))
+            .collect();
+        tops.sort_unstable();
+        tops.dedup();
+        tops
     }
 
     fn top_level_of(&self, element: ElementId) -> ElementId {

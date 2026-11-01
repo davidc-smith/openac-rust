@@ -28,6 +28,11 @@ ui_canvas_state -
 ui_canvas_available - window
 ui_canvas_remove -
 ui_measure_text -
+ui_font_bundled -
+ui_font_load -
+ui_font_measure -
+ui_font_release -
+ui_font_count -
 ui_theme -
 ui_image_client_art -
 ui_image_spell_icon -
