@@ -449,16 +449,123 @@ fn the_dock_stays_over_a_window_that_was_raised() {
     rig.add_plugins(1);
     rig.sync_plain();
     let frame = rig.frame();
-    let other = rig
-        .host
-        .root
-        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGear::default());
-    let top = rig.host.root.root();
-    rig.host.root.add_child(top, other);
+    let other = rig.window("other", Rect::new(0.0, 0.0, 100.0, 100.0));
     rig.host.root.bring_to_front(other);
     rig.tick();
-    let z = |rig: &Rig, id| rig.host.root.element(id).unwrap().z_order();
-    assert!(z(&rig, frame) > z(&rig, other));
+    assert!(rig.z(frame) > rig.z(other));
+}
+
+impl Rig {
+    /// A registered window at `r`, shown and raised.
+    fn window(&mut self, name: &str, r: Rect) -> ElementId {
+        let ui = &mut self.host.root;
+        let e = Element::at(r.x, r.y, r.w, r.h);
+        let frame = ui.insert(e, crate::widgets::Panel::default());
+        let top = ui.root();
+        ui.add_child(top, frame);
+        ui.register_window(name, frame, None, 0).unwrap();
+        ui.show_window(name);
+        frame
+    }
+
+    fn z(&self, id: ElementId) -> i32 {
+        self.host.root.element(id).unwrap().z_order()
+    }
+
+    /// The middle of the dock, on the screen.
+    fn middle(&mut self) -> (f32, f32) {
+        let (left, top) = self.at();
+        let (w, h) = self.size();
+        (left + w / 2.0, top + h / 2.0)
+    }
+}
+
+#[test]
+fn a_plugin_dialog_over_the_dock_stays_over_it_and_takes_the_press() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(1);
+    rig.sync_plain();
+    let dock = rig.frame();
+    // The dialog's window is centred on the dock, so the dialog is too.
+    let (mx, my) = rig.middle();
+    let owner = rig.window("owner", Rect::new(mx - 100.0, my - 50.0, 200.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(owner));
+    let before = rig.host.root.children(rig.host.root.root());
+    let dialog = ac_plugin_ui::DialogView {
+        handle: 1,
+        owner: UiOwner::new("test.0", "Plugin 0"),
+        title: "Delete".into(),
+        message: "Delete the profile?".into(),
+        buttons: vec!["Yes".into(), "No".into()],
+        owner_panel: Some(7),
+    };
+    let mut dialogs = crate::plugin::dialog::DialogPresenter::default();
+    let frames = std::collections::HashMap::from([(7, owner)]);
+    let outbox = Rc::clone(&rig.outbox);
+    dialogs.sync(
+        &mut rig.host.root,
+        &[dialog],
+        &frames,
+        &std::collections::HashMap::new(),
+        None,
+        None,
+        &outbox,
+    );
+    let shown = rig.host.root.children(rig.host.root.root());
+    let dialog = *shown.iter().find(|c| !before.contains(c)).unwrap();
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.z(dialog) > rig.z(dock));
+    // Another window raised over the dock: the dock goes back over it, and
+    // the dialog stays over the dock.
+    let other = rig.window("other", Rect::new(400.0, 300.0, 100.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(other));
+    assert!(rig.z(dialog) > rig.z(dock));
+    // A press where both are goes to the dialog, not the dock.
+    let (x, y) = (mx as i32, my as i32);
+    let hit = rig.host.root.pick(x, y).unwrap();
+    assert!(rig.host.root.is_within(Some(hit), dialog));
+    rig.host.mouse_move(x, y);
+    rig.host.mouse_down(MouseButton::Left, x, y, 0);
+    rig.host.mouse_up(MouseButton::Left, x, y, 0);
+    rig.tick();
+    assert!(rig.outbox.borrow().is_empty());
+    assert!(!rig.closed());
+}
+
+#[test]
+fn a_modal_plugin_window_and_a_tooltip_stay_over_the_dock() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(1);
+    rig.sync_plain();
+    let dock = rig.frame();
+    let owner = rig.window("owner", Rect::new(100.0, 100.0, 200.0, 100.0));
+    let modal = rig.window("modal", Rect::new(0.0, 100.0, 200.0, 200.0));
+    rig.tick();
+    let mut dialogs = crate::plugin::dialog::DialogPresenter::default();
+    let frames = std::collections::HashMap::from([(1, owner), (2, modal)]);
+    dialogs.sync_modals(&mut rig.host.root, &[(2, 1)], &frames);
+    // A tooltip-like overlay, which is not a window, raised once.
+    let tip = rig
+        .host
+        .root
+        .insert(Element::at(20.0, 120.0, 80.0, 20.0), DockGear::default());
+    let top = rig.host.root.root();
+    rig.host.root.add_child(top, tip);
+    rig.host.root.bring_to_front(tip);
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.z(modal) > rig.z(dock));
+    assert!(rig.z(tip) > rig.z(modal));
+    let other = rig.window("other", Rect::new(400.0, 300.0, 100.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(other));
+    assert!(rig.z(modal) > rig.z(dock));
+    assert!(rig.z(tip) > rig.z(modal));
 }
 
 #[test]

@@ -1875,6 +1875,21 @@ impl UiRoot {
         self.window_blocks.contains_key(&window)
     }
 
+    /// The top-level elements blocking a window: each dialog box or modal
+    /// window that holds another window back.
+    #[must_use]
+    pub fn window_blockers(&self) -> Vec<ElementId> {
+        let mut tops: Vec<ElementId> = self
+            .window_blocks
+            .values()
+            .flatten()
+            .map(|b| self.top_level_of(*b))
+            .collect();
+        tops.sort_unstable();
+        tops.dedup();
+        tops
+    }
+
     fn top_level_of(&self, element: ElementId) -> ElementId {
         let mut top = element;
         while let Some(parent) = self.parent(top) {

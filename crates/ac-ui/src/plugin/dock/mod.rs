@@ -950,11 +950,48 @@ impl PluginDock {
         )
     }
 
-    /// The dock sits over the other windows, whichever was raised last. A
-    /// modal window keeps the top.
+    /// The dock sits over the other windows, whichever was raised last: when
+    /// one comes up over it, it goes back on top. What is not such a window
+    /// stays over it, in the order it was in: a plugin's dialog box or modal
+    /// window (anything blocking a window), a tooltip, a game dialog. A modal
+    /// window keeps the top.
     fn keep_on_top(&self, ui: &mut UiRoot) {
-        if ui.modal.is_none() && self.is_shown() && !self.covered {
-            ui.bring_to_front(self.root);
+        if ui.modal.is_some() || !self.is_shown() || self.covered {
+            return;
+        }
+        let Some(z) = ui.element(self.root).map(Element::z_order) else {
+            return;
+        };
+        let blockers = ui.window_blockers();
+        let windows: Vec<ElementId> = ui
+            .windows()
+            .iter()
+            .map(|w| w.frame)
+            .filter(|f| *f != self.root && !blockers.contains(f))
+            .collect();
+        let top = ui.root();
+        let under = windows.iter().any(|f| {
+            ui.parent(*f) == Some(top)
+                && ui
+                    .element(*f)
+                    .is_some_and(|e| e.visible() && e.z_order() >= z)
+        });
+        if !under {
+            return;
+        }
+        let mut over: Vec<(i32, ElementId)> = ui
+            .children(top)
+            .into_iter()
+            .filter(|c| *c != self.root && !windows.contains(c))
+            .filter_map(|c| {
+                let cz = ui.element(c)?.z_order();
+                (cz > z).then_some((cz, c))
+            })
+            .collect();
+        over.sort_by_key(|(cz, _)| *cz);
+        ui.bring_to_front(self.root);
+        for (_, c) in over {
+            ui.bring_to_front(c);
         }
     }
 }
