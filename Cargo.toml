@@ -125,13 +125,13 @@ wasmtime = { version = "=48.0.5", default-features = false, features = ["runtime
 # wasm32-unknown-unknown. Its backtracking step limit stands in for .NET's match timeout.
 # These are its default features, spelled out.
 fancy-regex = { version = "0.19.2", default-features = false, features = ["std", "unicode", "perf", "variable-lookbehinds"] }
-# The bundled Noto Sans of the modern plugin themes (ac-ui): fontdue turns the glyph outlines
+# The bundled Noto Sans of the modern plugin themes (ac-ui) and plugin canvas fonts (ac-plugin-ui): fontdue turns the glyph outlines
 # into coverage pixels (OpenAC uses StbTrueTypeSharp). Pure
 # Rust, no build script. Default features off: no `simd` (x86 intrinsics) and no `hashbrown`.
 # ttf-parser is fontdue's own parser, named here so the atlas reads the font's metrics as
-# stb_truetype does (the glyf header boxes, hhea).
+# stb_truetype does (the glyf header boxes, hhea), and `opentype-layout` reads kerning from GPOS.
 fontdue = { version = "0.9.4", default-features = false }
-ttf-parser = { version = "0.25.1", default-features = false }
+ttf-parser = { version = "0.25.1", default-features = false, features = ["opentype-layout"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

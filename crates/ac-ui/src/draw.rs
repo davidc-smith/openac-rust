@@ -7,7 +7,9 @@
 //! [`TextureRef::Surface`] is a dat render surface id the renderer decodes
 //! and caches.
 
-use crate::font::UiFont;
+use std::sync::Arc;
+
+use crate::font::{SharpFont, SharpFonts, UiFont};
 use crate::shapes::{self, CornerRadii, ShapeOutcome};
 
 /// A colour, straight (not premultiplied) alpha, components 0..=1.
@@ -476,6 +478,7 @@ pub struct RenderContext<'a> {
     sprite_sizes: &'a dyn SpriteSizes,
     media_seconds: f64,
     device_pixel: f32,
+    sharp_fonts: Option<Arc<SharpFonts>>,
 }
 
 /// Pixel sizes of render surfaces, so widgets can tile UI art. `None` for an
@@ -493,6 +496,11 @@ impl SpriteSizes for NoSprites {
     fn sprite_size(&self, _file: u32) -> Option<(u32, u32)> {
         None
     }
+}
+
+/// `value` on a grid of `pixels` steps a unit, half up.
+fn snap_to_grid(value: f32, pixels: f32) -> f32 {
+    (value * pixels + 0.5).floor() / pixels
 }
 
 impl<'a> RenderContext<'a> {
@@ -515,6 +523,7 @@ impl<'a> RenderContext<'a> {
             sprite_sizes,
             media_seconds: 0.0,
             device_pixel: 1.0,
+            sharp_fonts: None,
         }
     }
 
@@ -528,6 +537,14 @@ impl<'a> RenderContext<'a> {
         } else {
             1.0
         };
+        self
+    }
+
+    /// With the sharper font bakes to draw from where this context has more
+    /// than one framebuffer pixel a unit.
+    #[must_use]
+    pub fn with_sharp_fonts(mut self, fonts: Option<Arc<SharpFonts>>) -> Self {
+        self.sharp_fonts = fonts;
         self
     }
 
@@ -1006,16 +1023,40 @@ impl<'a> RenderContext<'a> {
         top: Color,
         bottom: Color,
     ) {
+        self.fill_gradient((x, y, w, h), radii, top, bottom, |v| (v.y - y) / h);
+    }
+
+    /// A rounded rectangle whose colour runs from `left` to `right`. Each
+    /// corner of the shape takes the colour at its place across; the soft
+    /// edge keeps its own transparency.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_horizontal_gradient(
+        &mut self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radii: CornerRadii,
+        left: Color,
+        right: Color,
+    ) {
+        self.fill_gradient((x, y, w, h), radii, left, right, |v| (v.x - x) / w);
+    }
+
+    /// A rounded rectangle whose corners each take the colour `along` says
+    /// they are from `start` to `end`.
+    fn fill_gradient(
+        &mut self,
+        rect: shapes::ShapeRect,
+        radii: CornerRadii,
+        start: Color,
+        end: Color,
+        along: impl Fn(&ColorVertex) -> f32,
+    ) {
         let mut shape = Vec::new();
-        shapes::fill_rounded_rect(
-            (x, y, w, h),
-            radii,
-            Color::WHITE,
-            self.device_pixel,
-            &mut shape,
-        );
+        shapes::fill_rounded_rect(rect, radii, Color::WHITE, self.device_pixel, &mut shape);
         for v in &mut shape {
-            let c = top.lerp(bottom, ((v.y - y) / h).clamp(0.0, 1.0));
+            let c = start.lerp(end, along(v).clamp(0.0, 1.0));
             v.color = Color {
                 a: c.a * v.color.a,
                 ..c
@@ -1111,7 +1152,9 @@ impl<'a> RenderContext<'a> {
     /// One pass of [`RenderContext::string_dat`]: the fill, or the outline
     /// from the background atlas (inflated by the border pixels), or eight
     /// one-pixel offset copies of the fill when the font has no background.
-    /// Each glyph lands on a whole pixel; the baseline is snapped once.
+    /// Each glyph lands on a whole pixel; the baseline is snapped once. A fill
+    /// on a high-density display takes its glyph images from the font's sharper
+    /// bake when it has one, and the pen still moves by the font's own metrics.
     pub fn string_dat_pass(
         &mut self,
         font: &UiFont,
@@ -1131,12 +1174,51 @@ impl<'a> RenderContext<'a> {
             (true, Some(bg)) => bg,
             _ => font.foreground,
         };
+        let sharp = if outline_pass {
+            None
+        } else {
+            self.sharp_font(font)
+        };
+        // The sharper glyphs sit on the framebuffer's pixels, so its baseline
+        // must too: a whole unit is half a pixel out at 1.5, and nearest
+        // sampling there would split every texel.
+        let grid = sharp
+            .as_ref()
+            .map_or(1.0, |s| s.scale.min(1.0 / self.device_pixel));
+        let sharp_base_y = snap_to_grid(base_y, grid);
         let mut quads = Vec::new();
+        let mut sharp_quads = Vec::new();
         let mut pen = origin_x;
         for c in text.chars() {
             let Some(g) = font.glyph(c) else {
                 continue;
             };
+            if let Some(s) = &sharp
+                && let Some(fine) = s.font.glyph(c)
+                && fine.width > 0
+                && fine.height > 0
+            {
+                let texel = 1.0 / s.scale;
+                let down = f32::from(fine.vertical_offset_before) * texel * grid;
+                let uv = atlas_uv(
+                    i32::from(fine.offset_x),
+                    i32::from(fine.offset_y),
+                    i32::from(fine.width),
+                    i32::from(fine.height),
+                    s.font.foreground.width,
+                    s.font.foreground.height,
+                );
+                self.push_glyph(
+                    &mut sharp_quads,
+                    snap_to_grid(pen + f32::from(fine.horizontal_offset_before) * texel, grid),
+                    sharp_base_y + down.round_ties_even() / grid,
+                    f32::from(fine.width) * texel,
+                    f32::from(fine.height) * texel,
+                    uv,
+                );
+                pen += crate::font::glyph_advance(g);
+                continue;
+            }
             let gx = (pen + f32::from(g.horizontal_offset_before) + 0.5).floor();
             let gy = base_y + f32::from(g.vertical_offset_before);
             let (gw, gh) = (f32::from(g.width), f32::from(g.height));
@@ -1157,15 +1239,65 @@ impl<'a> RenderContext<'a> {
             }
             pen += crate::font::glyph_advance(g);
         }
-        if quads.is_empty() {
-            return;
-        }
         let tint = self.apply_alpha(tint);
-        self.emit(DrawCmd::Glyphs {
-            texture: texture.texture,
-            tint,
-            quads,
-        });
+        if !quads.is_empty() {
+            self.emit(DrawCmd::Glyphs {
+                texture: texture.texture,
+                tint,
+                quads,
+            });
+        }
+        if let Some(s) = sharp
+            && !sharp_quads.is_empty()
+        {
+            self.emit(DrawCmd::Glyphs {
+                texture: s.font.foreground.texture,
+                tint,
+                quads: sharp_quads,
+            });
+        }
+    }
+
+    /// The sharper bake to draw `font` from: none at one framebuffer pixel a
+    /// unit or less, where it would be no sharper.
+    fn sharp_font(&self, font: &UiFont) -> Option<SharpFont> {
+        if self.device_pixel >= 1.0 {
+            return None;
+        }
+        self.sharp_fonts.as_ref()?.get(&font.id).cloned()
+    }
+
+    /// Framebuffer pixels one unit of this context covers.
+    #[must_use]
+    pub fn pixels_per_unit(&self) -> f32 {
+        1.0 / self.device_pixel
+    }
+
+    /// One pass of glyphs a caller laid out: `(x, y, w, h, uv)` from this
+    /// context's origin, each snapped to a grid of `grid` cells a unit.
+    pub fn placed_glyphs(
+        &mut self,
+        texture: TextureRef,
+        tint: Color,
+        grid: f32,
+        glyphs: impl IntoIterator<Item = (f32, f32, f32, f32, (f32, f32, f32, f32))>,
+    ) {
+        let (ox, oy) = self.origin;
+        let mut quads = Vec::new();
+        for (x, y, w, h, uv) in glyphs {
+            if w > 0.0 && h > 0.0 {
+                let (x, y) = (snap_to_grid(ox + x, grid), snap_to_grid(oy + y, grid));
+                self.push_glyph(&mut quads, x, y, w, h, uv);
+            }
+        }
+        if !quads.is_empty() {
+            let tint = self.apply_alpha(tint);
+            self.emit(DrawCmd::Glyphs {
+                texture,
+                tint,
+                quads,
+            });
+        }
     }
 
     fn push_glyph(
@@ -1727,6 +1859,179 @@ mod tests {
         assert_eq!(seen.len(), 9);
     }
 
+    /// A sharper bake of font `font_id` at `scale`, with a texture of its own.
+    fn sharp_twin(
+        font_id: u32,
+        glyphs: &[ac_dat::objects::FontCharDesc],
+        scale: f32,
+    ) -> Arc<SharpFonts> {
+        let twin = UiFont::new(
+            font_id + 1,
+            Atlas {
+                texture: TextureRef::Runtime(22),
+                width: 128,
+                height: 128,
+            },
+            None,
+            32.0,
+            24.0,
+            glyphs.iter().copied(),
+            0,
+            0,
+        );
+        Arc::new(SharpFonts::from([(
+            font_id,
+            SharpFont {
+                font: Arc::new(twin),
+                scale,
+            },
+        )]))
+    }
+
+    fn sharp_ctx(
+        pixels: f32,
+        fonts: Arc<SharpFonts>,
+        f: impl FnOnce(&mut RenderContext<'_>),
+    ) -> DrawList {
+        let mut list = DrawList::default();
+        let mut ctx = RenderContext::new(&mut list, (800.0, 600.0), &NoSprites)
+            .with_pixels_per_unit(pixels)
+            .with_sharp_fonts(Some(fonts));
+        f(&mut ctx);
+        list
+    }
+
+    fn fill(c: &mut RenderContext<'_>, f: &UiFont, text: &str, x: f32, y: f32) {
+        c.string_dat(f, text, x, y, Color::WHITE, false, Color::BLACK);
+    }
+
+    #[test]
+    fn a_sharper_bake_draws_at_its_fraction_of_the_size_with_its_own_texture() {
+        let f = font(false, 0, &[glyph('A', (0, 0), (5, 8), 1, 2, 3)]);
+        let twin = sharp_twin(f.id, &[glyph('A', (10, 20), (10, 16), 2, 4, 6)], 2.0);
+        let width = f.measure_width("AA");
+        let list = sharp_ctx(2.0, twin, |c| fill(c, &f, "AA", 0.0, 0.0));
+        assert_eq!(f.measure_width("AA"), width);
+        assert_eq!(list.main.len(), 1);
+        let (texture, _, q) = glyphs(&list.main[0]);
+        assert_eq!(texture, TextureRef::Runtime(22));
+        // The image is half its texels' size; the pen moves by the font's own
+        // advance of 8, not the sharper bake's.
+        assert_eq!((q[0].x, q[0].y, q[0].w, q[0].h), (1.0, 3.0, 5.0, 8.0));
+        assert_eq!((q[1].x, q[1].y), (9.0, 3.0));
+        // Its texture coordinates are the sharper atlas's box.
+        assert_eq!(
+            (q[0].u0, q[0].v0, q[0].u1, q[0].v1),
+            (10.0 / 128.0, 20.0 / 128.0, 20.0 / 128.0, 36.0 / 128.0)
+        );
+    }
+
+    #[test]
+    fn at_one_framebuffer_pixel_a_unit_the_sharper_bake_is_not_used() {
+        let f = font(false, 0, &[glyph('A', (0, 0), (5, 8), 1, 2, 3)]);
+        let twin = sharp_twin(f.id, &[glyph('A', (10, 20), (10, 16), 2, 4, 6)], 2.0);
+        let plain = with_ctx(|c| fill(c, &f, "AA", 0.4, 2.5));
+        let list = sharp_ctx(1.0, twin, |c| fill(c, &f, "AA", 0.4, 2.5));
+        assert_eq!(list, plain);
+    }
+
+    #[test]
+    fn a_font_without_a_sharper_bake_draws_as_it_always_has() {
+        let f = font(false, 0, &[glyph('A', (0, 0), (5, 8), 1, 2, 3)]);
+        let twin = sharp_twin(f.id + 100, &[glyph('A', (10, 20), (10, 16), 2, 4, 6)], 2.0);
+        let plain = with_ctx(|c| fill(c, &f, "AA", 0.4, 2.5));
+        let list = sharp_ctx(2.0, twin, |c| fill(c, &f, "AA", 0.4, 2.5));
+        assert_eq!(list, plain);
+    }
+
+    /// At 1.5 pixels a unit a whole unit is half a pixel out, so every edge
+    /// must land on the finer grid or nearest sampling would split texels.
+    #[test]
+    fn at_one_and_a_half_each_texel_lands_on_one_framebuffer_pixel() {
+        let f = font(
+            false,
+            0,
+            &[
+                glyph('A', (0, 0), (5, 8), 1, 2, 3),
+                glyph('B', (0, 0), (5, 8), 1, 1, 4),
+            ],
+        );
+        let twin = sharp_twin(
+            f.id,
+            &[
+                glyph('A', (10, 20), (9, 12), 1, 3, 5),
+                glyph('B', (30, 20), (9, 12), 2, 2, 7),
+            ],
+            1.5,
+        );
+        let list = sharp_ctx(1.5, twin, |c| fill(c, &f, "ABAB", 3.3, 7.1));
+        let (_, _, q) = glyphs(&list.main[0]);
+        assert_eq!(q.len(), 4);
+        let on_grid = |v: f32| ((v * 1.5).round() - v * 1.5).abs() < 1e-3;
+        for g in q {
+            assert!(on_grid(g.x) && on_grid(g.y), "{g:?}");
+            assert!(on_grid(g.x + g.w) && on_grid(g.y + g.h), "{g:?}");
+            assert_eq!((g.w, g.h), (6.0, 8.0));
+        }
+    }
+
+    #[test]
+    fn a_glyph_the_sharper_bake_has_no_image_for_keeps_the_fonts_own() {
+        // A space has no image at any size; a glyph that did not fit the finer
+        // atlas keeps an empty record.
+        let f = font(
+            false,
+            0,
+            &[
+                glyph('A', (0, 0), (5, 8), 1, 2, 3),
+                glyph('C', (8, 0), (5, 8), 0, 0, 3),
+            ],
+        );
+        let twin = sharp_twin(
+            f.id,
+            &[
+                glyph('A', (10, 20), (10, 16), 2, 4, 6),
+                glyph('C', (0, 0), (0, 0), 0, 0, 0),
+            ],
+            2.0,
+        );
+        let list = sharp_ctx(2.0, twin, |c| fill(c, &f, "AC", 0.0, 0.0));
+        assert_eq!(list.main.len(), 2);
+        let (coarse, _, own) = glyphs(&list.main[0]);
+        assert_eq!(coarse, f.foreground.texture);
+        assert_eq!((own[0].x, own[0].w), (8.0, 5.0));
+        let (fine, _, sharp) = glyphs(&list.main[1]);
+        assert_eq!(fine, TextureRef::Runtime(22));
+        assert_eq!(sharp.len(), 1);
+    }
+
+    #[test]
+    fn an_outline_stays_in_the_fonts_own_glyphs() {
+        let f = font(true, 1, &[glyph('A', (4, 4), (5, 8), 1, 2, 3)]);
+        let twin = sharp_twin(f.id, &[glyph('A', (10, 20), (10, 16), 2, 4, 6)], 2.0);
+        let list = sharp_ctx(2.0, twin, |c| {
+            c.string_dat(&f, "A", 0.0, 0.0, Color::WHITE, true, Color::BLACK);
+        });
+        assert_eq!(list.main.len(), 2);
+        assert_eq!(glyphs(&list.main[0]).0, BG);
+        assert_eq!(glyphs(&list.main[1]).0, TextureRef::Runtime(22));
+    }
+
+    #[test]
+    fn a_sharper_glyph_is_cut_by_the_clip_and_faded_by_the_opacity() {
+        let f = font(false, 0, &[glyph('A', (0, 0), (10, 8), 0, 0, 0)]);
+        let twin = sharp_twin(f.id, &[glyph('A', (0, 0), (20, 16), 0, 0, 0)], 2.0);
+        let list = sharp_ctx(2.0, twin, |c| {
+            c.push_clip(0.0, 0.0, 4.0, 100.0);
+            c.push_alpha(0.5);
+            fill(c, &f, "A", 0.0, 0.0);
+        });
+        let (_, tint, q) = glyphs(&list.main[0]);
+        assert_eq!(tint.a, 0.5);
+        assert_eq!(q[0].w, 4.0);
+        assert_eq!(q[0].u1, 8.0 / 128.0);
+    }
+
     #[test]
     fn glyphs_snap_to_whole_pixels_from_a_snapped_baseline() {
         let f = font(false, 0, &[glyph('A', (0, 0), (5, 8), 1, 0, 4)]);
@@ -1970,6 +2275,47 @@ mod tests {
         // The rim beyond the shape holds the end colour, faded out.
         let rim = v.iter().find(|p| p.y == 99.5).expect("the top rim");
         assert_eq!(rim.color, Color { a: 0.0, ..RED });
+    }
+
+    #[test]
+    fn a_horizontal_gradient_takes_the_colour_at_its_place_and_keeps_its_soft_edge() {
+        let list = with_ctx(|c| {
+            c.fill_horizontal_gradient(100.0, 0.0, 100.0, 50.0, CornerRadii::default(), RED, BLUE);
+        });
+        let v = triangles(&list);
+        let solid_left = v
+            .iter()
+            .find(|p| p.x == 100.5 && p.color.a == 1.0)
+            .expect("the solid ring's left");
+        assert!((solid_left.color.r - 0.995).abs() < 1e-4);
+        let solid_right = v
+            .iter()
+            .find(|p| p.x == 199.5 && p.color.a == 1.0)
+            .expect("the solid ring's right");
+        assert!((solid_right.color.b - 0.995).abs() < 1e-4);
+        // The rim beyond the shape holds the end colour, faded out.
+        let rim = v.iter().find(|p| p.x == 99.5).expect("the left rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..RED });
+        let rim = v.iter().find(|p| p.x == 200.5).expect("the right rim");
+        assert_eq!(rim.color, Color { a: 0.0, ..BLUE });
+    }
+
+    /// Rounded corners keep to the line between the two colours, and a shape
+    /// with no width draws nothing rather than dividing by it.
+    #[test]
+    fn a_horizontal_gradient_follows_rounded_corners_and_ignores_an_empty_shape() {
+        let list = with_ctx(|c| {
+            c.fill_horizontal_gradient(0.0, 0.0, 100.0, 50.0, CornerRadii::all(10.0), RED, BLUE);
+        });
+        for p in triangles(&list) {
+            let t = (p.x / 100.0).clamp(0.0, 1.0);
+            assert!((p.color.b - t).abs() < 1e-4, "{p:?}");
+            assert!((p.color.r - (1.0 - t)).abs() < 1e-4, "{p:?}");
+        }
+        let empty = with_ctx(|c| {
+            c.fill_horizontal_gradient(0.0, 0.0, 0.0, 50.0, CornerRadii::default(), RED, BLUE);
+        });
+        assert!(empty.main.is_empty());
     }
 
     #[test]

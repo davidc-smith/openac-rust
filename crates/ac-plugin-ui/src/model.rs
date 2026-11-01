@@ -28,7 +28,7 @@ impl UiOwner {
     }
 }
 
-/// A plugin's `icon.png`, decoded: the image its shelf buttons show ahead
+/// A plugin's `icon.png`, decoded: the image its dock slots show ahead
 /// of a render surface or initials.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PluginIcon {
@@ -38,6 +38,33 @@ pub struct PluginIcon {
     pub height: u32,
     /// Four bytes per pixel, red first, top row first.
     pub rgba: Arc<Vec<u8>>,
+}
+
+/// What a plugin's folder holds for the dock icon one of its windows names.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowIcon {
+    /// The file as named.
+    pub named: Option<PluginIcon>,
+    /// Its version for a light theme.
+    pub light: Option<PluginIcon>,
+    /// Its version for every other theme.
+    pub dark: Option<PluginIcon>,
+}
+
+impl WindowIcon {
+    /// The picture for a dock in a light theme or not: its version when there
+    /// is one, else the named file.
+    #[must_use]
+    pub fn for_theme(&self, light: bool) -> Option<&PluginIcon> {
+        let version = if light { &self.light } else { &self.dark };
+        version.as_ref().or(self.named.as_ref())
+    }
+
+    /// Nothing there could be used.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.named.is_none() && self.light.is_none() && self.dark.is_none()
+    }
 }
 
 impl std::fmt::Debug for PluginIcon {
@@ -59,19 +86,22 @@ pub struct PanelDescriptor {
     pub window_id: String,
     /// The caption.
     pub title: String,
-    /// Initials on the shelf button when there is no icon.
+    /// Initials on the dock slot when there is no icon.
     pub icon_text: Option<String>,
-    /// The shelf button's icon (a full image id or a bare index; 0: none).
+    /// The dock slot's icon (a full image id or a bare index; 0: none).
     pub icon_surface_id: u32,
     /// Open as soon as it is registered.
     pub start_visible: bool,
-    /// Gets a button on the plugin shelf.
+    /// Gets a button on the plugin dock.
     pub show_in_side_panel: bool,
+    /// The window's own dock icon: a `.png` in the plugin's folder, by a path
+    /// relative to it.
+    pub icon_file: Option<String>,
 }
 
 impl PanelDescriptor {
     /// A descriptor with OpenAC's defaults: no icon, open at once, on the
-    /// shelf.
+    /// dock.
     #[must_use]
     pub fn new(window_id: impl Into<String>, title: impl Into<String>) -> Self {
         Self {
@@ -81,6 +111,7 @@ impl PanelDescriptor {
             icon_surface_id: 0,
             start_visible: true,
             show_in_side_panel: true,
+            icon_file: None,
         }
     }
 }
@@ -94,7 +125,7 @@ pub struct PanelView {
     pub id: u32,
     /// Its plugin.
     pub owner: UiOwner,
-    /// Its identity and shelf button.
+    /// Its identity and dock slot.
     pub descriptor: PanelDescriptor,
     /// Its markup, parsed.
     pub document: Arc<MarkupDocument>,
@@ -108,8 +139,11 @@ pub struct PanelView {
     /// The player's (or the plugin's) show or close request.
     pub requested_visible: bool,
     /// Its plugin's `icon.png`, when the plugin's folder has one that
-    /// decodes: the shelf button shows it ahead of the descriptor's icon.
+    /// decodes: the dock slot shows it ahead of the descriptor's icon.
     pub file_icon: Option<PluginIcon>,
+    /// The file its descriptor names, when any of it could be used: the dock
+    /// slot shows it ahead of the plugin's `icon.png`.
+    pub window_icon: Option<WindowIcon>,
 }
 
 impl PanelView {
@@ -265,6 +299,9 @@ pub enum PaintCmd {
         color: Color8,
         /// A dark outline around the glyphs.
         outline: bool,
+        /// One of the plugin's fonts ([`crate::fonts`]); 0: the interface
+        /// font. A font it no longer holds draws nothing.
+        font: u32,
     },
     /// An image stretched over a rectangle (a released image draws
     /// nothing).
@@ -971,6 +1008,15 @@ pub enum UiChange {
     /// The bound plugin hotkeys, in registration order (all of them, each
     /// time the table changes).
     Hotkeys(Arc<Vec<crate::hotkeys::BoundHotkey>>),
+    /// A plugin holds a font, or its sharper bake changed.
+    FontAdded(Box<crate::fonts::FontView>),
+    /// A plugin let go of a font.
+    FontRemoved {
+        /// The plugin.
+        owner: String,
+        /// The handle.
+        handle: u32,
+    },
     /// A plugin asked the player a question (or a snapshot carries one).
     DialogAdded(Box<DialogView>),
     /// A dialog was answered or withdrawn: it goes.
@@ -1025,7 +1071,7 @@ pub enum UiInput {
         value: ActionValue,
     },
     /// The player opened (`true`) or closed (`false`) a plugin window
-    /// (shelf button, close or minimize button).
+    /// (dock slot, close or minimize button).
     PanelShown {
         /// The panel.
         panel: u32,
@@ -1082,6 +1128,9 @@ pub enum UiInput {
         /// The paths, as its markup gives them.
         paths: Vec<String>,
     },
+    /// How many framebuffer pixels a unit the window's display has, sent when
+    /// it changes.
+    DisplayDensity(f32),
     /// The player answered a dialog (the button's index).
     DialogAnswered {
         /// The dialog.

@@ -1487,7 +1487,7 @@ fn the_theme_is_classic_until_a_window_tells_and_outlives_the_window() {
 
 #[test]
 fn a_plugins_file_icon_rides_with_its_windows_and_goes_with_it() {
-    // OpenAC RetailUiRuntime.ResolvePluginFileIcon: the shelf button of
+    // OpenAC RetailUiRuntime.ResolvePluginFileIcon: the dock slot of
     // every window a plugin registers gets the plugin's icon.png; another
     // plugin's windows do not, and an unloaded plugin's icon is forgotten.
     let mut ui = PluginUi::new();

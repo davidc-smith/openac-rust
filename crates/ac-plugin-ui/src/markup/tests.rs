@@ -664,6 +664,27 @@ fn bound_colours_follow_their_values() {
 }
 
 #[test]
+fn a_colour_may_name_a_second_colour_for_light_themes() {
+    let doc = parse(
+        r##"<panel theme="plugin"><label text="a" color="#FF112233|light:#FF445566"/></panel>"##,
+        &BindingSchema::new("T"),
+    )
+    .unwrap();
+    let Element::Label { color, .. } = &doc.nodes[0].element else {
+        panic!()
+    };
+    let color = color.clone().unwrap();
+    assert_eq!(
+        color,
+        ColorSource::Paired {
+            dark: Rgba::argb(0xFF11_2233),
+            light: Rgba::argb(0xFF44_5566),
+        }
+    );
+    assert_eq!(color.read(&NoValues), Rgba::argb(0xFF11_2233));
+}
+
+#[test]
 fn theme_colours_name_a_token_and_keep_a_classic_fallback() {
     // OpenAC MarkupDocument's theme branch (PluginUiPalette.Token).
     let doc = parse(

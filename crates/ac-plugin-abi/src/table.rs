@@ -114,6 +114,26 @@ macro_rules! import_table {
             /// Measure text in the interface font.
             UiMeasureText = ui_measure_text(String) -> $crate::ui::TextSize,
                 permission: None, window: false, since: (1, 0);
+            /// The client's bundled font in a weight at a size; handle 0 when
+            /// refused. Asking twice holds it twice.
+            UiFontBundled = ui_font_bundled($crate::ui::BundledFontRequest) -> $crate::ui::FontInfo,
+                permission: None, window: false, since: (1, 4);
+            /// A TrueType or OpenType font the plugin ships, read by the
+            /// client outside the plugin's sandbox; handle 0 when refused. A
+            /// second request under the same name, size and characters is the
+            /// same font held once more.
+            UiFontLoad = ui_font_load($crate::ui::FontLoadRequest) -> $crate::ui::FontInfo,
+                permission: None, window: false, since: (1, 4);
+            /// Measure text in one of the plugin's fonts: nothing for a font
+            /// it does not hold.
+            UiFontMeasure = ui_font_measure($crate::ui::FontMeasure) -> $crate::ui::TextSize,
+                permission: None, window: false, since: (1, 4);
+            /// Let go of one hold on a font.
+            UiFontRelease = ui_font_release(u32) -> bool,
+                permission: None, window: false, since: (1, 4);
+            /// How many distinct fonts the plugin holds.
+            UiFontCount = ui_font_count(()) -> u32,
+                permission: None, window: false, since: (1, 4);
             /// The plugin theme the player picked under Appearance, with
             /// its colours, so a canvas can draw like the themed windows;
             /// Classic until a window tells the session (and on a session

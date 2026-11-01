@@ -335,12 +335,25 @@ pub struct PluginUiSettings {
     /// The theme's name as saved (`Classic`, `Moss`, `Brass`); the reader
     /// of the name decides what an unknown one means.
     pub theme: String,
+    /// Where the plugin dock sits, as saved (`floating`,
+    /// `floating-horizontal`, `left`, `right`, `top`, `bottom`); the reader of
+    /// the name decides what an unknown one means.
+    pub dock: String,
+    /// The plugin dock's size, as saved (`smaller`, `default`, `bigger`); the
+    /// reader of the name decides what an unknown one means.
+    pub dock_size: String,
+    /// How the plugin dock opens, as saved (`click`, `hover`); the reader of the
+    /// name decides what an unknown one means.
+    pub dock_opens: String,
 }
 
 impl Default for PluginUiSettings {
     fn default() -> Self {
         Self {
             theme: "Classic".to_owned(),
+            dock: "floating".to_owned(),
+            dock_size: "default".to_owned(),
+            dock_opens: "click".to_owned(),
         }
     }
 }
@@ -348,6 +361,9 @@ impl Default for PluginUiSettings {
 fn read_plugin_ui(m: &[Member]) -> Result<PluginUiSettings, Unreadable> {
     Ok(PluginUiSettings {
         theme: crate::settings::read_string(m, "theme", "Classic"),
+        dock: crate::settings::read_string(m, "dock", "floating"),
+        dock_size: crate::settings::read_string(m, "dockSize", "default"),
+        dock_opens: crate::settings::read_string(m, "dockOpens", "click"),
     })
 }
 
@@ -613,7 +629,21 @@ impl SettingsStore {
     pub fn save_plugin_ui(&self, p: &PluginUiSettings) -> std::io::Result<()> {
         let mut theme = String::new();
         crate::json::write_string(&mut theme, &p.theme);
-        self.save_section("pluginUi", &object_text(&[("theme", theme)]))
+        let mut dock = String::new();
+        crate::json::write_string(&mut dock, &p.dock);
+        let mut dock_size = String::new();
+        crate::json::write_string(&mut dock_size, &p.dock_size);
+        let mut dock_opens = String::new();
+        crate::json::write_string(&mut dock_opens, &p.dock_opens);
+        self.save_section(
+            "pluginUi",
+            &object_text(&[
+                ("theme", theme),
+                ("dock", dock),
+                ("dockSize", dock_size),
+                ("dockOpens", dock_opens),
+            ]),
+        )
     }
 
     /// Every client-side section at once, with the warnings of those that

@@ -224,6 +224,7 @@ impl WindowUi {
     pub fn settings_changed_elsewhere(&mut self, settings: &PlayerSettings) {
         self.settings = settings.clone();
         self.follow_plugin_theme_setting();
+        self.follow_plugin_dock_setting();
         let settings = settings.clone();
         self.host
             .with_controller::<OptionsWindowController, _>(OPTIONS_WINDOW, |c, _| {

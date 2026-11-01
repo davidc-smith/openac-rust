@@ -19,13 +19,15 @@
 //!   the client's key map holds (refused while a window is attached).
 //!   `/uidemo hotkeys` logs how they stand, `/uidemo rebind` moves `ping`
 //!   to Ctrl+Shift+O; a press logs `uidemo hotkey <id>`.
+//! - `/uidemo typed` opens a window whose checkbox and colour picker use typed
+//!   bindings; what they send logs `uidemo typed <handler> <value>`.
 
 use openac_plugin::ui::{
     ActionValue, Anchor, BindingKind, Canvas, CanvasSpec, ClientWindow, Image, MapPoint,
     MarkerAnchor, MarkerLayer, Panel, PanelSpec, TriangleLayer, UiEvent, ground_ring, label, rgba,
     triangle, world_icon,
 };
-use openac_plugin::ui::{PluginKey, chord};
+use openac_plugin::ui::{Font, FontWeight, PluginKey, TypedBindingKind, TypedValue, chord};
 use openac_plugin::{Event, Host, Plugin, StartInfo};
 
 /// The window's markup: OpenAC's vocabulary, `{Binding}`s declared below.
@@ -42,6 +44,16 @@ pub const MARKUP: &str = r##"<panel x="40" y="120" w="260" h="250" resizable="tr
   <button x="10" y="222" w="110" h="20" text="Inventory" onclick="{Inventory}" anchor="left,bottom"/>
   <button x="126" y="222" w="120" h="20" text="Hide canvas" onclick="{ToggleCanvas}" anchor="right,bottom"/>
 </panel>"##;
+
+/// A window whose controls use typed bindings.
+const TYPED_MARKUP: &str = r#"<panel x="40" y="400" w="200" h="80" title="Typed">
+  <checkbox x="8" y="28" w="100" h="18" text="Loot" checked="{Maybe}" onchange="{SetFlag}"/>
+  <color x="8" y="50" w="28" h="20" value="{Colour}" onchange="{SetColour}"/>
+</panel>"#;
+
+/// A CFF OpenType font of the plugin's own.
+const OWN_FONT: &[u8] =
+    include_bytes!("../../../../../../ac-plugin-ui/tests/data/fonts/NotoSansCffFixture.otf");
 
 /// The canvas's size.
 pub const CANVAS: (i32, i32) = (180, 110);
@@ -60,6 +72,9 @@ pub struct UiDemo {
     dragging: bool,
     canvas_shown: bool,
     character: Option<u32>,
+    heading: Font,
+    body: Font,
+    own: Font,
     submitted: Vec<String>,
     triangles: Option<TriangleLayer>,
     markers: Option<MarkerLayer>,
@@ -105,6 +120,7 @@ impl UiDemo {
         let dot = self.dot;
         let marker = self.marker;
         let pings = self.pings;
+        let (heading, body, own) = (self.heading, self.body, self.own);
         let result = canvas.paint(host, |p| {
             p.clear(rgba(0, 0, 0, 170));
             p.stroke_rect(
@@ -116,6 +132,9 @@ impl UiDemo {
                 1.0,
             );
             p.text("uidemo canvas", (6.0, 4.0), rgba(255, 220, 120, 255), true);
+            p.text_in(heading, "Golem", (6.0, 40.0), rgba(255, 255, 255, 255), false);
+            p.text_in(body, "body text", (6.0, 62.0), rgba(255, 255, 255, 255), true);
+            p.text_in(own, "AVTo", (90.0, 40.0), rgba(255, 220, 120, 255), false);
             // The title's measured width, underlined.
             p.line(
                 (6.0, 5.0 + line_h),
@@ -267,6 +286,23 @@ impl Plugin for UiDemo {
             }
         }
         self.dot = host.image_rgba("dot", 4, 4, &dot);
+        // Its fonts: the bundled one in both weights, an OpenType file of its
+        // own, and a file that is no font, which is refused without harm.
+        self.heading = host.font_bundled(18.0, FontWeight::SemiBold);
+        self.body = host.font_bundled(12.0, FontWeight::Regular);
+        self.own = host.font_load("fonts/own.otf", OWN_FONT, 16.0, &[]);
+        let bad = host.font_load("fonts/bad.ttf", b"not a font", 16.0, &[]);
+        let spare = host.font_bundled(12.0, FontWeight::Regular);
+        let released = host.font_release(spare);
+        let (own_w, own_h) = host.font_measure(self.own, "AV");
+        let count = host.font_count();
+        host.info(&format!(
+            "uidemo fonts: heading={} body={} own={} bad={} released={released} count={count} own_size={own_w}x{own_h}",
+            self.heading.is_valid(),
+            self.body.is_valid(),
+            self.own.is_valid(),
+            bad.is_valid(),
+        ));
         self.push(host);
         self.paint(host);
         host.register_hotkey("ping", "Ping", chord(PluginKey::P, true, false, true))?;
@@ -330,6 +366,23 @@ impl Plugin for UiDemo {
                         let done = host.set_control_label("main", "Headline", rest);
                         host.info(&format!("uidemo rename: {done}"));
                     }
+                    "typed" => {
+                        let spec = PanelSpec::new("typed", "Typed", TYPED_MARKUP)
+                            .bind_typed("Maybe", TypedBindingKind::OptionalBool)
+                            .bind_typed("SetFlag", TypedBindingKind::BoolAction)
+                            .bind_typed("Colour", TypedBindingKind::Uint)
+                            .bind_typed("SetColour", TypedBindingKind::UintAction);
+                        match host.register_panel(&spec) {
+                            Ok(mut panel) => {
+                                panel.set("Maybe", TypedValue::OptionalBool(None));
+                                panel.set("Colour", TypedValue::Uint(0xFF33_6699));
+                                let flushed = panel.flush(host);
+                                panel.show(host, true);
+                                host.info(&format!("uidemo typed: {flushed:?}"));
+                            }
+                            Err(why) => host.info(&format!("uidemo typed refused: {why}")),
+                        }
+                    }
                     "hotkeys" => Self::hotkeys(host, "now"),
                     "actions" => {
                         let listen = rest != "off";
@@ -342,6 +395,13 @@ impl Plugin for UiDemo {
                     }
                     _ => self.report(host, "status"),
                 }
+            }
+            Event::Ui(UiEvent::Action(action)) if action.handler == "SetFlag" => {
+                host.info(&format!("uidemo typed SetFlag {:?}", action.value.as_bool()));
+            }
+            Event::Ui(UiEvent::Action(action)) if action.handler == "SetColour" => {
+                let colour = action.value.as_uint().map(|c| format!("{c:08X}"));
+                host.info(&format!("uidemo typed SetColour {colour:?}"));
             }
             Event::Ui(UiEvent::Action(action)) => {
                 match (action.handler.as_str(), action.value) {

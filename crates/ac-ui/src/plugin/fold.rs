@@ -17,11 +17,13 @@ use super::Palette;
 use super::controls::{
     CLASSIC_ARROW, CLASSIC_CAPTION, DISABLED_ALPHA, Emit, FOCUS, UNLIT_INNER, UNLIT_OUTER,
 };
+use super::style;
 use crate::draw::{Color, RenderContext};
 use crate::event::{Key, UiEvent, kind};
 use crate::font::UiFont;
 use crate::geometry::AnchorEdges;
 use crate::root::UiRoot;
+use crate::shapes::CornerRadii;
 use crate::tree::{Element, ElementId, Widget};
 
 /// The window's remembered control values, shared by every plugin window.
@@ -110,7 +112,8 @@ pub type Shifts = Rc<RefCell<HashMap<ElementId, f32>>>;
 /// A header that folds away the content below it (OpenAC
 /// `UiMarkupExpander`). Folded, the siblings at or below its bottom move up
 /// by the height it gave up (stretched ones grow instead) and come back when
-/// it opens.
+/// it opens. Under a modern theme it is framed like a group box, with a band
+/// behind the header; Classic draws no frame.
 #[derive(Debug)]
 pub struct MarkupExpander {
     /// The header element.
@@ -123,6 +126,10 @@ pub struct MarkupExpander {
     pub open_by_default: bool,
     /// A flex container places it: folding only hides the content.
     pub flex_placed: bool,
+    /// The markup's `border`: a theme draws the frame and header band.
+    pub framed: bool,
+    /// The theme on a themed panel.
+    pub palette: Option<Palette>,
     host: Option<bool>,
     remembered: Remembered,
     laid_out: bool,
@@ -153,6 +160,8 @@ impl MarkupExpander {
             bound: None,
             open_by_default,
             flex_placed: false,
+            framed: true,
+            palette: None,
             host: None,
             remembered,
             laid_out: true,
@@ -185,6 +194,16 @@ impl MarkupExpander {
     #[must_use]
     pub fn laid_out_expanded(&self) -> bool {
         self.laid_out
+    }
+
+    /// How tall the frame is in a box `height` tall: folded it is just the
+    /// header, even where a flex container keeps the height.
+    fn frame_height(&self, height: f32) -> f32 {
+        if self.laid_out {
+            height
+        } else {
+            height.min(EXPANDER_HEADER_HEIGHT)
+        }
     }
 
     /// A header click or Enter/Space.
@@ -340,6 +359,46 @@ impl Widget for MarkupExpander {
         let expanded = self.expanded();
         self.apply_layout(ui, me, expanded);
     }
+
+    fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
+        let (w, h) = size(ui, me);
+        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+            return;
+        };
+        let h = self.frame_height(h);
+        let is_live = live(ui, me);
+        let r = style::CONTROL_RADIUS;
+        let radii = if h > EXPANDER_HEADER_HEIGHT {
+            CornerRadii::new(r, r, 0.0, 0.0)
+        } else {
+            CornerRadii::all(r)
+        };
+        rc.fill_vertical_gradient(
+            0.0,
+            0.0,
+            w,
+            h.min(EXPANDER_HEADER_HEIGHT),
+            radii,
+            fade(style::mix(p.background, p.text, 0.08), is_live),
+            fade(style::mix(p.background, p.text, 0.04), is_live),
+        );
+    }
+
+    // The border goes over the children, so content placed at the edge
+    // cannot hide it.
+    fn draw_after_children(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
+        let (w, h) = size(ui, me);
+        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+            return;
+        };
+        let h = self.frame_height(h);
+        let edge = fade(p.border, live(ui, me));
+        let radius = style::CONTROL_RADIUS;
+        style::surface(rc, 0.0, 0.0, w, h, radius, Color::TRANSPARENT, edge);
+        if h > EXPANDER_HEADER_HEIGHT {
+            rc.fill(1.0, EXPANDER_HEADER_HEIGHT - 1.0, w - 2.0, 1.0, edge);
+        }
+    }
 }
 
 /// Where an expander header's caption starts: after the arrow.
@@ -440,14 +499,25 @@ impl Widget for ExpanderHeader {
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
         let is_live = live(ui, me);
-        let arrow = fade(self.palette.map_or(CLASSIC_ARROW, |p| p.text), is_live);
-        let top = ((h - 5.0) * 0.5).floor();
-        for i in 0..3u8 {
-            let i = f32::from(i);
+        if let Some(p) = &self.palette {
+            // A muted smooth chevron within the arrow's room.
+            let muted = fade(p.muted, is_live);
+            let cy = h * 0.5;
             if self.expanded {
-                rc.fill(3.0 + i, top + 1.0 + i, 5.0 - i * 2.0, 1.0, arrow);
+                style::chevron(rc, 3.0, cy - 2.0, 7.0, 4.0, muted);
             } else {
-                rc.fill(4.0 + i, top + i, 1.0, 5.0 - i * 2.0, arrow);
+                style::chevron_right(rc, 4.5, cy - 3.5, 3.5, 7.0, muted);
+            }
+        } else {
+            let arrow = fade(CLASSIC_ARROW, is_live);
+            let top = ((h - 5.0) * 0.5).floor();
+            for i in 0..3u8 {
+                let i = f32::from(i);
+                if self.expanded {
+                    rc.fill(3.0 + i, top + 1.0 + i, 5.0 - i * 2.0, 1.0, arrow);
+                } else {
+                    rc.fill(4.0 + i, top + i, 1.0, 5.0 - i * 2.0, arrow);
+                }
             }
         }
         if let Some(font) = &self.font {
@@ -463,7 +533,10 @@ impl Widget for ExpanderHeader {
             );
         }
         if self.focused {
-            rc.rect_outline(0.0, 0.0, w, h, FOCUS, 1.0);
+            match &self.palette {
+                Some(p) => style::focus_ring(rc, p, w, h, style::SMALL_RADIUS),
+                None => rc.rect_outline(0.0, 0.0, w, h, FOCUS, 1.0),
+            }
         }
     }
 }
@@ -757,16 +830,37 @@ impl Widget for SplitBar {
         }
         let is_live = live(ui, me);
         let hot = is_live && (self.dragging || self.hovered);
-        let p = self.palette.as_ref();
-        let fill = fade(p.map_or(UNLIT_OUTER, |p| p.field), is_live);
-        let grip = fade(
-            if hot {
-                p.map_or(CLASSIC_ARROW, |p| p.accent)
+        if let Some(p) = &self.palette {
+            // No band, only a slim grip pill across the middle.
+            const GRIP_LENGTH: f32 = 24.0;
+            const GRIP_WIDTH: f32 = 3.0;
+            let pill = fade(if hot { p.accent } else { p.border }, is_live);
+            let radii = CornerRadii::all(GRIP_WIDTH * 0.5);
+            let (gx, gy, gw, gh) = if self.horizontal {
+                let length = GRIP_LENGTH.min(h);
+                (
+                    ((w - GRIP_WIDTH) * 0.5).floor(),
+                    ((h - length) * 0.5).floor(),
+                    GRIP_WIDTH,
+                    length,
+                )
             } else {
-                p.map_or(UNLIT_INNER, |p| p.border)
-            },
-            is_live,
-        );
+                let length = GRIP_LENGTH.min(w);
+                (
+                    ((w - length) * 0.5).floor(),
+                    ((h - GRIP_WIDTH) * 0.5).floor(),
+                    length,
+                    GRIP_WIDTH,
+                )
+            };
+            rc.fill_rounded_rect(gx, gy, gw, gh, radii, pill);
+            if self.focused {
+                style::focus_ring(rc, p, w, h, style::SMALL_RADIUS);
+            }
+            return;
+        }
+        let fill = fade(UNLIT_OUTER, is_live);
+        let grip = fade(if hot { CLASSIC_ARROW } else { UNLIT_INNER }, is_live);
         rc.fill(0.0, 0.0, w, h, fill);
         if self.horizontal {
             rc.fill(((w - 1.0) * 0.5).floor(), 0.0, 1.0, h, grip);
@@ -1096,8 +1190,13 @@ impl Widget for MarkupContextMenu {
         let p = self.palette.as_ref();
         let (x, y, w, h) = self.rect;
         rc.push_alpha_absolute(1.0);
-        rc.fill(x, y, w, h, p.map_or(MENU_BACKGROUND, |p| p.field));
-        rc.rect_outline(x, y, w, h, p.map_or(MENU_BORDER, |p| p.border), 1.0);
+        if let Some(p) = p {
+            style::popup_shadow(rc, x, y, w, h);
+            style::surface(rc, x, y, w, h, style::CONTAINER_RADIUS, p.field, p.border);
+        } else {
+            rc.fill(x, y, w, h, MENU_BACKGROUND);
+            rc.rect_outline(x, y, w, h, MENU_BORDER, 1.0);
+        }
         for (i, item) in self.shown.iter().enumerate() {
             let top = y + self.row_tops[i];
             if item == MENU_SEPARATOR {
@@ -1111,13 +1210,12 @@ impl Widget for MarkupContextMenu {
                 continue;
             }
             if i as i32 == self.highlight {
-                rc.fill(
-                    x + 1.0,
-                    top,
-                    w - 2.0,
-                    MENU_ITEM_HEIGHT,
-                    p.map_or(MENU_HIGHLIGHT, |p| p.selected),
-                );
+                match p {
+                    Some(p) => {
+                        style::row(rc, x, top, w, MENU_ITEM_HEIGHT, style::hover(p, p.field));
+                    }
+                    None => rc.fill(x + 1.0, top, w - 2.0, MENU_ITEM_HEIGHT, MENU_HIGHLIGHT),
+                }
             }
             let color = if self.shown_enabled[i] {
                 p.map_or(MENU_TEXT, |p| p.text)

@@ -1030,6 +1030,34 @@ mod tests {
         }
     }
 
+    /// A horizontal gradient draws bright to dark from left to right, with no
+    /// step larger than its share of the width.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_horizontal_gradient_runs_smoothly_across_the_shape() {
+        let (device, queue) = crate::test_gpu::device().expect("a GPU device");
+        let drawn = shape_pixels(&device, &queue, 64, 1, |c| {
+            c.fill_horizontal_gradient(
+                8.0,
+                8.0,
+                48.0,
+                48.0,
+                ac_ui::shapes::CornerRadii::default(),
+                Color::WHITE,
+                Color::BLACK,
+            );
+        });
+        let row: Vec<u8> = (9..55).map(|x| drawn[32 * 64 + x]).collect();
+        assert!(row[0] > 240 && row[row.len() - 1] < 15, "{row:?}");
+        for pair in row.windows(2) {
+            assert!(pair[0] > pair[1], "{row:?}");
+            assert!(pair[0] - pair[1] <= 7, "{row:?}");
+        }
+        // A column stays one shade from top to bottom.
+        let column: Vec<u8> = (9..55).map(|y| drawn[y * 64 + 32]).collect();
+        assert!(column.iter().all(|&p| p == column[0]), "{column:?}");
+    }
+
     /// A shadow darkens most beside its caster, fades smoothly and is gone
     /// past its spread.
     #[test]

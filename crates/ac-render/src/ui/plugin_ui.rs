@@ -25,16 +25,16 @@ use ac_plugin_ui::{
 use ac_proto::Quaternion;
 use ac_runtime::session::SessionCommand;
 use ac_ui::DatContent;
-use ac_ui::bundled_font;
+use ac_ui::bundled_font::{self, BundledFontError, ModernFonts, Weight};
 use ac_ui::draw::{Color, SpriteSizes, TextureRef};
-use ac_ui::font::{DEFAULT_FONT_ID, UiFont};
-use ac_ui::icons::{IconComposer, IconSource, Rgba};
+use ac_ui::font::{DEFAULT_FONT_ID, SharpFont, SharpFonts, UiFont};
+use ac_ui::icons::{IconComposer, IconSource};
 use ac_ui::import::LayoutSource;
 use ac_ui::overlay::{WorldIcon, WorldIconAnchor, WorldLabel, WorldLabelAnchor};
 use ac_ui::panels::projectile_debug::{ProjectileDebugOverlay, ProjectileDebugSample};
-use ac_ui::plugin::canvas::CanvasLayer;
+use ac_ui::plugin::canvas::{CanvasFont, CanvasLayer};
+use ac_ui::plugin::dock::{self, DockArt, DockMode, DockOpens, DockSize, PluginDock};
 use ac_ui::plugin::fold::SharedControlState;
-use ac_ui::plugin::shelf::{self, PluginShelf};
 use ac_ui::plugin::{
     Icon, MarkupIcons, PluginOutbox, PluginPanelController, PluginTheme, build_panel,
     build_panel_with_state,
@@ -64,6 +64,16 @@ pub const PROJECTILE_SAMPLES_SHOWN: Duration = Duration::from_millis(350);
 /// A label hangs this high over an object nothing else gives a height,
 /// metres (about a standing human).
 pub const FALLBACK_LABEL_HEIGHT: f32 = 1.1;
+
+/// OpenAC's crescent on a clear background, which the plugin dock's tile shows
+/// on every theme's fill.
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../../assets/icons/crescent-256.png");
+/// The size of the count on the dock's tile, pixels.
+const DOCK_COUNT_FONT_SIZE: f32 = 10.0;
+/// The size of a monogram's letters on the smaller dock, pixels.
+const DOCK_SMALLER_LETTERS: f32 = 12.0;
+/// The size of a monogram's letters on the bigger dock, pixels.
+const DOCK_BIGGER_LETTERS: f32 = 20.0;
 
 /// The size composed item and spell icons are drawn at, pixels.
 const ICON_SIZE: f32 = 32.0;
@@ -105,17 +115,18 @@ pub struct PluginWindowUi {
     /// The plugin windows mounted, by the session's number, with their
     /// window names.
     panels: BTreeMap<u32, String>,
-    shelf: bool,
+    dock: bool,
     canvases: Option<CanvasLayer>,
     projectile: Option<ProjectileDebugOverlay>,
     /// The plugins' images as textures, by plugin and handle, each with
     /// whether this window uploaded it (and gives it back when the plugin
     /// lets go of the image).
     images: HashMap<(String, u32), (Icon, bool)>,
-    /// Each plugin's `icon.png` as a texture, uploaded once per plugin
-    /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), with the pixels it
-    /// was made from: a reloaded plugin's new file uploads again.
-    file_icons: HashMap<String, (Arc<Vec<u8>>, Icon)>,
+    /// The PNGs on the plugin dock as textures, uploaded once per picture
+    /// (OpenAC `RetailUiRuntime.ResolvePluginFileIcon`), by the pixels each was
+    /// made from, which an entry keeps alive so its key stays that picture's. A
+    /// picture nothing holds any more is let go.
+    file_icons: HashMap<usize, (Arc<Vec<u8>>, Icon)>,
     /// The file icons each plugin window draws, as the session was last
     /// told them.
     files_shown: HashMap<u32, Vec<String>>,
@@ -128,7 +139,18 @@ pub struct PluginWindowUi {
     manager_chord: Option<ac_ui::input::KeyChord>,
     /// The bundled sans font the modern themes draw opted-in windows in
     /// (OpenAC `BundledUiFont.Load`), baked when the plugin UI is mounted.
-    modern_font: Option<Arc<UiFont>>,
+    modern_fonts: Option<ModernFonts>,
+    /// The dock's own sizes of the bundled SemiBold, each with its size.
+    dock_fonts: Vec<(Arc<UiFont>, f32)>,
+    /// The display density the sharper bakes of those fonts were last chosen
+    /// for.
+    sharp_density: Option<f32>,
+    /// The atlases of the fonts plugins hold, by bake: a bake the bundled font
+    /// shares between plugins is one texture.
+    font_textures: HashMap<usize, (Arc<ac_plugin_ui::fonts::FontBake>, TextureRef)>,
+    /// Those sharper bakes by regular and SemiBold font and scale in quarter
+    /// steps, kept so a window moved between displays bakes each only once.
+    sharp_bakes: HashMap<(u32, u32), SharpFont>,
     /// A markup window's title colour without a theme, from the player's
     /// `controlsntrols.ini` (`[title] color`); white without one.
     title_color: Option<Color>,
@@ -255,7 +277,7 @@ impl PluginWindowUi {
 
 /// The Appearance window (OpenAC `RetailUiRuntime.ShowPluginAppearance`):
 /// the client's own markup window, built from a plugin UI of its own that
-/// only this window holds, offering the three themes.
+/// only this window holds, offering the themes.
 #[derive(Debug)]
 struct Appearance {
     ui: ac_plugin_ui::PluginUi,
@@ -271,10 +293,16 @@ const APPEARANCE_OWNER: &str = "openac";
 const APPEARANCE_VIEW: &str = "appearance";
 
 /// OpenAC `RetailUiRuntime.ShowPluginAppearance`'s markup.
-const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="140" title="Plugin appearance" theme="plugin">
+const APPEARANCE_MARKUP: &str = r#"<panel x="70" y="90" w="310" h="308" title="Plugin appearance" theme="plugin">
   <label x="12" y="33" text="Theme" />
-  <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="3" />
-  <button x="226" y="102" w="72" h="24" text="Close" onclick="{Close}" />
+  <menu x="12" y="55" w="286" h="24" items="{Themes}" selected="{Selected}" onchange="{Select}" rows="8" />
+  <label x="12" y="89" text="Dock" />
+  <menu x="12" y="111" w="286" h="24" items="{Docks}" selected="{SelectedDock}" onchange="{SelectDock}" rows="6" />
+  <label x="12" y="145" text="Dock size" />
+  <menu x="12" y="167" w="286" h="24" items="{DockSizes}" selected="{SelectedDockSize}" onchange="{SelectDockSize}" rows="3" />
+  <label x="12" y="201" text="Dock opens" />
+  <menu x="12" y="223" w="286" h="24" items="{DockOpenings}" selected="{SelectedDockOpens}" onchange="{SelectDockOpens}" rows="2" />
+  <button x="226" y="270" w="72" h="24" text="Close" onclick="{Close}" />
 </panel>"#;
 
 /// Markup with no images to resolve.
@@ -341,39 +369,60 @@ fn surface_icon(content: &DatContent, id: u32) -> Option<Icon> {
     Some((TextureRef::Surface(id), w as f32, h as f32))
 }
 
-/// The shelf's button images: the window's art and its runtime textures.
-struct WindowShelfIcons<'a> {
-    content: &'a DatContent,
-    images: &'a super::icons::RuntimeImages,
-    file_icons: &'a mut HashMap<String, (Arc<Vec<u8>>, Icon)>,
+/// An icon a plugin names by its image id, its pure white keyed out as the
+/// item icons' is (OpenAC `IMarkupIconResolver`): such art has opaque white
+/// where an item's underlay would show.
+fn keyed_surface_icon(content: &DatContent, icons: &mut IconComposer, id: u32) -> Option<Icon> {
+    let (w, h) = content.sprite_size(id)?;
+    Some((icons.keyed_icon(id)?, w as f32, h as f32))
 }
 
-impl shelf::ShelfIcons for WindowShelfIcons<'_> {
-    fn file(&mut self, owner: &str, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
-        if let Some((pixels, texture)) = self.file_icons.get(owner)
-            && Arc::ptr_eq(pixels, &icon.rgba)
-        {
+/// The dock's slot images: the window's art and its runtime textures.
+/// A picture for the plugin dock as a texture, smaller copies and all, as it is
+/// drawn below its size.
+fn plugin_icon_texture(
+    images: &super::icons::RuntimeImages,
+    icon: &ac_plugin_ui::PluginIcon,
+) -> Icon {
+    let (w, h) = (icon.width, icon.height);
+    let levels = ac_plugin_ui::mips::build(icon.rgba.as_ref().clone(), w, h)
+        .into_iter()
+        .map(|l| ac_dat::texture::DecodedTexture {
+            width: l.width,
+            height: l.height,
+            rgba: l.rgba,
+        })
+        .collect();
+    (images.add_plugin_image(levels), w as f32, h as f32)
+}
+
+struct WindowDockIcons<'a> {
+    content: &'a DatContent,
+    icons: &'a mut IconComposer,
+    images: &'a super::icons::RuntimeImages,
+    file_icons: &'a mut HashMap<usize, (Arc<Vec<u8>>, Icon)>,
+}
+
+impl dock::DockIcons for WindowDockIcons<'_> {
+    fn file(&mut self, icon: &ac_plugin_ui::PluginIcon) -> Option<Icon> {
+        let key = Arc::as_ptr(&icon.rgba) as usize;
+        if let Some((_, texture)) = self.file_icons.get(&key) {
             return Some(*texture);
         }
-        let rgba = Rgba::new(icon.width, icon.height, icon.rgba.as_ref().clone());
-        let texture = (
-            self.images.uploader().upload(&rgba),
-            icon.width as f32,
-            icon.height as f32,
-        );
+        let texture = plugin_icon_texture(self.images, icon);
         self.file_icons
-            .insert(owner.to_owned(), (Arc::clone(&icon.rgba), texture));
+            .insert(key, (Arc::clone(&icon.rgba), texture));
         Some(texture)
     }
 
     fn surface(&mut self, id: u32) -> Option<Icon> {
-        surface_icon(self.content, id)
+        keyed_surface_icon(self.content, self.icons, id)
     }
 }
 
 impl MarkupIcons for WindowIcons<'_> {
     fn surface(&mut self, id: u32) -> Option<Icon> {
-        surface_icon(self.content, id)
+        keyed_surface_icon(self.content, self.icons, id)
     }
 
     fn spell(&mut self, spell: u32) -> Option<Icon> {
@@ -423,48 +472,58 @@ impl WindowUi {
         self.plugins.title_color = controls.color("title", "color");
     }
 
-    /// Mount the plugins' shelf and their layers of the overlay band
+    /// Mount the plugins' dock and their layers of the overlay band
     /// (after the overlays).
     pub(super) fn mount_plugin_ui(&mut self) {
         // The bundled sans font of the modern themes, baked into an atlas
         // texture of this window (OpenAC `BundledUiFont.Load`).
-        match bundled_font::bake(bundled_font::DEFAULT_PIXEL_HEIGHT) {
-            Ok(mut atlas) => {
-                let coverage = std::mem::take(&mut atlas.coverage);
-                let texture = self
-                    .images
-                    .add_coverage(atlas.width, atlas.height, coverage);
-                self.plugins.modern_font = Some(Arc::new(atlas.create_font(texture)));
-            }
+        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+        match self
+            .bake_bundled_font(size, Weight::Regular)
+            .and_then(|regular| {
+                let semibold = self.bake_bundled_font(size, Weight::SemiBold)?;
+                Ok(ModernFonts { regular, semibold })
+            }) {
+            Ok(fonts) => self.plugins.modern_fonts = Some(fonts),
             Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
         }
         let font = self.content.font(DEFAULT_FONT_ID);
         let outbox = Rc::clone(&self.plugins.outbox);
-        let shelf = PluginShelf::build(&mut self.host.root, font, outbox);
-        let frame = shelf.root;
+        let modern = self.plugins.modern_fonts.clone();
+        let dock = PluginDock::build(&mut self.host.root, font, modern, outbox);
+        let frame = dock.root;
         let top = self.host.root.root();
         self.host.root.add_child(top, frame);
+        let art = DockArt {
+            icon: self.dock_app_icon(),
+            count_font: self.dock_font(DOCK_COUNT_FONT_SIZE),
+            smaller_letters: self.dock_font(DOCK_SMALLER_LETTERS),
+            bigger_letters: self.dock_font(DOCK_BIGGER_LETTERS),
+        };
+        let mut dock = dock;
+        dock.set_art(&mut self.host.root, art);
         match self
             .host
             .root
-            .register_window(shelf::WINDOW, frame, Some(frame), 0)
+            .register_window(dock::WINDOW, frame, Some(frame), 0)
         {
             Ok(()) => {
                 if self
                     .host
-                    .attach_controller(shelf::WINDOW, Box::new(shelf))
+                    .attach_controller(dock::WINDOW, Box::new(dock))
                     .is_ok()
                 {
-                    self.plugins.shelf = true;
+                    self.plugins.dock = true;
                 }
             }
-            Err(e) => self.notices.push(format!("ui: plugin shelf: {e:?}")),
+            Err(e) => self.notices.push(format!("ui: plugin dock: {e:?}")),
         }
         if let Some(host) = self.status.overlays.host_mut() {
             let root = &mut self.host.root;
             self.plugins.canvases = Some(CanvasLayer::mount(root, host));
             self.plugins.projectile = Some(ProjectileDebugOverlay::mount(root, host));
         }
+        self.follow_plugin_dock_setting();
         // The theme the player saved: opted-in windows take it from their
         // first draw, and plugins are told it (OpenAC `FollowTheme`).
         let saved = ThemeKind::from_saved(&self.settings.plugin_ui.theme);
@@ -474,17 +533,120 @@ impl WindowUi {
         self.apply_plugin_theme(saved, saved != ThemeKind::Classic);
     }
 
-    /// The plugin theme in force: opted-in windows restyle, the shelf
-    /// turns compact (or classic again), the Appearance window shows it and
+    /// OpenAC's icon as a texture.
+    fn dock_app_icon(&mut self) -> Option<Icon> {
+        let Some(icon) = ac_plugin_ui::icon::decode_png(APP_ICON_PNG) else {
+            self.notices
+                .push("ui: the OpenAC icon does not decode".to_owned());
+            return None;
+        };
+        Some(plugin_icon_texture(&self.images, &icon))
+    }
+
+    /// The bundled SemiBold at one of the dock's sizes.
+    fn dock_font(&mut self, size: f32) -> Option<Arc<UiFont>> {
+        match self.bake_bundled_font(size, Weight::SemiBold) {
+            Ok(font) => {
+                self.plugins.dock_fonts.push((Arc::clone(&font), size));
+                Some(font)
+            }
+            Err(e) => {
+                self.notices.push(format!("ui: bundled font: {e}"));
+                None
+            }
+        }
+    }
+
+    /// The sharper bakes of the bundled font for a display with `pixels` a
+    /// UI unit, made the first time a display of that density is used. On a
+    /// standard display there are none.
+    pub(super) fn follow_display_density(&mut self, pixels: f32) {
+        if self.plugins.sharp_density == Some(pixels) {
+            return;
+        }
+        self.plugins.sharp_density = Some(pixels);
+        // The session bakes plugins' fonts for this density too.
+        self.plugins
+            .outbox
+            .borrow_mut()
+            .push(UiInput::DisplayDensity(pixels));
+        let Some(fonts) = self.plugins.modern_fonts.clone() else {
+            return;
+        };
+        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+        let mut bakes = vec![
+            (fonts.regular, Weight::Regular, size),
+            (fonts.semibold, Weight::SemiBold, size),
+        ];
+        for (font, size) in self.plugins.dock_fonts.clone() {
+            bakes.push((font, Weight::SemiBold, size));
+        }
+        let mut chosen = SharpFonts::new();
+        for (font, weight, size) in &bakes {
+            let (font, weight, size) = (font, *weight, *size);
+            match self.sharp_bake(font, weight, size, pixels) {
+                Ok(Some(sharp)) => {
+                    chosen.insert(font.id, sharp);
+                }
+                Ok(None) => {}
+                Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
+            }
+        }
+        let chosen = (!chosen.is_empty()).then(|| Arc::new(chosen));
+        self.host.root.set_sharp_fonts(chosen);
+    }
+
+    /// The sharper bake of `font`, baked at `size`, for `pixels` a UI unit: none
+    /// where it would be no sharper.
+    fn sharp_bake(
+        &mut self,
+        font: &UiFont,
+        weight: Weight,
+        size: f32,
+        pixels: f32,
+    ) -> Result<Option<SharpFont>, BundledFontError> {
+        let scale = bundled_font::sharp_scale_for(size, pixels);
+        if scale <= 1.0 {
+            return Ok(None);
+        }
+        let key = (font.id, (scale * 4.0) as u32);
+        if let Some(sharp) = self.plugins.sharp_bakes.get(&key) {
+            return Ok(Some(sharp.clone()));
+        }
+        let sharp = SharpFont {
+            font: self.bake_bundled_font(size * scale, weight)?,
+            scale,
+        };
+        self.plugins.sharp_bakes.insert(key, sharp.clone());
+        Ok(Some(sharp))
+    }
+
+    /// The bundled font in `weight` at `pixel_height`, as a font over a new
+    /// atlas texture.
+    fn bake_bundled_font(
+        &self,
+        pixel_height: f32,
+        weight: Weight,
+    ) -> Result<Arc<UiFont>, BundledFontError> {
+        let mut atlas = bundled_font::bake(pixel_height, weight)?;
+        let coverage = std::mem::take(&mut atlas.coverage);
+        let texture = self
+            .images
+            .add_coverage(atlas.width, atlas.height, coverage);
+        Ok(Arc::new(atlas.create_font(texture)))
+    }
+
+    /// The plugin theme in force: opted-in windows restyle, the dock takes
+    /// its colours, the Appearance window shows it and
     /// the session tells plugins (OpenAC `PluginUiThemeSettings.Theme`'s
     /// setter and `BufferedUiRegistry.PublishTheme`).
     fn apply_plugin_theme(&mut self, kind: ThemeKind, tell_session: bool) {
         self.plugins.theme_kind = kind;
         self.plugins.theme = kind.into();
         let theme = self.plugins.theme;
-        if self.plugins.shelf {
+        if self.plugins.dock {
             self.host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_theme(ui, theme));
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_theme(ui, theme));
         }
         // Every window draws again in the theme.
         self.plugins.synced = None;
@@ -518,15 +680,94 @@ impl WindowUi {
         }
     }
 
-    /// Open the Appearance window, building it the first time (OpenAC
-    /// `ShowPluginAppearance`).
-    fn show_plugin_appearance(&mut self) {
-        if self.plugins.appearance.is_none() {
+    /// The dock's mode, as last saved or picked.
+    fn plugin_dock_mode(&mut self) -> DockMode {
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.mode())
+            .unwrap_or_default()
+    }
+
+    /// The dock's mode is saved with the client settings.
+    fn save_plugin_dock(&mut self, mode: DockMode) {
+        mode.saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+    }
+
+    /// The player picked a place for the dock in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock(&mut self, mode: DockMode) {
+        if mode == self.plugin_dock_mode() {
+            return;
+        }
+        self.save_plugin_dock(mode);
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_mode(ui, mode));
+    }
+
+    /// The player picked a size for the dock in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock_size(&mut self, size: DockSize) {
+        size.saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock_size);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_size(ui, size));
+    }
+
+    /// The player picked how the dock opens in the Appearance window: it is
+    /// saved with the client settings and applied.
+    fn pick_plugin_dock_opens(&mut self, opens: DockOpens) {
+        opens
+            .saved_name()
+            .clone_into(&mut self.settings.plugin_ui.dock_opens);
+        let section = ac_ui::panels::options::Section::PluginUi;
+        if !self.settings_changes.iter().any(|(s, _)| *s == section) {
+            self.settings_changes.push((section, true));
+        }
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_opens(ui, opens));
+    }
+
+    /// The saved place, size and opening of the dock are applied, when they
+    /// differ.
+    pub(super) fn follow_plugin_dock_setting(&mut self) {
+        let saved = DockMode::from_saved(&self.settings.plugin_ui.dock);
+        let size = DockSize::from_saved(&self.settings.plugin_ui.dock_size);
+        let opens = DockOpens::from_saved(&self.settings.plugin_ui.dock_opens);
+        self.host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
+                c.set_mode(ui, saved);
+                c.set_size(ui, size);
+                c.set_opens(ui, opens);
+            });
+    }
+
+    /// Open the Appearance window, building it the first time, or close it
+    /// when it is open (OpenAC `ShowPluginAppearance`).
+    fn toggle_plugin_appearance(&mut self) {
+        let first_time = self.plugins.appearance.is_none();
+        if first_time {
             let mut ui = ac_plugin_ui::PluginUi::new();
             let schema = ac_plugin_ui::BindingSchema::new("PluginAppearanceBinding")
                 .with("Themes", ac_plugin_ui::BindingKind::TextList)
                 .with("Selected", ac_plugin_ui::BindingKind::Text)
                 .with("Select", ac_plugin_ui::BindingKind::TextAction)
+                .with("Docks", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDock", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDock", ac_plugin_ui::BindingKind::TextAction)
+                .with("DockSizes", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDockSize", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDockSize", ac_plugin_ui::BindingKind::TextAction)
+                .with("DockOpenings", ac_plugin_ui::BindingKind::TextList)
+                .with("SelectedDockOpens", ac_plugin_ui::BindingKind::Text)
+                .with("SelectDockOpens", ac_plugin_ui::BindingKind::TextAction)
                 .with("Close", ac_plugin_ui::BindingKind::Action);
             let mut descriptor =
                 ac_plugin_ui::PanelDescriptor::new(APPEARANCE_VIEW, "Plugin appearance");
@@ -545,7 +786,7 @@ impl WindowUi {
             let outbox: PluginOutbox = Rc::new(std::cell::RefCell::new(Vec::new()));
             let font = self.content.font(DEFAULT_FONT_ID);
             let controller = build_panel(&mut self.host.root, &view, font, Rc::clone(&outbox))
-                .with_modern_font(self.plugins.modern_font.clone())
+                .with_modern_fonts(self.plugins.modern_fonts.clone())
                 .with_title_color(&mut self.host.root, self.plugins.title_color());
             let frame = controller.root;
             let window = controller.window_name.clone();
@@ -571,10 +812,15 @@ impl WindowUi {
                 revision: 0,
             });
         }
+        let mut opened = false;
         if let Some(a) = self.plugins.appearance.as_mut() {
-            a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, true);
+            opened = first_time || !a.ui.panels().next().is_some_and(PanelView::shown);
+            a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, opened);
         }
         self.sync_appearance();
+        if !opened {
+            return;
+        }
         if let Some(frame) = self
             .plugins
             .appearance
@@ -586,10 +832,15 @@ impl WindowUi {
         }
     }
 
-    /// The Appearance window shows the theme in force.
+    /// The Appearance window shows the theme in force and where the dock is.
     fn sync_appearance(&mut self) {
         let theme = self.plugins.theme;
         let kind = self.plugins.theme_kind;
+        let mode = self.plugin_dock_mode();
+        let (size, opens) = self
+            .host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| (c.size(), c.opens()))
+            .unwrap_or_default();
         let Some(a) = self.plugins.appearance.as_mut() else {
             return;
         };
@@ -605,6 +856,45 @@ impl WindowUi {
                 (
                     "Selected".into(),
                     ac_plugin_ui::UiValue::Text(kind.display_name().to_owned()),
+                ),
+                (
+                    "Docks".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockMode::ALL
+                            .iter()
+                            .map(|m| m.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDock".into(),
+                    ac_plugin_ui::UiValue::Text(mode.display_name().to_owned()),
+                ),
+                (
+                    "DockSizes".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockSize::ALL
+                            .iter()
+                            .map(|s| s.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDockSize".into(),
+                    ac_plugin_ui::UiValue::Text(size.display_name().to_owned()),
+                ),
+                (
+                    "DockOpenings".into(),
+                    ac_plugin_ui::UiValue::TextList(
+                        DockOpens::ALL
+                            .iter()
+                            .map(|o| o.display_name().to_owned())
+                            .collect(),
+                    ),
+                ),
+                (
+                    "SelectedDockOpens".into(),
+                    ac_plugin_ui::UiValue::Text(opens.display_name().to_owned()),
                 ),
             ],
         );
@@ -631,6 +921,9 @@ impl WindowUi {
             return;
         }
         let mut picked = None;
+        let mut picked_dock = None;
+        let mut picked_size = None;
+        let mut picked_opens = None;
         for input in inputs {
             match &input {
                 UiInput::Action {
@@ -638,6 +931,25 @@ impl WindowUi {
                     value: ac_plugin_ui::ActionValue::Text(name),
                     ..
                 } if handler == "Select" => picked = ThemeKind::from_display_name(name),
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDock" => picked_dock = DockMode::from_display_name(name),
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDockSize" => {
+                    picked_size = DockSize::from_display_name(name);
+                }
+                UiInput::Action {
+                    handler,
+                    value: ac_plugin_ui::ActionValue::Text(name),
+                    ..
+                } if handler == "SelectDockOpens" => {
+                    picked_opens = DockOpens::from_display_name(name);
+                }
                 UiInput::Action { handler, .. } if handler == "Close" => {
                     a.ui.show_panel(APPEARANCE_OWNER, APPEARANCE_VIEW, false);
                 }
@@ -646,6 +958,15 @@ impl WindowUi {
         }
         if let Some(kind) = picked {
             self.pick_plugin_theme(kind);
+        }
+        if let Some(mode) = picked_dock {
+            self.pick_plugin_dock(mode);
+        }
+        if let Some(size) = picked_size {
+            self.pick_plugin_dock_size(size);
+        }
+        if let Some(opens) = picked_opens {
+            self.pick_plugin_dock_opens(opens);
         }
         self.sync_appearance();
     }
@@ -669,15 +990,21 @@ impl WindowUi {
             self.client_window_request(window, action);
         }
         self.report_client_windows();
-        let appearance_asked = self.plugins.shelf
+        let appearance_asked = self.plugins.dock
             && self
                 .host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
-                    c.take_appearance_request()
-                })
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.take_appearance_request())
                 .unwrap_or(false);
         if appearance_asked {
-            self.show_plugin_appearance();
+            self.toggle_plugin_appearance();
+        }
+        let dragged = self
+            .host
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| c.take_dragged_mode())
+            .flatten();
+        if let Some(mode) = dragged {
+            self.save_plugin_dock(mode);
+            self.sync_appearance();
         }
         self.follow_appearance();
     }
@@ -698,6 +1025,7 @@ impl WindowUi {
             }
         }
         let font = self.content.font(DEFAULT_FONT_ID);
+        let modern = self.plugins.modern_fonts.clone();
         let outbox = Rc::clone(&self.plugins.outbox);
         let dialogs = self.facts.plugin_ui.dialogs.clone();
         let modals = self.facts.plugin_ui.modals.clone();
@@ -707,6 +1035,7 @@ impl WindowUi {
             &frames,
             &palettes,
             font.as_ref(),
+            modern.as_ref(),
             &outbox,
         );
         self.plugins
@@ -748,7 +1077,7 @@ impl WindowUi {
                 Rc::clone(&self.plugins.outbox),
                 Some(state),
             )
-            .with_modern_font(self.plugins.modern_font.clone())
+            .with_modern_fonts(self.plugins.modern_fonts.clone())
             .with_title_color(&mut self.host.root, self.plugins.title_color());
             for warning in controller.warnings() {
                 self.notices.push(format!(
@@ -814,14 +1143,23 @@ impl WindowUi {
                 notices.push(format!("ui: plugin window {name}: {notice}"));
             }
         }
-        if plugins.shelf {
-            let mut shelf_icons = WindowShelfIcons {
+        if plugins.dock {
+            let mut dock_icons = WindowDockIcons {
                 content,
+                icons: &mut *markup_icons.icons,
                 images,
                 file_icons: &mut plugins.file_icons,
             };
-            host.with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| {
-                c.sync(ui, &facts.plugin_ui.panels, &mut shelf_icons);
+            host.with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| {
+                c.sync(ui, &facts.plugin_ui.panels, &mut dock_icons);
+            });
+            // The window's copy of the panels holds what is still on the dock.
+            plugins.file_icons.retain(|_, (pixels, (texture, _, _))| {
+                let held = Arc::strong_count(pixels) > 1;
+                if !held {
+                    images.release(*texture);
+                }
+                held
             });
         }
     }
@@ -977,6 +1315,46 @@ impl WindowUi {
             plugins.images.insert(key, (icon, owned));
             Some(icon)
         };
+        // A font's atlases go when no font the plugins hold uses them.
+        let in_use = |key: usize| {
+            view.fonts.values().any(|f| {
+                Arc::as_ptr(&f.font) as usize == key
+                    || f.sharp
+                        .as_ref()
+                        .is_some_and(|s| Arc::as_ptr(&s.font) as usize == key)
+            })
+        };
+        plugins.font_textures.retain(|key, (_, texture)| {
+            let kept = in_use(*key);
+            if !kept {
+                images.release(*texture);
+            }
+            kept
+        });
+        let font_textures = &mut plugins.font_textures;
+        let mut font_of = |view: &ac_plugin_ui::fonts::FontView| {
+            let mut upload = |font: &Arc<ac_plugin_ui::fonts::FontBake>| {
+                font_textures
+                    .entry(Arc::as_ptr(font) as usize)
+                    .or_insert_with(|| {
+                        let texture = images.add_coverage(
+                            font.atlas_width,
+                            font.atlas_height,
+                            font.coverage.clone(),
+                        );
+                        (Arc::clone(font), texture)
+                    })
+                    .1
+            };
+            CanvasFont {
+                texture: upload(&view.font),
+                font: Arc::clone(&view.font),
+                sharp: view
+                    .sharp
+                    .as_ref()
+                    .map(|s| (s.scale, Arc::clone(&s.font), upload(&s.font))),
+            }
+        };
         let font = content.font(DEFAULT_FONT_ID);
         if let Some(layer) = plugins.canvases.as_mut() {
             layer.sync(
@@ -984,6 +1362,7 @@ impl WindowUi {
                 band,
                 view,
                 &mut image,
+                &mut font_of,
                 font.as_ref(),
                 &plugins.outbox,
             );
@@ -1196,13 +1575,13 @@ impl WindowUi {
     }
 
     /// OpenAC `RetailUiRuntime`'s `TogglePluginManager` (Shift+Ctrl+F1 by
-    /// default): with no plugin window on the shelf it says so; else the
-    /// shelf hides, telling the player the key that brings it back (or to
+    /// default): with no plugin window on the dock it says so; else the
+    /// dock hides, telling the player the key that brings it back (or to
     /// bind one), or shows again.
-    pub(super) fn toggle_plugin_shelf(&mut self) -> bool {
-        let state = if self.plugins.shelf {
+    pub(super) fn toggle_plugin_dock(&mut self) -> bool {
+        let state = if self.plugins.dock {
             self.host
-                .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, _| {
+                .with_controller::<PluginDock, _>(dock::WINDOW, |c, _| {
                     (c.entry_count(), c.is_shown())
                 })
                 .unwrap_or((0, false))
@@ -1215,18 +1594,18 @@ impl WindowUi {
             return true;
         }
         self.host
-            .with_controller::<PluginShelf, _>(shelf::WINDOW, |c, ui| c.set_hidden(ui, shown));
+            .with_controller::<PluginDock, _>(dock::WINDOW, |c, ui| c.set_hidden(ui, shown));
         if shown {
-            let text = self.plugin_shelf_hidden_message();
+            let text = self.plugin_dock_hidden_message();
             self.client_line(&text);
         }
         true
     }
 
     /// OpenAC `PluginShelfHiddenMessage`.
-    fn plugin_shelf_hidden_message(&self) -> String {
+    fn plugin_dock_hidden_message(&self) -> String {
         let Some(chord) = self.plugins.manager_chord else {
-            return "Plugin shelf hidden. Bind Toggle Plugin Manager in Configure Keyboard to \
+            return "Plugin dock hidden. Bind Toggle Plugin Manager in Configure Keyboard to \
                     show it again."
                 .to_owned();
         };
@@ -1239,7 +1618,7 @@ impl WindowUi {
             crate::platform::key_name_provider(),
         );
         format!(
-            "Plugin shelf hidden. Press {} to show it again.",
+            "Plugin dock hidden. Press {} to show it again.",
             names.describe(chord)
         )
     }
@@ -1465,6 +1844,23 @@ fn model_height(dats: &DatCollection, setup: &Setup) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_openac_icon_decodes() {
+        let icon = ac_plugin_ui::icon::decode_png(APP_ICON_PNG).expect("the icon decodes");
+        assert_eq!((icon.width, icon.height), (256, 256));
+    }
+
+    #[test]
+    fn the_openac_icon_is_clear_round_and_inside_its_ring() {
+        let icon = ac_plugin_ui::icon::decode_png(APP_ICON_PNG).expect("the icon decodes");
+        let alpha = |x: usize, y: usize| icon.rgba[(y * 256 + x) * 4 + 3];
+        // A corner, and the open middle of the crescent.
+        assert_eq!(alpha(4, 4), 0);
+        assert_eq!(alpha(180, 128), 0);
+        // The crescent's body.
+        assert_eq!(alpha(80, 128), 255);
+    }
 
     #[test]
     fn every_client_window_has_a_name() {

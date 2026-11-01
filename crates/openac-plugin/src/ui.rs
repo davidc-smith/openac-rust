@@ -61,18 +61,21 @@ pub mod route;
 
 use std::collections::BTreeMap;
 
+pub use ac_plugin_abi::ui::theme_metrics;
 pub use ac_plugin_abi::ui::{
-    ActionValue, BindingDecl, BindingKind, CanvasState, Color, GroundShape, GroundShapeKind,
-    ItemRows, MapPoint, MarkerAnchor, PaintCmd, PointerEvent, ProjectileSample, Rect, RowAction,
-    RowStep, TypedBindingDecl, TypedBindingKind, TypedValue, UiAction, UiEvent, UiValue, WorldIcon,
+    ActionValue, BindingDecl, BindingKind, CanvasState, CodepointRange, Color, FONT_MAXIMUM_BYTES,
+    FONT_MAXIMUM_COUNT, FONT_MAXIMUM_FILE_BYTES, FONT_MAXIMUM_GLYPHS, FONT_MAXIMUM_PIXEL_SIZE,
+    FONT_MINIMUM_PIXEL_SIZE, FontWeight, GroundShape, GroundShapeKind, ItemRows, MapPoint,
+    MarkerAnchor, PaintCmd, PointerEvent, ProjectileSample, Rect, RowAction, RowStep,
+    TypedBindingDecl, TypedBindingKind, TypedValue, UiAction, UiEvent, UiValue, WorldIcon,
     WorldLabel, WorldLine, WorldTriangle,
 };
 use ac_plugin_abi::ui::{
-    CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest, ControlLabel, ControlRef,
-    ControlVisible, DialogRequest, EncodedImage, IconSet, ImageInfo, ItemRow, ItemTypeDecl,
-    ItemValue, LineSet, ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration,
-    PanelValues, RgbaImage, ShapeSet, TextSize, TriangleSet, TypedPanelRegistration,
-    TypedPanelValues, ViewShow,
+    BundledFontRequest, CanvasChange, CanvasPaint, CanvasRegistration, ClientWindowRequest,
+    ControlLabel, ControlRef, ControlVisible, DialogRequest, EncodedImage, FontInfo,
+    FontLoadRequest, FontMeasure, IconSet, ImageInfo, ItemRow, ItemTypeDecl, ItemValue, LineSet,
+    ModalShow, NamedItemValue, NamedTypedValue, NamedValue, PanelRegistration, PanelValues,
+    RgbaImage, ShapeSet, TextSize, TriangleSet, TypedPanelRegistration, TypedPanelValues, ViewShow,
 };
 use ac_plugin_abi::{Import, Wire};
 
@@ -109,7 +112,7 @@ pub const MAXIMUM_LABELS: usize = 256;
 /// The most characters one label may have.
 pub const MAXIMUM_LABEL_TEXT: usize = 128;
 
-/// A window to register: its identity, shelf button, markup and bindings
+/// A window to register: its identity, dock slot, markup and bindings
 /// (OpenAC `PluginPanelDescriptor` plus the markup and the binding type).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelSpec {
@@ -177,7 +180,7 @@ impl ItemType {
 
 impl PanelSpec {
     /// A window `window_id` captioned `title` showing `markup`: open at
-    /// once, on the plugin shelf, no bindings yet.
+    /// once, on the plugin dock, no bindings yet.
     #[must_use]
     pub fn new(window_id: &str, title: &str, markup: &str) -> Self {
         Self {
@@ -191,6 +194,7 @@ impl PanelSpec {
                 markup: markup.to_owned(),
                 binding_type: "Bindings".to_owned(),
                 bindings: Vec::new(),
+                icon_file: None,
             },
             typed: Vec::new(),
             item_types: Vec::new(),
@@ -252,17 +256,26 @@ impl PanelSpec {
         self
     }
 
-    /// Initials on the shelf button when there is no icon.
+    /// Initials on the dock slot when there is no icon.
     #[must_use]
     pub fn icon_text(mut self, text: &str) -> Self {
         self.registration.icon_text = Some(text.to_owned());
         self
     }
 
-    /// The shelf button's icon (a full image id or a bare index).
+    /// The dock slot's icon (a full image id or a bare index).
     #[must_use]
     pub fn icon(mut self, surface: u32) -> Self {
         self.registration.icon_surface_id = surface;
+        self
+    }
+
+    /// The dock slot's own picture: a `.png` in the plugin's folder, by a path
+    /// relative to it (API 1.4). It comes ahead of the plugin's `icon.png` and
+    /// [`Self::icon`].
+    #[must_use]
+    pub fn icon_file(mut self, path: &str) -> Self {
+        self.registration.icon_file = Some(path.to_owned());
         self
     }
 
@@ -273,7 +286,7 @@ impl PanelSpec {
         self
     }
 
-    /// No button on the plugin shelf.
+    /// No slot on the plugin dock.
     #[must_use]
     pub fn off_shelf(mut self) -> Self {
         self.registration.show_in_side_panel = false;
@@ -366,7 +379,7 @@ impl Panel {
         Ok(())
     }
 
-    /// Shows or hides the window as its shelf and close buttons do.
+    /// Shows or hides the window as its dock slot and close button do.
     pub fn show(&self, host: &mut Host<'_>, visible: bool) -> bool {
         host.show_panel(&self.window_id, visible)
     }
@@ -394,6 +407,52 @@ pub struct Image {
     pub width: u32,
     /// Height, pixels.
     pub height: u32,
+}
+
+/// A font at one size that the client holds for the plugin, for drawing
+/// canvas text ([`Painter::text_in`]). Each size of each font is its own
+/// `Font`, and the metrics are here so text can be laid out without asking
+/// again. Sizes and metrics are in canvas pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Font {
+    /// The client's number for it; 0 means no font.
+    pub handle: u32,
+    /// The size prepared: the size asked for, to the nearest quarter pixel.
+    pub pixel_size: f32,
+    /// How far apart two lines of this font sit.
+    pub line_height: f32,
+    /// How far below the top of a line its baseline sits, so text in different
+    /// fonts can share a baseline.
+    pub ascent: f32,
+}
+
+impl Font {
+    /// No font: what every refused request returns. Text drawn with it
+    /// draws nothing and measures nothing.
+    pub const NONE: Self = Self {
+        handle: 0,
+        pixel_size: 0.0,
+        line_height: 0.0,
+        ascent: 0.0,
+    };
+
+    /// The client issued it. A released font stays valid by this test but
+    /// draws nothing.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.handle != 0
+    }
+}
+
+impl From<FontInfo> for Font {
+    fn from(info: FontInfo) -> Self {
+        Self {
+            handle: info.handle,
+            pixel_size: info.pixel_size,
+            line_height: info.line_height,
+            ascent: info.ascent,
+        }
+    }
 }
 
 impl Image {
@@ -546,8 +605,30 @@ impl Painter {
 
     /// One line of text with its top-left at `at`.
     pub fn text(&mut self, text: &str, at: (f32, f32), color: Color, outline: bool) {
-        self.commands
-            .push(PaintCmd::Text(text.to_owned(), at.0, at.1, color, outline));
+        self.commands.push(PaintCmd::Text(
+            text.to_owned(),
+            at.0,
+            at.1,
+            color,
+            outline,
+            0,
+        ));
+    }
+
+    /// One line of text in one of the plugin's fonts, with its top-left at
+    /// `at`. A font that was refused or released draws nothing.
+    pub fn text_in(&mut self, font: Font, text: &str, at: (f32, f32), color: Color, outline: bool) {
+        // Without a font this would be the interface font's text.
+        if font.is_valid() {
+            self.commands.push(PaintCmd::Text(
+                text.to_owned(),
+                at.0,
+                at.1,
+                color,
+                outline,
+                font.handle,
+            ));
+        }
     }
 
     /// An image stretched over a rectangle, tinted.
@@ -956,6 +1037,7 @@ impl Host<'_> {
                 binding_type: r.binding_type.clone(),
                 bindings: spec.typed.clone(),
                 item_types: spec.item_types.clone(),
+                icon_file: r.icon_file.clone(),
             }
             .to_bytes();
             let r = &request;
@@ -1125,6 +1207,87 @@ impl Host<'_> {
         let reply = ui_call!(self, UiMeasureText, ui_measure_text, &request);
         let size: TextSize = decode(Import::UiMeasureText, &reply);
         (size.width, size.height)
+    }
+
+    /// The client's bundled font, Noto Sans, at a size from
+    /// [`FONT_MINIMUM_PIXEL_SIZE`] to [`FONT_MAXIMUM_PIXEL_SIZE`] pixels, in a
+    /// weight. [`FontWeight::SemiBold`] is the weight themed window titles are
+    /// set in. Shared with every plugin, so it costs nothing against
+    /// [`FONT_MAXIMUM_BYTES`]. [`Font::NONE`] when refused, which is logged
+    /// once. Asking twice returns the same font, held twice. The same with or
+    /// without a window.
+    pub fn font_bundled(&mut self, pixel_size: f32, weight: FontWeight) -> Font {
+        let request = BundledFontRequest { pixel_size, weight }.to_bytes();
+        let reply = ui_call!(self, UiFontBundled, ui_font_bundled, &request);
+        decode::<FontInfo>(Import::UiFontBundled, &reply).into()
+    }
+
+    /// A TrueType (`.ttf`) or OpenType (`.otf`) font the plugin ships, usually
+    /// with `include_bytes!`, under the plugin's own name for the file. It
+    /// prepares the characters `ranges` names, where the font has them, so an
+    /// icon font can name the whole private-use area; no ranges prepare U+0020
+    /// to U+024F, U+0370 to U+052F and U+2000 to U+206F. A character that was
+    /// not prepared draws as the font's `?` if that was prepared, and as
+    /// nothing otherwise.
+    ///
+    /// A plugin may hold [`FONT_MAXIMUM_COUNT`] fonts, each of at most
+    /// [`FONT_MAXIMUM_GLYPHS`] characters, and its own fonts may take
+    /// [`FONT_MAXIMUM_BYTES`], counting the files and their atlases. A file
+    /// over [`FONT_MAXIMUM_FILE_BYTES`], one that is not a usable font, or a
+    /// request past a limit is [`Font::NONE`] and logged once. A second request
+    /// for the same name, size and characters is the same font held once more.
+    /// Preparing a font takes some milliseconds, so ask up front.
+    pub fn font_load(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        pixel_size: f32,
+        ranges: &[CodepointRange],
+    ) -> Font {
+        // Past this the request itself would not fit a call.
+        let bytes = if bytes.len() > FONT_MAXIMUM_FILE_BYTES {
+            &bytes[..FONT_MAXIMUM_FILE_BYTES + 1]
+        } else {
+            bytes
+        };
+        let request = FontLoadRequest {
+            name: name.to_owned(),
+            bytes: bytes.to_vec(),
+            pixel_size,
+            ranges: ranges.to_vec(),
+        }
+        .to_bytes();
+        let reply = ui_call!(self, UiFontLoad, ui_font_load, &request);
+        decode::<FontInfo>(Import::UiFontLoad, &reply).into()
+    }
+
+    /// The width of `text` in a font, with its kerning, as it is drawn, and the
+    /// font's line height, pixels. Nothing for a font the plugin does not hold.
+    #[must_use]
+    pub fn font_measure(&mut self, font: Font, text: &str) -> (f32, f32) {
+        let request = FontMeasure {
+            font: font.handle,
+            text: text.to_owned(),
+        }
+        .to_bytes();
+        let reply = ui_call!(self, UiFontMeasure, ui_font_measure, &request);
+        let size: TextSize = decode(Import::UiFontMeasure, &reply);
+        (size.width, size.height)
+    }
+
+    /// Lets go of one hold on a font: it goes on the last. False for a font
+    /// the plugin does not hold. A plugin's fonts go when it unloads.
+    pub fn font_release(&mut self, font: Font) -> bool {
+        let request = font.handle.to_bytes();
+        let reply = ui_call!(self, UiFontRelease, ui_font_release, &request);
+        decode(Import::UiFontRelease, &reply)
+    }
+
+    /// How many distinct fonts the plugin holds.
+    #[must_use]
+    pub fn font_count(&mut self) -> u32 {
+        let reply = ui_call!(self, UiFontCount, ui_font_count, &[]);
+        decode(Import::UiFontCount, &reply)
     }
 
     /// The plugin theme the player picked under Appearance and its colours,
