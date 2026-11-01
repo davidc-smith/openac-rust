@@ -584,6 +584,49 @@ fn an_element_beside_an_expander_holds_up_what_is_below_both() {
 }
 
 #[test]
+fn a_label_reaches_as_far_as_its_text() {
+    // A label with no width is as wide as its text (7 px a character with
+    // no font: 210 px here), so it spans both columns and stays under the
+    // one still open.
+    let mut m = Mounted::new(
+        r#"<expander x="8" y="20" w="150" h="100" text="Left"/>
+           <expander x="170" y="20" w="150" h="100" text="Right"/>
+           <label x="8" y="130" text="A caption across both columns"/>"#,
+        BindingSchema::new("B"),
+        Vec::new(),
+    );
+    click_header(&mut m, 30, 0);
+    assert_eq!(top(&mut m, 2), 130.0, "the right column is still open");
+    click_header(&mut m, 190, 1);
+    assert_eq!(top(&mut m, 2), 48.0, "both folded");
+    click_header(&mut m, 30, 0);
+    assert_eq!(top(&mut m, 2), 130.0, "the left column is open again");
+}
+
+#[test]
+fn a_hidden_element_beside_an_expander_holds_up_nothing() {
+    // Hidden, it takes no room; shown again while the expander is folded,
+    // what is below it moves back down under it.
+    let mut m = Mounted::new(
+        r#"<expander x="8" y="20" w="150" h="100" text="Fold"/>
+           <group x="170" y="30" w="100" h="60" visible="{Shown}"/>
+           <group x="8" y="130" w="312" h="20"/>"#,
+        BindingSchema::new("B").with("Shown", K::Bool),
+        vec![("Shown", UiValue::Bool(false))],
+    );
+    click_header(&mut m, 30, 0);
+    assert_eq!(top(&mut m, 2), 48.0, "only the fold is above it");
+    m.set("Shown", UiValue::Bool(true));
+    m.tick(0.016);
+    assert_eq!(top(&mut m, 2), 100.0, "below the group again");
+    m.set("Shown", UiValue::Bool(false));
+    m.tick(0.016);
+    assert_eq!(top(&mut m, 2), 48.0);
+    click_header(&mut m, 30, 0);
+    assert_eq!(top(&mut m, 2), 130.0);
+}
+
+#[test]
 fn a_stretched_sibling_grows_into_the_room_and_gives_it_back() {
     let mut m = Mounted::new(
         r#"<expander x="8" y="20" w="150" h="100" text="Fold"/>

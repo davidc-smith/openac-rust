@@ -14,10 +14,12 @@ use ac_plugin_ui::control_state::{ControlState, ControlStateStore, RememberedVal
 use ac_plugin_ui::markup::{EXPANDER_HEADER_HEIGHT, SPLIT_BAR_SIZE};
 
 use super::Palette;
+use super::content_size::text_width;
 use super::controls::{
     CLASSIC_ARROW, CLASSIC_CAPTION, DISABLED_ALPHA, Emit, FOCUS, UNLIT_INNER, UNLIT_OUTER,
 };
 use super::style;
+use super::widgets::MarkupLabel;
 use crate::draw::{Color, RenderContext};
 use crate::event::{Key, UiEvent, kind};
 use crate::font::UiFont;
@@ -123,12 +125,17 @@ struct AuthoredBox {
     stretches: bool,
     /// An expander showing only its header.
     folded: bool,
+    /// Shown: a hidden element takes no room, so it holds nothing up.
+    shown: bool,
 }
 
 impl AuthoredBox {
-    /// Entirely above `other`, and not off to one side of it.
+    /// Shown, entirely above `other`, and not off to one side of it.
     fn is_above(&self, other: &Self) -> bool {
-        self.bottom <= other.top + 0.5 && self.left < other.right && other.left < self.right
+        self.shown
+            && self.bottom <= other.top + 0.5
+            && self.left < other.right
+            && other.left < self.right
     }
 
     /// Where its bottom lands when moved up by `shift`.
@@ -173,6 +180,9 @@ pub struct MarkupExpander {
     expanded_anchors: Option<AnchorEdges>,
     parent_height_at_collapse: f32,
     shifts: Shifts,
+    /// The siblings hidden when it last looked, to place them afresh when
+    /// one is shown or hidden.
+    hidden_siblings: Vec<ElementId>,
     onchange: Option<String>,
     emit: Emit,
 }
@@ -204,6 +214,7 @@ impl MarkupExpander {
             expanded_anchors: None,
             parent_height_at_collapse: 0.0,
             shifts,
+            hidden_siblings: Vec::new(),
             onchange,
             emit,
         }
@@ -297,16 +308,25 @@ impl MarkupExpander {
             .map(|x| x.open_height(parent_height));
         let height = open.unwrap_or(el.height);
         let top = el.top + self.shift_of(id);
+        // A label sized by its text measures itself only when drawn, and the
+        // anchor pass before placing resets that width to the one it was
+        // built with (none); its text says how far it reaches.
+        let width = ui
+            .widget::<MarkupLabel>(id)
+            .filter(|label| !label.sized_by_layout)
+            .map_or(el.width, |label| {
+                text_width(label.font.as_ref(), &label.text)
+            });
         Some(AuthoredBox {
             id,
             left: el.left,
-            // Nothing has measured a label before its first draw.
-            right: el.left + el.width.max(1.0),
+            right: el.left + width.max(1.0),
             top,
             // A stretched sibling's growth already keeps its bottom in place.
             bottom: if stretches { el.top } else { top } + height,
             stretches,
             folded: open.is_some(),
+            shown: el.visible,
         })
     }
 
@@ -347,6 +367,31 @@ impl MarkupExpander {
             let bottom = b.placed_bottom(shift);
             placed.push((b, bottom));
         }
+    }
+
+    /// A sibling shown or hidden changes what holds up what is below it, so
+    /// every sibling is placed afresh when one is.
+    fn follow_shown_siblings(&mut self, ui: &mut UiRoot, me: ElementId) {
+        if self.flex_placed {
+            return;
+        }
+        let Some(parent) = ui.parent(me) else {
+            return;
+        };
+        let hidden: Vec<ElementId> = ui
+            .children(parent)
+            .into_iter()
+            .filter(|&id| ui.element(id).is_some_and(|e| !e.visible))
+            .collect();
+        if hidden == self.hidden_siblings {
+            return;
+        }
+        self.hidden_siblings = hidden;
+        let (pw, ph) = size(ui, parent);
+        for child in ui.children(parent) {
+            ui.apply_anchor(child, pw, ph);
+        }
+        self.place_siblings(ui, me, parent);
     }
 
     fn move_sibling(&mut self, ui: &mut UiRoot, me: ElementId, b: &AuthoredBox, shift: f32) {
@@ -427,6 +472,7 @@ impl Widget for MarkupExpander {
     fn tick(&mut self, ui: &mut UiRoot, me: ElementId, _dt: f64) {
         let expanded = self.expanded();
         self.apply_layout(ui, me, expanded);
+        self.follow_shown_siblings(ui, me);
     }
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
