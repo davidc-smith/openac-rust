@@ -403,6 +403,36 @@ fn a_hook_the_server_makes_visible_reaches_the_view_as_pickable() {
 }
 
 #[test]
+fn a_public_locked_bool_update_makes_an_unlocked_chest_openable() {
+    // PublicLockedBoolUpdate_MakesAnUnlockedChestOpenable: a key or a
+    // lockpick unlocking a chest is the Locked bool (3) going false.
+    // Everything that asks whether a container can be opened or filled, or
+    // how many slots its window shows, reads the description's openable bit
+    // (0x1), the inverse of Locked.
+    use ac_core::items::PublicWeenieFlags;
+    use ac_core::properties::PropertyBool;
+    let mut world = creature(Some(PublicWeenieFlags::STUCK.bits()));
+    let locked = |value| {
+        Inbound::PublicUpdatePropertyBool(ac_proto::PublicUpdatePropertyBool {
+            sequence: 0,
+            guid: CREATURE,
+            property: PropertyBool::LOCKED.0,
+            value,
+        })
+    };
+    world.apply(&locked(false));
+    assert_eq!(
+        view_bitfield(&world, CREATURE),
+        (PublicWeenieFlags::STUCK | PublicWeenieFlags::OPENABLE).bits()
+    );
+    world.apply(&locked(true));
+    assert_eq!(
+        view_bitfield(&world, CREATURE),
+        PublicWeenieFlags::STUCK.bits()
+    );
+}
+
+#[test]
 fn an_unrelated_property_leaves_the_description_bits() {
     // ObjectUpdated_UnrelatedProperty_DoesNotRewriteSnapshot (UI effects, 18).
     let mut world = creature(Some(PLAYER_BIT));
