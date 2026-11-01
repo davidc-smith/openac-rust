@@ -658,6 +658,37 @@ fn build_using_item_actions(
     actions
 }
 
+/// What asking to open a container on the ground comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroundObjectDecision {
+    /// It is described as openable: view it.
+    Open,
+    /// Leave it unopened, with the client-local line that says why (none
+    /// for a creature).
+    Refuse(Option<String>),
+}
+
+/// Whether the use of a container on the ground (`container`, `None` when
+/// the client has no object for it) also views it. Only a container
+/// described as openable is viewed; a locked one is not (its use still went
+/// to the server) and the client says so itself, since the server answers
+/// a locked container's use with no text of its own.
+#[must_use]
+pub fn decide_set_ground_object(container: Option<&ItemPolicyObject>) -> GroundObjectDecision {
+    let Some(container) = container else {
+        return GroundObjectDecision::Refuse(Some(
+            "The object has no representation on the client.".into(),
+        ));
+    };
+    if container.flags.intersects(PublicWeenieFlags::OPENABLE) {
+        return GroundObjectDecision::Open;
+    }
+    if container.item_type.intersects(ItemType::CREATURE) {
+        return GroundObjectDecision::Refuse(None);
+    }
+    GroundObjectDecision::Refuse(Some(format!("The {} is locked", name_of(container))))
+}
+
 fn has_unused_location(valid: EquipMask, current: EquipMask) -> bool {
     (valid.intersects(BODY_LOCATIONS) && !current.intersects(BODY_LOCATIONS))
         || (valid.intersects(CLOTHING_LOCATIONS) && !current.intersects(CLOTHING_LOCATIONS))
@@ -1226,6 +1257,46 @@ mod tests {
         assert_eq!(
             single(&placed.actions).kind,
             ItemPolicyActionKind::PlaceInContainer
+        );
+    }
+
+    #[test]
+    fn a_ground_container_opens_only_when_openable_and_a_locked_one_says_so() {
+        // Golden text: the retail client's own lines when a container on
+        // the ground is used: "The %s is locked" with the object's name,
+        // nothing for a creature, and "The object has no representation on
+        // the client." when the object is unknown.
+        let chest = ItemPolicyObject {
+            is_container: true,
+            item_type: ItemType::CONTAINER,
+            name: "Legendary Chest".into(),
+            ..obj(GROUND_CONTAINER)
+        };
+        assert_eq!(
+            decide_set_ground_object(Some(&chest)),
+            GroundObjectDecision::Refuse(Some("The Legendary Chest is locked".into()))
+        );
+        let unlocked = ItemPolicyObject {
+            flags: PublicWeenieFlags::OPENABLE,
+            ..chest.clone()
+        };
+        assert_eq!(
+            decide_set_ground_object(Some(&unlocked)),
+            GroundObjectDecision::Open
+        );
+        let creature = ItemPolicyObject {
+            item_type: ItemType::CREATURE,
+            ..chest
+        };
+        assert_eq!(
+            decide_set_ground_object(Some(&creature)),
+            GroundObjectDecision::Refuse(None)
+        );
+        assert_eq!(
+            decide_set_ground_object(None),
+            GroundObjectDecision::Refuse(Some(
+                "The object has no representation on the client.".into()
+            ))
         );
     }
 
