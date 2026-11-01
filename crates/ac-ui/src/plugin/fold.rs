@@ -379,9 +379,15 @@ impl ExpanderHeader {
         }
     }
 
-    fn toggle_owner(ui: &mut UiRoot, me: ElementId) {
+    fn toggle_owner(&mut self, ui: &mut UiRoot, me: ElementId) {
         if let Some(owner) = ui.parent(me) {
-            ui.with::<MarkupExpander, _>(owner, |x, ui| x.toggle(ui, owner));
+            // The expander cannot reach this widget while it runs, so the
+            // arrow is brought up to date here.
+            let expanded = ui.with::<MarkupExpander, _>(owner, |x, ui| {
+                x.toggle(ui, owner);
+                x.laid_out_expanded()
+            });
+            self.expanded = expanded.unwrap_or(self.expanded);
         }
     }
 }
@@ -406,7 +412,7 @@ impl Widget for ExpanderHeader {
                     && is_live
                     && matches!(e.key, Key::Enter | Key::KeypadEnter | Key::Space) =>
             {
-                Self::toggle_owner(ui, me);
+                self.toggle_owner(ui, me);
                 true
             }
             kind::MOUSE_DOWN => {
@@ -419,7 +425,7 @@ impl Widget for ExpanderHeader {
                     e.data1 >= 0 && e.data2 >= 0 && (e.data1 as f32) < w && (e.data2 as f32) < h;
                 if self.pressed && inside {
                     self.pressed = false;
-                    Self::toggle_owner(ui, me);
+                    self.toggle_owner(ui, me);
                 }
                 self.pressed = false;
                 true
