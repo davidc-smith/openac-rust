@@ -474,16 +474,38 @@ impl SessionState {
             teleport_sequence,
             destination_cell,
         } = held;
-        let arrived = self.transit.acknowledge_destination_readiness(readiness)
-            && self.transit.acknowledge_portal_materialized(
-                generation,
-                teleport_sequence,
-                destination_cell,
-            )
-            && self.transit.acknowledge_world_viewport_visible(generation)
-            && self.transit.complete(generation);
+        let refused = if !self.transit.acknowledge_destination_readiness(readiness) {
+            Some("its readiness")
+        } else if !self.transit.acknowledge_portal_materialized(
+            generation,
+            teleport_sequence,
+            destination_cell,
+        ) {
+            Some("its materialization")
+        } else if !self.transit.acknowledge_world_viewport_visible(generation) {
+            Some("its world view")
+        } else if !self.transit.complete(generation) {
+            Some("its completion")
+        } else {
+            None
+        };
         self.movement.arrive();
-        if arrived {
+        if let Some(step) = refused {
+            // No newer teleport replaced this one (that cancels the held
+            // arrival before it gets here), so the server never hears that
+            // this teleport ended and keeps the character in portal space.
+            let snapshot = self.transit.snapshot();
+            self.movement.refuse(&format!(
+                "portal arrival {generation} (teleport {teleport_sequence}) to \
+                 0x{destination_cell:08X} refused at {step}: the server is not told \
+                 the teleport ended (reveal {} to 0x{:08X}, {} stale, {} invariant failures)",
+                snapshot.generation,
+                snapshot.destination_cell(),
+                self.transit.rejection_count(),
+                snapshot.invariant_failure_count,
+            ));
+            self.transit.cancel(generation);
+        } else {
             if std::mem::take(&mut self.login_release_on_arrival) {
                 // The login complete a window held at login goes out now.
                 self.login_release = true;
@@ -496,8 +518,6 @@ impl SessionState {
                 teleport_sequence,
                 destination_cell,
             });
-        } else {
-            self.transit.cancel(generation);
         }
         self.transit.end_teleport();
     }
@@ -3048,6 +3068,51 @@ mod tests {
             CLOCKS,
         );
         assert!(outbox.is_empty());
+    }
+
+    /// An arrival the reveal's checks refuse leaves the server in portal
+    /// space (no login complete); the log says so, naming the step, so a
+    /// character left stuck that way can be told apart from one the server
+    /// never moved.
+    #[test]
+    fn a_refused_arrival_is_reported_and_tells_the_server_nothing() {
+        let (mut state, mut outbox) = in_portal_space(true, 1);
+        arrive_at(&mut state, &mut outbox, 1, DESTINATION);
+        state.drain_host_events();
+        let generation = state.transit.snapshot().generation;
+        // An outdoor destination with no render radius fails the readiness
+        // check.
+        let readiness = DestinationReadiness {
+            required_render_radius: 0,
+            ..DestinationReadiness::immediate(generation, DESTINATION)
+        };
+        state.command(
+            SessionCommand::DestinationShown(DestinationShown {
+                teleport_sequence: 1,
+                readiness,
+            }),
+            &mut outbox,
+            true,
+            CLOCKS,
+        );
+        assert!(outbox.is_empty(), "no login complete");
+        assert!(state.transit.snapshot().cancelled);
+        assert!(!state.transit.is_teleport_active());
+        let refusals: Vec<String> = state
+            .drain_host_events()
+            .into_iter()
+            .filter_map(|e| match e {
+                HostEvent::Movement(crate::movement::MovementEvent::Refused(text)) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refusals.len(), 1, "{refusals:?}");
+        assert!(
+            refusals[0].contains("refused at its readiness")
+                && refusals[0].contains("the server is not told the teleport ended"),
+            "{}",
+            refusals[0]
+        );
     }
 
     /// A window that goes away mid-hold releases the
