@@ -1,6 +1,6 @@
 # Plugin dock and modern look: plan
 
-Local to this fork. It never goes in the upstream PR, so never add it to `feat/plugin-dock`.
+Local to this fork. It never goes in the upstream PR, so never add it to `feat/plugin-dock-v2`.
 
 Written 2026-10-31 and meant to be read by a fresh session with no other context. Work one phase per session: the user clears the context between phases.
 
@@ -9,7 +9,7 @@ Written 2026-10-31 and meant to be read by a fresh session with no other context
 1. Read this whole file, then the Progress table. Do the first phase that is not Done.
 2. Read the "Notes for the next phase" section, and the memory notes `plugin-dock-redo`, `ui-shapes-f3`, `upstream-contributing-rules` and `mac-live-launch`.
 3. Check the plan still holds: `git fetch upstream`, see whether upstream has moved from `57a8e81`. If the ABI position below has changed, tell the user before continuing.
-4. Work in a worktree on `feat/plugin-dock`. It sits on upstream `57a8e81` with the three F3 commits first. Do not rebase it onto `main`.
+4. Work in a worktree on `feat/plugin-dock-v2`. It sits on upstream `57a8e81` with the three F3 commits first. Do not rebase it onto `main`.
 5. Make the commits listed. Each must build and pass on its own, with a clean message.
 6. Run the targeted checks and the live check for that phase. Long checks wait for the MBP, see Checks.
 7. Update this file in the main checkout (`/Users/davidsmith/Code/OpenAC/openac-rust/docs/plugin-dock-plan.md`): the Progress row, commit hashes, and anything the next phase must know. Then report to the user and stop. Do not start the next phase in the same session.
@@ -18,7 +18,7 @@ Commit only what the phase lists. Push only when the user says. The PR stays hel
 
 ## Goal
 
-One upstream PR to `eriknihlen/openac-rust`, from `davidc-smith:feat/plugin-dock`, holding one ordered series of commits. The phases are checkpoints, not separate PRs. Erik's rule: work that builds on itself is one PR of logically ordered commits, with no stacked PRs.
+One upstream PR to `eriknihlen/openac-rust`, from `davidc-smith:feat/plugin-dock-v2`, holding one ordered series of commits. The phases are checkpoints, not separate PRs. Erik's rule: work that builds on itself is one PR of logically ordered commits, with no stacked PRs.
 
 Contents:
 
@@ -217,7 +217,7 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 
 ## Notes for the next phase
 
-- **Start here, phase 6.** Pushing needs the user: `origin/feat/plugin-dock` is at the old `d5f6c52` and has diverged, so it takes a force-push, or a new branch name since force-pushes have been refused on the fork before. The MBP check depends on that.
+- **Start here, phase 6.** The branch was renamed `feat/plugin-dock-v2` and pushed to `origin` at `323425e` on 2026-11-01, so the MBP check can fetch it. `origin/feat/plugin-dock` still holds the old `d5f6c52` and nothing uses it. Later pushes still need the user's go-ahead.
 - **Rebase, for the PR text.** Upstream's UI Scale option (50% to 300%) was new to this work, and it has not been checked everywhere. The batcher now snaps quads and polygons to whole pixels when a unit is not one pixel, and coloured triangles are deliberately multiplied but not snapped, because a snap folds their one-pixel soft edge. `UiRoot`'s pixels per unit includes the player's scale, so soft edges and sharper bakes follow it. Seen in Moss at 110% (2.2 pixels a unit on Retina) and 150%. Not seen: Classic or a light theme at a scale, or pressed and hover states at one. A new density rebakes the sharper fonts, so stepping the option bakes each time, and that cost was not measured.
 - **A rule phase 4b broke, fixed in the rebase.** `ac-render` had taken a dependency on `ac-plugin` for the PNG decoder, which `ac-plugin/tests/crate_graph.rs` forbids. Phase 4b ran only the `ac-ui`, `ac-render` and `ac-host` tests, so it was not caught. The decoder moved to `ac-plugin-ui` in a new commit (`0cfb7da`), ahead of the tile. `ac_plugin::icon` still names it. A window-side change should also run the `ac-plugin` tests.
 - **Older plugins.** Live, a real module built by upstream's released 1.3 SDK (`phase5/uidemo-api-1.3.wasm`, its `uidemo`) and the older real 1.2 module both load and show on the dock. Tests also go through `rawbytes` built for 1.2 and 1.3.
@@ -265,7 +265,7 @@ About 10,000 to 13,000 added lines including tests, of which F3 is 2,700.
 - **Scope, confirmed by the user on 2026-10-31:** the plan stands as written. Themed plugin windows do get the modern look. The Command, Spell, Target, Chat and Gear Decks (tracker H1 to H13) are not part of this. Classic plugin windows must stay exactly as they are.
 - **Erik:** still ask at the start of each phase.
 - The stale `feat/ui-shapes` branch on the fork is the user's call to delete.
-- **Worktree:** `../openac-rust-dock`, on `feat/plugin-dock`. The user had it pushed to `origin` (the fork) at `c3b81a9` on 2026-10-31, as a copy on GitHub. Later pushes still need their go-ahead, and it never goes to `upstream` until the PR.
+- **Worktree:** `../openac-rust-dock`, on `feat/plugin-dock-v2` (named `feat/plugin-dock` until 2026-11-01). The user had it pushed to `origin` (the fork) at `c3b81a9` on 2026-10-31, as a copy on GitHub. Later pushes still need their go-ahead, and it never goes to `upstream` until the PR.
 - **Disk:** the Air has about 20 GB free. Build the worktree into the main target so dependencies are shared: `export CARGO_TARGET_DIR=/Users/davidsmith/Code/OpenAC/openac-rust/target`. Watch `df`: about 11 GB was free at the end of phase 2. `target/debug/incremental` reached 20 GB, and deleting it only costs rebuild time.
 - **Classic guard:** `crates/ac-ui/src/plugin/theme_tests.rs` draws a gallery of every control through 27 states in two window shapes, plus a dialog, and compares hashes of the draw lists with `crates/ac-ui/tests/data/plugin_classic/pinned.txt`. Those hashes came from the drawing code before phase 2. Never regenerate them to make a test pass: a change there means Classic changed. Phase 4's dock is the one agreed exception, and the hashes did not need to change for it: the gallery draws a window's minimize button, which still looks the same in Classic.
 - **Style:** the shapes are in `crates/ac-ui/src/plugin/style.rs`. Control tests are in `plugin/theme_control_tests.rs`, and `style::tests::{corners, has_color}` are the helpers. `Field`, `Menu`, `Meter` and `Scrollbar` in `crates/ac-ui/src/widgets` carry a `theme_palette` that only a themed plugin window sets, so retail windows never reach the style.
