@@ -426,6 +426,12 @@ pub fn chevron_right(rc: &mut RenderContext<'_>, x: f32, y: f32, w: f32, h: f32,
     rc.smooth_line(x + w, y + h / 2.0, x, y + h, color, 1.5);
 }
 
+/// A leftward chevron, `w` wide and `h` tall.
+pub fn chevron_left(rc: &mut RenderContext<'_>, x: f32, y: f32, w: f32, h: f32, color: Color) {
+    rc.smooth_line(x + w, y, x, y + h / 2.0, color, 1.5);
+    rc.smooth_line(x, y + h / 2.0, x + w, y + h, color, 1.5);
+}
+
 /// A meter's rounded track, and its filled part in `bar`.
 pub fn meter(
     rc: &mut RenderContext<'_>,

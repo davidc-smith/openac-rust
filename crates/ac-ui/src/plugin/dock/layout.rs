@@ -7,9 +7,11 @@
 //! main axis: the grip while the dock can be moved, the tile, a divider, the
 //! slots (a divider between two plugins, a gap between one plugin's windows), a
 //! divider, the gear slot and padding. When the slots do not fit, only those
-//! that do from the first one are laid out; the grip, the tile and the gear
-//! stay. Closed, the dock is only the grip and the tile, and the tile's art is
-//! in the same place either way.
+//! that do from the first one are laid out, with an arrow at each end of the
+//! list and a bar beside it saying how far through it they are; the grip, the
+//! tile and the gear stay, and do not move as it scrolls. Closed, the dock is
+//! only the grip and the tile, and the tile's art is in the same place either
+//! way.
 
 use crate::geometry::Rect;
 
@@ -27,8 +29,11 @@ pub const FLOATING_THICKNESS: f32 = PADDING + SLOT + PADDING;
 pub const GRIP_LENGTH: f32 = 14.0;
 /// The space each side of a divider.
 pub const DIVIDER_SPACE: f32 = 4.0;
-/// How long a fade over cut-off slots is.
-pub const FADE_LENGTH: f32 = 12.0;
+/// How long the arrow at each end of an overflowing list is along the main axis,
+/// at every size.
+pub const ARROW_LENGTH: f32 = 16.0;
+/// The shortest the scroll bar's thumb gets, so a long list's can still be seen.
+pub const MIN_THUMB: f32 = 12.0;
 /// A rail's thickness across its main axis at the default size.
 pub const RAIL_THICKNESS: f32 = 46.0;
 /// A rail's slot along its main axis at the default size.
@@ -379,6 +384,20 @@ pub fn dragged_mode(
     }
 }
 
+/// The bar beside an overflowing list, along the main axis in the dock's space:
+/// the whole list is its track and what shows now is its thumb.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollBar {
+    /// Where the track starts.
+    pub start: f32,
+    /// Where the track ends.
+    pub end: f32,
+    /// Where the thumb starts.
+    pub thumb_start: f32,
+    /// Where the thumb ends.
+    pub thumb_end: f32,
+}
+
 /// Where the dock's parts are, in its own space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DockLayout {
@@ -396,20 +415,20 @@ pub struct DockLayout {
     pub tile: Rect,
     /// The grip, which moves the dock; none while it cannot be moved.
     pub grip: Option<Rect>,
-    /// The first slot laid out.
+    /// The arrow before the list; none while every slot fits.
+    pub back: Option<Rect>,
+    /// The arrow after the list; none while every slot fits.
+    pub forward: Option<Rect>,
+    /// The bar beside the list; none while every slot fits.
+    pub scroll: Option<ScrollBar>,
+    /// The first slot laid out; kept while the dock is closed.
     pub first: usize,
     /// How many slots are laid out.
     pub visible: usize,
     /// The furthest the slots can scroll.
     pub max_first: usize,
-    /// Slots are cut off before the list.
-    pub fade_start: bool,
-    /// Slots are cut off after the list.
-    pub fade_end: bool,
     /// Where the list starts along the main axis.
     pub list_start: f32,
-    /// Where the list ends along the main axis.
-    pub list_end: f32,
 }
 
 /// Places things by main and cross axis in a dock running either way.
@@ -474,13 +493,13 @@ pub fn compute(
             gear: Rect::new(0.0, 0.0, 0.0, 0.0),
             tile: axes.rect(lead, 0.0, thickness, thickness),
             grip,
-            first: 0,
+            back: None,
+            forward: None,
+            scroll: None,
+            first,
             visible: 0,
             max_first: 0,
-            fade_start: false,
-            fade_end: false,
             list_start: 0.0,
-            list_end: 0.0,
         };
     }
 
@@ -498,7 +517,7 @@ pub fn compute(
         (lead + m.padding, m.padding, m.slot, m.slot, m.gap)
     };
     let tile = axes.rect(tile_start, slot_cross_at, slot_along, slot_across);
-    let list_start = tile_start + slot_along + DIVIDER_BLOCK;
+    let tile_end = tile_start + slot_along;
     let spacing = |i: usize| {
         if owners[i] == owners[i - 1] {
             gap
@@ -509,38 +528,49 @@ pub fn compute(
     // Everything that is not the slot list: the grip, tile and divider before it,
     // and the divider, gear and padding after it.
     let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
-    let room = max_length - (list_start + divider + slot_along + m.padding);
+    let room = max_length - (tile_end + DIVIDER_BLOCK + divider + slot_along + m.padding);
 
-    // At least one slot, however little room there is.
-    let mut fit_backward = 0;
-    let mut used = 0.0;
-    for i in (0..count).rev() {
-        let next =
-            used + if fit_backward > 0 {
-                spacing(i + 1)
-            } else {
-                0.0
-            } + slot_along;
-        if next > room && fit_backward > 0 {
-            break;
+    // How many slots fit back from the last one in `room`: at least one, however
+    // little room there is.
+    let last_page = |room: f32| {
+        let mut fit = 0;
+        let mut used = 0.0;
+        for i in (0..count).rev() {
+            let next = used + if fit > 0 { spacing(i + 1) } else { 0.0 } + slot_along;
+            if next > room && fit > 0 {
+                break;
+            }
+            used = next;
+            fit += 1;
         }
-        used = next;
-        fit_backward += 1;
-    }
-    let max_first = count - fit_backward;
+        fit
+    };
+    let overflows = last_page(room) < count;
+    let arrow = if overflows { ARROW_LENGTH } else { 0.0 };
+    let room = room - 2.0 * arrow;
+    let max_first = count - last_page(room);
     let first = first.min(max_first);
-    let mut visible = 0;
-    let mut used = 0.0;
-    for i in first..count {
-        let next = used + if visible > 0 { spacing(i) } else { 0.0 } + slot_along;
-        if next > room && visible > 0 {
-            break;
+    // How many slots fit from `first`, and how long they are.
+    let page = |first: usize| {
+        let mut fit = 0;
+        let mut used = 0.0;
+        for i in first..count {
+            let next = used + if fit > 0 { spacing(i) } else { 0.0 } + slot_along;
+            if next > room && fit > 0 {
+                break;
+            }
+            used = next;
+            fit += 1;
         }
-        used = next;
-        visible += 1;
-    }
+        (fit, used)
+    };
+    let visible = page(first).0;
+    // The list is as long as its longest page, so what comes after it stays put
+    // as it scrolls.
+    let list_length = (0..=max_first).map(|f| page(f).1).fold(0.0, f32::max);
 
-    let mut dividers = vec![tile_start + slot_along + DIVIDER_SPACE + 0.5];
+    let mut dividers = vec![tile_end + DIVIDER_SPACE + 0.5];
+    let list_start = tile_end + DIVIDER_BLOCK + arrow;
     let mut at = list_start;
     for (i, slot) in slots.iter_mut().enumerate().skip(first).take(visible) {
         if i > first {
@@ -553,7 +583,23 @@ pub fn compute(
         *slot = Some(axes.rect(at, slot_cross_at, slot_along, slot_across));
         at += slot_along;
     }
-    let list_end = at;
+    let arrow_at = |main| overflows.then(|| axes.rect(main, slot_cross_at, arrow, slot_across));
+    let back = arrow_at(tile_end + DIVIDER_BLOCK);
+    let forward = arrow_at(list_start + list_length);
+    let scroll = overflows.then(|| {
+        let share = list_length * visible as f32 / count as f32;
+        let thumb = share.max(MIN_THUMB).min(list_length);
+        let thumb_start = list_start + (list_length - thumb) * first as f32 / max_first as f32;
+        ScrollBar {
+            start: list_start,
+            end: list_start + list_length,
+            thumb_start,
+            thumb_end: thumb_start + thumb,
+        }
+    });
+    if overflows {
+        at = list_start + list_length + arrow;
+    }
     if count > 0 {
         dividers.push(at + DIVIDER_SPACE + 0.5);
         at += DIVIDER_BLOCK;
@@ -568,13 +614,13 @@ pub fn compute(
         gear,
         tile,
         grip,
+        back,
+        forward,
+        scroll,
         first,
         visible,
         max_first,
-        fade_start: first > 0,
-        fade_end: first + visible < count,
         list_start,
-        list_end,
     }
 }
 
@@ -641,19 +687,17 @@ mod tests {
     fn overflow_shows_what_fits_and_scrolling_stops_at_the_last_full_page() {
         let owners = twelve();
         let owners = refs(&owners);
-        // Room for 51 + 3 slots (36 + 9 + 36 + 9 + 36) + 9 + 36 + 6 = 228.
-        let top = floating(&owners, 230.0, 0);
+        // Room for 51 + 16 + 3 slots (36 + 9 + 36 + 9 + 36) + 16 + 9 + 36 + 6 = 260.
+        let top = floating(&owners, 262.0, 0);
         assert_eq!((top.visible, top.first, top.max_first), (3, 0, 9));
-        assert!(!top.fade_start && top.fade_end);
-        assert!(top.height <= 230.0);
+        assert!(top.height <= 262.0);
         assert!(top.slots[2].is_some());
         assert!(top.slots[3].is_none());
 
-        let end = floating(&owners, 230.0, 50);
+        let end = floating(&owners, 262.0, 50);
         assert_eq!(end.first, 9);
-        assert!(end.fade_start && !end.fade_end);
         assert!(end.slots[8].is_none());
-        assert_eq!(end.slots[9].unwrap().y, 51.0);
+        assert_eq!(end.slots[9].unwrap().y, 67.0);
         assert!(end.slots[11].is_some());
     }
 
@@ -662,6 +706,89 @@ mod tests {
         let l = floating(&["a", "b"], 10.0, 0);
         assert_eq!(l.visible, 1);
         assert!(l.slots[0].is_some());
+    }
+
+    #[test]
+    fn a_list_that_fits_has_no_arrows_or_bar() {
+        let l = floating(&["a", "b"], f32::INFINITY, 0);
+        assert_eq!((l.back, l.forward, l.scroll), (None, None, None));
+        // One slot that does not fit has nowhere to scroll to.
+        let l = floating(&["a"], 10.0, 0);
+        assert_eq!((l.back, l.forward, l.scroll), (None, None, None));
+    }
+
+    #[test]
+    fn the_arrows_are_at_each_end_of_the_list_inside_its_dividers() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let l = floating(&owners, 262.0, 0);
+        assert_eq!(l.back, Some(Rect::new(6.0, 51.0, 36.0, ARROW_LENGTH)));
+        assert_eq!(l.list_start, 67.0);
+        assert_eq!(l.slots[0].unwrap().y, 67.0);
+        assert_eq!(l.forward, Some(Rect::new(6.0, 193.0, 36.0, ARROW_LENGTH)));
+        assert_eq!(l.dividers.first(), Some(&46.5));
+        assert_eq!(l.dividers.last(), Some(&213.5));
+        assert_eq!(l.gear.y, 218.0);
+    }
+
+    #[test]
+    fn what_comes_after_the_list_stays_put_as_it_scrolls() {
+        // Pages of different lengths: one plugin's windows sit closer together
+        // than two plugins'.
+        let owners = ["a", "b", "c", "d", "e", "e", "e", "e", "e", "f", "g", "h"];
+        let start = floating(&owners, 300.0, 0);
+        assert!(start.max_first > 0);
+        for first in 0..=start.max_first {
+            let l = floating(&owners, 300.0, first);
+            assert_eq!(l.forward, start.forward, "{first}");
+            assert_eq!(l.gear, start.gear, "{first}");
+            assert_eq!(l.height, start.height, "{first}");
+            let last = l.slots.iter().flatten().last().unwrap();
+            assert!(last.y + last.h <= l.forward.unwrap().y, "{first}");
+        }
+    }
+
+    #[test]
+    fn the_bar_runs_along_the_list_and_its_thumb_says_how_far_through_it_is() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let start = floating(&owners, 262.0, 0);
+        let end = floating(&owners, 262.0, start.max_first);
+        let (a, b) = (start.scroll.unwrap(), end.scroll.unwrap());
+        assert_eq!(a.start, start.list_start);
+        assert_eq!(a.end, start.forward.unwrap().y);
+        assert_eq!(a.thumb_start, a.start);
+        assert_eq!(b.thumb_end, b.end);
+        // 3 of 12 show, so the thumb is a quarter of the track.
+        let track = a.end - a.start;
+        assert_eq!(a.thumb_end - a.thumb_start, track / 4.0);
+        let mut last = a.thumb_start;
+        for first in 1..=start.max_first {
+            let bar = floating(&owners, 262.0, first).scroll.unwrap();
+            assert!(bar.thumb_start > last, "{first}");
+            assert!(bar.thumb_end <= bar.end, "{first}");
+            last = bar.thumb_start;
+        }
+    }
+
+    #[test]
+    fn a_thumb_on_a_very_long_list_can_still_be_seen() {
+        let owners: Vec<String> = (0..200).map(|i| format!("p{i}")).collect();
+        let owners = refs(&owners);
+        let start = floating(&owners, 262.0, 0);
+        let end = floating(&owners, 262.0, start.max_first);
+        let (a, b) = (start.scroll.unwrap(), end.scroll.unwrap());
+        assert_eq!(a.thumb_end - a.thumb_start, MIN_THUMB);
+        assert_eq!(b.thumb_end, b.end);
+    }
+
+    #[test]
+    fn closed_keeps_its_place_in_the_list() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let l = compute(DockMode::Floating, true, &owners, 262.0, 4);
+        assert_eq!(l.first, 4);
+        assert_eq!((l.back, l.forward, l.scroll), (None, None, None));
     }
 
     #[test]
@@ -773,11 +900,11 @@ mod tests {
     fn the_grip_takes_its_room_out_of_the_slots_and_the_dock_still_fits() {
         let owners = twelve();
         let owners = refs(&owners);
-        let plain = compute(DockMode::Floating, false, &owners, 240.0, 0);
+        let plain = compute(DockMode::Floating, false, &owners, 272.0, 0);
         assert_eq!(plain.visible, 3);
-        let l = with_grip(DockMode::Floating, false, &owners, 240.0);
+        let l = with_grip(DockMode::Floating, false, &owners, 272.0);
         assert_eq!(l.visible, 2);
-        assert!(l.height <= 240.0);
+        assert!(l.height <= 272.0);
     }
 
     #[test]
@@ -856,6 +983,18 @@ mod tests {
     }
 
     #[test]
+    fn an_overflowing_horizontal_dock_is_the_vertical_one_turned_on_its_side() {
+        let owners = twelve();
+        let owners = refs(&owners);
+        let v = compute(DockMode::Left, false, &owners, 400.0, 2);
+        let h = compute(DockMode::Top, false, &owners, 400.0, 2);
+        assert!(v.back.is_some());
+        assert_eq!(h.back, v.back.map(turned));
+        assert_eq!(h.forward, v.forward.map(turned));
+        assert_eq!(h.scroll, v.scroll);
+    }
+
+    #[test]
     fn a_horizontal_dock_lays_out_along_x() {
         let l = compute(
             DockMode::FloatingHorizontal,
@@ -877,7 +1016,7 @@ mod tests {
         let l = compute(DockMode::Top, false, &owners, 400.0, 2);
         assert_eq!(l.height, RAIL_THICKNESS);
         assert!(l.width <= 400.0);
-        assert!(l.fade_start && l.fade_end);
+        assert!(l.back.is_some() && l.forward.is_some());
         assert!(l.slots[1].is_none());
         assert_eq!(l.slots[2].unwrap().x, l.list_start);
     }
