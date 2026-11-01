@@ -537,9 +537,11 @@ impl PluginDock {
     /// Lays the dock out for its mode and the screen, and tells its parts how
     /// to look.
     fn reflow(&mut self, ui: &mut UiRoot) {
-        // Where it was heading no longer holds.
+        // The slide was for the old screen or mode: the dock goes straight to
+        // where it was heading, and the layout below fits that to the new
+        // one. Stopped partway, that place would stay, and be saved.
         if self.screen != ui.size() || self.laid_out_as.1 != self.mode {
-            self.reveal = None;
+            self.finish_reveal(ui);
         }
         self.screen = ui.size();
         let owners: Vec<&str> = self.entries.iter().map(|e| e.owner.as_str()).collect();
@@ -796,16 +798,19 @@ impl PluginDock {
 
     /// Puts the dock where it was going, and lays it out for that.
     fn end_reveal(&mut self, ui: &mut UiRoot) {
-        let Some(r) = self.reveal.take() else {
-            return;
-        };
-        if let Some(e) = ui.element_mut(self.root) {
-            e.left = r.to.x;
-            e.top = r.to.y;
-            e.width = r.to.w;
-            e.height = r.to.h;
+        if self.finish_reveal(ui) {
+            self.reflow(ui);
         }
-        self.reflow(ui);
+    }
+
+    /// Puts the dock where it was going and forgets the slide, without
+    /// laying it out (the caller does). False when it was not on its way.
+    fn finish_reveal(&mut self, ui: &mut UiRoot) -> bool {
+        let Some(r) = self.reveal.take() else {
+            return false;
+        };
+        place(ui, self.root, r.to);
+        true
     }
 
     /// With hovering on, the pointer on a closed dock peeks it open after a

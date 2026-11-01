@@ -2509,6 +2509,36 @@ fn a_new_screen_size_or_mode_on_the_way_ends_it_where_the_layout_says() {
     let at = rig.placement();
     assert_eq!((at.w, at.h), (l.width, l.height));
     assert_eq!(at.x, 0.0);
+
+    // A tile near the bottom slides up to fit as it opens and back down as
+    // it closes; a new screen size halfway down still puts it back on its
+    // spot, not where the slide had got to.
+    let mut rig = Rig::revealing();
+    rig.press_tile();
+    rig.settle();
+    let low = rig.host.root.size().1 - rig.layout().height - 2.0;
+    rig.with(|c, ui| ui.element_mut(c.root).unwrap().top = low);
+    rig.tick();
+    let tile = rig.placement();
+    rig.press_tile();
+    rig.settle();
+    let open = rig.placement();
+    assert!(open.y < tile.y, "it slid up to fit");
+    rig.press_tile();
+    rig.tick();
+    let during = rig.placement();
+    assert!(
+        during.y > open.y && during.y < tile.y,
+        "{} on the way from {} to {}",
+        during.y,
+        open.y,
+        tile.y
+    );
+    rig.host.root.set_size(SCREEN.0 - 40.0, SCREEN.1);
+    rig.tick();
+    assert!(!rig.revealing_now());
+    let at = rig.placement();
+    assert_eq!((at.x, at.y, at.w, at.h), (tile.x, tile.y, tile.w, tile.h));
 }
 
 #[test]
