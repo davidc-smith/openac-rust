@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use ac_core::spells::SpellMetadata;
 use ac_dat::DatCollection;
 use ac_dat::objects::{Palette, PixelFormat, RenderSurface, SkillTable, SpellComponentTable};
 use ac_dat::texture::DecodeOptions;
@@ -33,7 +34,7 @@ use ac_ui::font::DEFAULT_FONT_ID;
 use ac_ui::icons::IconComposer;
 use ac_ui::import::{ImportedLayout, LayoutSource, import};
 use ac_ui::panels::PanelOutput;
-use ac_ui::panels::appraisal::{AppraisalController, SpellExamineComponent};
+use ac_ui::panels::appraisal::{AppraisalController, AppraisalPage, SpellExamineComponent};
 use ac_ui::panels::character::{
     CharacterSheet, CharacterStatController, CharacterTab, ExperienceCurves, SheetSource,
 };
@@ -511,6 +512,9 @@ pub struct WindowUi {
     /// Each spell component's weenie class (the component id map
     /// 0x27000002): the components page knows a component by its class.
     pub(super) component_classes: std::collections::HashMap<u32, u32>,
+    /// The component check over the component classes and each school's
+    /// focus: which formula an examined spell shows.
+    pub(super) spell_components: ac_core::spells::SpellComponentRequirements,
     pub(super) panels: MainPanels,
     pub(super) dialogs: DialogQueue<DialogAction>,
     pub(super) dialog_layout: Option<u32>,
@@ -609,6 +613,7 @@ impl WindowUi {
             skill_table: None,
             components: None,
             component_classes: std::collections::HashMap::new(),
+            spell_components: ac_core::spells::SpellComponentRequirements::default(),
             panels: MainPanels::new(),
             dialogs: DialogQueue::default(),
             dialog_layout: None,
@@ -958,6 +963,7 @@ impl WindowUi {
         self.update_book(dirty);
         self.update_map_house(scene);
         self.update_journal_pages(dirty, scene);
+        self.refresh_examined_spell(dirty);
         self.show_appraisals();
         self.follow_confirmation();
         let link = self.status.link.unwrap_or(ac_runtime::session::LinkStatus {
@@ -1585,6 +1591,68 @@ impl WindowUi {
         }
     }
 
+    /// An examined spell's components as the player would cast it, each
+    /// with its name, icon and whether the player carries one.
+    fn spell_examine_components(&mut self, spell: &SpellMetadata) -> Vec<SpellExamineComponent> {
+        let mut components = Vec::new();
+        let Some(table) = &self.components else {
+            return components;
+        };
+        let world = ac_runtime::gameplay::magic::TableComponentWorld {
+            objects: &self.facts.objects,
+            player: self.facts.state.player,
+        };
+        let formula = ac_runtime::gameplay::magic::examine_components(
+            &self.spell_components,
+            &world,
+            &self.facts.state.account,
+            spell,
+        );
+        for (id, owned) in formula {
+            // A component the table does not describe is left out.
+            let Some((_, base)) = table.components.iter().find(|(c, _)| *c == id) else {
+                continue;
+            };
+            components.push(SpellExamineComponent {
+                name: base.name.clone(),
+                icon: ac_ui::icons::IconSource::component_icon(&mut self.icons, base.icon),
+                owned,
+            });
+        }
+        components
+    }
+
+    /// The player's items changed while the examination window shows a
+    /// spell: its components again, as they stand now.
+    fn refresh_examined_spell(&mut self, dirty: Dirty) {
+        if !dirty.items {
+            return;
+        }
+        let examined = self
+            .host
+            .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, _| {
+                (c.page() == AppraisalPage::Spell).then(|| c.spell())
+            })
+            .flatten()
+            .filter(|&id| id != 0);
+        let Some(spell) = examined.and_then(|id| {
+            self.facts
+                .numbers()
+                .and_then(|n| n.spellbook())
+                .and_then(|b| b.try_get_metadata(id))
+                .cloned()
+        }) else {
+            return;
+        };
+        let components = self.spell_examine_components(&spell);
+        let Self { host, content, .. } = self;
+        let mut cells =
+            ac_ui::panels::DatRowTemplates::new(&*content, content.font(DEFAULT_FONT_ID));
+        host.with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
+            c.refresh_spell_components(ui, &spell, &components, &mut cells);
+        });
+    }
+
     /// A spell examined from the spellbook or a spell bar: the examination
     /// window's spell page, with no server request.
     fn examine_spell(&mut self, spell_id: u32) {
@@ -1600,23 +1668,13 @@ impl WindowUi {
         };
         let magic_skill = magic_skill(numbers, &spell.school);
         let icon = ac_ui::icons::IconSource::spell_icon(&mut self.icons, spell_id);
-        let mut components = Vec::new();
-        if let Some(table) = &self.components {
-            for &id in spell.formula_components.iter().filter(|&&c| c != 0) {
-                let base = table.components.iter().find(|(c, _)| *c == id);
-                components.push(SpellExamineComponent {
-                    name: base.map_or_else(String::new, |(_, b)| b.name.clone()),
-                    icon: base.and_then(|(_, b)| {
-                        ac_ui::icons::IconSource::component_icon(&mut self.icons, b.icon)
-                    }),
-                    owned: false,
-                });
-            }
-        }
-        let shown = self
-            .host
+        let components = self.spell_examine_components(&spell);
+        let Self { host, content, .. } = self;
+        let mut cells =
+            ac_ui::panels::DatRowTemplates::new(&*content, content.font(DEFAULT_FONT_ID));
+        let shown = host
             .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
-                c.examine_spell(ui, &spell, icon, magic_skill, &components);
+                c.examine_spell(ui, &spell, icon, magic_skill, &components, &mut cells);
             })
             .is_some();
         if shown {
