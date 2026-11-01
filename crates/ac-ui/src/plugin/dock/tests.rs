@@ -2319,3 +2319,25 @@ fn a_peek_open_and_closed_saves_nothing() {
     p.follow(&mut rig.host);
     assert_eq!(store.saves.get(), saves + 1);
 }
+
+#[test]
+fn a_closed_tile_in_a_corner_keeps_it_when_the_grip_comes_and_goes() {
+    for mode in [
+        DockMode::Floating,
+        DockMode::FloatingHorizontal,
+        DockMode::Right,
+        DockMode::Bottom,
+    ] {
+        let mut rig = Rig::in_mode(mode);
+        rig.press_tile();
+        rig.host.root.move_window(WINDOW, SCREEN.0, SCREEN.1);
+        rig.tick();
+        for locked in [true, false] {
+            rig.host.root.set_ui_locked(locked);
+            rig.tick();
+            let (w, h) = rig.size();
+            let corner = (SCREEN.0 - w, SCREEN.1 - h);
+            assert_eq!(rig.at(), corner, "{mode:?} locked {locked}");
+        }
+    }
+}

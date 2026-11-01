@@ -185,6 +185,8 @@ pub struct PluginDock {
     /// Where a closed dock was when it opened, if that made it move to fit:
     /// it goes back there when it closes.
     closed_at: Option<(f32, f32)>,
+    /// Whether it was last laid out closed, and in which mode.
+    laid_out_as: (bool, DockMode),
     /// The mode it had when the drag began.
     mode_before_drag: DockMode,
     /// A drag ended in another mode since the window last asked.
@@ -260,6 +262,7 @@ impl PluginDock {
             dragging: None,
             moved_in_drag: false,
             closed_at: None,
+            laid_out_as: (false, mode),
             mode_before_drag: mode,
             mode_dragged: false,
             appearance_requested: false,
@@ -546,9 +549,24 @@ impl PluginDock {
         place(ui, self.tile, l.tile);
         place(ui, self.gear, l.gear);
         ui.set_visible(self.gear, !closed);
+        // A dock on the screen's right or bottom edge keeps that edge when its
+        // size changes without opening, closing or changing mode (the grip
+        // coming or going, a new size), as one on the left or top edge keeps
+        // that one. Opening and closing place it themselves.
+        let same = self.laid_out_as == (closed, self.mode);
+        self.laid_out_as = (closed, self.mode);
+        let (sw, sh) = self.screen;
         if let Some(e) = ui.element_mut(self.root) {
+            let on_right = e.left > 0.0 && e.left + e.width >= sw - 0.5;
+            let on_bottom = e.top > 0.0 && e.top + e.height >= sh - 0.5;
             e.width = l.width;
             e.height = l.height;
+            if same && on_right {
+                e.left = sw - l.width;
+            }
+            if same && on_bottom {
+                e.top = sh - l.height;
+            }
         }
         let open_count = self.entries.iter().filter(|e| e.open).count();
         if let Some(w) = ui.widget_mut::<DockGrip>(self.grip) {
