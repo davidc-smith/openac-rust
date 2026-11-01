@@ -2168,6 +2168,37 @@ fn a_corpse_is_opened_looted_into_the_packs_and_closed() {
     assert_eq!(f.sent(), [build_use(3, CORPSE)]);
 }
 
+#[test]
+fn a_locked_chest_is_used_but_not_viewed_and_the_client_says_it_is_locked() {
+    // Golden text and order: the retail client sends the use, then refuses
+    // to view a container not described as openable and shows "The %s is
+    // locked" as client-local text. The server answers a locked chest's use
+    // with a sound and an empty use-done, no text. The corpse already open
+    // stays the open container.
+    const CORPSE: u32 = 0x8000_D011;
+    const CHEST: u32 = 0x8000_D012;
+    let mut f = Fixture::new();
+    open_empty_corpse(&mut f, CORPSE);
+    f.notices();
+    f.world.apply(&create(CHEST, "Legendary Chest", |d| {
+        d.item_type = ItemType::CONTAINER.bits();
+        d.object_description_flags = PublicWeenieFlags::STUCK.bits();
+        d.useability = Some(ItemUseable::REMOTE.bits());
+        d.items_capacity = Some(120);
+    }));
+    f.world.take_table_events();
+    f.now_ms += 1_000;
+    assert!(f.run(ItemCommand::Use(guid(CHEST))));
+    assert_eq!(f.sent(), [build_use(2, CHEST)]);
+    assert_eq!(
+        f.notices(),
+        [Notice::Interface("The Legendary Chest is locked".into())]
+    );
+    let external = f.inventory.external_containers();
+    assert_eq!(external.requested_container_id(), CORPSE);
+    assert_eq!(external.current_container_id(), CORPSE);
+}
+
 /// Leave the open corpse `corpse` (with nothing in it) as the open
 /// container.
 fn open_empty_corpse(f: &mut Fixture, corpse: u32) {

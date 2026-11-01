@@ -712,6 +712,34 @@ impl Inventory {
     fn snapshot(item: &ClientObject, ctx: &ItemContext<'_>) -> ItemPolicyObject {
         policy_object(ctx.world.items(), item, ctx.player())
     }
+
+    /// View `container` on the ground if it is described as openable. A
+    /// locked one stays unviewed (its use has already gone to the server,
+    /// which answers it with no text), and when `announce` the client says
+    /// why itself. Returns whether the view was asked for.
+    pub(super) fn attempt_set_ground_object(
+        &mut self,
+        container: u32,
+        announce: bool,
+        ctx: &mut ItemContext<'_>,
+    ) -> bool {
+        let object = ctx
+            .world
+            .item(container)
+            .map(|item| Self::snapshot(item, ctx));
+        match interaction::decide_set_ground_object(object.as_ref()) {
+            interaction::GroundObjectDecision::Open => {
+                self.request_external_open(container, ctx);
+                true
+            }
+            interaction::GroundObjectDecision::Refuse(message) => {
+                if announce && let Some(message) = message {
+                    self.notices.push(Notice::Interface(message));
+                }
+                false
+            }
+        }
+    }
 }
 
 /// Whether the item `source` may be used on `target` (the target cursor's
@@ -1418,7 +1446,7 @@ impl Inventory {
                         self.dispatch_targeted_use(action.object_id, action.target_id, false, ctx);
                 }
                 K::SetGroundObject => {
-                    self.request_external_open(action.object_id, ctx);
+                    self.attempt_set_ground_object(action.object_id, true, ctx);
                     acted = true;
                 }
                 K::EnterTargetMode => {
