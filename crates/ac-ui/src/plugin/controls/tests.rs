@@ -13,7 +13,7 @@ use ac_plugin_ui::{
     UiOwner, UiValue,
 };
 
-use super::super::fold::{MarkupExpander, MarkupSplit};
+use super::super::fold::{ExpanderHeader, MarkupExpander, MarkupSplit};
 use super::super::{MarkupIcons, PluginTheme, build_panel_with_state};
 use super::*;
 use crate::event::MouseButton;
@@ -447,6 +447,24 @@ fn folding_an_expander_moves_what_is_below_it_up() {
             action(panel, "SetOpen", ActionValue::Bool(true)),
         ]
     );
+}
+
+#[test]
+fn the_header_arrow_follows_a_click() {
+    let mut m = expander("");
+    let el = m.element(0);
+    let arrow = |m: &Mounted| {
+        let header = m.host.root.widget::<MarkupExpander>(el).unwrap().header;
+        let header = m.host.root.widget::<ExpanderHeader>(header).unwrap();
+        header.expanded
+    };
+    assert!(arrow(&m));
+    m.click(30, 66);
+    assert!(!arrow(&m), "folded by the click");
+    m.tick(0.016);
+    assert!(!arrow(&m));
+    m.click(30, 66);
+    assert!(arrow(&m), "opened by the click");
 }
 
 #[test]
