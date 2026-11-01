@@ -8,7 +8,8 @@
 //! things go is worked out by [`layout`] and how they look by [`style`].
 //!
 //! With more windows than fit, the slots scroll with the wheel or the arrows at
-//! each end of the list, and a bar beside them says how far through it they are.
+//! each end of the list, and a bar beside them says how far through it they are. The
+//! player can also limit how many slots it shows, and the rest scroll the same way.
 //!
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
@@ -203,6 +204,9 @@ pub struct PluginDock {
     /// Whether the slots' icons were last picked for a light theme.
     icons_light: bool,
     first: usize,
+    /// How many slots it shows at most; none for as many as the screen has room
+    /// for.
+    slot_limit: Option<usize>,
     layout: DockLayout,
     screen: (f32, f32),
     /// The dock is being dragged, with the closest the pointer has been to its
@@ -302,6 +306,7 @@ impl PluginDock {
             theme: PluginTheme::Classic,
             icons_light: false,
             first: 0,
+            slot_limit: None,
             layout,
             screen: ui.size(),
             dragging: None,
@@ -334,6 +339,21 @@ impl PluginDock {
     pub fn set_size(&mut self, ui: &mut UiRoot, size: DockSize) {
         if self.size != size {
             self.size = size;
+            self.reflow(ui);
+        }
+    }
+
+    /// How many slots it shows at most, if it is limited.
+    #[must_use]
+    pub fn slot_limit(&self) -> Option<usize> {
+        self.slot_limit
+    }
+
+    /// Shows at most `limit` slots, and scrolls the rest; none for as many as the
+    /// screen has room for.
+    pub fn set_slot_limit(&mut self, ui: &mut UiRoot, limit: Option<usize>) {
+        if self.slot_limit != limit {
+            self.slot_limit = limit;
             self.reflow(ui);
         }
     }
@@ -571,9 +591,11 @@ impl PluginDock {
         }
         self.screen = ui.size();
         let owners: Vec<&str> = self.entries.iter().map(|e| e.owner.as_str()).collect();
-        let longest = layout::max_length(self.mode, self.screen.0, self.screen.1);
         let closed = self.laid_out_closed();
         let grip = !ui.ui_locked();
+        let longest = layout::max_length(self.mode, self.screen.0, self.screen.1).min(
+            layout::length_for_slots(self.mode, self.size, grip, &owners, self.slot_limit),
+        );
         let l = layout::compute(
             self.mode, self.size, closed, grip, &owners, longest, self.first,
         );
