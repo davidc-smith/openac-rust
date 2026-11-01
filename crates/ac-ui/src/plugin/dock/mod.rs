@@ -10,7 +10,8 @@
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
 //! the dock's place. With hovering turned on, the pointer on a closed dock also
-//! peeks it open until the pointer leaves, which saves nothing.
+//! peeks it open until the pointer leaves, which saves nothing: while it
+//! peeks, the layout it reports is the closed one.
 //!
 //! The root sets a dragged window's place from the pointer on every move, so
 //! the dock reads that place each frame, decides its mode, and puts itself
@@ -184,6 +185,8 @@ pub struct PluginDock {
     /// Where a closed dock was when it opened, if that made it move to fit:
     /// it goes back there when it closes.
     closed_at: Option<(f32, f32)>,
+    /// Whether it was last laid out closed, and in which mode.
+    laid_out_as: (bool, DockMode),
     /// The mode it had when the drag began.
     mode_before_drag: DockMode,
     /// A drag ended in another mode since the window last asked.
@@ -259,6 +262,7 @@ impl PluginDock {
             dragging: None,
             moved_in_drag: false,
             closed_at: None,
+            laid_out_as: (false, mode),
             mode_before_drag: mode,
             mode_dragged: false,
             appearance_requested: false,
@@ -545,9 +549,24 @@ impl PluginDock {
         place(ui, self.tile, l.tile);
         place(ui, self.gear, l.gear);
         ui.set_visible(self.gear, !closed);
+        // A dock on the screen's right or bottom edge keeps that edge when its
+        // size changes without opening, closing or changing mode (the grip
+        // coming or going, a new size), as one on the left or top edge keeps
+        // that one. Opening and closing place it themselves.
+        let same = self.laid_out_as == (closed, self.mode);
+        self.laid_out_as = (closed, self.mode);
+        let (sw, sh) = self.screen;
         if let Some(e) = ui.element_mut(self.root) {
+            let on_right = e.left > 0.0 && e.left + e.width >= sw - 0.5;
+            let on_bottom = e.top > 0.0 && e.top + e.height >= sh - 0.5;
             e.width = l.width;
             e.height = l.height;
+            if same && on_right {
+                e.left = sw - l.width;
+            }
+            if same && on_bottom {
+                e.top = sh - l.height;
+            }
         }
         let open_count = self.entries.iter().filter(|e| e.open).count();
         if let Some(w) = ui.widget_mut::<DockGrip>(self.grip) {
@@ -949,11 +968,48 @@ impl PluginDock {
         )
     }
 
-    /// The dock sits over the other windows, whichever was raised last. A
-    /// modal window keeps the top.
+    /// The dock sits over the other windows, whichever was raised last: when
+    /// one comes up over it, it goes back on top. What is not such a window
+    /// stays over it, in the order it was in: a plugin's dialog box or modal
+    /// window (anything blocking a window), a tooltip, a game dialog. A modal
+    /// window keeps the top.
     fn keep_on_top(&self, ui: &mut UiRoot) {
-        if ui.modal.is_none() && self.is_shown() && !self.covered {
-            ui.bring_to_front(self.root);
+        if ui.modal.is_some() || !self.is_shown() || self.covered {
+            return;
+        }
+        let Some(z) = ui.element(self.root).map(Element::z_order) else {
+            return;
+        };
+        let blockers = ui.window_blockers();
+        let windows: Vec<ElementId> = ui
+            .windows()
+            .iter()
+            .map(|w| w.frame)
+            .filter(|f| *f != self.root && !blockers.contains(f))
+            .collect();
+        let top = ui.root();
+        let under = windows.iter().any(|f| {
+            ui.parent(*f) == Some(top)
+                && ui
+                    .element(*f)
+                    .is_some_and(|e| e.visible() && e.z_order() >= z)
+        });
+        if !under {
+            return;
+        }
+        let mut over: Vec<(i32, ElementId)> = ui
+            .children(top)
+            .into_iter()
+            .filter(|c| *c != self.root && !windows.contains(c))
+            .filter_map(|c| {
+                let cz = ui.element(c)?.z_order();
+                (cz > z).then_some((cz, c))
+            })
+            .collect();
+        over.sort_by_key(|(cz, _)| *cz);
+        ui.bring_to_front(self.root);
+        for (_, c) in over {
+            ui.bring_to_front(c);
         }
     }
 }
@@ -969,10 +1025,26 @@ fn place(ui: &mut UiRoot, id: ElementId, r: Rect) {
 }
 
 impl PanelController for PluginDock {
-    /// Minimized or not is saved per character, with its place.
-    fn capture_window_state(&self, _ui: &UiRoot) -> Option<WindowState> {
+    /// Minimized or not is saved per character, with its place. A peek is
+    /// not the player's change, so while it is open the place and size saved
+    /// are the closed dock's: where it goes back to, at the tile's size.
+    fn capture_window_state(&self, ui: &UiRoot) -> Option<WindowState> {
+        let closed = self
+            .peeking
+            .then(|| {
+                let at = ui.element(self.root).map(|e| (e.left, e.top))?;
+                let (left, top) = self.closed_at.unwrap_or(at);
+                let grip = self.layout.grip.is_some();
+                let tile = layout::compute(self.mode, self.size, true, grip, &[], 0.0, 0);
+                Some((left, top, tile.width, tile.height))
+            })
+            .flatten();
         Some(WindowState {
             collapsed: self.minimized,
+            persisted_left: closed.map(|c| c.0),
+            persisted_top: closed.map(|c| c.1),
+            persisted_width: closed.map(|c| c.2),
+            persisted_height: closed.map(|c| c.3),
             ..WindowState::default()
         })
     }
@@ -1293,6 +1365,11 @@ impl Widget for DockTile {
         true
     }
 
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
+        true
+    }
+
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = element_size(ui, me);
         let look = self.pointer.look(true);
@@ -1343,6 +1420,11 @@ impl Widget for DockGear {
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
         true
     }
 
@@ -1399,6 +1481,11 @@ impl Widget for DockSlot {
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
         true
     }
 

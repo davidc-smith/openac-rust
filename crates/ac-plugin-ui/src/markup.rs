@@ -20,8 +20,8 @@ pub use flex_attrs::{FlexContainer, FlexItem};
 mod flex_attrs;
 
 use crate::value::{
-    BindingKind, BindingSchema, Rgba, UiValue, bound_color, light_color, parse_bool, parse_color,
-    parse_float, parse_hex, parse_int,
+    BindingKind, BindingSchema, LIGHT_COLOR_MARKER, Rgba, UiValue, bound_color, light_color,
+    parse_bool, parse_color, parse_float, parse_hex, parse_int,
 };
 
 /// Why markup cannot become a panel.
@@ -1377,6 +1377,14 @@ impl<'a> Parser<'a> {
             }));
         }
         if let Some(light) = light_color(a) {
+            // A pair is two literals: a binding in either would be dropped.
+            if a.split(LIGHT_COLOR_MARKER)
+                .any(|part| is_binding(part.trim()))
+            {
+                return err(format!(
+                    "The colour '{a}' binds a value, so it cannot name a colour for light themes."
+                ));
+            }
             return Ok(Some(ColorSource::Paired {
                 dark: parse_color(Some(a)),
                 light,

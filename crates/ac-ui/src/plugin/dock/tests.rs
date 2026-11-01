@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ac_host::settings::{UiWindowLayout, UiWindowPlacement};
 use ac_plugin_ui::{BindingSchema, PanelDescriptor, PluginUi, UiOwner};
 
 use super::layout::{self, ART, DockLayout};
@@ -10,6 +11,7 @@ use super::*;
 use crate::draw::{DrawCmd, DrawList, NoSprites, TextureRef};
 use crate::event::MouseButton;
 use crate::host::UiHost;
+use crate::layout_persistence::{LayoutPersistence, LayoutStore};
 use crate::plugin::style::tests::{corners as draw_corners, has_color};
 use crate::plugin::style::{hover, mix};
 use crate::shapes::CornerRadii;
@@ -447,16 +449,123 @@ fn the_dock_stays_over_a_window_that_was_raised() {
     rig.add_plugins(1);
     rig.sync_plain();
     let frame = rig.frame();
-    let other = rig
-        .host
-        .root
-        .insert(Element::at(0.0, 0.0, 100.0, 100.0), DockGear::default());
-    let top = rig.host.root.root();
-    rig.host.root.add_child(top, other);
+    let other = rig.window("other", Rect::new(0.0, 0.0, 100.0, 100.0));
     rig.host.root.bring_to_front(other);
     rig.tick();
-    let z = |rig: &Rig, id| rig.host.root.element(id).unwrap().z_order();
-    assert!(z(&rig, frame) > z(&rig, other));
+    assert!(rig.z(frame) > rig.z(other));
+}
+
+impl Rig {
+    /// A registered window at `r`, shown and raised.
+    fn window(&mut self, name: &str, r: Rect) -> ElementId {
+        let ui = &mut self.host.root;
+        let e = Element::at(r.x, r.y, r.w, r.h);
+        let frame = ui.insert(e, crate::widgets::Panel::default());
+        let top = ui.root();
+        ui.add_child(top, frame);
+        ui.register_window(name, frame, None, 0).unwrap();
+        ui.show_window(name);
+        frame
+    }
+
+    fn z(&self, id: ElementId) -> i32 {
+        self.host.root.element(id).unwrap().z_order()
+    }
+
+    /// The middle of the dock, on the screen.
+    fn middle(&mut self) -> (f32, f32) {
+        let (left, top) = self.at();
+        let (w, h) = self.size();
+        (left + w / 2.0, top + h / 2.0)
+    }
+}
+
+#[test]
+fn a_plugin_dialog_over_the_dock_stays_over_it_and_takes_the_press() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(1);
+    rig.sync_plain();
+    let dock = rig.frame();
+    // The dialog's window is centred on the dock, so the dialog is too.
+    let (mx, my) = rig.middle();
+    let owner = rig.window("owner", Rect::new(mx - 100.0, my - 50.0, 200.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(owner));
+    let before = rig.host.root.children(rig.host.root.root());
+    let dialog = ac_plugin_ui::DialogView {
+        handle: 1,
+        owner: UiOwner::new("test.0", "Plugin 0"),
+        title: "Delete".into(),
+        message: "Delete the profile?".into(),
+        buttons: vec!["Yes".into(), "No".into()],
+        owner_panel: Some(7),
+    };
+    let mut dialogs = crate::plugin::dialog::DialogPresenter::default();
+    let frames = std::collections::HashMap::from([(7, owner)]);
+    let outbox = Rc::clone(&rig.outbox);
+    dialogs.sync(
+        &mut rig.host.root,
+        &[dialog],
+        &frames,
+        &std::collections::HashMap::new(),
+        None,
+        None,
+        &outbox,
+    );
+    let shown = rig.host.root.children(rig.host.root.root());
+    let dialog = *shown.iter().find(|c| !before.contains(c)).unwrap();
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.z(dialog) > rig.z(dock));
+    // Another window raised over the dock: the dock goes back over it, and
+    // the dialog stays over the dock.
+    let other = rig.window("other", Rect::new(400.0, 300.0, 100.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(other));
+    assert!(rig.z(dialog) > rig.z(dock));
+    // A press where both are goes to the dialog, not the dock.
+    let (x, y) = (mx as i32, my as i32);
+    let hit = rig.host.root.pick(x, y).unwrap();
+    assert!(rig.host.root.is_within(Some(hit), dialog));
+    rig.host.mouse_move(x, y);
+    rig.host.mouse_down(MouseButton::Left, x, y, 0);
+    rig.host.mouse_up(MouseButton::Left, x, y, 0);
+    rig.tick();
+    assert!(rig.outbox.borrow().is_empty());
+    assert!(!rig.closed());
+}
+
+#[test]
+fn a_modal_plugin_window_and_a_tooltip_stay_over_the_dock() {
+    let mut rig = Rig::new(SCREEN.1, PluginTheme::Moss);
+    rig.add_plugins(1);
+    rig.sync_plain();
+    let dock = rig.frame();
+    let owner = rig.window("owner", Rect::new(100.0, 100.0, 200.0, 100.0));
+    let modal = rig.window("modal", Rect::new(0.0, 100.0, 200.0, 200.0));
+    rig.tick();
+    let mut dialogs = crate::plugin::dialog::DialogPresenter::default();
+    let frames = std::collections::HashMap::from([(1, owner), (2, modal)]);
+    dialogs.sync_modals(&mut rig.host.root, &[(2, 1)], &frames);
+    // A tooltip-like overlay, which is not a window, raised once.
+    let tip = rig
+        .host
+        .root
+        .insert(Element::at(20.0, 120.0, 80.0, 20.0), DockGear::default());
+    let top = rig.host.root.root();
+    rig.host.root.add_child(top, tip);
+    rig.host.root.bring_to_front(tip);
+    for _ in 0..3 {
+        rig.tick();
+    }
+    assert!(rig.z(modal) > rig.z(dock));
+    assert!(rig.z(tip) > rig.z(modal));
+    let other = rig.window("other", Rect::new(400.0, 300.0, 100.0, 100.0));
+    rig.tick();
+    assert!(rig.z(dock) > rig.z(other));
+    assert!(rig.z(modal) > rig.z(dock));
+    assert!(rig.z(tip) > rig.z(modal));
 }
 
 #[test]
@@ -1565,6 +1674,35 @@ fn hovering_a_slot_shows_its_label_and_it_has_no_tooltip() {
 }
 
 #[test]
+fn a_label_and_its_look_stay_while_the_pointer_rests_past_the_tooltip_time() {
+    let mut rig = labelled("Loot Editor", "MossTank");
+    let slot = rig.layout().slots[0].unwrap();
+    rig.hover(slot);
+    let wait = rig.host.root.tooltip_delay_ms + rig.host.root.tooltip_duration_ms;
+    // Two frames: one fires the tooltip time, the next would end it.
+    rig.pass(wait as f64 / 1000.0);
+    rig.pass(wait as f64 / 1000.0);
+    assert_eq!(rig.label().unwrap().title, "Loot Editor");
+    let panel = rig.ui.panels().next().unwrap().id;
+    let id = rig.with(|c, _| c.slot(panel)).unwrap();
+    let look = rig
+        .host
+        .root
+        .widget::<DockSlot>(id)
+        .unwrap()
+        .pointer
+        .look(true);
+    assert_eq!(look, ButtonLook::Hovered);
+    // The tile and the gear keep theirs too.
+    for part in [rig.layout().tile, rig.layout().gear] {
+        rig.hover(part);
+        rig.pass(wait as f64 / 1000.0);
+        rig.pass(wait as f64 / 1000.0);
+        assert!(rig.label().is_some());
+    }
+}
+
+#[test]
 fn a_label_is_one_line_when_the_title_is_the_plugins_name() {
     let mut rig = labelled("GoArrow", "GoArrow");
     let slot = rig.layout().slots[0].unwrap();
@@ -2052,4 +2190,154 @@ fn a_windows_own_png_dims_while_its_window_is_closed() {
     assert_eq!(alpha_of(&mut rig, &panels), 1.0);
     panels[0].requested_visible = false;
     assert_eq!(alpha_of(&mut rig, &panels), style::CLOSED_ART_ALPHA);
+}
+
+// ── Saved layout ────────────────────────────────────────────────────────
+
+/// Layouts kept in memory for one character, counting the saves.
+#[derive(Clone, Default)]
+struct MemoryLayouts {
+    placements: Rc<RefCell<std::collections::HashMap<String, UiWindowPlacement>>>,
+    saves: Rc<std::cell::Cell<usize>>,
+}
+
+impl LayoutStore for MemoryLayouts {
+    fn load_window_placement(
+        &self,
+        _character: &str,
+        _resolution: &str,
+        window: &str,
+        _fallback: &UiWindowLayout,
+    ) -> Option<UiWindowPlacement> {
+        self.placements.borrow().get(window).copied()
+    }
+
+    fn save_window_placement(
+        &self,
+        _character: &str,
+        window: &str,
+        placement: &UiWindowPlacement,
+    ) -> std::io::Result<()> {
+        self.saves.set(self.saves.get() + 1);
+        self.placements
+            .borrow_mut()
+            .insert(window.to_owned(), *placement);
+        Ok(())
+    }
+
+    fn load_named_window_layout(
+        &self,
+        _profile: &str,
+        _window: &str,
+        _fallback: &UiWindowLayout,
+    ) -> Option<UiWindowLayout> {
+        None
+    }
+
+    fn save_named_window_layout(
+        &self,
+        _profile: &str,
+        _window: &str,
+        _layout: &UiWindowLayout,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Rig {
+    /// The layout persistence over this dock, restored from `store` as on
+    /// login.
+    fn persist(&mut self, store: &MemoryLayouts) -> LayoutPersistence {
+        let screen = (SCREEN.0 as i32, SCREEN.1 as i32);
+        let mut p = LayoutPersistence::new(
+            &mut self.host,
+            Some(Box::new(store.clone())),
+            "Tester",
+            screen,
+            &[],
+        );
+        p.set_gameplay_active(&mut self.host, true);
+        p.restore_all(&mut self.host);
+        self.tick();
+        p.follow(&mut self.host);
+        p
+    }
+}
+
+#[test]
+fn a_closed_dock_in_a_corner_comes_back_to_that_corner() {
+    for mode in [
+        DockMode::Floating,
+        DockMode::FloatingHorizontal,
+        DockMode::Right,
+        DockMode::Bottom,
+    ] {
+        let store = MemoryLayouts::default();
+        let mut rig = Rig::in_mode(mode);
+        let mut p = rig.persist(&store);
+        rig.press_tile();
+        rig.host.root.move_window(WINDOW, SCREEN.0, SCREEN.1);
+        rig.tick();
+        p.follow(&mut rig.host);
+        let (w, h) = rig.size();
+        let corner = rig.at();
+        assert_eq!(corner, (SCREEN.0 - w, SCREEN.1 - h), "{mode:?}");
+        // The next run, with the mode the settings keep.
+        let mut rig = Rig::in_mode(mode);
+        rig.persist(&store);
+        assert!(rig.closed(), "{mode:?}");
+        assert_eq!(rig.at(), corner, "{mode:?}");
+    }
+}
+
+#[test]
+fn a_peek_open_and_closed_saves_nothing() {
+    let store = MemoryLayouts::default();
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let mut p = rig.persist(&store);
+    rig.press_tile();
+    rig.with(|c, ui| c.set_opens(ui, DockOpens::Hover));
+    // Near the far end, so that the peek also slides to fit.
+    rig.host.root.move_window(WINDOW, 300.0, 600.0);
+    rig.host.mouse_move(100, 100);
+    rig.pass(1.0);
+    p.follow(&mut rig.host);
+    let saves = store.saves.get();
+    let closed_at = rig.at();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+    assert_ne!(rig.at(), closed_at);
+    p.follow(&mut rig.host);
+    rig.host.mouse_move(100, 100);
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+    p.follow(&mut rig.host);
+    assert_eq!(store.saves.get(), saves);
+    // Opening it for good is saved.
+    rig.press_tile();
+    p.follow(&mut rig.host);
+    assert_eq!(store.saves.get(), saves + 1);
+}
+
+#[test]
+fn a_closed_tile_in_a_corner_keeps_it_when_the_grip_comes_and_goes() {
+    for mode in [
+        DockMode::Floating,
+        DockMode::FloatingHorizontal,
+        DockMode::Right,
+        DockMode::Bottom,
+    ] {
+        let mut rig = Rig::in_mode(mode);
+        rig.press_tile();
+        rig.host.root.move_window(WINDOW, SCREEN.0, SCREEN.1);
+        rig.tick();
+        for locked in [true, false] {
+            rig.host.root.set_ui_locked(locked);
+            rig.tick();
+            let (w, h) = rig.size();
+            let corner = (SCREEN.0 - w, SCREEN.1 - h);
+            assert_eq!(rig.at(), corner, "{mode:?} locked {locked}");
+        }
+    }
 }

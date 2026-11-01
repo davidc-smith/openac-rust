@@ -1212,9 +1212,10 @@ impl Host<'_> {
     /// The client's bundled font, Noto Sans, at a size from
     /// [`FONT_MINIMUM_PIXEL_SIZE`] to [`FONT_MAXIMUM_PIXEL_SIZE`] pixels, in a
     /// weight. [`FontWeight::SemiBold`] is the weight themed window titles are
-    /// set in. Shared with every plugin, so it costs nothing against
-    /// [`FONT_MAXIMUM_BYTES`]. [`Font::NONE`] when refused, which is logged
-    /// once. Asking twice returns the same font, held twice. The same with or
+    /// set in. Shared with every plugin: a size counts its atlas against
+    /// [`FONT_MAXIMUM_BYTES`] only while no other plugin holds it too.
+    /// [`Font::NONE`] when refused, which is logged (see [`Self::font_load`]).
+    /// Asking twice returns the same font, held twice. The same with or
     /// without a window.
     pub fn font_bundled(&mut self, pixel_size: f32, weight: FontWeight) -> Font {
         let request = BundledFontRequest { pixel_size, weight }.to_bytes();
@@ -1232,10 +1233,16 @@ impl Host<'_> {
     ///
     /// A plugin may hold [`FONT_MAXIMUM_COUNT`] fonts, each of at most
     /// [`FONT_MAXIMUM_GLYPHS`] characters, and its own fonts may take
-    /// [`FONT_MAXIMUM_BYTES`], counting the files and their atlases. A file
-    /// over [`FONT_MAXIMUM_FILE_BYTES`], one that is not a usable font, or a
-    /// request past a limit is [`Font::NONE`] and logged once. A second request
-    /// for the same name, size and characters is the same font held once more.
+    /// [`FONT_MAXIMUM_BYTES`], counting the files and their atlases. A name
+    /// may be 256 bytes and a request may list 256 ranges. A file over
+    /// [`FONT_MAXIMUM_FILE_BYTES`], one that is not a usable font or whose
+    /// outlines take too much work to draw, or a request past a limit is
+    /// [`Font::NONE`]. A refusal is logged once; each kind of refusal (size,
+    /// count, budget, an unusable file and so on) for at most eight requests,
+    /// then once more to say the rest are left out. A font whose kerning
+    /// takes too long to read is kept with part of it, and that is logged. A
+    /// second request for the same name, size and characters is the same font
+    /// held once more.
     /// Preparing a font takes some milliseconds, so ask up front.
     pub fn font_load(
         &mut self,

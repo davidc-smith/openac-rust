@@ -1359,6 +1359,9 @@ impl UiRoot {
                 self.emit(UiOutput::TooltipShow(hover));
             } else if self.tooltip_fired
                 && self.now_ms - self.tooltip_shown_ms >= self.tooltip_duration_ms
+                && !self
+                    .widget_dyn(hover)
+                    .is_some_and(|w| w.hover_outlasts_tooltip())
             {
                 let e = self.event_for(hover, kind::HOVER_LEAVE);
                 self.send_event(hover, &e);
@@ -1870,6 +1873,21 @@ impl UiRoot {
     #[must_use]
     pub fn is_window_blocked(&self, window: ElementId) -> bool {
         self.window_blocks.contains_key(&window)
+    }
+
+    /// The top-level elements blocking a window: each dialog box or modal
+    /// window that holds another window back.
+    #[must_use]
+    pub fn window_blockers(&self) -> Vec<ElementId> {
+        let mut tops: Vec<ElementId> = self
+            .window_blocks
+            .values()
+            .flatten()
+            .map(|b| self.top_level_of(*b))
+            .collect();
+        tops.sort_unstable();
+        tops.dedup();
+        tops
     }
 
     fn top_level_of(&self, element: ElementId) -> ElementId {

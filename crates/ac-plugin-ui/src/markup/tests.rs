@@ -684,6 +684,22 @@ fn a_colour_may_name_a_second_colour_for_light_themes() {
     assert_eq!(color.read(&NoValues), Rgba::argb(0xFF11_2233));
 }
 
+/// A pair is two literals: a binding on either side is refused rather than
+/// dropped.
+#[test]
+fn a_colour_pair_with_a_binding_is_refused() {
+    let schema = schema("T", &[("Accent", K::Uint)]);
+    for value in ["{Accent}|light:#FF445566", "#FF112233|light:{Accent}"] {
+        let markup = format!(r#"<panel theme="plugin"><label text="a" color="{value}"/></panel>"#);
+        assert_eq!(
+            error(&markup, &schema),
+            format!(
+                "The colour '{value}' binds a value, so it cannot name a colour for light themes."
+            )
+        );
+    }
+}
+
 #[test]
 fn theme_colours_name_a_token_and_keep_a_classic_fallback() {
     // OpenAC MarkupDocument's theme branch (PluginUiPalette.Token).
