@@ -511,6 +511,9 @@ pub struct WindowUi {
     /// Each spell component's weenie class (the component id map
     /// 0x27000002): the components page knows a component by its class.
     pub(super) component_classes: std::collections::HashMap<u32, u32>,
+    /// The component check over the component classes and each school's
+    /// focus: which formula an examined spell shows.
+    pub(super) spell_components: ac_core::spells::SpellComponentRequirements,
     pub(super) panels: MainPanels,
     pub(super) dialogs: DialogQueue<DialogAction>,
     pub(super) dialog_layout: Option<u32>,
@@ -609,6 +612,7 @@ impl WindowUi {
             skill_table: None,
             components: None,
             component_classes: std::collections::HashMap::new(),
+            spell_components: ac_core::spells::SpellComponentRequirements::default(),
             panels: MainPanels::new(),
             dialogs: DialogQueue::default(),
             dialog_layout: None,
@@ -1602,14 +1606,25 @@ impl WindowUi {
         let icon = ac_ui::icons::IconSource::spell_icon(&mut self.icons, spell_id);
         let mut components = Vec::new();
         if let Some(table) = &self.components {
-            for &id in spell.formula_components.iter().filter(|&&c| c != 0) {
-                let base = table.components.iter().find(|(c, _)| *c == id);
+            let world = ac_runtime::gameplay::magic::TableComponentWorld {
+                objects: &self.facts.objects,
+                player: self.facts.state.player,
+            };
+            let formula = ac_runtime::gameplay::magic::examine_components(
+                &self.spell_components,
+                &world,
+                &self.facts.state.account,
+                &spell,
+            );
+            for (id, owned) in formula {
+                // A component the table does not describe is left out.
+                let Some((_, base)) = table.components.iter().find(|(c, _)| *c == id) else {
+                    continue;
+                };
                 components.push(SpellExamineComponent {
-                    name: base.map_or_else(String::new, |(_, b)| b.name.clone()),
-                    icon: base.and_then(|(_, b)| {
-                        ac_ui::icons::IconSource::component_icon(&mut self.icons, b.icon)
-                    }),
-                    owned: false,
+                    name: base.name.clone(),
+                    icon: ac_ui::icons::IconSource::component_icon(&mut self.icons, base.icon),
+                    owned,
                 });
             }
         }
