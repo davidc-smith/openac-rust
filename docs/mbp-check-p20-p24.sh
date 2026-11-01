@@ -16,7 +16,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export TMPDIR=/tmp/
 : "${OPENAC_DAT_DIR:?set OPENAC_DAT_DIR to the retail dats, or the real-dat tests are skipped}"
 
-BRANCHES=(fix/expander-arrow fix/side-by-side-expanders fix/classic-expander-frame feat/dock-overflow-cues feat/dock-animation)
+BRANCHES=(fix/expander-arrow-v2 fix/side-by-side-expanders-v2 fix/classic-expander-frame feat/dock-overflow-cues feat/dock-animation)
 REPO="$(git rev-parse --show-toplevel)"
 WORK="$REPO/../openac-rust-p20-p24-check"
 LOGS="$HOME/code/OpenAC/check-logs/p20-p24-$(date +%Y%m%d-%H%M)"

@@ -8,7 +8,7 @@ The suggested order is P24, P20, P21, P22, P23. P20 and P21 conflict on `MarkupE
 
 ---
 
-## P24: `fix/expander-arrow`
+## P24: `fix/expander-arrow-v2`
 
 **Title:** An expander's arrow follows a header click
 
@@ -37,7 +37,7 @@ The original client has no plugin expanders, so there is nothing in it to compar
 
 ---
 
-## P20: `fix/side-by-side-expanders`
+## P20: `fix/side-by-side-expanders-v2`
 
 **Title:** Expanders place their siblings afresh when one folds
 
