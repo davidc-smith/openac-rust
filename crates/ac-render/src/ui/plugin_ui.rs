@@ -101,7 +101,6 @@ pub fn client_window_name(window: ClientWindow) -> &'static str {
 /// The first cell number inside a building or dungeon.
 const FIRST_INDOOR_CELL: u32 = 0x0100;
 
-/// A plugin's icon placed this frame: which of the merged icons, and where.
 /// A sharper bake of the bundled font a display wants: the font, its weight
 /// and size, and the scale to bake it at.
 #[derive(Debug)]
@@ -119,6 +118,7 @@ impl SharpWanted {
     }
 }
 
+/// A plugin's icon placed this frame: which of the merged icons, and where.
 #[derive(Debug, Clone, Copy)]
 struct PlacedIcon {
     entry: usize,
