@@ -130,6 +130,9 @@ rather than a paint callback, so the canvas items become new `PaintCmd` and
 | P17 | Canvas inside a markup window (`5279f073`, `352099df`) | Missing | `<canvas id>` element in markup, sized by flex. `in_markup` flag, paired by id in `plugin/mod.rs`. | M | F1 | Not started | |
 | P18 | Remembered canvas position (`f4a5b7bf`) | Missing | `remembers_position` flag, saved per character through `layout_persistence.rs`, debounced 0.5 s. | S-M | F1 | Not started | |
 | P19 | Sample plugins: ControlsDemo, FlexDemo, ThemeGallery | Missing | Port as WASM samples to test the features above against. | S each | P1, P6 | Not started | Optional |
+| P20 | Side-by-side expanders (not a port) | Bug | Folding moves what is below by each expander's height, so side-by-side expanders add up and can put a group over a header, which then cannot reopen. Needs siblings placed afresh, since limiting each move breaks when they reopen in another order. | S-M | — | Not started | Found in the dock's live test, 2026-11-01. Also upstream at `57a8e81` and in C#. Separate PR, by the user's choice |
+| P21 | Classic expander frame | Missing | Frame Classic expanders as modern themes do. Re-pins `crates/ac-ui/tests/data/plugin_classic/pinned.txt`. | S | P14 | Not started | The user, 2026-11-01: it looks odd unframed, and the frame goes in a different PR from the dock |
+| P22 | Dock with many windows | Partial | The user's follow-ups on the dock when it has to scroll. Ask them what they are. | ? | P2 | Not started | The wheel, fades, gear and labels all work. Separate PR, by the user's choice |
 
 ## Modern HUD decks
 

@@ -1,7 +1,7 @@
 # Plugin dock PR: draft for review
 
-Local to this fork. Not opened: the user decides when, after the final live test.
-Fill in the two `TODO` lines first, and recheck that upstream has not moved from `57a8e81`.
+Local to this fork. Not opened: the user reviews this and decides when.
+Fill in the `TODO` line first, and recheck that upstream has not moved from `57a8e81`.
 
 Base `eriknihlen/openac-rust` `main`, head `davidc-smith:feat/plugin-dock-v2`.
 
@@ -31,11 +31,13 @@ In order:
 
 **A bug this fixes.** `ui_theme` was missing from the host's list of UI imports, so a real plugin always read Classic.
 
-**At a UI Scale.** The batcher's whole-pixel snap skips coloured triangles, which are multiplied but not snapped, because a snap folds their soft edge. `UiRoot`'s pixels per unit includes the player's scale, so soft edges and sharper bakes follow it.
+**At a UI Scale.** The batcher's whole-pixel snap skips coloured triangles, which are multiplied but not snapped, because a snap folds their soft edge. `UiRoot`'s pixels per unit includes the player's scale, so soft edges and sharper bakes follow it. Each new scale bakes the sharper fonts again, and I did not measure what that costs when stepping through the option.
 
 **Dependencies.** No new crates. `ttf-parser` gains its `opentype-layout` feature for GPOS kerning, and `ac-plugin-ui` now uses `fontdue` and `ttf-parser`. Canvas fonts are baked there, so the client and the SDK's fake host answer alike. The PNG decoder moved from `ac-plugin` to `ac-plugin-ui`, so that `ac-render` can use it within the crate graph test.
 
-**Where it comes from.** It is ported from my own fork of OpenAC. The top and bottom edges, the horizontal layout, the closed tile, the sizes and the grip are new here. I reworded the code comments to cite only what OpenAC itself has.
+**Where it comes from.** It is ported from my own fork of OpenAC. The top and bottom edges, the horizontal layout, the closed tile, the sizes and the grip are new here.
+
+**Found while testing, not changed here.** Expanders placed side by side can make a header impossible to reopen. Each one that folds moves what is below it up by its own height, so together they can put a scrolling group over a header, and the group takes the clicks. It happens on `main` today, and in OpenAC. I'll send a fix separately, along with a frame for Classic expanders, which stay unframed here.
 
 ## Original behavior
 
@@ -48,7 +50,7 @@ The original client has none of this, and no retail window changes. Plugin windo
 - Older plugins: real modules built by the 1.2 and 1.3 SDKs load, show on the dock and are told a theme kind they know. New imports each have a test through a real plugin module.
 - Hostile numbers: 300,000 shape calls with NaN, infinities and huge values gave no panics and nothing non-finite in the draw list.
 - Damaged fonts: 1,176,600 runs on a CFF fixture and Noto over 180 s gave no crash or parser panic, with the slowest bake 0.15 s and a peak of 76 MB.
-- TODO: live on a local ACE server on a Retina Mac (Metal), all six positions in all eight themes, the three sizes and the closed tile in several, Moss at UI Scale 110% and 150%, and a by-hand pass with a real mouse. Add what the final test covers.
+- Live on a local ACE server on a Retina Mac (Metal), with a real mouse: all six positions in all eight themes, the three sizes and the closed tile in several, Moss at UI Scale 110% and 150%, Parchment and Classic at 150%, and an overflowing dock with 36 more plugins, scrolled with the wheel.
 - Not tested on Windows or Linux.
 
 ## Checklist
