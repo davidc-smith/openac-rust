@@ -9,9 +9,10 @@
 //! divider, the gear slot and padding. When the slots do not fit, only those
 //! that do from the first one are laid out, with an arrow at each end of the
 //! list and a bar beside it saying how far through it they are; the grip, the
-//! tile and the gear stay, and do not move as it scrolls. Closed, the dock is
-//! only the grip and the tile, and the tile's art is in the same place either
-//! way.
+//! tile and the gear stay, and do not move as it scrolls. While the dock can be
+//! moved and has more than one slot it ends in the handle that sets how many of
+//! them show, not in padding. Closed, the dock is only the grip and the tile, and
+//! the tile's art is in the same place either way.
 
 use crate::geometry::Rect;
 
@@ -27,6 +28,9 @@ pub const ART: f32 = 24.0;
 pub const FLOATING_THICKNESS: f32 = PADDING + SLOT + PADDING;
 /// How long the grip is along the main axis, at every size.
 pub const GRIP_LENGTH: f32 = 14.0;
+/// How long the handle at the dock's far end is along the main axis, at every
+/// size.
+pub const LENGTH_HANDLE: f32 = 12.0;
 /// The space each side of a divider.
 pub const DIVIDER_SPACE: f32 = 4.0;
 /// How long the arrow at each end of an overflowing list is along the main axis,
@@ -415,6 +419,9 @@ pub struct DockLayout {
     pub tile: Rect,
     /// The grip, which moves the dock; none while it cannot be moved.
     pub grip: Option<Rect>,
+    /// The handle, which sets how many slots show; none while the dock cannot
+    /// be moved, while it is closed and with one slot or none.
+    pub length_handle: Option<Rect>,
     /// The arrow before the list; none while every slot fits.
     pub back: Option<Rect>,
     /// The arrow after the list; none while every slot fits.
@@ -475,10 +482,19 @@ impl SlotRun {
     }
 
     /// Everything that is not the slot list: the grip, tile and divider before
-    /// it, and the divider, gear and padding after it.
-    fn around_list(&self, count: usize, padding: f32) -> f32 {
+    /// it, and the divider, gear and `end` after it.
+    fn around_list(&self, count: usize, end: f32) -> f32 {
         let divider = if count > 0 { DIVIDER_BLOCK } else { 0.0 };
-        self.tile_start + self.along + DIVIDER_BLOCK + divider + self.along + padding
+        self.tile_start + self.along + DIVIDER_BLOCK + divider + self.along + end
+    }
+}
+
+/// What comes after the gear: the handle where there is one, else padding.
+fn after_gear(m: &Metrics, grip: bool, count: usize) -> f32 {
+    if grip && count > 1 {
+        LENGTH_HANDLE
+    } else {
+        m.padding
     }
 }
 
@@ -508,7 +524,10 @@ pub fn length_for_slots(
                 .sum::<f32>()
         })
         .fold(0.0, f32::max);
-    run.around_list(count, m.padding) + 2.0 * ARROW_LENGTH + limit as f32 * run.along + longest
+    run.around_list(count, after_gear(&m, grip, count))
+        + 2.0 * ARROW_LENGTH
+        + limit as f32 * run.along
+        + longest
 }
 
 /// The limit that brings a dock nearest to `length` along its main axis, with
@@ -602,6 +621,8 @@ pub fn compute(
         m.floating_thickness()
     };
     let lead = if grip { GRIP_LENGTH } else { 0.0 };
+    let end = after_gear(&m, grip, count);
+    let handled = grip && count > 1;
     let grip = grip.then(|| axes.rect(0.0, 0.0, GRIP_LENGTH, thickness));
     if minimized {
         let (width, height) = axes.size(lead + thickness, thickness);
@@ -613,6 +634,7 @@ pub fn compute(
             gear: Rect::new(0.0, 0.0, 0.0, 0.0),
             tile: axes.rect(lead, 0.0, thickness, thickness),
             grip,
+            length_handle: None,
             back: None,
             forward: None,
             scroll: None,
@@ -628,7 +650,7 @@ pub fn compute(
     let tile = axes.rect(run.tile_start, slot_cross_at, slot_along, slot_across);
     let tile_end = run.tile_start + slot_along;
     let spacing = |i: usize| run.spacing(owners, i);
-    let room = max_length - run.around_list(count, m.padding);
+    let room = max_length - run.around_list(count, end);
 
     // How many slots fit back from the last one in `room`: at least one, however
     // little room there is.
@@ -705,7 +727,8 @@ pub fn compute(
         at += DIVIDER_BLOCK;
     }
     let gear = axes.rect(at, slot_cross_at, slot_along, slot_across);
-    let (width, height) = axes.size(at + slot_along + m.padding, thickness);
+    let length_handle = handled.then(|| axes.rect(at + slot_along, 0.0, LENGTH_HANDLE, thickness));
+    let (width, height) = axes.size(at + slot_along + end, thickness);
     DockLayout {
         width,
         height,
@@ -714,6 +737,7 @@ pub fn compute(
         gear,
         tile,
         grip,
+        length_handle,
         back,
         forward,
         scroll,
@@ -1014,6 +1038,35 @@ mod tests {
             let closed = with_grip(mode, true, &["a"], 500.0);
             let open = with_grip(mode, false, &["a"], 500.0);
             assert_eq!(centre(closed.tile), centre(open.tile), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_handle_ends_a_dock_that_can_be_moved_and_has_slots_to_choose_from() {
+        for mode in DockMode::ALL {
+            let l = with_grip(mode, false, &["a", "b"], 2000.0);
+            let handle = l.length_handle.unwrap();
+            let gear = l.gear;
+            if mode.is_horizontal() {
+                assert_eq!(handle.x, gear.x + gear.w, "{mode:?}");
+                assert_eq!(l.width, handle.x + LENGTH_HANDLE, "{mode:?}");
+                assert_eq!((handle.y, handle.h), (0.0, l.height), "{mode:?}");
+            } else {
+                assert_eq!(handle.y, gear.y + gear.h, "{mode:?}");
+                assert_eq!(l.height, handle.y + LENGTH_HANDLE, "{mode:?}");
+                assert_eq!((handle.x, handle.w), (0.0, l.width), "{mode:?}");
+            }
+            // Locked, closed, or with nothing to choose between, it is not there
+            // and the dock ends as it always has.
+            assert_eq!(
+                compute(mode, false, &["a", "b"], 2000.0, 0).length_handle,
+                None
+            );
+            assert_eq!(
+                with_grip(mode, true, &["a", "b"], 2000.0).length_handle,
+                None
+            );
+            assert_eq!(with_grip(mode, false, &["a"], 2000.0).length_handle, None);
         }
     }
 
