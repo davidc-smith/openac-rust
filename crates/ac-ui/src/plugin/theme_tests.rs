@@ -395,11 +395,12 @@ fn scenes(attributes: &str, through_moss: bool) -> Vec<(String, DrawList)> {
 /// A window with a legacy title, then one with a title bar.
 const WINDOWS: [&str; 2] = ["", r#"titlebar="true""#];
 
-/// What the Classic windows drew, by state, before the modern look existed.
+/// What the Classic windows drew, by state: as before the modern look existed,
+/// plus the frame on expanders.
 const PINNED: &str = include_str!("../../tests/data/plugin_classic/pinned.txt");
 
 #[test]
-fn a_window_under_classic_draws_what_it_drew_before_the_modern_look() {
+fn a_window_under_classic_draws_what_it_drew_before_the_modern_look_and_framed_expanders() {
     let mut report = String::new();
     for attributes in WINDOWS {
         for (name, list) in scenes(attributes, false) {

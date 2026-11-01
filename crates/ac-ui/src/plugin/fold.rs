@@ -15,7 +15,8 @@ use ac_plugin_ui::markup::{EXPANDER_HEADER_HEIGHT, SPLIT_BAR_SIZE};
 
 use super::Palette;
 use super::controls::{
-    CLASSIC_ARROW, CLASSIC_CAPTION, DISABLED_ALPHA, Emit, FOCUS, UNLIT_INNER, UNLIT_OUTER,
+    CLASSIC_ARROW, CLASSIC_BAND, CLASSIC_CAPTION, CLASSIC_FRAME, DISABLED_ALPHA, Emit, FOCUS,
+    UNLIT_INNER, UNLIT_OUTER,
 };
 use super::style;
 use crate::draw::{Color, RenderContext};
@@ -147,9 +148,9 @@ impl AuthoredBox {
 /// `UiMarkupExpander`). Folded, what is below it moves up, keeping its authored
 /// gap to the lowest thing still above it (stretched siblings grow instead),
 /// and comes back when it opens. Expanders side by side therefore give back
-/// only the room they all left free, and each column follows its own. Under a
-/// modern theme it is framed like a group box, with a band behind the header;
-/// Classic draws no frame.
+/// only the room they all left free, and each column follows its own. It is
+/// framed like a group box, with a band behind the header, in the theme's
+/// colours or Classic's; `border="false"` leaves that out.
 #[derive(Debug)]
 pub struct MarkupExpander {
     /// The header element.
@@ -162,7 +163,7 @@ pub struct MarkupExpander {
     pub open_by_default: bool,
     /// A flex container places it: folding only hides the content.
     pub flex_placed: bool,
-    /// The markup's `border`: a theme draws the frame and header band.
+    /// The markup's `border`: draws the frame and header band.
     pub framed: bool,
     /// The theme on a themed panel.
     pub palette: Option<Palette>,
@@ -431,11 +432,16 @@ impl Widget for MarkupExpander {
 
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
-        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+        if !self.framed || w <= 0.0 {
             return;
-        };
+        }
         let h = self.frame_height(h);
         let is_live = live(ui, me);
+        let Some(p) = self.palette else {
+            let band = fade(CLASSIC_BAND, is_live);
+            rc.fill(0.0, 0.0, w, h.min(EXPANDER_HEADER_HEIGHT), band);
+            return;
+        };
         let r = style::CONTROL_RADIUS;
         let radii = if h > EXPANDER_HEADER_HEIGHT {
             CornerRadii::new(r, r, 0.0, 0.0)
@@ -457,13 +463,21 @@ impl Widget for MarkupExpander {
     // cannot hide it.
     fn draw_after_children(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = size(ui, me);
-        let Some(p) = self.palette.filter(|_| self.framed && w > 0.0) else {
+        if !self.framed || w <= 0.0 {
             return;
-        };
+        }
         let h = self.frame_height(h);
-        let edge = fade(p.border, live(ui, me));
-        let radius = style::CONTROL_RADIUS;
-        style::surface(rc, 0.0, 0.0, w, h, radius, Color::TRANSPARENT, edge);
+        let is_live = live(ui, me);
+        let edge = if let Some(p) = &self.palette {
+            let edge = fade(p.border, is_live);
+            let radius = style::CONTROL_RADIUS;
+            style::surface(rc, 0.0, 0.0, w, h, radius, Color::TRANSPARENT, edge);
+            edge
+        } else {
+            let edge = fade(CLASSIC_FRAME, is_live);
+            rc.rect_outline(0.0, 0.0, w, h, edge, 1.0);
+            edge
+        };
         if h > EXPANDER_HEADER_HEIGHT {
             rc.fill(1.0, EXPANDER_HEADER_HEIGHT - 1.0, w - 2.0, 1.0, edge);
         }
