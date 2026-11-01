@@ -1310,6 +1310,11 @@ impl Widget for DockTile {
         true
     }
 
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
+        true
+    }
+
     fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
         let (w, h) = element_size(ui, me);
         let look = self.pointer.look(true);
@@ -1360,6 +1365,11 @@ impl Widget for DockGear {
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
         true
     }
 
@@ -1416,6 +1426,11 @@ impl Widget for DockSlot {
     }
 
     fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
         true
     }
 

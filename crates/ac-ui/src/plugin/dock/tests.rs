@@ -1567,6 +1567,35 @@ fn hovering_a_slot_shows_its_label_and_it_has_no_tooltip() {
 }
 
 #[test]
+fn a_label_and_its_look_stay_while_the_pointer_rests_past_the_tooltip_time() {
+    let mut rig = labelled("Loot Editor", "MossTank");
+    let slot = rig.layout().slots[0].unwrap();
+    rig.hover(slot);
+    let wait = rig.host.root.tooltip_delay_ms + rig.host.root.tooltip_duration_ms;
+    // Two frames: one fires the tooltip time, the next would end it.
+    rig.pass(wait as f64 / 1000.0);
+    rig.pass(wait as f64 / 1000.0);
+    assert_eq!(rig.label().unwrap().title, "Loot Editor");
+    let panel = rig.ui.panels().next().unwrap().id;
+    let id = rig.with(|c, _| c.slot(panel)).unwrap();
+    let look = rig
+        .host
+        .root
+        .widget::<DockSlot>(id)
+        .unwrap()
+        .pointer
+        .look(true);
+    assert_eq!(look, ButtonLook::Hovered);
+    // The tile and the gear keep theirs too.
+    for part in [rig.layout().tile, rig.layout().gear] {
+        rig.hover(part);
+        rig.pass(wait as f64 / 1000.0);
+        rig.pass(wait as f64 / 1000.0);
+        assert!(rig.label().is_some());
+    }
+}
+
+#[test]
 fn a_label_is_one_line_when_the_title_is_the_plugins_name() {
     let mut rig = labelled("GoArrow", "GoArrow");
     let slot = rig.layout().slots[0].unwrap();

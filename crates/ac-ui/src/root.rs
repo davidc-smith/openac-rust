@@ -1359,6 +1359,9 @@ impl UiRoot {
                 self.emit(UiOutput::TooltipShow(hover));
             } else if self.tooltip_fired
                 && self.now_ms - self.tooltip_shown_ms >= self.tooltip_duration_ms
+                && !self
+                    .widget_dyn(hover)
+                    .is_some_and(|w| w.hover_outlasts_tooltip())
             {
                 let e = self.event_for(hover, kind::HOVER_LEAVE);
                 self.send_event(hover, &e);
