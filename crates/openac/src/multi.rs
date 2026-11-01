@@ -409,6 +409,17 @@ impl ChatPrinter {
         }
     }
 
+    /// A line the client log must keep (the session's lifecycle and portal
+    /// space, which explain a character left stuck): printed as the console
+    /// prints, and on standard error too when the console does not write
+    /// there.
+    fn print_logged(&self, line: &str) {
+        self.print(line);
+        if self.client_log_unseen() {
+            errln!("{line}");
+        }
+    }
+
     /// A chat line, as the main chat window would show it.
     fn print_chat(&self, line: &ac_runtime::communication::ChatLine) {
         if let Some(text) = console::console_chat_line(line, self.session.as_deref(), Self::color())
@@ -489,7 +500,7 @@ pub(crate) fn monitor(
                     reported_connection = false;
                 }
                 for line in console::event_lines(&HostEvent::Lifecycle(lifecycle), tag) {
-                    outln!("{line}");
+                    printer.print_logged(&line);
                 }
             }
             Some(
@@ -499,7 +510,7 @@ pub(crate) fn monitor(
                 | HostEvent::CharacterCreation(_)),
             ) => {
                 for line in console::event_lines(&event, tag) {
-                    outln!("{line}");
+                    printer.print_logged(&line);
                 }
             }
             Some(HostEvent::Session(event)) => {

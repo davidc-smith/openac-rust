@@ -1073,7 +1073,8 @@ impl Movement {
         }
     }
 
-    fn refuse(&mut self, text: &str) {
+    /// Report something the owner could not do (printed as a movement line).
+    pub(crate) fn refuse(&mut self, text: &str) {
         self.events.push(MovementEvent::Refused(text.to_owned()));
     }
 
