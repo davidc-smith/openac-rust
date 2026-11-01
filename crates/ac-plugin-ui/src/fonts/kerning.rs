@@ -6,12 +6,13 @@
 //! lookup the feature names applies once, in lookup order, and the first
 //! subtable of a lookup that knows a pair gives its value. A font with no
 //! such kerning may have the older `kern` table instead, whose first subtable
-//! that knows a pair gives its value. The work is bounded: a lookup or
-//! subtable the font lists twice is read once, reading stops after
-//! [`MAXIMUM_KERNING_WORK`] steps, keeping what it found, and no more than
-//! [`MAXIMUM_KERNING_PAIRS`] pairs are kept.
+//! that knows a pair gives its value. The work is bounded: a lookup the
+//! feature names twice (or two that are one table), or a subtable a lookup
+//! lists twice, is read once; reading stops after [`MAXIMUM_KERNING_WORK`]
+//! steps, keeping what it found; and no more than [`MAXIMUM_KERNING_PAIRS`]
+//! pairs are kept. A font cut short by a limit says so.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use ttf_parser::gpos::{ClassMatrix, PairAdjustment, PairSet, PositioningSubtable};
 use ttf_parser::kern::Format as KernFormat;
@@ -31,6 +32,8 @@ pub const MAXIMUM_KERNING_PAIRS: usize = 131_072;
 #[derive(Debug, Default)]
 pub(crate) struct Kerning {
     pairs: HashMap<(u16, u16), i32>,
+    /// Reading stopped at a limit, so some pairs may be missing.
+    pub(crate) cut_short: bool,
 }
 
 impl Kerning {
@@ -83,9 +86,10 @@ pub(super) fn read(face: &Face<'_>, glyphs: &[GlyphId]) -> Kerning {
     if !from_gpos(face, glyphs, &mut budget, &mut pairs) {
         from_kern_table(face, glyphs, &mut budget, &mut pairs);
     }
+    let cut_short = budget.left == 0 || pairs.len() >= MAXIMUM_KERNING_PAIRS;
     pairs.retain(|_, v| *v != 0);
     pairs.shrink_to_fit();
-    Kerning { pairs }
+    Kerning { pairs, cut_short }
 }
 
 /// One pair adjustment subtable as it applies to one first glyph.
@@ -113,7 +117,9 @@ fn from_gpos(
         return false;
     };
     let kern = Tag::from_bytes(b"kern");
-    let mut lookups = BTreeSet::new();
+    // The lookups named, as a set over every lookup number: listed in order,
+    // each once.
+    let mut named = vec![0u64; 1024];
     for feature in gpos.features {
         if !budget.step() {
             break;
@@ -121,13 +127,22 @@ fn from_gpos(
         if feature.tag != kern {
             continue;
         }
-        for index in feature.lookup_indices {
+        // By number: the parser's own walk of a list overflows at its
+        // longest (65,535 entries).
+        let indices = feature.lookup_indices;
+        for at in 0..indices.len() {
             if !budget.step() {
                 break;
             }
-            lookups.insert(index);
+            let Some(index) = indices.get(at) else {
+                continue;
+            };
+            named[usize::from(index >> 6)] |= 1 << (index & 63);
         }
     }
+    let lookups: Vec<u16> = (0..=u16::MAX)
+        .filter(|i| named[usize::from(i >> 6)] & (1 << (i & 63)) != 0)
+        .collect();
     if lookups.is_empty() {
         return false;
     }
@@ -135,7 +150,6 @@ fn from_gpos(
         .raw_face()
         .table(Tag::from_bytes(b"GPOS"))
         .unwrap_or(&[]);
-    let mut seen = HashSet::new();
     let mut seen_lookups = HashSet::new();
     for index in lookups {
         let Some(lookup) = gpos.lookups.get(index) else {
@@ -149,12 +163,14 @@ fn from_gpos(
             continue;
         }
         let mut subtables = Vec::new();
+        let mut seen = HashSet::new();
         for at in 0..lookup.subtables.len() {
             if !budget.step() {
                 return true;
             }
-            // A subtable listed again adds nothing: the first already
-            // answered for every pair it knows.
+            // A subtable the lookup lists again adds nothing: the first
+            // already answered for every pair it knows. Another lookup that
+            // lists it applies it again.
             if let Some(place) = places.as_ref().and_then(|p| p.subtable(at))
                 && !seen.insert(place)
             {
@@ -332,10 +348,13 @@ fn from_kern_table(
             continue;
         }
         if let KernFormat::Format0(table) = &subtable.format {
-            for pair in table.pairs {
+            for at in 0..table.pairs.len() {
                 if !budget.step() {
                     return;
                 }
+                let Some(pair) = table.pairs.get(at) else {
+                    continue;
+                };
                 let (left, right) = (pair.left(), pair.right());
                 if baked.has(left) && baked.has(right) && known.insert((left.0, right.0)) {
                     add(pairs, (left.0, right.0), i32::from(pair.value));

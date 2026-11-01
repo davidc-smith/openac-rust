@@ -1214,7 +1214,8 @@ impl Host<'_> {
     /// weight. [`FontWeight::SemiBold`] is the weight themed window titles are
     /// set in. Shared with every plugin: a size counts its atlas against
     /// [`FONT_MAXIMUM_BYTES`] only while no other plugin holds it too.
-    /// [`Font::NONE`] when refused; each kind of refusal is logged once. Asking twice returns the same font, held twice. The same with or
+    /// [`Font::NONE`] when refused, which is logged (see [`Self::font_load`]).
+    /// Asking twice returns the same font, held twice. The same with or
     /// without a window.
     pub fn font_bundled(&mut self, pixel_size: f32, weight: FontWeight) -> Font {
         let request = BundledFontRequest { pixel_size, weight }.to_bytes();
@@ -1236,8 +1237,12 @@ impl Host<'_> {
     /// may be 256 bytes and a request may list 256 ranges. A file over
     /// [`FONT_MAXIMUM_FILE_BYTES`], one that is not a usable font or whose
     /// outlines take too much work to draw, or a request past a limit is
-    /// [`Font::NONE`]; each kind of refusal is logged once. A second request
-    /// for the same name, size and characters is the same font held once more.
+    /// [`Font::NONE`]. A refusal is logged once; each kind of refusal (size,
+    /// count, budget, an unusable file and so on) for at most eight requests,
+    /// then once more to say the rest are left out. A font whose kerning
+    /// takes too long to read is kept with part of it, and that is logged. A
+    /// second request for the same name, size and characters is the same font
+    /// held once more.
     /// Preparing a font takes some milliseconds, so ask up front.
     pub fn font_load(
         &mut self,

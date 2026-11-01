@@ -140,7 +140,8 @@ the files and their atlases; a size of the bundled font counts its atlas only
 while no other plugin holds it too. A file's name may be 256 bytes and a request
 may list 256 ranges. A font whose outlines take too much work to draw is refused.
 A request past a limit, or a file that is not a usable font, answers
-`Font::NONE`, and each kind of refusal is logged once; text in such a font, or a
+`Font::NONE`. A refusal is logged once, and each kind of refusal for at most
+eight requests, then once to say the rest are left out; text in such a font, or a
 released one, draws nothing.
 Preparing a font takes some milliseconds, so ask up front rather than on every
 paint.

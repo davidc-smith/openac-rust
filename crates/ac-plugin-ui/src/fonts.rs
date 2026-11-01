@@ -24,7 +24,7 @@
 //! when the font is baked; and a panic in the parsers is a refusal like any
 //! other. Handles are never reused.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Weak};
@@ -304,6 +304,14 @@ fn validate_sfnt(bytes: &[u8]) -> Result<(), String> {
         };
         if u64::from(offset) + u64::from(length) > bytes.len() as u64 {
             return Err(NOT_A_FONT.to_owned());
+        }
+        // The directory is sorted, each table once. The parser keeps the last
+        // of two tables with one tag while a lookup by tag finds either, so a
+        // second table could be drawn that was never checked.
+        if tags.last().is_some_and(|last| *last >= tag.to_be_bytes()) {
+            return Err(
+                "the font's table directory is not sorted, or names a table twice".to_owned(),
+            );
         }
         tags.insert(tag.to_be_bytes());
     }
@@ -791,10 +799,13 @@ pub(crate) struct AcquiredFont {
     pub(crate) info: FontInfo,
     /// The font when this request made it (not a repeat).
     pub(crate) added: Option<FontView>,
+    /// What to log about a font that was made, though not all of it.
+    pub(crate) notice: Option<String>,
 }
 
-/// Why a request was refused: each is reported once per plugin, whatever the
-/// request named, so what is remembered stays small.
+/// What a report is about. Each kind is reported to a plugin for at most
+/// [`REPORTS_PER_KIND`] distinct requests, so what is remembered stays small
+/// whatever the plugin asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Refusal {
     Size,
@@ -808,6 +819,25 @@ enum Refusal {
     Sharp,
     Holds,
     Handles,
+    /// A font was made with only part of its kerning.
+    Kerning,
+}
+
+/// How many distinct reports of one kind a plugin is given; one more says
+/// the rest are left out.
+const REPORTS_PER_KIND: usize = 8;
+
+/// The most characters of a plugin's name for a file a report shows.
+const SHOWN_NAME_CHARS: usize = 64;
+
+/// A plugin's name for a file as a report shows it.
+fn shown(name: &str) -> String {
+    if name.chars().count() <= SHOWN_NAME_CHARS {
+        return name.to_owned();
+    }
+    let mut shown: String = name.chars().take(SHOWN_NAME_CHARS).collect();
+    shown.push_str("...");
+    shown
 }
 
 /// One plugin's fonts. See the module documentation.
@@ -817,7 +847,8 @@ pub(crate) struct FontTable {
     next_handle: u32,
     owned_bytes: u64,
     sharp_bytes: u64,
-    reported: BTreeSet<Refusal>,
+    /// The reports given, by kind.
+    reported: BTreeMap<Refusal, Vec<String>>,
 }
 
 impl FontTable {
@@ -828,7 +859,7 @@ impl FontTable {
             next_handle: last,
             owned_bytes: 0,
             sharp_bytes: 0,
-            reported: BTreeSet::new(),
+            reported: BTreeMap::new(),
         }
     }
 
@@ -869,13 +900,19 @@ impl FontTable {
         (base, sharp)
     }
 
-    /// A reason to log, or nothing when this reason was logged before.
+    /// A report to log, or nothing: the same report is logged once, and a kind
+    /// [`REPORTS_PER_KIND`] times, then once more saying the rest are left
+    /// out.
     fn once(&mut self, why: Refusal, message: String) -> String {
-        if self.reported.insert(why) {
-            message
-        } else {
-            String::new()
+        let given = self.reported.entry(why).or_default();
+        if given.contains(&message) || given.len() > REPORTS_PER_KIND {
+            return String::new();
         }
+        given.push(message.clone());
+        if given.len() > REPORTS_PER_KIND {
+            return format!("{message} (further reports like this are left out)");
+        }
+        message
     }
 
     fn size_refused(&mut self, pixel_size: f32) -> Option<String> {
@@ -905,6 +942,7 @@ impl FontTable {
         Some(Ok(AcquiredFont {
             info: info_of(&self.entries[at]),
             added: None,
+            notice: None,
         }))
     }
 
@@ -949,6 +987,7 @@ impl FontTable {
         Ok(AcquiredFont {
             info,
             added: Some(added),
+            notice: None,
         })
     }
 
@@ -1055,7 +1094,7 @@ impl FontTable {
         if let Some(answer) = self.hold_again(&key) {
             return answer;
         }
-        let what = format!("font '{name}'");
+        let what = format!("font '{}'", shown(name));
         if let Some(report) = self.room_refused(&what) {
             return Err(report);
         }
@@ -1095,7 +1134,18 @@ impl FontTable {
                 ),
             ));
         }
-        self.add(owner, key, Arc::new(font), owned)
+        let cut_short = font.kerning.cut_short;
+        let mut acquired = self.add(owner, key, Arc::new(font), owned)?;
+        if cut_short {
+            let notice = self.once(
+                Refusal::Kerning,
+                format!(
+                    "{what} at {size} px is kerned only in part: its kerning takes more than {MAXIMUM_KERNING_WORK} steps or {MAXIMUM_KERNING_PAIRS} pairs to read"
+                ),
+            );
+            acquired.notice = Some(notice).filter(|n| !n.is_empty());
+        }
+        Ok(acquired)
     }
 
     /// Lets go of one hold: whether the plugin held it, and whether that was

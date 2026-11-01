@@ -9,6 +9,8 @@
 //! it never counts less than the parser would do, and stops at a budget.
 //! Accented glyphs built by the deprecated `endchar` composition are refused.
 
+use std::collections::HashMap;
+
 use ttf_parser::GlyphId;
 
 /// The charstring operators this reads differently from a plain number.
@@ -53,6 +55,7 @@ pub(super) fn charstring_work(
         font: &font,
         work: 0,
         budget,
+        dicts: HashMap::new(),
     };
     for glyph in glyphs {
         run.glyph(*glyph)?;
@@ -431,6 +434,9 @@ struct Run<'a> {
     font: &'a Font<'a>,
     work: u64,
     budget: u64,
+    /// Each font dictionary of a CID-keyed font, read once: the bytes the
+    /// parser reads to find its local subroutines, and those subroutines.
+    dicts: HashMap<u8, (u64, Option<Index<'a>>)>,
 }
 
 impl<'a> Run<'a> {
@@ -597,7 +603,10 @@ impl<'a> Run<'a> {
     }
 
     /// The local subroutines of the glyph: a CID-keyed font's are found
-    /// through its font dictionary the first time one is called.
+    /// through its font dictionary the first time one is called. The parser
+    /// reads that dictionary and its private dictionary again for every
+    /// glyph, so every glyph pays for the bytes, though they are read here
+    /// once.
     fn local_subrs(&mut self, glyph: &mut Glyph<'a>) -> Result<Option<Index<'a>>, Stop> {
         if glyph.local.is_none()
             && let Kind::Keyed {
@@ -607,16 +616,29 @@ impl<'a> Run<'a> {
         {
             let (dict, walked) = font_dict_index(fd_select, glyph.id);
             self.spend(walked)?;
-            glyph.local = dict
-                .and_then(|d| fd_array.get(usize::from(d)))
-                .and_then(private_range)
-                .and_then(|range| local_subrs(self.font.table, range))
-                .flatten();
+            let Some(dict) = dict else {
+                return Ok(None);
+            };
+            let table = self.font.table;
+            let (read, subrs) = *self.dicts.entry(dict).or_insert_with(|| {
+                let Some(font_dict) = fd_array.get(usize::from(dict)) else {
+                    return (0, None);
+                };
+                let range = private_range(font_dict);
+                let private = range.clone().map_or(0, |r| {
+                    r.end
+                        .min(table.len())
+                        .saturating_sub(r.start.min(table.len()))
+                });
+                let subrs = range.and_then(|r| local_subrs(table, r)).flatten();
+                ((font_dict.len() + private) as u64, subrs)
+            });
+            self.spend(read)?;
+            glyph.local = subrs;
         }
         Ok(glyph.local)
     }
 }
-
 /// The subroutine a call's number reaches, with the bias the count sets.
 fn subroutine<'a>(subrs: &Index<'a>, n: f32) -> Option<&'a [u8]> {
     let len = subrs.len();

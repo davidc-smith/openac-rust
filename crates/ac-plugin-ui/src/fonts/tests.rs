@@ -288,7 +288,6 @@ fn a_size_is_prepared_to_the_nearest_quarter_pixel() {
 
 #[test]
 fn a_size_outside_the_limits_is_refused_and_reported_once() {
-    // Refusals are reported once per reason, whatever the size asked for.
     let mut ui = ui();
     for size in [5.9, 64.5, f32::NAN] {
         assert_eq!(
@@ -297,7 +296,7 @@ fn a_size_outside_the_limits_is_refused_and_reported_once() {
         );
     }
     assert_eq!(ui.font_bundled(OWNER, 5.9, FontWeight::Regular).handle, 0);
-    assert_eq!(ui.take_reports().len(), 1);
+    assert_eq!(ui.take_reports().len(), 3);
     assert_ne!(ui.font_bundled(OWNER, 6.0, FontWeight::Regular).handle, 0);
     assert_ne!(ui.font_bundled(OWNER, 64.0, FontWeight::SemiBold).handle, 0);
 }

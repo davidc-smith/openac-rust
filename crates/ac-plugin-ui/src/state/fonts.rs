@@ -16,7 +16,8 @@ impl PluginUi {
             .or_insert_with(|| FontTable::after(last))
     }
 
-    /// The bundled bakes plugins other than owner hold: those cost owner`n    /// nothing.
+    /// The bundled bakes plugins other than `owner` hold: those cost `owner`
+    /// nothing.
     fn bundled_held_elsewhere(&self, owner: &str) -> HashSet<BundledKey> {
         self.fonts
             .iter()
@@ -28,6 +29,9 @@ impl PluginUi {
     fn font_answer(&mut self, owner: &str, result: Result<AcquiredFont, String>) -> FontInfo {
         match result {
             Ok(acquired) => {
+                if let Some(notice) = acquired.notice {
+                    self.reports.push((owner.to_owned(), notice));
+                }
                 if let Some(view) = acquired.added {
                     self.changes.push(UiChange::FontAdded(Box::new(view)));
                     self.prepare_fonts(owner);
