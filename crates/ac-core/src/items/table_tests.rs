@@ -598,6 +598,55 @@ fn update_bool_property_ui_hidden_sets_and_clears_the_public_bit() {
 }
 
 #[test]
+fn a_description_bool_update_moves_its_description_bit() {
+    // DescriptionBoolUpdate_MovesItsDescriptionBit: each of these bools is
+    // also a bit of the public description, and the update moves that bit
+    // with it, leaving every other bit alone. Locked (3) is the inverse of
+    // openable (0x1): unlocking a chest with a key makes it openable.
+    use crate::properties::PropertyBool;
+    let cases = [
+        (PropertyBool::STUCK, PublicWeenieFlags::STUCK, false),
+        (PropertyBool::LOCKED, PublicWeenieFlags::OPENABLE, true),
+        (
+            PropertyBool::INSCRIBABLE,
+            PublicWeenieFlags::INSCRIBABLE,
+            false,
+        ),
+        (PropertyBool::UI_HIDDEN, PublicWeenieFlags::UI_HIDDEN, false),
+        (
+            PropertyBool::IGNORE_HOUSE_BARRIERS,
+            PublicWeenieFlags::IMMUNE_CELL_RESTRICTIONS,
+            false,
+        ),
+        (
+            PropertyBool::HIDDEN_ADMIN,
+            PublicWeenieFlags::HIDDEN_ADMIN,
+            false,
+        ),
+    ];
+    let guid = 0x7E16_6010;
+    let other = PublicWeenieFlags::ATTACKABLE | PublicWeenieFlags::BINDSTONE;
+    for (property, bit, inverted) in cases {
+        let mut f = Fixture::new();
+        let mut object = ClientObject::new(guid);
+        object.public_weenie_bitfield = Some(other);
+        f.add(object);
+        assert!(f.t.update_bool_property(guid, property.0, !inverted, &mut f.ev));
+        assert_eq!(
+            f.get(guid).public_weenie_bitfield,
+            Some(other | bit),
+            "{property:?} set"
+        );
+        assert!(f.t.update_bool_property(guid, property.0, inverted, &mut f.ev));
+        assert_eq!(
+            f.get(guid).public_weenie_bitfield,
+            Some(other),
+            "{property:?} cleared"
+        );
+    }
+}
+
+#[test]
 fn ingest_and_live_properties_preserve_hook_identity() {
     let guid = 0x5000_00AE;
     let mut f = Fixture::new();

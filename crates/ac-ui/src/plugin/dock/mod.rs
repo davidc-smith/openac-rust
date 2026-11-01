@@ -7,11 +7,16 @@
 //! shape in every theme, in the theme's colours or its own under Classic; where
 //! things go is worked out by [`layout`] and how they look by [`style`].
 //!
+//! With more windows than fit, the slots scroll with the wheel or the arrows at
+//! each end of the list, and a bar beside them says how far through it they are.
+//!
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
 //! the dock's place. With hovering turned on, the pointer on a closed dock also
 //! peeks it open until the pointer leaves, which saves nothing: while it
-//! peeks, the layout it reports is the closed one.
+//! peeks, the layout it reports is the closed one. Opening and closing take a
+//! moment, in which the dock runs from where it was to where it ends up, showing
+//! as much of itself as has room.
 //!
 //! The root sets a dragged window's place from the pointer on every move, so
 //! the dock reads that place each frame, decides its mode, and puts itself
@@ -26,10 +31,10 @@ use std::sync::Arc;
 use ac_plugin_ui::markup::normalize_icon;
 use ac_plugin_ui::{PanelView, PluginIcon, UiInput};
 
-use self::layout::{DockLayout, FADE_LENGTH, Metrics};
+use self::layout::{ARROW_LENGTH, DockLayout, Metrics, ScrollBar};
 pub use self::layout::{DockMode, DockOpens, DockSize};
 use self::style::DockSide;
-use super::style::PointerState;
+use super::style::{PointerState, with_alpha};
 use super::widgets::ButtonLook;
 use super::{Icon, Palette, PluginOutbox, PluginTheme};
 use crate::bundled_font::ModernFonts;
@@ -58,6 +63,8 @@ pub const TILE_LABEL: &str = "Plugins";
 pub const PEEK_OPEN_SECONDS: f32 = 0.12;
 /// How long the pointer must stay away before a peeking dock closes, seconds.
 pub const PEEK_CLOSE_SECONDS: f32 = 0.5;
+/// How long the dock takes to open or close, seconds.
+pub const REVEAL_SECONDS: f32 = 0.14;
 
 /// Where the dock's slot images come from: the window's textures.
 pub trait DockIcons {
@@ -107,6 +114,16 @@ pub fn initials(requested: Option<&str>, title: &str) -> String {
     }
 }
 
+/// An arrow's hover label: how many slots are off the list that way, which the
+/// player knows as plugins.
+fn more_label(more: usize) -> String {
+    if more == 1 {
+        "1 more plugin".to_owned()
+    } else {
+        format!("{more} more plugins")
+    }
+}
+
 /// A slot's hover label: the window's title, and its plugin's name under it
 /// unless the two are the same.
 fn label_text<'a>(title: &'a str, owner: &'a str) -> (&'a str, Option<&'a str>) {
@@ -141,6 +158,15 @@ pub struct DockArt {
     pub bigger_letters: Option<Arc<UiFont>>,
 }
 
+/// The dock on its way open or closed.
+#[derive(Debug, Clone, Copy)]
+struct Reveal {
+    from: Rect,
+    to: Rect,
+    elapsed: f32,
+    closing: bool,
+}
+
 /// The dock's controller: its entries and how it lays them out.
 #[derive(Debug)]
 pub struct PluginDock {
@@ -149,6 +175,8 @@ pub struct PluginDock {
     grip: ElementId,
     tile: ElementId,
     gear: ElementId,
+    back: ElementId,
+    forward: ElementId,
     entries: Vec<Entry>,
     mode: DockMode,
     size: DockSize,
@@ -187,6 +215,10 @@ pub struct PluginDock {
     closed_at: Option<(f32, f32)>,
     /// Whether it was last laid out closed, and in which mode.
     laid_out_as: (bool, DockMode),
+    /// How long opening and closing take, seconds.
+    reveal_seconds: f32,
+    /// It is on its way open or closed.
+    reveal: Option<Reveal>,
     /// The mode it had when the drag began.
     mode_before_drag: DockMode,
     /// A drag ended in another mode since the window last asked.
@@ -235,11 +267,24 @@ impl PluginDock {
         let mut c = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
         c.name = Some("PluginDockGear".to_owned());
         let gear = ui.add(root, c, DockGear::default());
+        let mut arrow = |name: &str, forward: bool| {
+            let mut a = Element::at(0.0, 0.0, 0.0, 0.0).with_anchors(AnchorEdges::NONE);
+            a.name = Some(name.to_owned());
+            let widget = DockArrow {
+                forward,
+                ..DockArrow::default()
+            };
+            ui.add(root, a, widget)
+        };
+        let back = arrow("PluginDockBack", false);
+        let forward = arrow("PluginDockForward", true);
         let mut dock = Self {
             root,
             grip,
             tile,
             gear,
+            back,
+            forward,
             entries: Vec::new(),
             mode,
             size: DockSize::default(),
@@ -263,6 +308,8 @@ impl PluginDock {
             moved_in_drag: false,
             closed_at: None,
             laid_out_as: (false, mode),
+            reveal_seconds: REVEAL_SECONDS,
+            reveal: None,
             mode_before_drag: mode,
             mode_dragged: false,
             appearance_requested: false,
@@ -346,6 +393,12 @@ impl PluginDock {
     /// Whether it shows closed now.
     fn closed(&self) -> bool {
         self.minimized && !self.peeking
+    }
+
+    /// Whether it is laid out closed: on its way closed it keeps its slots until
+    /// it gets there, so they go with it.
+    fn laid_out_closed(&self) -> bool {
+        self.closed() && !self.reveal.is_some_and(|r| r.closing)
     }
 
     /// How it opens.
@@ -512,10 +565,16 @@ impl PluginDock {
     /// Lays the dock out for its mode and the screen, and tells its parts how
     /// to look.
     fn reflow(&mut self, ui: &mut UiRoot) {
+        // The slide was for the old screen or mode: the dock goes straight to
+        // where it was heading, and the layout below fits that to the new
+        // one. Stopped partway, that place would stay, and be saved.
+        if self.screen != ui.size() || self.laid_out_as.1 != self.mode {
+            self.finish_reveal(ui);
+        }
         self.screen = ui.size();
         let owners: Vec<&str> = self.entries.iter().map(|e| e.owner.as_str()).collect();
         let longest = layout::max_length(self.mode, self.screen.0, self.screen.1);
-        let closed = self.closed();
+        let closed = self.laid_out_closed();
         let grip = !ui.ui_locked();
         let l = layout::compute(
             self.mode, self.size, closed, grip, &owners, longest, self.first,
@@ -549,6 +608,25 @@ impl PluginDock {
         place(ui, self.tile, l.tile);
         place(ui, self.gear, l.gear);
         ui.set_visible(self.gear, !closed);
+        let after = self.entries.len() - (l.first + l.visible).min(self.entries.len());
+        for (id, rect, more) in [
+            (self.back, l.back, l.first),
+            (self.forward, l.forward, after),
+        ] {
+            if let Some(r) = rect {
+                place(ui, id, r);
+            }
+            ui.set_visible(id, rect.is_some());
+            if let Some(w) = ui.widget_mut::<DockArrow>(id) {
+                w.palette = palette;
+                w.mode = self.mode;
+                w.metrics = metrics;
+                w.more = more;
+                if rect.is_none() {
+                    w.pointer = PointerState::default();
+                }
+            }
+        }
         // A dock on the screen's right or bottom edge keeps that edge when its
         // size changes without opening, closing or changing mode (the grip
         // coming or going, a new size), as one on the left or top edge keeps
@@ -595,12 +673,12 @@ impl PluginDock {
             frame.metrics = metrics;
             frame.minimized = closed;
             frame.dividers.clone_from(&l.dividers);
-            frame.fades = (l.fade_start, l.fade_end);
-            frame.list = (l.list_start, l.list_end);
+            frame.scroll = l.scroll;
         }
         self.layout = l;
         self.mark_slots(ui);
         self.keep_in_place(ui);
+        self.place_reveal(ui);
         self.follow_pointer(ui);
         self.apply_visibility(ui);
     }
@@ -646,6 +724,9 @@ impl PluginDock {
     /// A rail stays on its edge, and a dock that grew, or a screen that
     /// shrank, leaves it where it all fits.
     fn keep_in_place(&self, ui: &mut UiRoot) {
+        if self.reveal.is_some() {
+            return;
+        }
         let (sw, sh) = self.screen;
         let (w, h) = (self.layout.width, self.layout.height);
         let (far_x, far_y) = ((sw - w).max(0.0), (sh - h).max(0.0));
@@ -685,6 +766,8 @@ impl PluginDock {
     /// Makes `change`, and lays the dock out for it. A dock that has to move to
     /// fit when it opens goes back to where it was when it closes.
     fn change_openness(&mut self, ui: &mut UiRoot, change: impl FnOnce(&mut Self)) {
+        let seen = self.placement(ui);
+        self.end_reveal(ui);
         let was_closed = self.closed();
         let before = ui.element(self.root).map(|e| (e.left, e.top));
         change(self);
@@ -701,6 +784,79 @@ impl PluginDock {
             let after = ui.element(self.root).map(|e| (e.left, e.top));
             self.closed_at = before.filter(|_| before != after);
         }
+        if closed != was_closed {
+            self.begin_reveal(ui, seen, closed);
+        }
+    }
+
+    /// Where the dock is on the screen and how big it is now.
+    fn placement(&self, ui: &UiRoot) -> Option<Rect> {
+        ui.element(self.root)
+            .map(|e| Rect::new(e.left, e.top, e.width, e.height))
+    }
+
+    /// Runs the dock to where it is now, from `from`.
+    fn begin_reveal(&mut self, ui: &mut UiRoot, from: Option<Rect>, closing: bool) {
+        let (Some(from), Some(to)) = (from, self.placement(ui)) else {
+            return;
+        };
+        if self.reveal_seconds <= 0.0 || !self.is_shown() {
+            return;
+        }
+        self.reveal = Some(Reveal {
+            from,
+            to,
+            elapsed: 0.0,
+            closing,
+        });
+        self.reflow(ui);
+    }
+
+    /// Moves the dock on, and finishes when it is there. The player taking hold
+    /// of it finishes it too.
+    fn ease_reveal(&mut self, ui: &mut UiRoot, dt: f32) {
+        let Some(reveal) = &mut self.reveal else {
+            return;
+        };
+        reveal.elapsed += dt.max(0.0);
+        if reveal.elapsed >= self.reveal_seconds || !self.is_shown() || ui.is_window_move_active() {
+            self.end_reveal(ui);
+        } else {
+            self.place_reveal(ui);
+        }
+    }
+
+    /// Puts the dock where it has got to: fast at first, settling at the end.
+    fn place_reveal(&self, ui: &mut UiRoot) {
+        let Some(r) = self.reveal else {
+            return;
+        };
+        let t = (r.elapsed / self.reveal_seconds).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let at = |from: f32, to: f32| from + (to - from) * eased;
+        if let Some(e) = ui.element_mut(self.root) {
+            e.left = at(r.from.x, r.to.x);
+            e.top = at(r.from.y, r.to.y);
+            e.width = at(r.from.w, r.to.w);
+            e.height = at(r.from.h, r.to.h);
+        }
+    }
+
+    /// Puts the dock where it was going, and lays it out for that.
+    fn end_reveal(&mut self, ui: &mut UiRoot) {
+        if self.finish_reveal(ui) {
+            self.reflow(ui);
+        }
+    }
+
+    /// Puts the dock where it was going and forgets the slide, without
+    /// laying it out (the caller does). False when it was not on its way.
+    fn finish_reveal(&mut self, ui: &mut UiRoot) -> bool {
+        let Some(r) = self.reveal.take() else {
+            return false;
+        };
+        place(ui, self.root, r.to);
+        true
     }
 
     /// With hovering on, the pointer on a closed dock peeks it open after a
@@ -890,11 +1046,23 @@ impl PluginDock {
         }
     }
 
-    /// The label of the tile, slot or gear under the pointer.
+    /// The label of the tile, slot, arrow or gear under the pointer.
     fn hover_label(&self, ui: &UiRoot, side: DockSide) -> Option<HoverLabel> {
         let hovered = |look: Option<ButtonLook>| {
             matches!(look, Some(ButtonLook::Hovered | ButtonLook::Pressed))
         };
+        for (id, rect) in [
+            (self.back, self.layout.back),
+            (self.forward, self.layout.forward),
+        ] {
+            let Some((arrow, rect)) = ui.widget::<DockArrow>(id).zip(rect) else {
+                continue;
+            };
+            if hovered(Some(arrow.pointer.look(arrow.more > 0))) {
+                let title = more_label(arrow.more);
+                return Some(self.label_at(ui, side, rect, &title, None));
+            }
+        }
         let (slot, title, subtitle) = if hovered(
             ui.widget::<DockTile>(self.tile)
                 .map(|t| t.pointer.look(true)),
@@ -914,16 +1082,25 @@ impl PluginDock {
             let (title, subtitle) = label_text(&entry.title, &entry.owner_name);
             ((*slot)?, title, subtitle)
         };
-        let title_font = self.title_font();
-        let body_font = self.body_font();
-        let rect = self.label_rect(ui, side, slot, title, subtitle);
-        Some(HoverLabel {
-            rect,
+        Some(self.label_at(ui, side, slot, title, subtitle))
+    }
+
+    /// A label saying `title` and `subtitle` beside `slot`.
+    fn label_at(
+        &self,
+        ui: &UiRoot,
+        side: DockSide,
+        slot: Rect,
+        title: &str,
+        subtitle: Option<&str>,
+    ) -> HoverLabel {
+        HoverLabel {
+            rect: self.label_rect(ui, side, slot, title, subtitle),
             title: title.to_owned(),
             subtitle: subtitle.map(str::to_owned),
-            title_font,
-            body_font,
-        })
+            title_font: self.title_font(),
+            body_font: self.body_font(),
+        }
     }
 
     /// Where a slot's label goes in the dock's space: beside the slot, on the
@@ -966,6 +1143,12 @@ impl PluginDock {
             w,
             h,
         )
+    }
+
+    /// Scrolls the list to start at slot `first`, as far as it goes.
+    fn scroll_to(&mut self, ui: &mut UiRoot, first: usize) {
+        self.first = first.min(self.layout.max_first);
+        self.reflow(ui);
     }
 
     /// The dock sits over the other windows, whichever was raised last: when
@@ -1027,24 +1210,29 @@ fn place(ui: &mut UiRoot, id: ElementId, r: Rect) {
 impl PanelController for PluginDock {
     /// Minimized or not is saved per character, with its place. A peek is
     /// not the player's change, so while it is open the place and size saved
-    /// are the closed dock's: where it goes back to, at the tile's size.
+    /// are the closed dock's: where it goes back to, at the tile's size. On its
+    /// way open or closed, what is saved is where it is going.
     fn capture_window_state(&self, ui: &UiRoot) -> Option<WindowState> {
+        let going = self.reveal.map(|r| r.to);
         let closed = self
             .peeking
             .then(|| {
-                let at = ui.element(self.root).map(|e| (e.left, e.top))?;
+                let at = going
+                    .map(|r| (r.x, r.y))
+                    .or_else(|| ui.element(self.root).map(|e| (e.left, e.top)))?;
                 let (left, top) = self.closed_at.unwrap_or(at);
                 let grip = self.layout.grip.is_some();
                 let tile = layout::compute(self.mode, self.size, true, grip, &[], 0.0, 0);
-                Some((left, top, tile.width, tile.height))
+                Some(Rect::new(left, top, tile.width, tile.height))
             })
-            .flatten();
+            .flatten()
+            .or(going);
         Some(WindowState {
             collapsed: self.minimized,
-            persisted_left: closed.map(|c| c.0),
-            persisted_top: closed.map(|c| c.1),
-            persisted_width: closed.map(|c| c.2),
-            persisted_height: closed.map(|c| c.3),
+            persisted_left: closed.map(|c| c.x),
+            persisted_top: closed.map(|c| c.y),
+            persisted_width: closed.map(|c| c.w),
+            persisted_height: closed.map(|c| c.h),
             ..WindowState::default()
         })
     }
@@ -1058,10 +1246,11 @@ impl PanelController for PluginDock {
     }
 
     fn tick(&mut self, ui: &mut UiRoot, dt: f64) {
+        self.ease_reveal(ui, dt as f32);
         self.follow_drag(ui);
         let size = ui.element(self.root).map(|e| (e.width, e.height));
         if self.screen != ui.size()
-            || size != Some((self.layout.width, self.layout.height))
+            || (self.reveal.is_none() && size != Some((self.layout.width, self.layout.height)))
             || self.layout.grip.is_some() == ui.ui_locked()
         {
             self.reflow(ui);
@@ -1087,12 +1276,12 @@ impl PanelController for PluginDock {
             }
             ElementMessage::Wheel(dy) if element == self.root => {
                 if !self.closed() && self.layout.max_first > 0 {
-                    self.first = if *dy > 0 {
+                    let first = if *dy > 0 {
                         self.first.saturating_sub(1)
                     } else {
-                        (self.first + 1).min(self.layout.max_first)
+                        self.first + 1
                     };
-                    self.reflow(ui);
+                    self.scroll_to(ui, first);
                 }
                 return true;
             }
@@ -1106,6 +1295,17 @@ impl PanelController for PluginDock {
         }
         if element == self.gear {
             self.appearance_requested = true;
+            return true;
+        }
+        // An arrow moves a page, with the slot at the far end left showing to
+        // keep the player's place.
+        let page = self.layout.visible.saturating_sub(1).max(1);
+        if element == self.back {
+            self.scroll_to(ui, self.first.saturating_sub(page));
+            return true;
+        }
+        if element == self.forward {
+            self.scroll_to(ui, self.first + page);
             return true;
         }
         let Some(entry) = self.entries.iter().find(|e| e.slot == element) else {
@@ -1138,8 +1338,8 @@ struct HoverLabel {
     body_font: Option<Arc<UiFont>>,
 }
 
-/// The dock's own frame: its body, what is drawn beside each slot, the fades
-/// and the hover label; and the right click (on it or any slot) and the wheel,
+/// The dock's own frame: its body, what is drawn beside each slot, the scroll
+/// bar and the hover label; and the right click (on it or any slot) and the wheel,
 /// which it tells its controller.
 #[derive(Debug, Clone)]
 struct DockFrame {
@@ -1150,8 +1350,7 @@ struct DockFrame {
     minimized: bool,
     dividers: Vec<f32>,
     marks: Vec<SlotMark>,
-    fades: (bool, bool),
-    list: (f32, f32),
+    scroll: Option<ScrollBar>,
     label: Option<HoverLabel>,
 }
 
@@ -1165,8 +1364,7 @@ impl Default for DockFrame {
             minimized: false,
             dividers: Vec::new(),
             marks: Vec::new(),
-            fades: (false, false),
-            list: (0.0, 0.0),
+            scroll: None,
             label: None,
         }
     }
@@ -1209,20 +1407,8 @@ impl Widget for DockFrame {
                 style::open_dot(rc, p, self.side, size, mark.slot);
             }
         }
-    }
-
-    fn draw_after_children(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
-        if self.minimized {
-            return;
-        }
-        let size = element_size(ui, me);
-        if self.fades.0 {
-            let at = self.list.0;
-            style::fade(rc, &self.palette, self.mode, size, at, FADE_LENGTH, false);
-        }
-        if self.fades.1 {
-            let at = self.list.1 - FADE_LENGTH;
-            style::fade(rc, &self.palette, self.mode, size, at, FADE_LENGTH, true);
+        if let Some(bar) = &self.scroll {
+            style::scroll_bar(rc, p, self.side, size, bar);
         }
     }
 
@@ -1441,6 +1627,61 @@ impl Widget for DockGear {
         };
         let art = self.metrics.art;
         style::gear(rc, (w - art) / 2.0, (h - art) / 2.0, art, color);
+    }
+}
+
+/// An arrow at one end of an overflowing list, which scrolls it a page that way
+/// and dims when there is no more that way. Its hover label says how many more.
+#[derive(Debug, Clone)]
+struct DockArrow {
+    palette: Palette,
+    pointer: PointerState,
+    mode: DockMode,
+    metrics: Metrics,
+    forward: bool,
+    /// How many slots are off the list this way.
+    more: usize,
+}
+
+impl Default for DockArrow {
+    fn default() -> Self {
+        Self {
+            palette: Palette::CLASSIC_DOCK,
+            pointer: PointerState::default(),
+            mode: DockMode::default(),
+            metrics: DockSize::default().metrics(),
+            forward: false,
+            more: 0,
+        }
+    }
+}
+
+impl Widget for DockArrow {
+    fn on_event(&mut self, ui: &mut UiRoot, me: ElementId, e: &UiEvent) -> bool {
+        click_event(&mut self.pointer, ui, me, e)
+    }
+
+    fn handles_click(&self, _element: &Element) -> bool {
+        true
+    }
+
+    /// Its hover label is the dock's own, not a timed tooltip.
+    fn hover_outlasts_tooltip(&self) -> bool {
+        true
+    }
+
+    fn draw(&mut self, ui: &mut UiRoot, me: ElementId, rc: &mut RenderContext<'_>) {
+        let (w, h) = element_size(ui, me);
+        let p = &self.palette;
+        let look = self.pointer.look(self.more > 0);
+        let radius = self.metrics.well_radius.min(ARROW_LENGTH / 2.0);
+        style::slot_well(rc, p, style::slot_well_rect(self.mode, w, h), radius, look);
+        let color = match look {
+            ButtonLook::Normal => p.muted,
+            ButtonLook::Disabled => with_alpha(p.muted, style::SPENT_ARROW_ALPHA),
+            ButtonLook::Hovered | ButtonLook::Pressed => p.text,
+        };
+        style::arrow(rc, color, self.mode.is_horizontal(), self.forward, (w, h));
     }
 }
 

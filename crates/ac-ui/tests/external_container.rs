@@ -308,6 +308,38 @@ fn a_container_that_is_not_openable_shows_no_cells() {
     assert_eq!(s.num_cells(PACKS), 0);
 }
 
+/// A chest described while locked (a key chest: not openable) and then
+/// unlocked: the server says so with the Locked bool going false, which
+/// makes the chest openable, so its window shows its capacity and the
+/// items inside (the item strip stayed empty before).
+#[test]
+fn a_chest_unlocked_after_it_was_described_shows_its_contents() {
+    let mut s = strip();
+    s.objects.add(plain_item(ITEM));
+    let locked = ac_core::properties::PropertyBool::LOCKED.0;
+    let mut chest = ClientObject::new(CHEST);
+    chest.item_type = ItemType::CONTAINER;
+    chest.items_capacity = 120;
+    chest.containers_capacity = 10;
+    chest.useability = Some(ItemUseable::REMOTE);
+    chest.public_weenie_bitfield = Some(PublicWeenieFlags::STUCK);
+    s.objects.add(chest);
+    assert!(
+        s.objects
+            .t
+            .update_bool_property(CHEST, locked, false, &mut s.objects.ev)
+    );
+    s.objects.mv(ITEM, CHEST, 0);
+    s.facts = ExternalContainerFacts {
+        container: CHEST,
+        in_range: true,
+    };
+    s.update();
+    assert_eq!(s.num_cells(PACKS), 10);
+    assert!(s.num_cells(CONTENTS) > 0);
+    assert_eq!(s.slot(CONTENTS, 0).object_id, ITEM);
+}
+
 /// OpenAC `ThePlayer_keepsItsCapacity_withoutTheOpenableFlag`: the player
 /// is the one container whose capacity holds without the openable flag.
 #[test]

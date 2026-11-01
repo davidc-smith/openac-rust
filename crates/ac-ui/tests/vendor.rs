@@ -1413,6 +1413,43 @@ fn a_refused_drop_says_why_and_stages_nothing() {
     }
 }
 
+// The main pack (the character itself) is the player's own: a drop of it
+// with an item in an item slot is taken; one holding only pack-slot objects
+// (a spell focus, container type 2) is judged as the character, which a
+// vendor does not buy.
+#[test]
+fn the_main_pack_is_taken_when_an_item_slot_holds_something() {
+    let mut v = vendor_window();
+    v.event(Some(&shop(
+        VendorViewReason::Opened,
+        sell_profile(ItemType::ARMOR | ItemType::MISC),
+        Vec::new(),
+    )));
+    // "Foci of Enchantment" (wcid 15268): item type Misc, value 500.
+    v.owned(0x6000_0301, ItemType::MISC, 500, 1, 15268);
+    v.objects.t.replace_contents(
+        PLAYER,
+        &[ac_core::items::ContainerContentEntry {
+            guid: 0x6000_0301,
+            container_type: 2,
+        }],
+        &mut v.objects.ev,
+    );
+    let out = drag_onto_sell_list(&mut v, PLAYER, kind::DROP_RELEASED);
+    assert_eq!(notices(&out), ["You cannot sell that here"]);
+    assert!(items_commands(&out).is_empty());
+
+    v.owned(OWNED_ARMOR, ItemType::ARMOR, 100, 1, 1);
+    let out = drag_onto_sell_list(&mut v, PLAYER, kind::DROP_RELEASED);
+    assert!(notices(&out).is_empty());
+    assert_dbg_eq!(
+        items_commands(&out),
+        [ItemCommand::Vendor(VendorCommand::AddToSellList(
+            ObjectRef::Guid(PLAYER)
+        ))]
+    );
+}
+
 // HandleDropRelease_PartialStack_SplitsThenStagesTheNewExactStack
 #[test]
 fn part_of_a_stack_is_split_off_and_the_new_stack_staged() {

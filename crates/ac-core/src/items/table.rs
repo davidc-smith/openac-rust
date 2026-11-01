@@ -1360,10 +1360,12 @@ impl ClientObjectTable {
         true
     }
 
-    /// Records one true/false property update. The UI-hidden one is also
-    /// the description's UI-hidden bit, which decides whether the object
-    /// can be picked, cycled to or shown on the radar, so it moves the bit
-    /// with it.
+    /// Records one true/false property update. Some of these are also a bit
+    /// of the public description, which is what everything else reads
+    /// (whether the object can be picked or shown on the radar, whether a
+    /// container can be opened and how many slots its window shows), so the
+    /// bit moves with the bool. Locked is the inverse of openable: a key or
+    /// a lockpick unlocking a chest makes it openable.
     pub fn update_bool_property(
         &mut self,
         item_id: u32,
@@ -1374,10 +1376,11 @@ impl ClientObjectTable {
         let Some(item) = self.objects.get_mut(&item_id) else {
             return false;
         };
+        server_showed_object(item);
         item.properties.bools.insert(property_id, value);
-        if PropertyBool(property_id) == PropertyBool::UI_HIDDEN {
+        if let Some((bit, inverted)) = description_bit_of(PropertyBool(property_id)) {
             let mut bitfield = item.public_weenie_bitfield.unwrap_or_default();
-            bitfield.set(PublicWeenieFlags::UI_HIDDEN, value);
+            bitfield.set(bit, value != inverted);
             item.public_weenie_bitfield = Some(bitfield);
         }
         self.emit_updated(item_id, events);
@@ -1879,6 +1882,22 @@ fn server_showed_object(item: &mut ClientObject) -> bool {
     }
     item.last_appraisal_unsuccessful = false;
     true
+}
+
+/// The public description bit a true/false property stands for, if any,
+/// and whether the bit is set when the property is false.
+fn description_bit_of(property: PropertyBool) -> Option<(PublicWeenieFlags, bool)> {
+    match property {
+        PropertyBool::STUCK => Some((PublicWeenieFlags::STUCK, false)),
+        PropertyBool::LOCKED => Some((PublicWeenieFlags::OPENABLE, true)),
+        PropertyBool::INSCRIBABLE => Some((PublicWeenieFlags::INSCRIBABLE, false)),
+        PropertyBool::UI_HIDDEN => Some((PublicWeenieFlags::UI_HIDDEN, false)),
+        PropertyBool::IGNORE_HOUSE_BARRIERS => {
+            Some((PublicWeenieFlags::IMMUNE_CELL_RESTRICTIONS, false))
+        }
+        PropertyBool::HIDDEN_ADMIN => Some((PublicWeenieFlags::HIDDEN_ADMIN, false)),
+        _ => None,
+    }
 }
 
 /// Merges a property bundle; the pack capacities it carries (an

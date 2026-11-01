@@ -4,11 +4,13 @@
 
 use std::sync::Arc;
 
-use super::layout::{DockMode, Metrics};
+use super::layout::{DockMode, Metrics, ScrollBar};
 use crate::draw::{Color, DEFAULT_OUTLINE_COLOR, RenderContext};
 use crate::font::UiFont;
 use crate::geometry::Rect;
-use crate::plugin::style::{hover, mix, pressed, surface, with_alpha};
+use crate::plugin::style::{
+    chevron, chevron_left, chevron_right, chevron_up, hover, mix, pressed, surface, with_alpha,
+};
 use crate::plugin::widgets::{ButtonLook, Palette};
 use crate::shapes::CornerRadii;
 
@@ -59,6 +61,16 @@ pub const GRIP_WELL_SIDES: f32 = 9.0;
 pub const GRIP_WELL_ENDS: f32 = 2.0;
 /// Colour art's alpha while its window is closed.
 pub const CLOSED_ART_ALPHA: f32 = 0.85;
+/// How wide an arrow's chevron is across the dock.
+pub const ARROW_ACROSS: f32 = 10.0;
+/// How long an arrow's chevron is along the dock.
+pub const ARROW_ALONG: f32 = 5.0;
+/// An arrow's alpha when the list has no more that way.
+pub const SPENT_ARROW_ALPHA: f32 = 0.3;
+/// The scroll bar's thickness.
+pub const SCROLL_BAR_THICKNESS: f32 = 3.0;
+/// How far the scroll bar sits in from the dock's side.
+pub const SCROLL_BAR_INSET: f32 = 1.5;
 
 const fn rgb(packed: u32) -> Color {
     Color::rgba(
@@ -291,30 +303,62 @@ pub fn divider(
     }
 }
 
-/// A fade into the dock's fill over the slots cut off, `at` along the dock,
-/// running to the fill at its far end when `to_end`, else at its near end.
-pub fn fade(
+/// An arrow's chevron, centred in an arrow `w` by `h`, pointing along the dock:
+/// toward its far end when `forward`, else its near end.
+pub fn arrow(
+    rc: &mut RenderContext<'_>,
+    color: Color,
+    horizontal: bool,
+    forward: bool,
+    (w, h): (f32, f32),
+) {
+    let (across, along) = (ARROW_ACROSS, ARROW_ALONG);
+    if horizontal {
+        let (x, y) = ((w - along) / 2.0, (h - across) / 2.0);
+        if forward {
+            chevron_right(rc, x, y, along, across, color);
+        } else {
+            chevron_left(rc, x, y, along, across, color);
+        }
+    } else {
+        let (x, y) = ((w - across) / 2.0, (h - along) / 2.0);
+        if forward {
+            chevron(rc, x, y, across, along, color);
+        } else {
+            chevron_up(rc, x, y, across, along, color);
+        }
+    }
+}
+
+/// The bar beside an overflowing list, on the dock's side away from `side`: open
+/// dots and edge pills are on the other.
+pub fn scroll_bar(
     rc: &mut RenderContext<'_>,
     p: &Palette,
-    mode: DockMode,
+    side: DockSide,
     (w, h): (f32, f32),
-    at: f32,
-    length: f32,
-    to_end: bool,
+    bar: &ScrollBar,
 ) {
-    let solid = p.background;
-    let clear = with_alpha(solid, 0.0);
-    let (start, end) = if to_end {
-        (clear, solid)
-    } else {
-        (solid, clear)
+    let thick = SCROLL_BAR_THICKNESS;
+    let across = match side {
+        DockSide::Left => w - SCROLL_BAR_INSET - thick,
+        DockSide::Top => h - SCROLL_BAR_INSET - thick,
+        DockSide::Right | DockSide::Bottom => SCROLL_BAR_INSET,
     };
-    let none = CornerRadii::all(0.0);
-    if mode.is_horizontal() {
-        rc.fill_horizontal_gradient(at, 0.0, length, h, none, start, end);
-    } else {
-        rc.fill_vertical_gradient(0.0, at, w, length, none, start, end);
-    }
+    let radii = CornerRadii::all(thick / 2.0);
+    let mut piece = |start: f32, end: f32, color: Color| {
+        if matches!(side, DockSide::Left | DockSide::Right) {
+            rc.fill_rounded_rect(across, start, thick, end - start, radii, color);
+        } else {
+            rc.fill_rounded_rect(start, across, end - start, thick, radii, color);
+        }
+    };
+    piece(
+        bar.start,
+        bar.end,
+        mix(p.border, p.background, DIVIDER_FADE),
+    );
+    piece(bar.thumb_start, bar.thumb_end, p.muted);
 }
 
 /// The gear on the dock's appearance slot, filling a `size` box at (`x`, `y`).
