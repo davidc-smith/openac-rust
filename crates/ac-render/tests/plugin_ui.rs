@@ -474,9 +474,10 @@ fn the_dock_uploads_each_windows_picture_once_and_gives_it_back() {
     );
 }
 
-/// The window bakes a sharper bundled font in each weight the first time it
-/// is on a high-density display, keeps the bakes when it moves back and forth
-/// between displays, and draws from none on a standard one.
+/// The window bakes a sharper bundled font in each weight when it is on a
+/// high-density display, one a frame so no frame waits for them all, lets go
+/// of the bakes for a density it leaves, and draws from none on a standard
+/// display.
 #[test]
 #[ignore = "needs the retail dat files"]
 fn the_window_follows_the_displays_density_with_sharper_fonts() {
@@ -496,21 +497,34 @@ fn the_window_follows_the_displays_density_with_sharper_fonts() {
         bakes.sort_by_key(|t| format!("{t:?}"));
         bakes
     };
+    let frames = |ui: &mut WindowUi, pixels: f32, count: usize| {
+        for _ in 0..count {
+            ui.set_pixels_per_unit(pixels);
+        }
+    };
     ui.set_pixels_per_unit(2.0);
+    assert_eq!(textures(&ui).len(), 1, "one bake a frame");
+    frames(&mut ui, 2.0, 4);
     let first = textures(&ui);
     // The regular and SemiBold fonts, and the dock's count and two sizes of
     // letters.
     assert_eq!(first.len(), 5);
     assert!(first.windows(2).all(|t| t[0] != t[1]));
+    frames(&mut ui, 2.0, 3);
+    assert_eq!(textures(&ui), first, "nothing more to bake");
 
+    // Leaving the density lets its bakes go; coming back bakes them again.
     ui.set_pixels_per_unit(1.0);
     assert!(ui.host().root.sharp_fonts().is_none());
-    ui.set_pixels_per_unit(2.0);
-    assert_eq!(textures(&ui), first, "no second bake");
+    frames(&mut ui, 2.0, 5);
+    let again = textures(&ui);
+    assert_eq!(again.len(), 5);
+    assert!(again.iter().all(|t| !first.contains(t)), "baked anew");
 
     // No bake goes past what the largest allows, so a bigger font stops sooner
-    // and a smaller one has room for more.
-    ui.set_pixels_per_unit(3.0);
+    // and a smaller one has room for more. Bakes the new density still wants
+    // are kept.
+    frames(&mut ui, 3.0, 5);
     let mut scales: Vec<f32> = ui
         .host()
         .root
@@ -522,9 +536,8 @@ fn the_window_follows_the_displays_density_with_sharper_fonts() {
     scales.sort_by(f32::total_cmp);
     assert_eq!(scales, [1.5, 2.0, 2.0, 2.5, 3.0]);
     let at_three = textures(&ui);
-    assert_eq!(first.iter().filter(|t| at_three.contains(t)).count(), 3);
+    assert_eq!(again.iter().filter(|t| at_three.contains(t)).count(), 3);
 }
-
 fn runtime_sprites(list: &ac_ui::draw::DrawList) -> usize {
     list.main
         .iter()

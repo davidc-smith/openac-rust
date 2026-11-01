@@ -102,6 +102,23 @@ pub fn client_window_name(window: ClientWindow) -> &'static str {
 const FIRST_INDOOR_CELL: u32 = 0x0100;
 
 /// A plugin's icon placed this frame: which of the merged icons, and where.
+/// A sharper bake of the bundled font a display wants: the font, its weight
+/// and size, and the scale to bake it at.
+#[derive(Debug)]
+struct SharpWanted {
+    font: Arc<UiFont>,
+    weight: Weight,
+    size: f32,
+    scale: f32,
+}
+
+impl SharpWanted {
+    /// The font and the scale in quarter steps.
+    fn key(&self) -> (u32, u32) {
+        (self.font.id, (self.scale * 4.0) as u32)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PlacedIcon {
     entry: usize,
@@ -148,9 +165,14 @@ pub struct PluginWindowUi {
     /// The atlases of the fonts plugins hold, by bake: a bake the bundled font
     /// shares between plugins is one texture.
     font_textures: HashMap<usize, (Arc<ac_plugin_ui::fonts::FontBake>, TextureRef)>,
-    /// Those sharper bakes by regular and SemiBold font and scale in quarter
-    /// steps, kept so a window moved between displays bakes each only once.
+    /// Those sharper bakes for the display density in use, by font and scale
+    /// in quarter steps. A bake for another density is let go of when the
+    /// density changes.
     sharp_bakes: HashMap<(u32, u32), SharpFont>,
+    /// The sharper bakes the density in use still wants, baked one a frame:
+    /// each takes several milliseconds, and its font draws from its own atlas
+    /// until then.
+    sharp_pending: Vec<SharpWanted>,
     /// A markup window's title colour without a theme, from the player's
     /// `controlsntrols.ini` (`[title] color`); white without one.
     title_color: Option<Color>,
@@ -558,69 +580,92 @@ impl WindowUi {
     }
 
     /// The sharper bakes of the bundled font for a display with `pixels` a
-    /// UI unit, made the first time a display of that density is used. On a
+    /// UI unit. Called every frame: when the density changes, the bakes for
+    /// the old one are let go of and those the new one wants are listed; each
+    /// frame then bakes one of them, so no frame waits for them all. On a
     /// standard display there are none.
     pub(super) fn follow_display_density(&mut self, pixels: f32) {
-        if self.plugins.sharp_density == Some(pixels) {
-            return;
+        if self.plugins.sharp_density != Some(pixels) {
+            self.plugins.sharp_density = Some(pixels);
+            // The session bakes plugins' fonts for this density too.
+            self.plugins
+                .outbox
+                .borrow_mut()
+                .push(UiInput::DisplayDensity(pixels));
+            self.want_sharp_fonts(pixels);
         }
-        self.plugins.sharp_density = Some(pixels);
-        // The session bakes plugins' fonts for this density too.
-        self.plugins
-            .outbox
-            .borrow_mut()
-            .push(UiInput::DisplayDensity(pixels));
-        let Some(fonts) = self.plugins.modern_fonts.clone() else {
-            return;
-        };
-        let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
-        let mut bakes = vec![
-            (fonts.regular, Weight::Regular, size),
-            (fonts.semibold, Weight::SemiBold, size),
-        ];
-        for (font, size) in self.plugins.dock_fonts.clone() {
-            bakes.push((font, Weight::SemiBold, size));
-        }
-        let mut chosen = SharpFonts::new();
-        for (font, weight, size) in &bakes {
-            let (font, weight, size) = (font, *weight, *size);
-            match self.sharp_bake(font, weight, size, pixels) {
-                Ok(Some(sharp)) => {
-                    chosen.insert(font.id, sharp);
-                }
-                Ok(None) => {}
-                Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
+        self.bake_one_sharp_font();
+    }
+
+    /// Lists the sharper bakes a display with `pixels` a UI unit wants, and
+    /// lets go of every other.
+    fn want_sharp_fonts(&mut self, pixels: f32) {
+        let mut wanted = Vec::new();
+        if let Some(fonts) = self.plugins.modern_fonts.clone() {
+            let size = bundled_font::DEFAULT_PIXEL_HEIGHT;
+            wanted.push((fonts.regular, Weight::Regular, size));
+            wanted.push((fonts.semibold, Weight::SemiBold, size));
+            for (font, size) in self.plugins.dock_fonts.clone() {
+                wanted.push((font, Weight::SemiBold, size));
             }
         }
+        let wanted: Vec<SharpWanted> = wanted
+            .into_iter()
+            .filter_map(|(font, weight, size)| {
+                let scale = bundled_font::sharp_scale_for(size, pixels);
+                (scale > 1.0).then_some(SharpWanted {
+                    font,
+                    weight,
+                    size,
+                    scale,
+                })
+            })
+            .collect();
+        let images = &self.images;
+        self.plugins.sharp_bakes.retain(|key, sharp| {
+            let kept = wanted.iter().any(|w| w.key() == *key);
+            if !kept {
+                images.release(sharp.font.foreground.texture);
+            }
+            kept
+        });
+        let baked = &self.plugins.sharp_bakes;
+        self.plugins.sharp_pending = wanted
+            .into_iter()
+            .filter(|w| !baked.contains_key(&w.key()))
+            .collect();
+        self.publish_sharp_fonts();
+    }
+
+    /// Bakes the next sharper font the display wants, if any.
+    fn bake_one_sharp_font(&mut self) {
+        let Some(next) = self.plugins.sharp_pending.pop() else {
+            return;
+        };
+        match self.bake_bundled_font(next.size * next.scale, next.weight) {
+            Ok(font) => {
+                let sharp = SharpFont {
+                    font,
+                    scale: next.scale,
+                };
+                self.plugins.sharp_bakes.insert(next.key(), sharp);
+            }
+            Err(e) => self.notices.push(format!("ui: bundled font: {e}")),
+        }
+        self.publish_sharp_fonts();
+    }
+
+    /// Hands the sharper bakes made so far to the UI.
+    fn publish_sharp_fonts(&mut self) {
+        let chosen: SharpFonts = self
+            .plugins
+            .sharp_bakes
+            .iter()
+            .map(|((id, _), sharp)| (*id, sharp.clone()))
+            .collect();
         let chosen = (!chosen.is_empty()).then(|| Arc::new(chosen));
         self.host.root.set_sharp_fonts(chosen);
     }
-
-    /// The sharper bake of `font`, baked at `size`, for `pixels` a UI unit: none
-    /// where it would be no sharper.
-    fn sharp_bake(
-        &mut self,
-        font: &UiFont,
-        weight: Weight,
-        size: f32,
-        pixels: f32,
-    ) -> Result<Option<SharpFont>, BundledFontError> {
-        let scale = bundled_font::sharp_scale_for(size, pixels);
-        if scale <= 1.0 {
-            return Ok(None);
-        }
-        let key = (font.id, (scale * 4.0) as u32);
-        if let Some(sharp) = self.plugins.sharp_bakes.get(&key) {
-            return Ok(Some(sharp.clone()));
-        }
-        let sharp = SharpFont {
-            font: self.bake_bundled_font(size * scale, weight)?,
-            scale,
-        };
-        self.plugins.sharp_bakes.insert(key, sharp.clone());
-        Ok(Some(sharp))
-    }
-
     /// The bundled font in `weight` at `pixel_height`, as a font over a new
     /// atlas texture.
     fn bake_bundled_font(
