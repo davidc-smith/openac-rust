@@ -26,7 +26,7 @@ The original client has no plugin expanders, so there is nothing in it to compar
 
 - `scripts/check.sh` green on macOS (Apple Silicon) at `<hash>`, with the real-dat tests.
 - A test clicks an unbound expander and checks the arrow each way.
-- By hand on a local ACE server on macOS (Metal): <fill in after the by-hand pass>. Not tested on Windows or Linux.
+- By hand on a local ACE server on macOS (Metal), under Classic: clicking each header flips its arrow both ways. Not tested on Windows or Linux.
 
 ### Checklist
 - [ ] `scripts/check.sh` (or `scripts/check.ps1`) passes: fmt, clippy with `-D warnings`, the WebAssembly build, tests
@@ -59,7 +59,7 @@ The original client has no plugin expanders, so there is nothing in it to compar
 
 - `scripts/check.sh` green on macOS (Apple Silicon) at `<hash>`, with the real-dat tests.
 - New tests cover expanders side by side, folding and reopening in any order, stacked expanders, stretched siblings and separate columns.
-- By hand on a local ACE server on macOS (Metal): a window with expanders folded at the start, under Moss, and <fill in after the by-hand pass>. Not tested on Windows or Linux.
+- By hand on a local ACE server on macOS (Metal): a window with expanders folded at the start, under Moss; and under Classic, three side by side folded and reopened in different orders, with what is below staying clear of the headers and coming back to its place. Not tested on Windows or Linux.
 
 ### Merging with the Classic frame PR
 
@@ -96,7 +96,7 @@ The original client has no plugin expanders, so there is nothing in it to compar
 
 - `scripts/check.sh` green on macOS (Apple Silicon) at `<hash>`, with the real-dat tests.
 - New tests: the frame reaches round the content with its band and divider, is just the header when folded, and is absent with `border="false"`.
-- By hand on a local ACE server on macOS (Metal): <fill in after the by-hand pass>. Not tested on Windows or Linux.
+- By hand on a local ACE server on macOS (Metal), under Classic: framed, folded, and `border="false"`. Not tested on Windows or Linux.
 
 ### Merging with the side-by-side expanders PR
 
@@ -121,7 +121,7 @@ When the plugin windows did not fit, the dock showed as many as it could, scroll
 
 An overflowing list now has an arrow at each end and a thin bar beside it.
 
-- An arrow moves a page, keeping one slot on screen to hold your place, dims when there is no more that way, and its hover label says how many more.
+- An arrow moves a page, keeping one slot on screen to hold your place, dims when there is no more that way, and its hover label says how many more plugins.
 - The bar's thumb shows how much of the list is on screen and where, on the side away from the screen edge, clear of the open dots and edge pills.
 - The wheel still moves one slot.
 
@@ -139,7 +139,7 @@ The original client has no plugin dock, so there is nothing in it to compare aga
 
 - `scripts/check.sh` green on macOS (Apple Silicon) at `<hash>`, with the real-dat tests.
 - New tests cover paging and stopping at the ends, the wheel on an arrow, the arrows' labels and how long they stay, dimming, the bar's place, and a list that fits having none of it.
-- By hand on a local ACE server on macOS (Metal), with enough plugins to overflow: <fill in after the by-hand pass>. Not tested on Windows or Linux.
+- By hand on a local ACE server on macOS (Metal), under Classic with 36 extra plugins: the arrows and their labels, paging to the end, the wheel, the bar, and closing and reopening at the same place. Not tested on Windows or Linux.
 
 ### Checklist
 - [ ] `scripts/check.sh` (or `scripts/check.ps1`) passes: fmt, clippy with `-D warnings`, the WebAssembly build, tests
@@ -178,7 +178,7 @@ The original client has no plugin dock, so there is nothing in it to compare aga
 
 - `scripts/check.sh` green on macOS (Apple Silicon) at `<hash>`, with the real-dat tests.
 - New tests cover opening, closing, the easing, turning round on the way, sliding to fit and back, what is saved on the way, a new screen size or mode on the way, and saved state not sliding.
-- By hand on a local ACE server on macOS (Metal), floating under Moss: <fill in which cases were tried>. Not tested on Windows or Linux.
+- By hand on a local ACE server on macOS (Metal), floating under Moss, and under Classic with the dock overflowing. Not tested on Windows or Linux.
 
 ### Checklist
 - [ ] `scripts/check.sh` (or `scripts/check.ps1`) passes: fmt, clippy with `-D warnings`, the WebAssembly build, tests
