@@ -75,6 +75,8 @@ impl Rig {
             .register_window(WINDOW, frame, Some(frame), 0)
             .unwrap();
         dock.set_theme(&mut host.root, theme);
+        // At once, unless a test is about the time it takes.
+        dock.reveal_seconds = 0.0;
         host.attach_controller(WINDOW, Box::new(dock)).unwrap();
         Self {
             host,
@@ -2340,4 +2342,181 @@ fn a_closed_tile_in_a_corner_keeps_it_when_the_grip_comes_and_goes() {
             assert_eq!(rig.at(), corner, "{mode:?} locked {locked}");
         }
     }
+}
+
+impl Rig {
+    /// An open dock of two windows that takes its time opening and closing.
+    fn revealing() -> Self {
+        let mut rig = Self::in_mode(DockMode::Floating);
+        rig.with(|c, _| c.reveal_seconds = REVEAL_SECONDS);
+        rig
+    }
+
+    fn placement(&mut self) -> Rect {
+        self.with(|c, ui| c.placement(ui)).unwrap()
+    }
+
+    fn revealing_now(&mut self) -> bool {
+        self.with(|c, _| c.reveal.is_some())
+    }
+
+    /// Long enough for any opening or closing to finish.
+    fn settle(&mut self) {
+        self.pass(f64::from(REVEAL_SECONDS) * 2.0);
+    }
+}
+
+#[test]
+fn closing_shrinks_the_dock_with_its_slots_still_there_then_lays_it_out_closed() {
+    let mut rig = Rig::revealing();
+    let open = rig.placement();
+    rig.press_tile();
+    assert!(rig.closed_view(), "closed at once, as far as anyone asks");
+    let during = rig.placement();
+    assert!(during.h < open.h, "{} of {}", during.h, open.h);
+    assert!(during.h > layout::FLOATING_THICKNESS, "{}", during.h);
+    assert!(rig.layout().slots[0].is_some(), "the slots go with it");
+    assert!(rig.layout().gear.h > 0.0);
+
+    rig.settle();
+    assert!(!rig.revealing_now());
+    assert!(rig.layout().slots[0].is_none());
+    let closed = rig.placement();
+    assert_eq!(
+        (closed.w, closed.h),
+        (rig.layout().width, rig.layout().height)
+    );
+}
+
+#[test]
+fn opening_grows_the_dock_from_its_tile_to_its_whole_length() {
+    let mut rig = Rig::revealing();
+    rig.press_tile();
+    rig.settle();
+    let closed = rig.placement();
+    rig.press_tile();
+    assert!(!rig.closed_view());
+    assert!(rig.layout().slots[0].is_some(), "laid out open at once");
+    let during = rig.placement();
+    let whole = rig.layout().height;
+    assert!(during.h > closed.h && during.h < whole, "{}", during.h);
+    assert_eq!((during.x, during.y), (closed.x, closed.y));
+
+    rig.settle();
+    assert_eq!(rig.placement().h, whole);
+    assert!(!rig.revealing_now());
+}
+
+#[test]
+fn it_is_quick_at_first_and_settles_at_the_end() {
+    let mut rig = Rig::revealing();
+    let open = rig.placement().h;
+    rig.press_tile();
+    let closed = rig.layout_closed_height();
+    let mut last = rig.placement().h;
+    let mut steps = Vec::new();
+    while rig.revealing_now() {
+        rig.tick();
+        let h = rig.placement().h;
+        assert!(h <= last, "only ever shrinks");
+        steps.push(last - h);
+        last = h;
+    }
+    assert_eq!(last, closed);
+    assert!(open > closed);
+    assert!(steps.len() >= 5, "{} frames", steps.len());
+    assert!(steps[0] > steps[steps.len() - 2]);
+}
+
+impl Rig {
+    fn layout_closed_height(&mut self) -> f32 {
+        self.with(|c, _| c.reveal.map(|r| r.to.h)).unwrap()
+    }
+}
+
+#[test]
+fn a_press_on_the_way_turns_it_round_from_where_it_is() {
+    let mut rig = Rig::revealing();
+    let open = rig.placement().h;
+    rig.press_tile();
+    rig.tick();
+    let on_the_way = rig.placement().h;
+    assert!(on_the_way < open);
+    rig.press_tile();
+    assert!(!rig.closed_view());
+    let turned = rig.placement().h;
+    assert!(
+        turned >= on_the_way && turned < open,
+        "{on_the_way} then {turned}, whole {open}"
+    );
+    rig.settle();
+    assert_eq!(rig.placement().h, open);
+}
+
+#[test]
+fn a_dock_that_slid_to_fit_eases_there_and_back() {
+    let mut rig = Rig::revealing();
+    rig.press_tile();
+    rig.settle();
+    let low = rig.host.root.size().1 - rig.layout().height - 2.0;
+    rig.with(|c, ui| ui.element_mut(c.root).unwrap().top = low);
+    rig.tick();
+    let closed = rig.placement();
+    rig.press_tile();
+    let during = rig.placement();
+    assert!(during.y < closed.y, "on its way up");
+    rig.settle();
+    let open = rig.placement();
+    assert!(open.y < during.y, "{} then {}", during.y, open.y);
+    assert!(open.y + open.h <= rig.host.root.size().1);
+
+    rig.press_tile();
+    rig.settle();
+    assert_eq!(rig.placement().y, closed.y, "back where it was");
+}
+
+#[test]
+fn what_is_saved_on_the_way_is_where_it_is_going() {
+    let mut rig = Rig::revealing();
+    rig.press_tile();
+    assert!(rig.revealing_now());
+    let saved = rig.host.capture_window_state(WINDOW);
+    let going = rig.with(|c, _| c.reveal.unwrap().to);
+    assert!(saved.collapsed);
+    assert_eq!(saved.persisted_width, Some(going.w));
+    assert_eq!(saved.persisted_height, Some(going.h));
+    assert_eq!(saved.persisted_top, Some(going.y));
+}
+
+#[test]
+fn a_new_screen_size_or_mode_on_the_way_ends_it_where_the_layout_says() {
+    let mut rig = Rig::revealing();
+    rig.press_tile();
+    assert!(rig.revealing_now());
+    rig.host.root.set_size(SCREEN.0, SCREEN.1 - 40.0);
+    rig.tick();
+    assert!(!rig.revealing_now());
+    let l = rig.layout();
+    let at = rig.placement();
+    assert_eq!((at.w, at.h), (l.width, l.height));
+
+    rig.press_tile();
+    assert!(rig.revealing_now());
+    rig.with(|c, ui| c.set_mode(ui, DockMode::Left));
+    rig.tick();
+    assert!(!rig.revealing_now());
+    let l = rig.layout();
+    let at = rig.placement();
+    assert_eq!((at.w, at.h), (l.width, l.height));
+    assert_eq!(at.x, 0.0);
+}
+
+#[test]
+fn putting_the_dock_back_from_saved_state_does_not_animate() {
+    let mut rig = Rig::revealing();
+    let mut state = rig.host.capture_window_state(WINDOW);
+    state.collapsed = true;
+    rig.host.restore_window_state(WINDOW, state);
+    assert!(!rig.revealing_now());
+    assert_eq!(rig.placement().h, rig.layout().height);
 }
