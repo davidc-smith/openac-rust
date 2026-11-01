@@ -762,8 +762,7 @@ pub enum Element {
         open: bool,
         /// Header caption colour.
         color: Option<ColorSource>,
-        /// Framed like a group box under a modern theme (`border`, default
-        /// true).
+        /// Framed like a group box (`border`, default true).
         framed: bool,
     },
     /// Two panes with a bar between them the player drags.
