@@ -415,7 +415,7 @@ fn a_dock_too_long_for_the_screen_scrolls_and_fits_wherever_it_is_placed() {
     rig.sync_plain();
     let l = rig.layout();
     assert!(l.max_first > 0);
-    assert!(l.fade_end);
+    assert!(l.forward.is_some());
     assert!(l.height <= 300.0 - 2.0 * layout::FLOATING_MARGIN);
     rig.host.root.move_window(WINDOW, 10.0, 280.0);
     rig.tick();
@@ -423,6 +423,144 @@ fn a_dock_too_long_for_the_screen_scrolls_and_fits_wherever_it_is_placed() {
     assert!(top + l.height <= 300.0);
     // Where it is placed changes nothing about how long it is.
     assert_eq!(rig.layout().height, l.height);
+}
+
+impl Rig {
+    /// A dock too long for a short screen, in `mode`.
+    fn overflowing(mode: DockMode) -> Self {
+        let mut rig = Self::new(300.0, PluginTheme::Moss);
+        rig.add_plugins(12);
+        rig.sync_plain();
+        rig.with(|c, ui| c.set_mode(ui, mode));
+        rig.tick();
+        rig
+    }
+
+    fn press_arrow(&mut self, forward: bool) {
+        let l = self.layout();
+        let arrow = if forward { l.forward } else { l.back };
+        self.click(arrow.unwrap());
+        self.tick();
+    }
+}
+
+#[test]
+fn an_arrow_moves_a_page_keeping_one_slot_and_stops_at_the_end() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    let start = rig.layout();
+    assert!(start.visible >= 2 && start.max_first > 0);
+    let page = start.visible - 1;
+    let mut want = 0;
+    while want < start.max_first {
+        rig.press_arrow(true);
+        want = (want + page).min(start.max_first);
+        assert_eq!(rig.layout().first, want);
+    }
+    rig.press_arrow(true);
+    assert_eq!(rig.layout().first, start.max_first);
+    rig.press_arrow(false);
+    assert_eq!(rig.layout().first, start.max_first - page);
+    assert!(rig.outbox.borrow().is_empty(), "no window opened");
+}
+
+#[test]
+fn the_wheel_on_an_arrow_scrolls_a_slot_like_the_wheel_on_a_slot() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    let forward = rig.layout().forward.unwrap();
+    rig.hover(forward);
+    rig.host.scroll(-1);
+    rig.host.pump();
+    rig.tick();
+    assert_eq!(rig.layout().first, 1);
+    rig.host.scroll(1);
+    rig.host.pump();
+    rig.tick();
+    assert_eq!(rig.layout().first, 0);
+}
+
+#[test]
+fn an_arrow_says_how_many_more_and_says_nothing_with_none() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    let l = rig.layout();
+    rig.hover(l.forward.unwrap());
+    let after = 12 - l.visible;
+    assert_eq!(rig.label().unwrap().title, format!("{after} more plugins"));
+    rig.hover(l.back.unwrap());
+    assert!(rig.label().is_none());
+
+    rig.with(|c, ui| c.scroll_to(ui, 1));
+    rig.tick();
+    let l = rig.layout();
+    rig.hover(l.back.unwrap());
+    assert_eq!(rig.label().unwrap().title, "1 more plugin");
+}
+
+#[test]
+fn an_arrows_label_stays_while_the_pointer_rests_past_the_tooltip_time() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    let forward = rig.layout().forward.unwrap();
+    rig.hover(forward);
+    let wait = rig.host.root.tooltip_delay_ms + rig.host.root.tooltip_duration_ms;
+    // Two frames: one fires the tooltip time, the next would end it.
+    rig.pass(wait as f64 / 1000.0);
+    rig.pass(wait as f64 / 1000.0);
+    assert!(rig.label().is_some());
+}
+
+#[test]
+fn an_arrow_dims_with_no_more_that_way_and_the_list_that_fits_has_none() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    let more = |rig: &mut Rig, forward: bool| {
+        rig.with(|c, ui| {
+            let id = if forward { c.forward } else { c.back };
+            ui.widget::<DockArrow>(id).unwrap().more
+        })
+    };
+    assert_eq!(more(&mut rig, false), 0);
+    assert!(more(&mut rig, true) > 0);
+    let max = rig.layout().max_first;
+    rig.with(|c, ui| c.scroll_to(ui, max));
+    rig.tick();
+    assert_eq!(more(&mut rig, false), max);
+    assert_eq!(more(&mut rig, true), 0);
+
+    let (back, forward) = rig.with(|c, _| (c.back, c.forward));
+    assert!(rig.host.root.element(back).unwrap().visible());
+    let mut fits = Rig::new(SCREEN.1, PluginTheme::Moss);
+    fits.add_plugins(2);
+    fits.sync_plain();
+    let (back, forward_2) = fits.with(|c, _| (c.back, c.forward));
+    assert!(!fits.host.root.element(back).unwrap().visible());
+    assert!(!fits.host.root.element(forward_2).unwrap().visible());
+    assert!(rig.host.root.element(forward).unwrap().visible());
+}
+
+#[test]
+fn closing_an_overflowing_dock_keeps_its_place_in_the_list() {
+    let mut rig = Rig::overflowing(DockMode::Floating);
+    rig.with(|c, ui| c.scroll_to(ui, 3));
+    rig.tick();
+    assert_eq!(rig.layout().first, 3);
+    rig.with(|c, ui| c.set_minimized(ui, true));
+    rig.tick();
+    rig.with(|c, ui| c.set_minimized(ui, false));
+    rig.tick();
+    assert_eq!(rig.layout().first, 3);
+}
+
+#[test]
+fn only_an_overflowing_dock_draws_its_bar() {
+    let mut rig = Rig::overflowing(DockMode::Left);
+    let bar = rig.layout().scroll;
+    assert!(bar.is_some());
+    let drawn_bar =
+        |rig: &mut Rig| rig.with(|c, ui| ui.widget::<DockFrame>(c.root).unwrap().scroll);
+    assert_eq!(drawn_bar(&mut rig), bar);
+
+    let mut fits = Rig::new(SCREEN.1, PluginTheme::Moss);
+    fits.add_plugins(2);
+    fits.sync_plain();
+    assert_eq!(drawn_bar(&mut fits), None);
 }
 
 #[test]
@@ -1149,7 +1287,7 @@ fn a_bigger_dock_too_long_for_the_screen_scrolls_sooner() {
     rig.tick();
     let bigger = rig.layout();
     assert!(bigger.visible < at_default);
-    assert!(bigger.fade_end);
+    assert!(bigger.forward.is_some());
     assert!(bigger.height <= 600.0 - 2.0 * layout::FLOATING_MARGIN);
 }
 
@@ -1595,7 +1733,7 @@ fn a_horizontal_dock_shows_its_label_away_from_its_edge_and_scrolls_along_its_le
     let l = rig.layout();
     assert_eq!(l.width, rig.size().0);
     assert!(l.width <= 800.0);
-    assert!(l.max_first > 0 && l.fade_end);
+    assert!(l.max_first > 0 && l.forward.is_some());
     let slot = l.slots[0].unwrap();
     rig.hover(slot);
     let label = rig.label().unwrap().rect;
@@ -1614,7 +1752,6 @@ fn a_horizontal_dock_shows_its_label_away_from_its_edge_and_scrolls_along_its_le
     rig.tick();
     let scrolled = rig.layout();
     assert_eq!(scrolled.first, 1);
-    assert!(scrolled.fade_start);
     assert_eq!(scrolled.slots[1].unwrap().x, scrolled.list_start);
 }
 
@@ -1931,6 +2068,73 @@ fn an_open_dot_sits_on_the_side_facing_the_screen_edge() {
             ink(&corners)
                 .iter()
                 .all(|(_, y)| *y >= min_y - 0.5 && *y <= max_y + 0.5)
+        );
+    }
+}
+
+#[test]
+fn the_scroll_bar_is_on_the_side_away_from_the_screen_edge_clear_of_the_wells() {
+    let moss = Palette::MOSS;
+    let bar = layout::ScrollBar {
+        start: 60.0,
+        end: 160.0,
+        thumb_start: 80.0,
+        thumb_end: 105.0,
+    };
+    let thick = style::SCROLL_BAR_THICKNESS;
+    let inset = style::SCROLL_BAR_INSET;
+    let dock = (46.0, 200.0);
+    for (side, from) in [
+        (DockSide::Left, 46.0 - inset - thick),
+        (DockSide::Right, inset),
+    ] {
+        let corners = drawn(|rc| style::scroll_bar(rc, &moss, side, dock, &bar));
+        assert!(has_color(&corners, moss.muted));
+        let ink = ink(&corners);
+        assert!(!ink.is_empty());
+        assert!(ink.iter().all(|(x, y)| {
+            *x >= from - 0.5 && *x <= from + thick + 0.5 && *y >= 59.5 && *y <= 160.5
+        }));
+        assert!(from + thick <= style::RAIL_WELL_ACROSS || from >= 46.0 - style::RAIL_WELL_ACROSS);
+    }
+    let dock = (200.0, 46.0);
+    for (side, from) in [
+        (DockSide::Top, 46.0 - inset - thick),
+        (DockSide::Bottom, inset),
+    ] {
+        let corners = drawn(|rc| style::scroll_bar(rc, &moss, side, dock, &bar));
+        assert!(ink(&corners).iter().all(|(x, y)| {
+            *y >= from - 0.5 && *y <= from + thick + 0.5 && *x >= 59.5 && *x <= 160.5
+        }));
+    }
+}
+
+#[test]
+fn an_arrows_chevron_is_centred_whichever_way_it_points() {
+    let moss = Palette::MOSS;
+    let spread = |horizontal, forward| {
+        let corners = drawn(|rc| {
+            style::arrow(rc, moss.text, horizontal, forward, (36.0, 16.0));
+        });
+        ink(&corners)
+    };
+    for (horizontal, forward) in [(false, false), (false, true), (true, false), (true, true)] {
+        let ink = spread(horizontal, forward);
+        assert!(!ink.is_empty());
+        let (mut lo_x, mut hi_x, mut lo_y, mut hi_y) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for (x, y) in &ink {
+            lo_x = lo_x.min(*x);
+            hi_x = hi_x.max(*x);
+            lo_y = lo_y.min(*y);
+            hi_y = hi_y.max(*y);
+        }
+        assert!(
+            ((lo_x + hi_x) / 2.0 - 18.0).abs() < 1.0,
+            "{horizontal} {forward}"
+        );
+        assert!(
+            ((lo_y + hi_y) / 2.0 - 8.0).abs() < 1.0,
+            "{horizontal} {forward}"
         );
     }
 }
