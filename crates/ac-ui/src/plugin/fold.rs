@@ -105,15 +105,51 @@ fn fade(mut c: Color, live: bool) -> Color {
 
 // ── Expander ──────────────────────────────────────────────────────────────
 
-/// How far expanders above have moved each element up, per window: siblings
-/// are chosen by their authored position (current top plus this shift).
+/// How far expanders above have moved each element up, per window: an
+/// element's authored top is its current top plus this shift.
 pub type Shifts = Rc<RefCell<HashMap<ElementId, f32>>>;
 
+/// A sibling's box as the window authored it: every expander open, at the
+/// parent's current size.
+#[derive(Debug)]
+struct AuthoredBox {
+    id: ElementId,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    /// Anchored top and bottom: it grows into the room instead of moving its
+    /// bottom.
+    stretches: bool,
+    /// An expander showing only its header.
+    folded: bool,
+}
+
+impl AuthoredBox {
+    /// Entirely above `other`, and not off to one side of it.
+    fn is_above(&self, other: &Self) -> bool {
+        self.bottom <= other.top + 0.5 && self.left < other.right && other.left < self.right
+    }
+
+    /// Where its bottom lands when moved up by `shift`.
+    fn placed_bottom(&self, shift: f32) -> f32 {
+        if self.folded {
+            self.top - shift + EXPANDER_HEADER_HEIGHT
+        } else if self.stretches {
+            self.bottom
+        } else {
+            self.bottom - shift
+        }
+    }
+}
+
 /// A header that folds away the content below it (OpenAC
-/// `UiMarkupExpander`). Folded, the siblings at or below its bottom move up
-/// by the height it gave up (stretched ones grow instead) and come back when
-/// it opens. Under a modern theme it is framed like a group box, with a band
-/// behind the header; Classic draws no frame.
+/// `UiMarkupExpander`). Folded, what is below it moves up, keeping its authored
+/// gap to the lowest thing still above it (stretched siblings grow instead),
+/// and comes back when it opens. Expanders side by side therefore give back
+/// only the room they all left free, and each column follows its own. Under a
+/// modern theme it is framed like a group box, with a band behind the header;
+/// Classic draws no frame.
 #[derive(Debug)]
 pub struct MarkupExpander {
     /// The header element.
@@ -136,7 +172,6 @@ pub struct MarkupExpander {
     collapse_delta: f32,
     expanded_anchors: Option<AnchorEdges>,
     parent_height_at_collapse: f32,
-    moved: Vec<(ElementId, bool, f32)>,
     shifts: Shifts,
     onchange: Option<String>,
     emit: Emit,
@@ -168,7 +203,6 @@ impl MarkupExpander {
             collapse_delta: 0.0,
             expanded_anchors: None,
             parent_height_at_collapse: 0.0,
-            moved: Vec::new(),
             shifts,
             onchange,
             emit,
@@ -230,16 +264,50 @@ impl MarkupExpander {
         self.shifts.borrow().get(&e).copied().unwrap_or(0.0)
     }
 
-    fn add_shift(&self, e: ElementId, delta: f32) {
-        *self.shifts.borrow_mut().entry(e).or_insert(0.0) += delta;
+    /// The height it opens to in a parent `parent_height` tall.
+    fn open_height(&self, parent_height: f32) -> f32 {
+        let resized = if self.expanded_anchors.is_some() {
+            parent_height - self.parent_height_at_collapse
+        } else {
+            0.0
+        };
+        EXPANDER_HEADER_HEIGHT + self.collapse_delta + resized
     }
 
-    fn stretches_when_expanded(ui: &UiRoot, e: ElementId) -> bool {
-        let collapsed = ui.widget::<Self>(e).and_then(|x| x.expanded_anchors);
-        let anchors = collapsed
-            .or_else(|| ui.element(e).map(|el| el.anchors))
-            .unwrap_or(AnchorEdges::NONE);
-        anchors.contains(AnchorEdges::TOP | AnchorEdges::BOTTOM)
+    fn authored_box(
+        &self,
+        ui: &UiRoot,
+        me: ElementId,
+        id: ElementId,
+        parent_height: f32,
+    ) -> Option<AuthoredBox> {
+        let el = ui.element(id)?;
+        // This expander's own widget is out of the tree while it runs.
+        let expander = if id == me {
+            Some(self)
+        } else {
+            ui.widget::<Self>(id)
+        };
+        let anchors = expander
+            .and_then(|x| x.expanded_anchors)
+            .unwrap_or(el.anchors);
+        let stretches = anchors.contains(AnchorEdges::TOP | AnchorEdges::BOTTOM);
+        let open = expander
+            .filter(|x| !x.laid_out)
+            .map(|x| x.open_height(parent_height));
+        let height = open.unwrap_or(el.height);
+        let top = el.top + self.shift_of(id);
+        Some(AuthoredBox {
+            id,
+            left: el.left,
+            // Nothing has measured a label before its first draw.
+            right: el.left + el.width.max(1.0),
+            top,
+            // A stretched sibling's growth already keeps its bottom in place.
+            bottom: if stretches { el.top } else { top } + height,
+            stretches,
+            folded: open.is_some(),
+        })
     }
 
     fn grow(ui: &mut UiRoot, e: ElementId, delta: f32) {
@@ -256,6 +324,48 @@ impl MarkupExpander {
         if !handled && let Some(el) = ui.element_mut(e) {
             el.height = (el.height + delta).max(0.0);
         }
+    }
+
+    /// Places every sibling afresh from its authored box, so where it lands
+    /// depends only on which expanders are folded now, not on the order they
+    /// folded and opened in.
+    fn place_siblings(&mut self, ui: &mut UiRoot, me: ElementId, parent: ElementId) {
+        let parent_height = size(ui, parent).1;
+        let mut boxes: Vec<AuthoredBox> = ui
+            .children(parent)
+            .into_iter()
+            .filter_map(|id| self.authored_box(ui, me, id, parent_height))
+            .collect();
+        boxes.sort_by(|a, b| a.top.total_cmp(&b.top).then(a.bottom.total_cmp(&b.bottom)));
+        let mut placed: Vec<(AuthoredBox, f32)> = Vec::with_capacity(boxes.len());
+        for b in boxes {
+            let above = placed.iter().filter(|(a, _)| a.is_above(&b));
+            let authored = above.clone().map(|(a, _)| a.bottom).reduce(f32::max);
+            let now = above.map(|(_, bottom)| *bottom).reduce(f32::max);
+            let shift = authored.zip(now).map_or(0.0, |(a, n)| (a - n).max(0.0));
+            self.move_sibling(ui, me, &b, shift);
+            let bottom = b.placed_bottom(shift);
+            placed.push((b, bottom));
+        }
+    }
+
+    fn move_sibling(&mut self, ui: &mut UiRoot, me: ElementId, b: &AuthoredBox, shift: f32) {
+        let delta = shift - self.shift_of(b.id);
+        if delta.abs() < f32::EPSILON {
+            return;
+        }
+        if let Some(el) = ui.element_mut(b.id) {
+            el.top -= delta;
+        }
+        if b.stretches {
+            if b.id == me && self.expanded_anchors.is_some() {
+                self.collapse_delta = (self.collapse_delta + delta).max(0.0);
+            } else {
+                Self::grow(ui, b.id, delta);
+            }
+        }
+        self.shifts.borrow_mut().insert(b.id, shift);
+        ui.capture_current_anchor_baseline(b.id);
     }
 
     /// Folds or opens the layout (OpenAC `ApplyLayout`).
@@ -278,32 +388,11 @@ impl MarkupExpander {
                 ui.apply_anchor(child, pw, ph);
             }
         }
-        let (top, height, anchors) = ui.element(me).map_or((0.0, 0.0, AnchorEdges::NONE), |e| {
-            (e.top, e.height, e.anchors)
-        });
+        let (height, anchors) = ui
+            .element(me)
+            .map_or((0.0, AnchorEdges::NONE), |e| (e.height, e.anchors));
         if !expanded {
             self.collapse_delta = height - EXPANDER_HEADER_HEIGHT;
-            let authored_bottom = top + self.shift_of(me) + height;
-            self.moved.clear();
-            if let Some(parent) = parent {
-                for sibling in ui.children(parent) {
-                    let sibling_top = ui.element(sibling).map_or(0.0, |e| e.top);
-                    if sibling == me || sibling_top + self.shift_of(sibling) < authored_bottom - 0.5
-                    {
-                        continue;
-                    }
-                    let grows = Self::stretches_when_expanded(ui, sibling);
-                    if let Some(el) = ui.element_mut(sibling) {
-                        el.top -= self.collapse_delta;
-                    }
-                    if grows {
-                        Self::grow(ui, sibling, self.collapse_delta);
-                    }
-                    self.add_shift(sibling, self.collapse_delta);
-                    ui.capture_current_anchor_baseline(sibling);
-                    self.moved.push((sibling, grows, self.collapse_delta));
-                }
-            }
             ui.set_visible(self.content, false);
             if let Some(parent) = parent
                 && anchors.contains(AnchorEdges::TOP | AnchorEdges::BOTTOM)
@@ -317,39 +406,19 @@ impl MarkupExpander {
             if let Some(el) = ui.element_mut(me) {
                 el.height = EXPANDER_HEADER_HEIGHT;
             }
-            ui.capture_current_anchor_baseline(me);
         } else {
-            match (self.expanded_anchors.take(), parent) {
-                (Some(anchors), Some(parent)) => {
-                    let ph = size(ui, parent).1;
-                    if let Some(el) = ui.element_mut(me) {
-                        el.height = EXPANDER_HEADER_HEIGHT
-                            + self.collapse_delta
-                            + (ph - self.parent_height_at_collapse);
-                    }
-                    ui.set_anchors(me, anchors);
-                }
-                _ => {
-                    if let Some(el) = ui.element_mut(me) {
-                        el.height += self.collapse_delta;
-                    }
-                }
+            let open = self.open_height(parent.map_or(0.0, |p| size(ui, p).1));
+            if let Some(el) = ui.element_mut(me) {
+                el.height = open;
             }
-            ui.capture_current_anchor_baseline(me);
+            if let Some(anchors) = self.expanded_anchors.take() {
+                ui.set_anchors(me, anchors);
+            }
             ui.set_visible(self.content, true);
-            for (sibling, grew, delta) in std::mem::take(&mut self.moved) {
-                if ui.parent(sibling) != parent {
-                    continue;
-                }
-                if let Some(el) = ui.element_mut(sibling) {
-                    el.top += delta;
-                }
-                if grew {
-                    Self::grow(ui, sibling, -delta);
-                }
-                self.add_shift(sibling, -delta);
-                ui.capture_current_anchor_baseline(sibling);
-            }
+        }
+        ui.capture_current_anchor_baseline(me);
+        if let Some(parent) = parent {
+            self.place_siblings(ui, me, parent);
         }
     }
 }
