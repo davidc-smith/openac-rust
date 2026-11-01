@@ -10,7 +10,8 @@
 //! Closed, the dock is only the tile, with a count of the plugin windows open,
 //! and those windows stay as they are. The state is saved per character with
 //! the dock's place. With hovering turned on, the pointer on a closed dock also
-//! peeks it open until the pointer leaves, which saves nothing.
+//! peeks it open until the pointer leaves, which saves nothing: while it
+//! peeks, the layout it reports is the closed one.
 //!
 //! The root sets a dragged window's place from the pointer on every move, so
 //! the dock reads that place each frame, decides its mode, and puts itself
@@ -969,10 +970,26 @@ fn place(ui: &mut UiRoot, id: ElementId, r: Rect) {
 }
 
 impl PanelController for PluginDock {
-    /// Minimized or not is saved per character, with its place.
-    fn capture_window_state(&self, _ui: &UiRoot) -> Option<WindowState> {
+    /// Minimized or not is saved per character, with its place. A peek is
+    /// not the player's change, so while it is open the place and size saved
+    /// are the closed dock's: where it goes back to, at the tile's size.
+    fn capture_window_state(&self, ui: &UiRoot) -> Option<WindowState> {
+        let closed = self
+            .peeking
+            .then(|| {
+                let at = ui.element(self.root).map(|e| (e.left, e.top))?;
+                let (left, top) = self.closed_at.unwrap_or(at);
+                let grip = self.layout.grip.is_some();
+                let tile = layout::compute(self.mode, self.size, true, grip, &[], 0.0, 0);
+                Some((left, top, tile.width, tile.height))
+            })
+            .flatten();
         Some(WindowState {
             collapsed: self.minimized,
+            persisted_left: closed.map(|c| c.0),
+            persisted_top: closed.map(|c| c.1),
+            persisted_width: closed.map(|c| c.2),
+            persisted_height: closed.map(|c| c.3),
             ..WindowState::default()
         })
     }

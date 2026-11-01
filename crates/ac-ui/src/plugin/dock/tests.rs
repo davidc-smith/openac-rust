@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ac_host::settings::{UiWindowLayout, UiWindowPlacement};
 use ac_plugin_ui::{BindingSchema, PanelDescriptor, PluginUi, UiOwner};
 
 use super::layout::{self, ART, DockLayout};
@@ -10,6 +11,7 @@ use super::*;
 use crate::draw::{DrawCmd, DrawList, NoSprites, TextureRef};
 use crate::event::MouseButton;
 use crate::host::UiHost;
+use crate::layout_persistence::{LayoutPersistence, LayoutStore};
 use crate::plugin::style::tests::{corners as draw_corners, has_color};
 use crate::plugin::style::{hover, mix};
 use crate::shapes::CornerRadii;
@@ -2052,4 +2054,132 @@ fn a_windows_own_png_dims_while_its_window_is_closed() {
     assert_eq!(alpha_of(&mut rig, &panels), 1.0);
     panels[0].requested_visible = false;
     assert_eq!(alpha_of(&mut rig, &panels), style::CLOSED_ART_ALPHA);
+}
+
+// ── Saved layout ────────────────────────────────────────────────────────
+
+/// Layouts kept in memory for one character, counting the saves.
+#[derive(Clone, Default)]
+struct MemoryLayouts {
+    placements: Rc<RefCell<std::collections::HashMap<String, UiWindowPlacement>>>,
+    saves: Rc<std::cell::Cell<usize>>,
+}
+
+impl LayoutStore for MemoryLayouts {
+    fn load_window_placement(
+        &self,
+        _character: &str,
+        _resolution: &str,
+        window: &str,
+        _fallback: &UiWindowLayout,
+    ) -> Option<UiWindowPlacement> {
+        self.placements.borrow().get(window).copied()
+    }
+
+    fn save_window_placement(
+        &self,
+        _character: &str,
+        window: &str,
+        placement: &UiWindowPlacement,
+    ) -> std::io::Result<()> {
+        self.saves.set(self.saves.get() + 1);
+        self.placements
+            .borrow_mut()
+            .insert(window.to_owned(), *placement);
+        Ok(())
+    }
+
+    fn load_named_window_layout(
+        &self,
+        _profile: &str,
+        _window: &str,
+        _fallback: &UiWindowLayout,
+    ) -> Option<UiWindowLayout> {
+        None
+    }
+
+    fn save_named_window_layout(
+        &self,
+        _profile: &str,
+        _window: &str,
+        _layout: &UiWindowLayout,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Rig {
+    /// The layout persistence over this dock, restored from `store` as on
+    /// login.
+    fn persist(&mut self, store: &MemoryLayouts) -> LayoutPersistence {
+        let screen = (SCREEN.0 as i32, SCREEN.1 as i32);
+        let mut p = LayoutPersistence::new(
+            &mut self.host,
+            Some(Box::new(store.clone())),
+            "Tester",
+            screen,
+            &[],
+        );
+        p.set_gameplay_active(&mut self.host, true);
+        p.restore_all(&mut self.host);
+        self.tick();
+        p.follow(&mut self.host);
+        p
+    }
+}
+
+#[test]
+fn a_closed_dock_in_a_corner_comes_back_to_that_corner() {
+    for mode in [
+        DockMode::Floating,
+        DockMode::FloatingHorizontal,
+        DockMode::Right,
+        DockMode::Bottom,
+    ] {
+        let store = MemoryLayouts::default();
+        let mut rig = Rig::in_mode(mode);
+        let mut p = rig.persist(&store);
+        rig.press_tile();
+        rig.host.root.move_window(WINDOW, SCREEN.0, SCREEN.1);
+        rig.tick();
+        p.follow(&mut rig.host);
+        let (w, h) = rig.size();
+        let corner = rig.at();
+        assert_eq!(corner, (SCREEN.0 - w, SCREEN.1 - h), "{mode:?}");
+        // The next run, with the mode the settings keep.
+        let mut rig = Rig::in_mode(mode);
+        rig.persist(&store);
+        assert!(rig.closed(), "{mode:?}");
+        assert_eq!(rig.at(), corner, "{mode:?}");
+    }
+}
+
+#[test]
+fn a_peek_open_and_closed_saves_nothing() {
+    let store = MemoryLayouts::default();
+    let mut rig = Rig::in_mode(DockMode::Floating);
+    let mut p = rig.persist(&store);
+    rig.press_tile();
+    rig.with(|c, ui| c.set_opens(ui, DockOpens::Hover));
+    // Near the far end, so that the peek also slides to fit.
+    rig.host.root.move_window(WINDOW, 300.0, 600.0);
+    rig.host.mouse_move(100, 100);
+    rig.pass(1.0);
+    p.follow(&mut rig.host);
+    let saves = store.saves.get();
+    let closed_at = rig.at();
+    rig.pointer_on_dock();
+    rig.pass(0.2);
+    assert!(!rig.closed_view());
+    assert_ne!(rig.at(), closed_at);
+    p.follow(&mut rig.host);
+    rig.host.mouse_move(100, 100);
+    rig.pass(1.0);
+    assert!(rig.closed_view());
+    p.follow(&mut rig.host);
+    assert_eq!(store.saves.get(), saves);
+    // Opening it for good is saved.
+    rig.press_tile();
+    p.follow(&mut rig.host);
+    assert_eq!(store.saves.get(), saves + 1);
 }
