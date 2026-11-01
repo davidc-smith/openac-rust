@@ -1645,10 +1645,12 @@ impl WindowUi {
             return;
         };
         let components = self.spell_examine_components(&spell);
-        self.host
-            .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
-                c.refresh_spell_components(ui, &spell, &components);
-            });
+        let Self { host, content, .. } = self;
+        let mut cells =
+            ac_ui::panels::DatRowTemplates::new(&*content, content.font(DEFAULT_FONT_ID));
+        host.with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
+            c.refresh_spell_components(ui, &spell, &components, &mut cells);
+        });
     }
 
     /// A spell examined from the spellbook or a spell bar: the examination
@@ -1667,10 +1669,12 @@ impl WindowUi {
         let magic_skill = magic_skill(numbers, &spell.school);
         let icon = ac_ui::icons::IconSource::spell_icon(&mut self.icons, spell_id);
         let components = self.spell_examine_components(&spell);
-        let shown = self
-            .host
+        let Self { host, content, .. } = self;
+        let mut cells =
+            ac_ui::panels::DatRowTemplates::new(&*content, content.font(DEFAULT_FONT_ID));
+        let shown = host
             .with_controller::<AppraisalController, _>(EXAMINATION_WINDOW, |c, ui| {
-                c.examine_spell(ui, &spell, icon, magic_skill, &components);
+                c.examine_spell(ui, &spell, icon, magic_skill, &components, &mut cells);
             })
             .is_some();
         if shown {

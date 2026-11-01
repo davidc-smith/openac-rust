@@ -2426,10 +2426,13 @@ struct ExaminedSpell {
     scene: Scene,
     names: std::collections::HashMap<u32, String>,
     focus_class: u32,
+    class_of: std::collections::HashMap<u32, u32>,
 }
 
 const EXAMINED_SPELL: u32 = 0x7FFF;
 const FOCUS: u32 = 0x8000_0030;
+const SCARAB: u32 = 0x8000_0031;
+const PRISMATIC_TAPER: u32 = 0x8000_0032;
 
 impl ExaminedSpell {
     fn new() -> Self {
@@ -2447,6 +2450,14 @@ impl ExaminedSpell {
             .map(|(id, c)| (id, c.name))
             .collect();
         let focus_class = ac_runtime::gameplay::tables::magic_packs(&dats).unwrap()[&1];
+        let map = dats
+            .get::<ac_dat::objects::EnumIdMap>(0x2700_0002)
+            .unwrap()
+            .unwrap();
+        let class_of = [1, 0xBC]
+            .into_iter()
+            .map(|scid| (scid, map.client_id(scid).unwrap()))
+            .collect();
         let size = (1280, 720);
         let mut ui = WindowUi::build(dats, size).expect("the UI builds");
         let mut scene = scene();
@@ -2482,6 +2493,7 @@ impl ExaminedSpell {
             scene,
             names,
             focus_class,
+            class_of,
         }
     }
 
@@ -2537,6 +2549,22 @@ impl ExaminedSpell {
             })
             .unwrap()
     }
+
+    /// Whether each formula cell's missing overlay shows.
+    fn missing(&mut self) -> Vec<bool> {
+        use ac_ui::panels::appraisal::SPELL_COMPONENT_MISSING_ID;
+        let cells = self.cells();
+        let root = &self.ui.host().root;
+        cells
+            .into_iter()
+            .map(|c| {
+                let m = root
+                    .find_descendant(c, SPELL_COMPONENT_MISSING_ID)
+                    .expect("the authored cell's missing overlay");
+                root.element(m).unwrap().visible
+            })
+            .collect()
+    }
 }
 
 // OpenAC `AppraisalUiController.RefreshSpellComponents`, run on the item
@@ -2560,4 +2588,33 @@ fn picking_up_a_focus_while_a_spell_is_examined_shows_its_prismatic_taper() {
     assert!(display.contains(&prismatic), "{display}");
     assert!(!display.contains(&taper), "{display}");
     assert_eq!(s.cells().len(), 2);
+}
+
+// OpenAC `SpellExamineComponentTemplateFactory.Create`: each formula cell
+// is the examination layout's authored cell, its missing overlay shown
+// over a component the player does not carry.
+#[test]
+#[ignore = "needs the retail dat files"]
+fn components_the_player_does_not_carry_show_the_missing_overlay() {
+    use ac_ui::widgets::DatElement;
+    let mut s = ExaminedSpell::new();
+    assert_eq!(s.missing(), [true, true]);
+    let (focus, scarab, prismatic) = (s.focus_class, s.class_of[&1], s.class_of[&0xBC]);
+    s.carry(&[(FOCUS, focus), (SCARAB, scarab)]);
+    assert_eq!(s.missing(), [false, true]);
+    s.carry(&[
+        (FOCUS, focus),
+        (SCARAB, scarab),
+        (PRISMATIC_TAPER, prismatic),
+    ]);
+    assert_eq!(s.missing(), [false, false]);
+    let cells = s.cells();
+    let root = &s.ui.host().root;
+    for c in cells {
+        let cell = root.widget::<DatElement>(c).expect("the authored cell");
+        assert!(
+            matches!(cell.runtime_image, Some(Some(_))),
+            "the icon shows"
+        );
+    }
 }
