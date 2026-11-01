@@ -92,6 +92,10 @@ pub const FOCUS: Color = Color::rgba(1.0, 0.82, 0.25, 1.0);
 pub const CLASSIC_ARROW: Color = Color::rgba(0.80, 0.74, 0.55, 1.0);
 /// The classic caption colour.
 pub const CLASSIC_CAPTION: Color = Color::rgba(0.86, 0.84, 0.74, 1.0);
+/// A Classic expander's frame.
+pub const CLASSIC_FRAME: Color = Color::rgba(0.46, 0.41, 0.28, 1.0);
+/// The band behind a Classic expander's header.
+pub const CLASSIC_BAND: Color = Color::rgba(0.0, 0.0, 0.0, 0.30);
 /// The alpha a disabled control fades to.
 pub const DISABLED_ALPHA: f32 = super::widgets::DISABLED_ALPHA;
 

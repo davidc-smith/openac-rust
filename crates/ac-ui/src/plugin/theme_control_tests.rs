@@ -901,12 +901,47 @@ fn a_themed_expander_with_border_false_has_no_frame() {
 }
 
 #[test]
-fn a_classic_expander_has_no_frame() {
+fn a_classic_expander_is_framed_round_its_content_with_a_band_and_a_divider() {
     let mut g = control(EXPANDER);
     g.set_theme(PluginTheme::Classic);
     let v = element_corners(&mut g, "x");
-    let frame = super::controls::UNLIT_INNER;
-    assert!(!has_color(&v, frame));
+    let edge: Vec<_> = v
+        .iter()
+        .filter(|(_, _, c)| *c == super::controls::CLASSIC_FRAME)
+        .collect();
+    assert!(
+        span(edge.iter().map(|p| p.1)).1 >= 8.0 + 100.0,
+        "reaches round the content"
+    );
+    let divider = 8.0 + ac_plugin_ui::markup::EXPANDER_HEADER_HEIGHT - 1.0;
+    assert!(edge.iter().any(|(_, y, _)| *y == divider), "the divider");
+    assert!(has_color(&v, super::controls::CLASSIC_BAND), "the band");
+}
+
+#[test]
+fn a_folded_classic_expanders_frame_is_just_the_header() {
+    let mut g = control(EXPANDER);
+    g.set_theme(PluginTheme::Classic);
+    let at = g.centre("x");
+    let header_y = 8 + 9;
+    g.click(MouseButton::Left, (at.0, header_y));
+    g.draw();
+    let v = element_corners(&mut g, "x");
+    let (_, bottom) = span(v.iter().map(|p| p.1));
+    assert!(
+        bottom <= 8.0 + ac_plugin_ui::markup::EXPANDER_HEADER_HEIGHT,
+        "{bottom}"
+    );
+    assert!(has_color(&v, super::controls::CLASSIC_FRAME));
+}
+
+#[test]
+fn a_classic_expander_with_border_off_has_no_frame() {
+    let mut g = control(&EXPANDER.replace("<expander ", r#"<expander border="false" "#));
+    g.set_theme(PluginTheme::Classic);
+    let v = element_corners(&mut g, "x");
+    assert!(!has_color(&v, super::controls::CLASSIC_FRAME));
+    assert!(!has_color(&v, super::controls::CLASSIC_BAND));
     assert!(v.iter().all(|(_, y, _)| *y < 8.0 + 20.0), "only its arrow");
 }
 
