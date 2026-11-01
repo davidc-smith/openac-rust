@@ -2,8 +2,10 @@
 //! plugin's table, the bundled bakes they share, and the display density their
 //! sharper bakes follow.
 
+use std::collections::HashSet;
+
 use super::PluginUi;
-use crate::fonts::{AcquiredFont, FontInfo, FontTable, FontWeight};
+use crate::fonts::{AcquiredFont, BundledKey, FontInfo, FontTable, FontWeight};
 use crate::model::UiChange;
 
 impl PluginUi {
@@ -12,6 +14,15 @@ impl PluginUi {
         self.fonts
             .entry(owner.to_owned())
             .or_insert_with(|| FontTable::after(last))
+    }
+
+    /// The bundled bakes plugins other than owner hold: those cost owner`n    /// nothing.
+    fn bundled_held_elsewhere(&self, owner: &str) -> HashSet<BundledKey> {
+        self.fonts
+            .iter()
+            .filter(|(o, _)| o.as_str() != owner)
+            .flat_map(|(_, table)| table.bundled_keys())
+            .collect()
     }
 
     fn font_answer(&mut self, owner: &str, result: Result<AcquiredFont, String>) -> FontInfo {
@@ -35,10 +46,15 @@ impl PluginUi {
     /// The bundled font (Noto Sans) in a weight at a size, for plugin `owner`;
     /// all zero when refused, and reported once.
     pub fn font_bundled(&mut self, owner: &str, pixel_size: f32, weight: FontWeight) -> FontInfo {
+        let others = self.bundled_held_elsewhere(owner);
         let mut bundled = std::mem::take(&mut self.bundled_fonts);
-        let result =
-            self.font_table(owner)
-                .acquire_bundled(owner, pixel_size, weight, &mut bundled);
+        let result = self.font_table(owner).acquire_bundled(
+            owner,
+            pixel_size,
+            weight,
+            &mut bundled,
+            &others,
+        );
         self.bundled_fonts = bundled;
         self.font_answer(owner, result)
     }
@@ -56,9 +72,10 @@ impl PluginUi {
         pixel_size: f32,
         ranges: &[(u32, u32)],
     ) -> FontInfo {
+        let others = self.bundled_held_elsewhere(owner);
         let result = self
             .font_table(owner)
-            .acquire_own(owner, name, bytes, pixel_size, ranges);
+            .acquire_own(owner, name, bytes, pixel_size, ranges, &others);
         self.font_answer(owner, result)
     }
 
@@ -117,10 +134,11 @@ impl PluginUi {
 
     fn prepare_fonts(&mut self, owner: &str) {
         let density = self.font_density;
+        let others = self.bundled_held_elsewhere(owner);
         let mut bundled = std::mem::take(&mut self.bundled_fonts);
         let (changed, reports) =
             self.font_table(owner)
-                .prepare_density(owner, density, &mut bundled);
+                .prepare_density(owner, density, &mut bundled, &others);
         self.bundled_fonts = bundled;
         for view in changed {
             self.changes.push(UiChange::FontAdded(Box::new(view)));

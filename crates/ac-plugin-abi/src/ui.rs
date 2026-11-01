@@ -1586,7 +1586,7 @@ wire_enum! {
 /// The most distinct fonts one plugin may hold.
 pub const FONT_MAXIMUM_COUNT: u32 = 16;
 /// The most memory one plugin's own fonts may take: the files and their
-/// atlases, bytes.
+/// atlases, and the atlases of bundled fonts it alone holds, bytes.
 pub const FONT_MAXIMUM_BYTES: u64 = 16 * 1024 * 1024;
 /// The largest font file a plugin may hand over, bytes.
 pub const FONT_MAXIMUM_FILE_BYTES: usize = 15 * 1024 * 1024;

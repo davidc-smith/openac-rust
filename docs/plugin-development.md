@@ -136,9 +136,12 @@ one hold.
 Name characters beyond the default set in the last argument, so an icon font
 can name the private-use area. A plugin may hold 16 fonts, sized from 6 to 64
 pixels, each of at most 2048 characters. Its own fonts may take 16 MB, counting
-the files and their atlases, and the bundled font costs nothing against that. A
-request past a limit, or a file that is not a usable font, answers `Font::NONE`
-and is logged once; text in such a font, or a released one, draws nothing.
+the files and their atlases; a size of the bundled font counts its atlas only
+while no other plugin holds it too. A file's name may be 256 bytes and a request
+may list 256 ranges. A font whose outlines take too much work to draw is refused.
+A request past a limit, or a file that is not a usable font, answers
+`Font::NONE`, and each kind of refusal is logged once; text in such a font, or a
+released one, draws nothing.
 Preparing a font takes some milliseconds, so ask up front rather than on every
 paint.
 

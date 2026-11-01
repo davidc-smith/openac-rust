@@ -4,6 +4,8 @@ use super::*;
 use crate::PluginUi;
 use crate::model::{UiChange, UiInput};
 
+mod crafted;
+
 const CFF: &[u8] = include_bytes!("../../tests/data/fonts/NotoSansCffFixture.otf");
 const OWNER: &str = "acme.hello";
 
@@ -185,7 +187,8 @@ fn bytes_that_are_not_a_font_are_refused_without_a_panic() {
 }
 
 /// A file whose line metrics make every glyph enormous is refused before
-/// anything is allocated for it: a glyph this size would take gigabytes.
+/// anything is allocated for it or its outlines are read: a glyph this size
+/// would take gigabytes.
 #[test]
 fn a_glyph_claiming_to_be_huge_is_refused_before_it_is_drawn() {
     let mut bytes = CFF.to_vec();
@@ -199,7 +202,7 @@ fn a_glyph_claiming_to_be_huge_is_refused_before_it_is_drawn() {
     bytes[hhea + 4..hhea + 6].copy_from_slice(&1i16.to_be_bytes());
     bytes[hhea + 6..hhea + 8].copy_from_slice(&0i16.to_be_bytes());
     let why = bake(bytes, 64.0, &DEFAULT_RANGES, MAXIMUM_GLYPHS).unwrap_err();
-    assert!(why.contains("larger than an atlas"), "{why}");
+    assert!(why.contains("line metrics are not usable"), "{why}");
 }
 
 /// A small generator, so a failure repeats.
@@ -285,6 +288,7 @@ fn a_size_is_prepared_to_the_nearest_quarter_pixel() {
 
 #[test]
 fn a_size_outside_the_limits_is_refused_and_reported_once() {
+    // Refusals are reported once per reason, whatever the size asked for.
     let mut ui = ui();
     for size in [5.9, 64.5, f32::NAN] {
         assert_eq!(
@@ -293,7 +297,7 @@ fn a_size_outside_the_limits_is_refused_and_reported_once() {
         );
     }
     assert_eq!(ui.font_bundled(OWNER, 5.9, FontWeight::Regular).handle, 0);
-    assert_eq!(ui.take_reports().len(), 3);
+    assert_eq!(ui.take_reports().len(), 1);
     assert_ne!(ui.font_bundled(OWNER, 6.0, FontWeight::Regular).handle, 0);
     assert_ne!(ui.font_bundled(OWNER, 64.0, FontWeight::SemiBold).handle, 0);
 }
