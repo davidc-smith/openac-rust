@@ -1,6 +1,6 @@
 # C# fork → Rust client: port tracker
 
-As of 2026-10-30.
+As of 2026-11-01.
 
 ## Summary
 
@@ -38,9 +38,9 @@ these groups:
 | Group | Items | Why |
 | --- | --- | --- |
 | **Focus: world art** | Done: F1 (awaiting Erik), F2, W1-W5, W11. To do: W6 | Vision's terrain drawing reads landblock terrain with W6, then draws it with triangles and lines |
-| **Focus: plugin HUDs** | Done: F3 (PR being prepared). To do: F4, P8, P9, P10, P15, P16, P18 | The five HUDs use all of these: remembered position (P18), screen size and outside presses for menus (P15), resize (P16), layers (P10), polygons, rounded rects and ellipses (F3, P9), fonts and SemiBold (F4, P8) |
+| **Focus: plugin HUDs** | Done: F3, F4, P8 (on `main`, PR held). To do: P9, P10, P15, P16, P18 | The five HUDs use all of these: remembered position (P18), screen size and outside presses for menus (P15), resize (P16), layers (P10), polygons, rounded rects and ellipses (F3, P9), fonts and SemiBold (F4, P8) |
 | **Parked: replaces retail UI** | F6, H1-H13 | Includes H5, even though it is logic only, because nothing uses it until H6 |
-| **Other C# ports, not now** | Plugin windows and dock: F5, P1-P7, P13, P14, P19. Canvas extras with no use found in the five HUDs: P11, P12, P17. Data for navigation: W7-W9. Levels: W10. Walks and live checks: G1-G8. Mac: M1 | Still to port, but no focus item needs them. P1 and P2 restyle plugin windows and the dock, not retail windows |
+| **Other C# ports, not now** | Plugin windows and dock: F5, P3, P19 (P1, P2, P4-P7, P13 and P14 are done on `main`). Canvas extras with no use found in the five HUDs: P11, P12, P17. Data for navigation: W7-W9. Levels: W10. Walks and live checks: G1-G8. Mac: M1 | Still to port, but no focus item needs them. P1 and P2 restyle plugin windows and the dock, not retail windows |
 
 **Clicks and Ctrl+drag work, with fix M3.** A canvas gets press, release, move,
 wheel and cancel events with the Shift, Ctrl and Alt bits, keeps the pointer
@@ -58,11 +58,12 @@ Order within the focus:
 
 1. **M3 upstream:** the two fixes Ctrl+drag depends on. Done on `main`, in
    review as PR [#58](https://github.com/eriknihlen/openac-rust/pull/58).
-2. **F3, then P9:** F3 is done on `main`, on branch `feat/antialiased-shapes`,
-   and goes up by itself, ahead of what uses it. P9 waits for PR #51.
-3. **P18, P15, P16 and W6, after PR #51:** each adds to the ABI, so they would
-   conflict with it until it merges. P10 follows.
-4. **F4, then P8:** the largest piece, and it comes last.
+2. **F3, then P9:** F3 is done on `main`. It goes up with the plugin dock in one
+   PR, from `feat/plugin-dock-v2`, because the dock is what shows it working.
+   `feat/antialiased-shapes` is replaced. P9 is next, now #51 has merged.
+3. **P18, P15, P16 and W6:** each adds to the ABI, on top of API 1.4 once the
+   dock PR merges. P10 follows.
+4. **F4, then P8:** done on `main`, in the same PR as F3.
 
 ## Shared foundations
 
@@ -71,11 +72,11 @@ F1 has to be settled with Erik before any ABI change.
 
 | ID | Foundation | What it is | Unlocks | Size | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| F1 | ABI versioning policy | Asked Erik on 2026-10-30, follow-up sent the same day. The ABI cannot hold an import newer than `API_CURRENT` (the SDK writes every import, which must equal `section_at(API_CURRENT)`), so a PR that adds to the API raises the version itself. Proposal: the first API-adding PR after a release raises it, later ones before the next release reuse it. | Every ABI item | S | In progress | Waiting on Erik for the policy. The world drawing PR (`feat/world-markers`) takes the API from 1.2 to 1.3 once, for triangles and markers together, which is what the proposal says |
+| F1 | ABI versioning policy | Asked Erik on 2026-10-30, follow-up sent the same day. The ABI cannot hold an import newer than `API_CURRENT` (the SDK writes every import, which must equal `section_at(API_CURRENT)`), so a PR that adds to the API raises the version itself. Proposal: the first API-adding PR after a release raises it, later ones before the next release reuse it. | Every ABI item | S | In progress | Waiting on Erik for the policy. Upstream released 1.3 in v0.1.9 with the world drawing, which is what the proposal says. `feat/plugin-dock-v2` raises to 1.4 itself |
 | F2 | Translucent world pass | A second pipeline next to `world_line_pipeline`: alpha blend, depth test, no depth write, no culling, RGBA per vertex. Same world pass as the lines. | W1, W3, W4 | M | Done (on `main`) | Built with W1 on `feat/world-triangles`; GPU test in `ac-render/src/renderer/world_triangles.rs` |
-| F3 | Anti-aliased UI shapes | `DrawCmd::Triangles` with a colour per vertex, drawn by the existing pipeline. `ac-ui/src/shapes.rs` turns rounded rects, ellipses, convex polygons, strokes and shadows into triangles with a soft edge one framebuffer pixel wide, and `RenderContext` draws them, smooth lines and vertical gradients too. Numbers that are not finite draw nothing, shadows fade with no step, and ellipse strokes are even all the way round. | P1, P2, P9, all decks | M | Done (on `main`) | Branch `feat/antialiased-shapes` off `upstream-main`, 3 commits, no ABI change, replacing `feat/ui-shapes`. PR waits for the full check on the MBP. Live-checked on the Air with a temporary patch, since nothing in the client draws it yet. Not tested on Windows or Linux |
-| F4 | Fonts | A bundled SemiBold weight, plus a plugin font API (bundled Noto Sans at any size and weight, or the plugin's own TTF/OTF). | P1, P7, P8, P13, decks | M-L | Not started | `ac-ui/src/font.rs`, `bundled_font.rs` |
-| F5 | SVG icons | Decide between adding resvg/tiny-skia and shipping PNGs. The installer and `plugincheck` must accept `.svg` if we add it. | P3, decks | S-M | Not started | Decks use about 15 SVGs from `assets/hud` |
+| F3 | Anti-aliased UI shapes | `DrawCmd::Triangles` with a colour per vertex, drawn by the existing pipeline. `ac-ui/src/shapes.rs` turns rounded rects, ellipses, convex polygons, strokes and shadows into triangles with a soft edge one framebuffer pixel wide, and `RenderContext` draws them, smooth lines and vertical gradients too. Numbers that are not finite draw nothing, shadows fade with no step, and ellipse strokes are even all the way round. | P1, P2, P9, all decks | M | Done (on `main`) | The first 3 commits of `feat/plugin-dock-v2`, no ABI change of its own, replacing `feat/antialiased-shapes` and `feat/ui-shapes`. PR held. The dock and themed windows draw with it. Not tested on Windows or Linux |
+| F4 | Fonts | A bundled SemiBold weight, plus a plugin font API (bundled Noto Sans at any size and weight, or the plugin's own TTF/OTF). | P1, P7, P8, P13, decks | M-L | Done (on `main`) | `ac-ui/src/font.rs`, `bundled_font.rs`. SemiBold and the plugin font API, with P8. Branch `feat/plugin-dock-v2`, PR held |
+| F5 | SVG icons | Decide between adding resvg/tiny-skia and shipping PNGs. The installer and `plugincheck` must accept `.svg` if we add it. | P3, decks | S-M | Not started | Decks use about 15 SVGs from `assets/hud`. Left out for now by the user, 2026-11-01, so no `resvg` dependency |
 | F6 | Modern HUD option | One setting, off by default, in `ac-host` settings and the Options panel. Also adds the HUD text size setting. | All decks | S | Not started | `ac-host/src/settings/sections.rs` |
 
 ## World rendering and plugin world APIs
@@ -110,20 +111,20 @@ rather than a paint callback, so the canvas items become new `PaintCmd` and
 
 | ID | Feature (C# merge) | Rust today | What porting involves | Size | Needs | Status | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1 | Modern theme look (`16b0db10`) | Missing | Rounded corners, soft shadow, header band, SemiBold title, pill tabs, switch toggles, focus rings. Restyle `ac-ui/src/plugin/` widgets, controls, fold, dialog, title bar, list and menu. | L | F3, F4 | Not started | Rust themes are flat palette swaps |
-| P2 | Dock as a floating pill with an edge rail (`7832a8e7`) | Partial | Rework the layout in `ac-ui/src/plugin/shelf.rs`. Add a hover label, a dock-mode setting and a menu in Plugin appearance. | M | F3 | Not started | Rust has upstream's shelf |
-| P3 | Theme-tinted SVG dock icons (`e57192bb`) | Missing | Rasterise to a coverage texture and tint it per state. `icon_file` field at the end of `PanelRegistration`. Installer and `plugincheck` accept `.svg`. | M | F1, F5 | Not started | |
-| P4 | Full-colour PNG dock icon per window (`7f1262fe`) | Partial | Same `icon_file` field as P3. Reuse `ac-plugin-ui/src/file_images.rs` with the 64×64 px / 64 KiB rule. | S | F1 | Not started | Rust uses one `icon.png` per plugin |
-| P5 | Dock gear toggles Plugin appearance (`abfd3f9c`) | Partial | Add a gear slot to `shelf.rs` that opens and closes Appearance. | S | — | Not started | Rust opens it with a right-click only |
-| P6 | Five more themes, IsLight, light/dark variants (`773f0294`) | Missing | Lavender Dusk, Ember, Bloodmoon, Glacier and Parchment in `theme.rs`. `ThemeKind` tags plus `is_light`. `color="A\|light:B"` in markup, and `.light.png`/`.dark.png` lookups. | S-M | F1 | Not started | Plugins on API 1.2 or older must be sent a kind they know |
-| P7 | Theme metrics and SemiBold for canvases (`a0c1408e`) | Partial | Metric constants in the SDK. SemiBold comes with F4. | S | F4 | Not started | Theme read and ThemeChanged already exist |
-| P8 | Plugin fonts (painter-v2 PR1: `7d6f7246`, `2fde2783`, `866257df`) | Missing | Imports to get a bundled font or decode the plugin's own and release it. A font handle on `PaintCmd::Text`, a measure call, and a glyph atlas per font and size with budgets. | M-L | F1, F4 | Not started | |
+| P1 | Modern theme look (`16b0db10`) | Missing | Rounded corners, soft shadow, header band, SemiBold title, pill tabs, switch toggles, focus rings. Restyle `ac-ui/src/plugin/` widgets, controls, fold, dialog, title bar, list and menu. | L | F3, F4 | Done (on `main`) | Rust themes are flat palette swaps. Branch `feat/plugin-dock-v2`, PR held. Classic plugin windows draw as before, pinned by `tests/data/plugin_classic/pinned.txt` |
+| P2 | Dock as a floating pill with an edge rail (`7832a8e7`) | Partial | Rework the layout in `ac-ui/src/plugin/shelf.rs`. Add a hover label, a dock-mode setting and a menu in Plugin appearance. | M | F3 | Done (on `main`) | Rust has upstream's shelf. Branch `feat/plugin-dock-v2`, PR held. Replaces the shelf with no option, as Erik agreed. Beyond the C# dock: top and bottom edges, a horizontal layout, a remembered closed state as an icon tile, three sizes, and hover or click to open |
+| P3 | Theme-tinted SVG dock icons (`e57192bb`) | Missing | Rasterise to a coverage texture and tint it per state. `icon_file` field at the end of `PanelRegistration`. Installer and `plugincheck` accept `.svg`. | M | F1, F5 | Not started | Left out for now by the user, 2026-11-01. `icon_file` went in with P4 |
+| P4 | Full-colour PNG dock icon per window (`7f1262fe`) | Partial | Same `icon_file` field as P3. Reuse `ac-plugin-ui/src/file_images.rs` with the 64×64 px / 64 KiB rule. | S | F1 | Done (on `main`) | Rust uses one `icon.png` per plugin. Branch `feat/plugin-dock-v2`, PR held. A `.svg` is refused and logged, and the next icon is drawn |
+| P5 | Dock gear toggles Plugin appearance (`abfd3f9c`) | Partial | Add a gear slot to `shelf.rs` that opens and closes Appearance. | S | — | Done (on `main`) | Rust opens it with a right-click only. Branch `feat/plugin-dock-v2`, PR held |
+| P6 | Five more themes, IsLight, light/dark variants (`773f0294`) | Missing | Lavender Dusk, Ember, Bloodmoon, Glacier and Parchment in `theme.rs`. `ThemeKind` tags plus `is_light`. `color="A\|light:B"` in markup, and `.light.png`/`.dark.png` lookups. | S-M | F1 | Done (on `main`) | Plugins on API 1.2 or older must be sent a kind they know. Branch `feat/plugin-dock-v2`, PR held. A plugin on API 1.3 or older is told Moss under a new theme, with the real name and colours |
+| P7 | Theme metrics and SemiBold for canvases (`a0c1408e`) | Partial | Metric constants in the SDK. SemiBold comes with F4. | S | F4 | Done (on `main`) | Theme read and ThemeChanged already exist. Branch `feat/plugin-dock-v2`, PR held |
+| P8 | Plugin fonts (painter-v2 PR1: `7d6f7246`, `2fde2783`, `866257df`) | Missing | Imports to get a bundled font or decode the plugin's own and release it. A font handle on `PaintCmd::Text`, a measure call, and a glyph atlas per font and size with budgets. | M-L | F1, F4 | Done (on `main`) | Branch `feat/plugin-dock-v2`, PR held. Bytes from the plugin, with no path-based load. Fuzzed with damaged fonts, no crash |
 | P9 | Anti-aliased canvas shapes (`44a505ee`) | Missing | `PaintCmd` variants for rounded rects, ellipses, convex polygons and gradients, drawn through the `RenderContext` methods from F3, which already refuse numbers that are not finite. | M | F1, F3 | Not started | |
 | P10 | Canvas layers and z-order (`a4ab9664`) | Missing | A second band above windows and below dialogs (`overlay.rs`, `root.rs`). `layer` and `z_order` on `CanvasRegistration`, plus `CanvasChange::ZOrder`. | M | F1 | Not started | |
 | P11 | Canvas keyboard input (`84ada220`) | Missing | Keyboard flag, a key `UiEvent`, focus request and release, and key repeat through `UiRoot`. | M | F1 | Not started | |
 | P12 | Image regions and nine-slice (`303c40ef`) | Missing | Three `PaintCmd` variants. The UV sub-rect already exists in `RenderContext`. | S | F1 | Not started | |
-| P13 | Themed Confirm close X, SemiBold list headers (`2e0894ce`) | Partial | Ghost X in `plugin/dialog.rs:271`. SemiBold headers come with F4. | S | F4 | Not started | |
-| P14 | Expander framed like a group box (`451b6f9c`) | Missing | Parse `border` and draw the frame in `plugin/fold.rs`. | S | — | Not started | |
+| P13 | Themed Confirm close X, SemiBold list headers (`2e0894ce`) | Partial | Ghost X in `plugin/dialog.rs:271`. SemiBold headers come with F4. | S | F4 | Done (on `main`) | Branch `feat/plugin-dock-v2`, PR held |
+| P14 | Expander framed like a group box (`451b6f9c`) | Missing | Parse `border` and draw the frame in `plugin/fold.rs`. | S | — | Done (on `main`) | Branch `feat/plugin-dock-v2`, PR held. Framed under a modern theme only, unlike C#, because Classic windows must not change |
 | P15 | Screen size and presses outside a canvas (`a16e142f`) | Missing | `UiScreenSize` import and event. A `wants_outside_presses` flag and pointer kind 5. | S | F1 | Not started | |
 | P16 | Canvas resize (`ebcf854c`) | Missing | `CanvasChange::Resize(w, h)`, applied in `canvas.rs::sync`. | S | F1 | Not started | |
 | P17 | Canvas inside a markup window (`5279f073`, `352099df`) | Missing | `<canvas id>` element in markup, sized by flex. `in_markup` flag, paired by id in `plugin/mod.rs`. | M | F1 | Not started | |
