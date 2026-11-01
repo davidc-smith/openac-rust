@@ -344,10 +344,8 @@ fn sell_check(
     let player = items.player;
     evaluate_sell(
         &VendorSellCandidate {
-            owned_by_player: player != 0
-                && guid != player
-                && items.objects.is_owned_by_object(guid, player),
-            contained_item_count: i32::try_from(items.objects.get_contents(guid).len())
+            owned_by_player: items.objects.is_owned_by_object(guid, player),
+            contained_item_count: i32::try_from(items.objects.get_contained_items(guid).len())
                 .unwrap_or(i32::MAX),
             item_type: item.item_type.bits(),
             per_unit_value: per_unit_value(item.value, Some(item.stack_size)),
