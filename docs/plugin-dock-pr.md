@@ -43,7 +43,7 @@ The original client has none of this, and no retail window changes. Plugin windo
 
 ## Testing
 
-- `scripts/check.sh` green on macOS (Apple Silicon) with real dats, 10849 tests. fmt, clippy with `-D warnings` and the tests with `--include-ignored` also passed at each of the 32 commits. Since then only code comments, one test's name and a commit message have changed.
+- `scripts/check.sh` green on macOS (Apple Silicon) with real dats, 10849 tests. fmt, clippy with `-D warnings` and the tests with `--include-ignored` also passed at each of the 32 commits.
 - New tests port the fork's dock, theme and font tests, with cases added for horizontal layouts and the top and bottom edges. GPU tests on Metal read back shape pixels.
 - Older plugins: real modules built by the 1.2 and 1.3 SDKs load, show on the dock and are told a theme kind they know. New imports each have a test through a real plugin module.
 - Hostile numbers: 300,000 shape calls with NaN, infinities and huge values gave no panics and nothing non-finite in the draw list.
