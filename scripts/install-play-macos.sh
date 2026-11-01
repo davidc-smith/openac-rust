@@ -40,7 +40,10 @@ exec "$(dirname "$0")/openac-launcher" --update-manifest-uri http://127.0.0.1:9/
 EOF
 chmod 0755 "$bundle/Contents/MacOS/openac-play"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable openac-play' "$bundle/Contents/Info.plist"
-codesign --force --sign - --timestamp=none "$bundle/Contents/MacOS/openac-play"
+# Each program's signature names Info.plist, so all of them are signed again after that edit.
+for program in openac openac-launcher openac-play; do
+    codesign --force --sign - --timestamp=none "$bundle/Contents/MacOS/$program"
+done
 codesign --force --sign - --timestamp=none "$bundle"
 codesign --verify --deep --strict "$bundle"
 
