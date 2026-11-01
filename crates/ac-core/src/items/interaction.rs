@@ -1228,4 +1228,43 @@ mod tests {
             ItemPolicyActionKind::PlaceInContainer
         );
     }
+
+    #[test]
+    fn placement_follows_the_server_unlocking_and_locking_a_chest() {
+        // Placement_followsTheServerUnlockingAndLockingAChest: an unlock
+        // arrives as the Locked bool going false; the chest's openable bit
+        // is what placement reads, so the bool has to move it, and locking
+        // it again takes it away.
+        use crate::items::{ClientObject, ClientObjectTable};
+        use crate::properties::PropertyBool;
+        let mut table = ClientObjectTable::new();
+        let mut events = Vec::new();
+        let mut chest = ClientObject::new(GROUND_CONTAINER);
+        chest.item_type = ItemType::CONTAINER;
+        chest.public_weenie_bitfield = Some(PublicWeenieFlags::STUCK);
+        table.add_or_update(chest, &mut events);
+        let place_into_chest = |table: &ClientObjectTable| {
+            let chest = ItemPolicyObject {
+                is_container: true,
+                flags: table
+                    .get(GROUND_CONTAINER)
+                    .and_then(|c| c.public_weenie_bitfield)
+                    .unwrap_or_default(),
+                ..obj(GROUND_CONTAINER)
+            };
+            decide_placement(&ItemPlacementPolicyInput {
+                ground_object_id: GROUND_CONTAINER,
+                ..place(owned_direct(), chest)
+            })
+            .return_value
+        };
+        assert!(!place_into_chest(&table));
+
+        let locked = PropertyBool::LOCKED.0;
+        assert!(table.update_bool_property(GROUND_CONTAINER, locked, false, &mut events));
+        assert!(place_into_chest(&table));
+
+        assert!(table.update_bool_property(GROUND_CONTAINER, locked, true, &mut events));
+        assert!(!place_into_chest(&table));
+    }
 }
